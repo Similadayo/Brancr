@@ -1,0 +1,358 @@
+package bot
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/redis/go-redis/v9"
+	"github.com/similadayo/brancr/internal/ai"
+	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// TenantBotManager orchestrates all tenant bots & their AI brains
+type TenantBotManager struct {
+	DB         *gorm.DB
+	Bots       map[uint]*tgbotapi.BotAPI
+	Owners     map[uint]int64
+	Mutex      sync.RWMutex
+	Logger     *zap.Logger
+	Groups     *MediaGroupCollector
+	AIClient   *ai.AIClient
+	Memory     *ai.MemoryService
+	Classifier *ai.Classifier
+	Emotion    *ai.EmotionAnalyzer
+	Policy     *ai.PolicyEngine
+	Responder  *ai.Responder
+	AdminBot   *tgbotapi.BotAPI
+}
+
+// ✅ Constructor — now initializes AI components too
+func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *TenantBotManager {
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+
+	// ✅ Initialize AI Embedding engine
+	embedder := ai.NewEmbeddingClient()
+
+	// ✅ Initialize AI core stack
+	client := ai.NewAIClient()
+	memory := &ai.MemoryService{
+		DB:      db,
+		Encoder: embedder, // 🧠 FIXED: plug in embedding engine
+	}
+	classifier := &ai.Classifier{Client: client}
+	emotion := &ai.EmotionAnalyzer{Client: client}
+	policy := ai.NewPolicyEngine()
+
+	// ✅ Responder now has full context (no nils)
+	responder := &ai.Responder{
+		Client:     client,
+		Memory:     memory,
+		Persona:    storage.Persona{BotName: "Brancr Assistant", Tone: "friendly and professional"},
+		Classifier: classifier,
+		Emotion:    emotion,
+		Policy:     policy,
+	}
+
+	return &TenantBotManager{
+		DB:         db,
+		Bots:       make(map[uint]*tgbotapi.BotAPI),
+		Owners:     make(map[uint]int64),
+		Logger:     logger,
+		Groups:     NewMediaGroupCollector(rdb),
+		AIClient:   client,
+		Memory:     memory,
+		Classifier: classifier,
+		Emotion:    emotion,
+		Policy:     policy,
+		Responder:  responder,
+	}
+}
+
+// ✅ Initialize all bots for active tenants
+func (m *TenantBotManager) InitBots() error {
+	publicURL, err := utils.GetPublicURL()
+	if err != nil {
+		log.Printf("⚠️ Could not detect public tunnel: %v", err)
+	} else {
+		log.Printf("🌐 Detected public URL: %s", publicURL)
+	}
+
+	var tenants []storage.Tenant
+	if err := m.DB.Where("status = ?", "Active").Find(&tenants).Error; err != nil {
+		return fmt.Errorf("failed to fetch tenants: %w", err)
+	}
+	if len(tenants) == 0 {
+		log.Println("⚠️ No active tenants found — skipping bot startup.")
+		return nil
+	}
+
+	for _, t := range tenants {
+		time.Sleep(2 * time.Second)
+		if err := m.startTenantBot(&t); err != nil {
+			log.Printf("❌ Failed to start bot for tenant %s: %v", t.Name, err)
+			continue
+		}
+
+		bot, ok := m.GetBot(t.ID)
+		if !ok || bot == nil {
+			log.Printf("⚠️ Bot instance not found after startup for tenant %d", t.ID)
+			continue
+		}
+
+		m.Mutex.Lock()
+		m.Owners[t.ID] = t.OwnerTelegramID
+		m.Mutex.Unlock()
+
+		bot.Request(tgbotapi.DeleteWebhookConfig{})
+		if publicURL != "" {
+			webhook := fmt.Sprintf("%s/bot/tenant/%d/webhook", publicURL, t.ID)
+			cfg, err := tgbotapi.NewWebhook(webhook)
+			if err != nil {
+				log.Printf("❌ Invalid webhook URL for tenant %d: %v", t.ID, err)
+				continue
+			}
+			if _, err = bot.Request(cfg); err != nil {
+				log.Printf("❌ Failed to set webhook for tenant %d: %v", t.ID, err)
+			} else {
+				log.Printf("✅ Webhook set for tenant %d → %s", t.ID, webhook)
+			}
+		} else {
+			log.Printf("⚠️ No public URL detected — webhook skipped for tenant %d.", t.ID)
+		}
+
+	}
+
+	go m.selfHealWebhooks()
+	log.Printf("🤖 Initialized %d active tenant bots (webhook mode)", len(tenants))
+	return nil
+}
+
+// ✅ Self-healing webhook refresher
+func (m *TenantBotManager) selfHealWebhooks() {
+	for {
+		time.Sleep(10 * time.Minute)
+		publicURL, err := utils.GetPublicURL()
+		if err != nil {
+			log.Printf("⚠️ Could not refresh tunnel URL: %v", err)
+			continue
+		}
+		for id, bot := range m.Bots {
+			expected := fmt.Sprintf("%s/bot/tenant/%d/webhook", publicURL, id)
+			info, _ := bot.GetWebhookInfo()
+			if info.URL != expected {
+				bot.Request(tgbotapi.DeleteWebhookConfig{})
+				wh, _ := tgbotapi.NewWebhook(expected)
+				if _, err := bot.Request(wh); err != nil {
+					log.Printf("⚠️ Failed to reset webhook for tenant %d: %v", id, err)
+				} else {
+					log.Printf("🔄 Refreshed webhook for tenant %d → %s", id, expected)
+				}
+			}
+			if info.LastErrorMessage != "" {
+				log.Printf("⚠️ Webhook error for tenant %d: %s", id, info.LastErrorMessage)
+			}
+		}
+	}
+}
+
+// ✅ Start a bot instance per tenant
+func (m *TenantBotManager) startTenantBot(t *storage.Tenant) error {
+	m.Mutex.Lock()
+	defer m.Mutex.Unlock()
+
+	if _, exists := m.Bots[t.ID]; exists {
+		return nil
+	}
+
+	token, err := utils.DecryptToken(t.TelegramBotToken)
+	if err != nil {
+		return fmt.Errorf("decrypt bot token for tenant %d: %w", t.ID, err)
+	}
+
+	bot, err := tgbotapi.NewBotAPI(token)
+	if err != nil {
+		return fmt.Errorf("invalid bot token for tenant %d: %w", t.ID, err)
+	}
+
+	m.Bots[t.ID] = bot
+	m.Owners[t.ID] = t.OwnerTelegramID
+
+	log.Printf("🤖 Tenant bot loaded → ID %d | Owner %d", t.ID, t.OwnerTelegramID)
+	return nil
+}
+
+// ✅ Safe bot retrieval
+func (m *TenantBotManager) GetBot(id uint) (*tgbotapi.BotAPI, bool) {
+	m.Mutex.RLock()
+	defer m.Mutex.RUnlock()
+	b, ok := m.Bots[id]
+	return b, ok
+}
+
+// ✅ Owner lookup cache
+func (m *TenantBotManager) GetOwnerID(tenantID uint) int64 {
+	m.Mutex.RLock()
+	defer m.Mutex.RUnlock()
+	return m.Owners[tenantID]
+}
+
+// ✅ Stop bot
+func (m *TenantBotManager) StopBot(tenantID uint) {
+	m.Mutex.Lock()
+	defer m.Mutex.Unlock()
+	if _, ok := m.Bots[tenantID]; ok {
+		delete(m.Bots, tenantID)
+		delete(m.Owners, tenantID)
+		log.Printf("🛑 Bot stopped for tenant ID %d", tenantID)
+	}
+}
+
+// ✅ Generate AI Response for messages
+func (m *TenantBotManager) GenerateAIResponse(ctx context.Context, tenantID uint, userMsg string) (string, error) {
+	persona := ai.GetPersona(m.DB, tenantID)
+	responder := &ai.Responder{
+		Client:     m.AIClient,
+		Memory:     m.Memory,
+		Persona:    persona,
+		Classifier: m.Classifier,
+		Emotion:    m.Emotion,
+		Policy:     m.Policy,
+	}
+	return responder.GenerateConversationalReply(ctx, tenantID, userMsg)
+}
+
+// ✅ GetBotInstance returns a bot instance if it exists
+func (m *TenantBotManager) GetBotInstance(tenantID uint) *tgbotapi.BotAPI {
+	m.Mutex.RLock()
+	defer m.Mutex.RUnlock()
+	if bot, ok := m.Bots[tenantID]; ok {
+		return bot
+	}
+	return nil
+}
+
+// ✅ StartBotForTenant starts a bot instance + registers webhook
+func (m *TenantBotManager) StartBotForTenant(tenant *storage.Tenant) error {
+	// Start bot in memory
+	if err := m.startTenantBot(tenant); err != nil {
+		return fmt.Errorf("failed to start tenant bot: %w", err)
+	}
+
+	// ✅ Retrieve bot instance
+	bot, ok := m.GetBot(tenant.ID)
+	if !ok || bot == nil {
+		return fmt.Errorf("bot instance not found after creation for tenant %d", tenant.ID)
+	}
+
+	// Detect public URL
+	publicURL, err := utils.GetPublicURL()
+	if err != nil || publicURL == "" {
+		m.Logger.Warn("no public URL detected for webhook registration",
+			zap.Uint("tenant_id", tenant.ID))
+		return nil
+	}
+
+	// ✅ Webhook setup with retry
+	webhook := fmt.Sprintf("%s/bot/tenant/%d/webhook", publicURL, tenant.ID)
+	if err := m.setWebhookWithRetry(bot, tenant.ID, webhook, 3); err != nil {
+		m.Logger.Error("failed to set webhook after retries",
+			zap.Uint("tenant_id", tenant.ID),
+			zap.Error(err))
+		return err
+	}
+
+	m.Logger.Info("✅ Tenant bot started successfully",
+		zap.Uint("tenant_id", tenant.ID),
+		zap.String("webhook", webhook),
+		zap.String("bot_username", bot.Self.UserName))
+
+	return nil
+}
+
+// ✅ setWebhookWithRetry safely retries webhook setup when Telegram rate-limits
+func (m *TenantBotManager) setWebhookWithRetry(bot *tgbotapi.BotAPI, tenantID uint, webhook string, maxRetries int) error {
+	var err error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		cfg, _ := tgbotapi.NewWebhook(webhook)
+		_, err = bot.Request(cfg)
+		if err == nil {
+			m.Logger.Info("✅ Webhook set successfully",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("webhook", webhook))
+			return nil
+		}
+
+		// Check for Telegram rate-limit hint
+		if strings.Contains(err.Error(), "Too Many Requests") {
+			m.Logger.Warn("⏳ Telegram rate limit hit, retrying...",
+				zap.Int("attempt", attempt),
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+			time.Sleep(time.Duration(attempt) * time.Second) // exponential-ish backoff
+			continue
+		}
+
+		m.Logger.Warn("⚠️ Webhook registration attempt failed",
+			zap.Int("attempt", attempt),
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err))
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("failed to set webhook after %d retries: %w", maxRetries, err)
+}
+
+func (m *TenantBotManager) WaitForBot(tenantID uint, timeout time.Duration) *tgbotapi.BotAPI {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		bot, ok := m.GetBot(tenantID)
+		if ok && bot != nil {
+			return bot
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil
+}
+
+// TrackOrCreateCustomer finds or creates a cross-platform customer record
+func (m *TenantBotManager) TrackOrCreateCustomer(
+	ctx context.Context,
+	tenantID uint,
+	channel, platformID, displayName, username, profilePic string,
+) (*storage.Customer, error) {
+
+	customer := &storage.Customer{
+		TenantID:      tenantID,
+		Channel:       channel,
+		PlatformID:    platformID,
+		DisplayName:   displayName,
+		Username:      username,
+		ProfilePicURL: profilePic,
+		LastMessageAt: time.Now(),
+	}
+
+	err := m.DB.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "channel"}, {Name: "platform_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"last_message_at", "display_name", "profile_pic_url"}),
+	}).Create(customer).Error
+
+	if err != nil {
+		m.Logger.Error("failed to track customer",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("channel", channel),
+			zap.String("platform_id", platformID),
+			zap.Error(err))
+		return nil, err
+	}
+
+	return customer, nil
+}

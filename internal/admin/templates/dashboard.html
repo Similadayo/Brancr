@@ -1,0 +1,196 @@
+{{define "title"}}Dashboard — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>Overview of your Brancr platform</p>
+</div>
+
+<!-- Stats Cards -->
+<div class="grid">
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Total Tenants</div>
+        <div class="stat-card-value">{{.TotalTenants}}</div>
+      </div>
+      <div class="stat-card-icon blue">👥</div>
+    </div>
+  </div>
+  
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Active Bots</div>
+        <div class="stat-card-value">{{.ActiveBots}}</div>
+      </div>
+      <div class="stat-card-icon green">🤖</div>
+    </div>
+  </div>
+  
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Posts Today</div>
+        <div class="stat-card-value">{{.PostsToday}}</div>
+      </div>
+      <div class="stat-card-icon purple">📱</div>
+    </div>
+  </div>
+  
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">AI Requests</div>
+        <div class="stat-card-value">{{.OpenRouterUsage}}</div>
+      </div>
+      <div class="stat-card-icon orange">✨</div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts Section -->
+<div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px; margin-bottom: 32px; align-items: start;">
+  <div class="chart-container">
+    <div class="chart-header">
+      <h3>Activity Overview</h3>
+    </div>
+    <div style="flex: 1; position: relative; height: 100%;">
+      <canvas id="activityChart"></canvas>
+    </div>
+  </div>
+  
+  <div class="chart-container">
+    <div class="chart-header">
+      <h3>Platform Distribution</h3>
+    </div>
+    <div style="flex: 1; position: relative; height: 100%;">
+      <canvas id="platformChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Recent Activity and Quick Actions -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+  <div class="card">
+    <h3 style="margin-bottom: 16px; font-size: 18px; font-weight: 600;">Recent Activity</h3>
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 8px;">
+        <div style="width: 40px; height: 40px; border-radius: 8px; background: var(--accent); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600;">T</div>
+        <div style="flex: 1;">
+          <div style="font-weight: 500; color: var(--text-primary);">New tenant registered</div>
+          <div style="font-size: 12px; color: var(--text-secondary);">Just now</div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 8px;">
+        <div style="width: 40px; height: 40px; border-radius: 8px; background: var(--success); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600;">✓</div>
+        <div style="flex: 1;">
+          <div style="font-weight: 500; color: var(--text-primary);">Post scheduled successfully</div>
+          <div style="font-size: 12px; color: var(--text-secondary);">5 minutes ago</div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 8px;">
+        <div style="width: 40px; height: 40px; border-radius: 8px; background: var(--warning); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600;">⚠</div>
+        <div style="flex: 1;">
+          <div style="font-weight: 500; color: var(--text-primary);">Connection issue detected</div>
+          <div style="font-size: 12px; color: var(--text-secondary);">1 hour ago</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom: 16px; font-size: 18px; font-weight: 600;">Quick Actions</h3>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <a href="/admin/tenants" style="padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-decoration: none; color: var(--text-primary); display: flex; align-items: center; gap: 12px; transition: all 0.2s;">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+        Manage Tenants
+      </a>
+      <a href="/admin/health" style="padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-decoration: none; color: var(--text-primary); display: flex; align-items: center; gap: 12px; transition: all 0.2s;">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        System Health
+      </a>
+      <a href="/admin/scheduled" style="padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-decoration: none; color: var(--text-primary); display: flex; align-items: center; gap: 12px; transition: all 0.2s;">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+        Scheduled Posts
+      </a>
+      <a href="/admin/social" style="padding: 12px; background: var(--bg-secondary); border-radius: 8px; text-decoration: none; color: var(--text-primary); display: flex; align-items: center; gap: 12px; transition: all 0.2s;">
+        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+        Social Connections
+      </a>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Wait for DOM to be ready
+  document.addEventListener('DOMContentLoaded', function() {
+    // Activity Chart
+    const activityCtx = document.getElementById('activityChart');
+    if (activityCtx) {
+      new Chart(activityCtx.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+          datasets: [{
+            label: 'Posts',
+            data: [12, 19, 15, 25, 22, 18, 24],
+            borderColor: 'rgb(37, 99, 235)',
+            backgroundColor: 'rgba(37, 99, 235, 0.1)',
+            tension: 0.4
+          }, {
+            label: 'Messages',
+            data: [8, 15, 12, 20, 18, 14, 20],
+            borderColor: 'rgb(16, 185, 129)',
+            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+            tension: 0.4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'top',
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: true
+            }
+          }
+        }
+      });
+    }
+
+    // Platform Distribution Chart
+    const platformCtx = document.getElementById('platformChart');
+    if (platformCtx) {
+      new Chart(platformCtx.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Instagram', 'Facebook', 'TikTok', 'WhatsApp'],
+          datasets: [{
+            data: [45, 25, 20, 10],
+            backgroundColor: [
+              'rgb(225, 48, 108)',
+              'rgb(24, 119, 242)',
+              'rgb(0, 0, 0)',
+              'rgb(37, 211, 102)'
+            ]
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+            }
+          }
+        }
+      });
+    }
+  });
+</script>
+{{end}}
+{{template "layout.html" .}}

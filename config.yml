@@ -1,0 +1,7 @@
+tunnel: my-tunnel
+credentials-file: C:\Users\USER\.cloudflared\3f76e304-ab5e-4d5b-9af6-a8398861ec55.json
+
+ingress:
+  - hostname: responsibilities-talk-selecting-serves.trycloudflare.com
+    service: http://localhost:8080
+  - service: http_status:404

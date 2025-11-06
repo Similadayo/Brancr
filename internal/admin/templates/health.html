@@ -1,0 +1,43 @@
+{{define "title"}}System Health — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>System Health</h1>
+  <p>Monitor system components and services</p>
+</div>
+
+<div id="health-content" hx-get="/admin/_health_partial" hx-trigger="load, every 15s" hx-swap="innerHTML">
+  <div class="grid">
+    {{range $k, $v := .}}
+    {{if and (ne $k "Notes") (ne $k "Timestamp") (ne $k "Page")}}
+    <div class="card" style="border-left: 4px solid {{if eq $v "ok"}}var(--success){{else}}var(--danger){{end}};">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+        <h3 style="font-size: 16px; font-weight: 600; margin: 0; color: var(--text-primary);">{{$k}}</h3>
+        <span style="font-size: 24px;">{{if eq $v "ok"}}✅{{else}}❌{{end}}</span>
+      </div>
+      <p style="margin: 0; color: var(--text-secondary); font-size: 14px;">
+        {{if eq $v "ok"}}
+          <span class="badge success">Operational</span>
+        {{else}}
+          <span class="badge danger">{{$v}}</span>
+        {{end}}
+      </p>
+    </div>
+    {{end}}
+    {{end}}
+  </div>
+
+  {{if .Notes}}
+  <div class="card" style="margin-top: 24px; background: var(--warning); color: var(--text-primary); border: 1px solid var(--border-color);">
+    <h3 style="margin-bottom: 12px; color: var(--text-primary); font-weight: 600;">Notes</h3>
+    {{range $k, $v := .Notes}}
+    <p style="margin: 4px 0; color: var(--text-primary);"><strong>{{$k}}:</strong> {{$v}}</p>
+    {{end}}
+  </div>
+  {{end}}
+
+  <p style="margin-top: 24px; color: var(--text-secondary); font-size: 14px;">
+    Last checked: {{if .Timestamp}}{{.Timestamp.Format "Jan 2, 2006 at 3:04 PM"}}{{else}}Checking...{{end}}
+  </p>
+</div>
+{{end}}
+{{template "layout.html" .}}

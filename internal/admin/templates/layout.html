@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{block "title" .}}Dashboard — Brancr Admin{{end}}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="https://unpkg.com/htmx.org@1.9.2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      /* Light mode colors */
+      --bg-primary: #ffffff;
+      --bg-secondary: #f9fafb;
+      --bg-tertiary: #f3f4f6;
+      --text-primary: #111827;
+      --text-secondary: #6b7280;
+      --text-tertiary: #9ca3af;
+      --border-color: #e5e7eb;
+      --card-bg: #ffffff;
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+      --card-shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+      --primary: #0A034B;
+      --primary-hover: #0d045f;
+      --accent: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --sidebar-bg: #ffffff;
+      --sidebar-border: #e5e7eb;
+      --nav-active: #f3f4f6;
+      --nav-hover: #f9fafb;
+    }
+
+    [data-theme="dark"] {
+      --bg-primary: #111827;
+      --bg-secondary: #1f2937;
+      --bg-tertiary: #374151;
+      --text-primary: #f9fafb;
+      --text-secondary: #d1d5db;
+      --text-tertiary: #9ca3af;
+      --border-color: #374151;
+      --card-bg: #1f2937;
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+      --card-shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+      --primary: #ffffff;
+      --primary-hover: #e5e7eb;
+      --accent: #3b82f6;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --sidebar-bg: #1f2937;
+      --sidebar-border: #374151;
+      --nav-active: #374151;
+      --nav-hover: #374151;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    /* Header */
+    header {
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--card-shadow);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    .logo svg {
+      width: 32px;
+      height: 32px;
+    }
+
+    .logo-text {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--primary);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .theme-toggle {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .theme-toggle:hover {
+      background: var(--nav-hover);
+      color: var(--text-primary);
+    }
+
+    .logout-btn {
+      background: var(--danger);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 500;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .logout-btn:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    /* Main Layout */
+    main {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      min-height: calc(100vh - 65px);
+    }
+
+    /* Sidebar */
+    nav {
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--sidebar-border);
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow-y: auto;
+    }
+
+    .nav-section {
+      margin-bottom: 24px;
+    }
+
+    .nav-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-tertiary);
+      padding: 0 12px;
+      margin-bottom: 8px;
+    }
+
+    nav a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    nav a:hover {
+      background: var(--nav-hover);
+      color: var(--text-primary);
+    }
+
+    nav a.active {
+      background: var(--accent);
+      color: white;
+    }
+    
+    [data-theme="dark"] nav a.active {
+      background: var(--accent);
+      color: white;
+    }
+
+    nav a svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* Content Area */
+    .content {
+      padding: 32px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .page-header {
+      margin-bottom: 32px;
+    }
+
+    .page-header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+
+    .page-header p {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    /* Cards */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--card-shadow);
+      border: 1px solid var(--border-color);
+      transition: all 0.2s;
+    }
+
+    .card:hover {
+      box-shadow: var(--card-shadow-hover);
+      transform: translateY(-2px);
+    }
+
+    .stat-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .stat-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .stat-card-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+
+    .stat-card-icon.blue { background: #dbeafe; color: #1e40af; }
+    .stat-card-icon.green { background: #d1fae5; color: #065f46; }
+    .stat-card-icon.purple { background: #e9d5ff; color: #6b21a8; }
+    .stat-card-icon.orange { background: #fed7aa; color: #9a3412; }
+
+    [data-theme="dark"] .stat-card-icon.blue { background: #1e3a8a; color: #dbeafe; }
+    [data-theme="dark"] .stat-card-icon.green { background: #065f46; color: #d1fae5; }
+    [data-theme="dark"] .stat-card-icon.purple { background: #6b21a8; color: #e9d5ff; }
+    [data-theme="dark"] .stat-card-icon.orange { background: #9a3412; color: #fed7aa; }
+
+    .stat-card-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .stat-card-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .stat-card-change {
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .stat-card-change.positive { color: var(--success); }
+    .stat-card-change.negative { color: var(--danger); }
+
+    /* Tables */
+    .table-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      box-shadow: var(--card-shadow);
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead {
+      background: var(--bg-secondary);
+    }
+
+    th {
+      padding: 16px;
+      text-align: left;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+
+    tbody tr:hover {
+      background: var(--bg-secondary);
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* Buttons */
+    button, .btn {
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+      font-size: 14px;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button.primary, .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.primary:hover, .btn-primary:hover {
+      background: var(--accent);
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+    
+    [data-theme="dark"] button.primary,
+    [data-theme="dark"] .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.danger, .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+
+    button.danger:hover, .btn-danger:hover {
+      opacity: 0.9;
+    }
+
+    /* Status badges */
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .badge.success { background: #d1fae5; color: #065f46; }
+    .badge.warning { background: #fed7aa; color: #9a3412; }
+    .badge.danger { background: #fee2e2; color: #991b1b; }
+    .badge.info { background: #dbeafe; color: #1e40af; }
+
+    [data-theme="dark"] .badge.success { background: #065f46; color: #d1fae5; }
+    [data-theme="dark"] .badge.warning { background: #9a3412; color: #fed7aa; }
+    [data-theme="dark"] .badge.danger { background: #991b1b; color: #fee2e2; }
+    [data-theme="dark"] .badge.info { background: #1e3a8a; color: #dbeafe; }
+
+    /* Charts */
+    .chart-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--card-shadow);
+      border: 1px solid var(--border-color);
+      margin-bottom: 24px;
+      height: 400px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-shrink: 0;
+    }
+
+    .chart-header h3 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .chart-container canvas {
+      flex: 1;
+      max-height: 320px;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* Forms */
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+      nav {
+        display: none;
+      }
+      .content {
+        padding: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <a href="/admin" class="logo">
+        <svg viewBox="0 0 1280 484" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M189 207C208.6 211.4 224.2 220 235.8 232.8C247.8 245.6 253.8 260.6 253.8 277.8C253.8 301 244 319.6 224.4 333.6C204.8 347.2 178.4 354 145.2 354H19.8L15.6 343.2C25.6 340.4 32.8 337.8 37.2 335.4C41.6 332.6 44.6 329 46.2 324.6C47.8 320.2 48.6 313.4 48.6 304.2V141.6C48.6 127.6 47.4 117.4 45 111C43 104.6 38 99 30 94.2L22.8 90L25.2 82.2C38 78.2 54.4 75 74.4 72.6C94.8 69.8 113.2 68.4 129.6 68.4C164.8 68.4 192.2 75 211.8 88.2C231.8 101.4 241.8 119.8 241.8 143.4C241.8 158.2 237 171.2 227.4 182.4C218.2 193.2 205.4 201.4 189 207ZM144.6 340.8C159 340.8 170.8 335 180 323.4C189.6 311.8 194.4 297 194.4 279C194.4 260.6 188.2 245.6 175.8 234C163.4 222.4 145.8 214.6 123 210.6V203.4C141.4 203.4 155.8 198 166.2 187.2C177 176.4 182.4 161.8 182.4 143.4C182.4 125 178 110.4 169.2 99.6C160.4 88.4 148.6 82.8 133.8 82.8C125 82.8 118.2 85.8 113.4 91.8C108.6 97.4 106.2 105.4 106.2 115.8V287.4C106.2 303.8 109.6 316.8 116.4 326.4C123.6 336 133 340.8 144.6 340.8ZM390.131 154.8C402.931 154.8 413.331 158.6 421.331 166.2C429.331 173.4 433.331 182.8 433.331 194.4C433.331 205.2 430.131 214 423.731 220.8C417.331 227.2 408.931 230.4 398.531 230.4C390.531 230.4 383.131 228.8 376.331 225.6C383.531 219.6 387.131 210.6 387.131 198.6C387.131 193 385.931 188.6 383.531 185.4C381.131 182.2 377.931 180.6 373.931 180.6C364.331 180.6 356.331 190.4 349.931 210C343.531 229.2 340.331 253.2 340.331 282C340.331 296.8 341.131 308.6 342.731 317.4C344.731 326.2 347.931 334.4 352.331 342L357.131 348L352.331 354H265.331L261.731 343.8L270.131 342C276.531 340.4 280.731 338 282.731 334.8C284.731 331.2 285.731 324.4 285.731 314.4V197.4C285.731 189.8 283.131 186 277.931 186H259.331L256.931 179.4C264.531 172.6 273.931 167 285.131 162.6C296.731 158.2 308.131 156 319.331 156C324.531 156 328.731 157.2 331.931 159.6C335.131 162 336.731 165.2 336.731 169.2V213H338.531C346.931 174.2 364.131 154.8 390.131 154.8ZM494.761 221.4C486.361 226.2 476.361 228.6 464.761 228.6C456.361 228.6 449.761 226.2 444.961 221.4C440.161 216.2 437.761 209 437.761 199.8C437.761 186.2 444.361 175.4 457.561 167.4C471.161 159 488.761 154.8 510.361 154.8C535.961 154.8 555.961 160.4 570.361 171.6C585.161 182.8 592.561 198 592.561 217.2V321C592.561 332.2 596.561 337.8 604.561 337.8C612.161 337.8 619.561 334.8 626.761 328.8L631.561 334.8C616.761 351.2 599.161 359.4 578.761 359.4C566.761 359.4 557.561 356.4 551.161 350.4C545.161 344.4 541.561 335 540.361 322.2H537.961C531.561 333.8 522.961 343 512.161 349.8C501.761 356.2 489.761 359.4 476.161 359.4C460.961 359.4 448.761 354.8 439.561 345.6C430.361 336 425.761 323.6 425.761 308.4C425.761 291.2 433.961 277.6 450.361 267.6C466.761 257.6 488.961 252.6 516.961 252.6C522.161 252.6 529.561 253 539.161 253.8V223.8C539.161 204.2 536.761 190.2 531.961 181.8C527.161 173 519.361 168.6 508.561 168.6C500.961 168.6 494.961 171 490.561 175.8C486.161 180.6 483.961 186.8 483.961 194.4C483.961 206.4 487.561 215.4 494.761 221.4ZM503.761 329.4C527.361 329.4 539.161 308 539.161 265.2C519.161 265.2 504.161 268.6 494.161 275.4C484.161 281.8 479.161 291 479.161 303C479.161 311 481.361 317.4 485.761 322.2C490.161 327 496.161 329.4 503.761 329.4ZM829.702 319.8C829.702 331.8 833.502 337.8 841.102 337.8C848.702 337.8 856.102 334.8 863.302 328.8L868.102 334.8C853.302 351.2 835.902 359.4 815.902 359.4C801.502 359.4 791.102 355.8 784.702 348.6C778.702 341 775.702 328.8 775.702 312V220.2C775.702 197 768.302 185.4 753.502 185.4C739.102 185.4 727.302 195.2 718.102 214.8C709.302 234.4 704.902 260 704.902 291.6C704.902 303.6 705.902 313.4 707.902 321C709.902 328.2 713.102 335.2 717.502 342L722.302 348L717.502 354H630.502L626.902 343.8L635.302 342C641.702 340.4 645.902 338 647.902 334.8C649.902 331.2 650.902 324.4 650.902 314.4V197.4C650.902 189.8 648.302 186 643.102 186H623.902L622.102 179.4C630.102 172.6 640.102 167 652.102 162.6C664.102 158.2 676.102 156 688.102 156C693.302 156 697.302 157.2 700.102 159.6C703.302 162 704.902 165.2 704.902 169.2V220.8C710.502 202 720.502 186.4 734.902 174C749.302 161.2 764.502 154.8 780.502 154.8C797.702 154.8 810.102 160.4 817.702 171.6C825.702 182.8 829.702 200.6 829.702 225V319.8ZM1038.75 207.6C1038.75 220.8 1034.75 231.2 1026.75 238.8C1018.75 246.4 1008.95 250.2 997.345 250.2C988.145 250.2 979.745 247.8 972.145 243C980.945 235 985.345 223.8 985.345 209.4C985.345 197.8 982.945 188.4 978.145 181.2C973.345 173.6 966.345 169.8 957.145 169.8C946.745 169.8 938.145 178 931.345 194.4C924.945 210.4 921.745 231.4 921.745 257.4C921.745 282.2 926.345 302.2 935.545 317.4C945.145 332.2 958.545 339.6 975.745 339.6C987.745 339.6 997.945 337.4 1006.35 333C1015.15 328.6 1023.35 322.2 1030.95 313.8L1038.15 318.6C1029.75 330.6 1018.75 340.4 1005.15 348C991.545 355.6 975.745 359.4 957.745 359.4C929.745 359.4 906.745 350 888.745 331.2C870.745 312.4 861.745 288.2 861.745 258.6C861.745 227 871.145 201.8 889.945 183C908.745 164.2 933.745 154.8 964.945 154.8C986.945 154.8 1004.75 159.8 1018.35 169.8C1031.95 179.4 1038.75 192 1038.75 207.6ZM1170.11 154.8C1182.91 154.8 1193.31 158.6 1201.31 166.2C1209.31 173.4 1213.31 182.8 1213.31 194.4C1213.31 205.2 1210.11 214 1203.71 220.8C1197.31 227.2 1188.91 230.4 1178.51 230.4C1170.51 230.4 1163.11 228.8 1156.31 225.6C1163.51 219.6 1167.11 210.6 1167.11 198.6C1167.11 193 1165.91 188.6 1163.51 185.4C1161.11 182.2 1157.91 180.6 1153.91 180.6C1144.31 180.6 1136.31 190.4 1129.91 210C1123.51 229.2 1120.31 253.2 1120.31 282C1120.31 296.8 1121.11 308.6 1122.71 317.4C1124.71 326.2 1127.91 334.4 1132.31 342L1137.11 348L1132.31 354H1045.31L1041.71 343.8L1050.11 342C1056.51 340.4 1060.71 338 1062.71 334.8C1064.71 331.2 1065.71 324.4 1065.71 314.4V197.4C1065.71 189.8 1063.11 186 1057.91 186H1039.31L1036.91 179.4C1044.51 172.6 1053.91 167 1065.11 162.6C1076.71 158.2 1088.11 156 1099.31 156C1104.51 156 1108.71 157.2 1111.91 159.6C1115.11 162 1116.71 165.2 1116.71 169.2V213H1118.51C1126.91 174.2 1144.11 154.8 1170.11 154.8Z" fill="currentColor"/>
+          <rect x="1216" y="291" width="64" height="63" fill="currentColor"/>
+        </svg>
+        <span class="logo-text">Brancr</span>
+      </a>
+    </div>
+    <div class="header-right">
+      <button class="theme-toggle" onclick="toggleTheme()" id="themeToggle">
+        <span id="themeIcon">🌙</span>
+        <span id="themeText">Dark</span>
+      </button>
+      <form method="POST" action="/admin/logout" style="display: inline;">
+        <button type="submit" class="logout-btn">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <main>
+    <nav>
+      <div class="nav-section">
+        <div class="nav-section-title">Main</div>
+        <a href="/admin" class="{{if eq .Page "dashboard"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+          Dashboard
+        </a>
+        <a href="/admin/tenants" class="{{if eq .Page "tenants"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+          Tenants
+        </a>
+        <a href="/admin/scheduled" class="{{if eq .Page "scheduled"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+          Scheduled Posts
+        </a>
+        <a href="/admin/social" class="{{if eq .Page "social"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+          Social Connections
+        </a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">System</div>
+        <a href="/admin/health" class="{{if eq .Page "health"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          System Health
+        </a>
+        <a href="/admin/logs" class="{{if eq .Page "logs"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          Logs
+        </a>
+      </div>
+    </nav>
+    <div class="content">
+      {{block "content" .}}{{end}}
+    </div>
+  </main>
+
+  <script>
+    // Theme toggle functionality
+    function getTheme() {
+      return localStorage.getItem('theme') || 'light';
+    }
+
+    function setTheme(theme) {
+      localStorage.setItem('theme', theme);
+      document.documentElement.setAttribute('data-theme', theme);
+      updateThemeIcon(theme);
+    }
+
+    function toggleTheme() {
+      const currentTheme = getTheme();
+      const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+      setTheme(newTheme);
+    }
+
+    function updateThemeIcon(theme) {
+      const icon = document.getElementById('themeIcon');
+      const text = document.getElementById('themeText');
+      if (theme === 'dark') {
+        icon.textContent = '☀️';
+        text.textContent = 'Light';
+      } else {
+        icon.textContent = '🌙';
+        text.textContent = 'Dark';
+      }
+    }
+
+    // Initialize theme on page load
+    setTheme(getTheme());
+  </script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{{define "logs_partial"}}
+<div class="p-4">
+  <h2 class="text-lg font-semibold mb-2">System Logs</h2>
+  <table class="w-full text-sm border">
+    <thead>
+      <tr class="bg-gray-100">
+        <th class="px-2 py-1 text-left">Timestamp</th>
+        <th class="px-2 py-1 text-left">Level</th>
+        <th class="px-2 py-1 text-left">Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Logs}}
+      <tr class="border-t">
+        <td class="px-2 py-1">{{.Timestamp}}</td>
+        <td class="px-2 py-1">{{.Level}}</td>
+        <td class="px-2 py-1">{{.Message}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="3" class="text-center py-2 text-gray-400">No logs yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

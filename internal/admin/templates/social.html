@@ -1,0 +1,49 @@
+{{define "title"}}Social Connections — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Social Connections</h1>
+  <p>Manage connected social media accounts</p>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Tenant ID</th>
+        <th>Platform</th>
+        <th>Mode</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Accounts}}
+      <tr>
+        <td>{{.TenantID}}</td>
+        <td style="text-transform: capitalize; font-weight: 500;">{{.Platform}}</td>
+        <td><span class="badge info">{{.Mode}}</span></td>
+        <td>
+          {{if .Connected}}
+            <span class="badge success">✅ Connected</span>
+          {{else}}
+            <span class="badge danger">❌ Disconnected</span>
+          {{end}}
+        </td>
+        <td style="color: var(--text-secondary);">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+        <td>
+          <button class="btn-danger" style="padding: 6px 12px; font-size: 12px;">Disconnect</button>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="6" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+          No connected accounts yet
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "layout.html" .}}

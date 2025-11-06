@@ -1,0 +1,49 @@
+{{define "title"}}System Logs — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>System Logs</h1>
+  <p>Real-time system activity and error logs</p>
+</div>
+
+<div class="table-container">
+  <div id="logs" hx-get="/admin/logs/_partial" hx-trigger="load, every 8s" hx-swap="innerHTML">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Level</th>
+          <th>Source</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Logs}}
+        <tr class="{{.Level}}">
+          <td style="font-family: monospace; color: var(--text-secondary);">{{.CreatedAt.Format "15:04:05"}}</td>
+          <td>
+            {{if eq .Level "error"}}
+              <span class="badge danger">ERROR</span>
+            {{else if eq .Level "warn"}}
+              <span class="badge warning">WARN</span>
+            {{else if eq .Level "info"}}
+              <span class="badge info">INFO</span>
+            {{else}}
+              <span class="badge">{{.Level}}</span>
+            {{end}}
+          </td>
+          <td style="font-family: monospace; color: var(--text-secondary); font-size: 12px;">{{.Source}}</td>
+          <td style="font-family: monospace; font-size: 13px;">{{.Message}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="4" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+            No logs available
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
+{{template "layout.html" .}}

@@ -1,0 +1,45 @@
+{{define "title"}}Tenants — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Tenants</h1>
+  <p>Manage all registered businesses ({{.TotalCount}} total)</p>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Business Name</th>
+        <th>Email</th>
+        <th>Plan</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Tenants}}
+      <tr>
+        <td>{{.ID}}</td>
+        <td style="font-weight: 500;">{{.Name}}</td>
+        <td>{{.Email}}</td>
+        <td><span class="badge info">{{.PlanType}}</span></td>
+        <td><span class="badge {{if eq .Status "active"}}success{{else}}warning{{end}}">{{.Status}}</span></td>
+        <td style="color: var(--text-secondary);">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+        <td>
+          <a href="/admin/tenants/{{.ID}}" class="btn-primary" style="padding: 6px 12px; font-size: 12px; text-decoration: none; display: inline-block;">View</a>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+          No tenants found
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "layout.html" .}}

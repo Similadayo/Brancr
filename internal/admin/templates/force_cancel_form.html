@@ -1,0 +1,13 @@
+{{range .Posts}}
+<tr>
+  <td>{{.ID}}</td>
+  <td>{{.TenantID}}</td>
+  <td style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{.Caption}}</td>
+  <td>{{.Platforms}}</td>
+  <td>{{if .ScheduledAt}}{{.ScheduledAt.Format "02 Jan 06 15:04"}}{{end}}</td>
+  <td>{{.Status}}</td>
+  <td>{{if eq .Status "scheduled"}}<button class="button" style="background:#dc2626" onclick="showCancel({{.ID}})">Force Cancel</button>{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="7">No scheduled posts</td></tr>
+{{end}}

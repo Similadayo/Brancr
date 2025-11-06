@@ -1,0 +1,71 @@
+{{define "title"}}Scheduled Posts — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Scheduled Posts</h1>
+  <p>Manage and monitor scheduled social media posts</p>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Tenant</th>
+        <th>Name</th>
+        <th>Scheduled Time</th>
+        <th>Platforms</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Posts}}
+      <tr>
+        <td>{{.ID}}</td>
+        <td>{{.TenantID}}</td>
+        <td style="font-weight: 500;">{{.Name}}</td>
+        <td>
+          {{if .ScheduledAt}}
+            {{.ScheduledAt.Format "Jan 2, 2006 3:04 PM"}}
+          {{else}}
+            <span style="color: var(--text-tertiary);">Not set</span>
+          {{end}}
+        </td>
+        <td>{{.Platforms}}</td>
+        <td>
+          {{if eq .Status "scheduled"}}
+            <span class="badge info">Scheduled</span>
+          {{else if eq .Status "posting"}}
+            <span class="badge warning">Posting</span>
+          {{else if eq .Status "completed"}}
+            <span class="badge success">Completed</span>
+          {{else if eq .Status "failed"}}
+            <span class="badge danger">Failed</span>
+          {{else}}
+            <span class="badge">{{.Status}}</span>
+          {{end}}
+        </td>
+        <td>
+          {{if eq .Status "scheduled"}}
+            <button class="btn-danger" 
+              hx-get="/admin/scheduled/force_cancel_form?id={{.ID}}"
+              hx-target="#modal"
+              hx-swap="innerHTML"
+              style="padding: 6px 12px; font-size: 12px;">Cancel</button>
+          {{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+          No scheduled posts
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div id="modal"></div>
+{{end}}
+{{template "layout.html" .}}
