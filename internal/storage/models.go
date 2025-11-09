@@ -28,12 +28,37 @@ type Tenant struct {
 // BusinessProfile represents the personality and niche of the tenant’s bot
 type BusinessProfile struct {
 	gorm.Model
-	TenantID     uint `gorm:"index"`
-	Name         string
-	Niche        string
-	Tone         string
-	Description  string
-	MemoryVector string
+	TenantID       uint `gorm:"index"`
+	Name           string
+	Niche          string
+	Tone           string
+	Description    string
+	MemoryVector   string
+	Industry       string
+	OperatingHours string `gorm:"type:text"`
+	Location       string
+	Website        string
+	Keywords       string `gorm:"type:text"`
+	KnowledgeBase  string `gorm:"type:text"`
+}
+
+// BusinessMenuItem represents a product or service offering with optional pricing.
+type BusinessMenuItem struct {
+	gorm.Model
+	TenantID    uint `gorm:"index"`
+	Name        string
+	Category    string
+	Price       string
+	Description string `gorm:"type:text"`
+	Tags        string `gorm:"type:text"`
+}
+
+// BusinessFAQ captures frequently asked questions and scripted answers.
+type BusinessFAQ struct {
+	gorm.Model
+	TenantID uint   `gorm:"index"`
+	Question string `gorm:"type:text"`
+	Answer   string `gorm:"type:text"`
 }
 
 // ADMIN USERS (SYSTEM)

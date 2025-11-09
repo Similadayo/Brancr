@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -59,6 +60,11 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		h.Manager.Logger.Error("invalid telegram update", zap.Error(err))
 		return
 	}
+	if update.CallbackQuery != nil {
+		go h.handleCallbackQuery(bot, uint(tenantID), update.CallbackQuery)
+		return
+	}
+
 	if update.Message == nil {
 		return
 	}
@@ -158,6 +164,14 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	if isOwner {
+		if _, ok := businessSessions[chatID]; ok {
+			if h.handleBusinessSessionInput(bot, uint(tenantID), chatID, text) {
+				return
+			}
+		}
+	}
+
 	// Step 4️: AI-Powered Intent Routing (for owners)
 	if isOwner {
 		// Try AI intent routing first (before hardcoded commands)
@@ -178,28 +192,8 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		case text == "fix instagram" || text == "update instagram id" || strings.HasPrefix(strings.ToLower(text), "fix instagram"):
 			h.fixInstagramAccountID(bot, chatID, uint(tenantID))
 			return
-		case text == "/help" || text == "/menu" || text == "/commands":
-			helpMsg := `🎛️ *Control Center Commands*
-
-*Social Media:*
-• connect instagram - Connect Instagram
-• connect facebook - Connect Facebook  
-• connect tiktok - Connect TikTok
-• connect youtube - Connect YouTube
-• connect whatsapp - Connect WhatsApp
-• verify <platform> - Verify connection
-
-*Content Management:*
-• Send photos/videos - Upload media
-• schedule posts - View scheduled posts
-• post logs - View posting activity
-• cancel <post_name> - Cancel a scheduled post
-
-*General:*
-• Just chat naturally for business help!`
-			msg := tgbotapi.NewMessage(chatID, helpMsg)
-			msg.ParseMode = "Markdown"
-			bot.Send(msg)
+		case text == "/help" || text == "/menu" || text == "/commands" || text == "/start":
+			h.sendOwnerMenu(bot, chatID, uint(tenantID))
 			return
 
 		case text == "schedule posts" || text == "scheduled posts" || text == "my posts":
@@ -289,6 +283,10 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			}
 
 			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Cancelled: %s", postName)))
+			return
+
+		case textLower == "status" || textLower == "connections":
+			h.sendConnectionStatus(bot, chatID, uint(tenantID))
 			return
 
 		case strings.HasPrefix(strings.ToLower(text), "connect "):
@@ -436,6 +434,600 @@ func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantI
 
 		bot.Send(tgbotapi.NewMessage(chatID, msg))
 	}()
+}
+
+func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantID uint, cq *tgbotapi.CallbackQuery) {
+	if cq == nil {
+		return
+	}
+
+	// Acknowledge callback to avoid "button spinning"
+	_, _ = bot.Request(tgbotapi.NewCallback(cq.ID, ""))
+
+	data := strings.TrimSpace(cq.Data)
+	if data == "" {
+		return
+	}
+
+	chatID := cq.Message.Chat.ID
+
+	parts := strings.Split(data, ":")
+	action := parts[0]
+	arg := ""
+	if len(parts) > 1 {
+		arg = strings.Join(parts[1:], ":")
+	}
+
+	switch action {
+	case "menu":
+		h.sendOwnerMenu(bot, chatID, tenantID)
+	case "connect":
+		if arg == "" {
+			return
+		}
+		go h.Manager.StartSocialConnectFlow(bot, tenantID, chatID, arg)
+	case "verify":
+		if arg == "" {
+			return
+		}
+		h.handleVerifyCommand(bot, tenantID, chatID, arg)
+	case "status":
+		h.sendConnectionStatus(bot, chatID, tenantID)
+	case "help":
+		h.sendHelpOverview(bot, chatID)
+	case "business":
+		h.handleBusinessCallback(bot, tenantID, chatID, arg)
+	default:
+		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
+	}
+}
+
+func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	text := "🎛️ *Brancr Control Center*\nChoose what you’d like to do next."
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect Instagram 📸", "connect:instagram"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect Facebook 📘", "connect:facebook"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect WhatsApp 💬", "connect:whatsapp"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Verify & Status ✅", "status:"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Manage Business Info 🗂", "business:menu"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Help & Tutorials 💡", "help:menu"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	var accounts []storage.SocialAccount
+	h.Manager.DB.Where("tenant_id = ?", tenantID).Find(&accounts)
+
+	status := map[string]string{
+		"instagram": "⚪️ Not connected",
+		"facebook":  "⚪️ Not connected",
+		"whatsapp":  "⚪️ Not connected",
+	}
+
+	for _, acc := range accounts {
+		if _, ok := status[acc.Platform]; !ok {
+			continue
+		}
+		if acc.Connected {
+			timestamp := "just now"
+			if !acc.UpdatedAt.IsZero() {
+				timestamp = acc.UpdatedAt.Format("Jan 2 15:04")
+			}
+			status[acc.Platform] = fmt.Sprintf("✅ Connected · updated %s", timestamp)
+		} else {
+			status[acc.Platform] = "⚠️ Needs attention"
+		}
+	}
+
+	lines := []string{
+		"🔐 *Account Connections*",
+		fmt.Sprintf("• Instagram: %s", status["instagram"]),
+		fmt.Sprintf("• Facebook: %s", status["facebook"]),
+		fmt.Sprintf("• WhatsApp: %s", status["whatsapp"]),
+		"",
+		"Tap a button below to manage a specific platform.",
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect IG", "connect:instagram"),
+			tgbotapi.NewInlineKeyboardButtonData("Verify IG", "verify:instagram"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect FB", "connect:facebook"),
+			tgbotapi.NewInlineKeyboardButtonData("Verify FB", "verify:facebook"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect WA", "connect:whatsapp"),
+			tgbotapi.NewInlineKeyboardButtonData("Verify WA", "verify:whatsapp"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, strings.Join(lines, "\n"))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendHelpOverview(bot *tgbotapi.BotAPI, chatID int64) {
+	helpMsg := `💡 *Quick Help & Tips*
+
+• Connect platforms with the menu buttons above.
+• Use "Verify" after connecting to double-check access.
+• Send media files here to store them for scheduling.
+• Type naturally to ask Brancr anything for your business.`
+
+	msg := tgbotapi.NewMessage(chatID, helpMsg)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Back to menu ⬅️", "menu:main"),
+		),
+	)
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) handleBusinessCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	switch arg {
+	case "", "menu":
+		h.sendBusinessMenu(bot, chatID, tenantID)
+	case "industry":
+		h.startIndustryUpdate(bot, chatID)
+	case "description":
+		h.startDescriptionUpdate(bot, chatID)
+	case "hours":
+		h.startHoursUpdate(bot, chatID)
+	case "knowledge":
+		h.startKnowledgeCapture(bot, chatID)
+	case "menu_manager":
+		h.sendMenuManager(bot, chatID, tenantID)
+	case "menu_add":
+		h.startMenuAdd(bot, chatID)
+	case "menu_list":
+		h.sendMenuList(bot, chatID, tenantID)
+	case "faq_manager":
+		h.sendFAQManager(bot, chatID, tenantID)
+	case "faq_add":
+		h.startFAQAdd(bot, chatID)
+	case "faq_list":
+		h.sendFAQList(bot, chatID, tenantID)
+	default:
+		h.Manager.Logger.Debug("unhandled business callback", zap.String("arg", arg))
+	}
+}
+
+func (h *TenantWebhookHandler) sendBusinessMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	profile, err := h.ensureBusinessProfile(tenantID)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to load your business profile right now. Please try again later."))
+		return
+	}
+
+	var menuCount int64
+	var faqCount int64
+	h.Manager.DB.Model(&storage.BusinessMenuItem{}).Where("tenant_id = ?", tenantID).Count(&menuCount)
+	h.Manager.DB.Model(&storage.BusinessFAQ{}).Where("tenant_id = ?", tenantID).Count(&faqCount)
+
+	industry := fallbackValue(profile.Industry, "Not set")
+	description := fallbackValue(profile.Description, "Not set")
+	hours := fallbackValue(profile.OperatingHours, "Not set")
+	knowledgePoints := "None yet"
+	if profile.KnowledgeBase != "" {
+		lines := strings.Split(profile.KnowledgeBase, "\n")
+		if len(lines) > 3 {
+			lines = lines[len(lines)-3:]
+		}
+		knowledgePoints = strings.Join(lines, "\n")
+	}
+
+	lines := []string{
+		"🗂 *Business Profile*",
+		fmt.Sprintf("• Industry: %s", industry),
+		fmt.Sprintf("• Description: %s", description),
+		fmt.Sprintf("• Hours: %s", hours),
+		fmt.Sprintf("• Menu / Services: %d items", menuCount),
+		fmt.Sprintf("• FAQs: %d articles", faqCount),
+		"",
+		"*Latest teachings:*",
+		knowledgePoints,
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Update Industry", "business:industry"),
+			tgbotapi.NewInlineKeyboardButtonData("Update Description", "business:description"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Update Hours", "business:hours"),
+			tgbotapi.NewInlineKeyboardButtonData("Teach Brancr", "business:knowledge"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Manage Menu / Services", "business:menu_manager"),
+			tgbotapi.NewInlineKeyboardButtonData("Manage FAQs", "business:faq_manager"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Back to menu ⬅️", "menu:main"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, strings.Join(lines, "\n"))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendMenuManager(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	var count int64
+	h.Manager.DB.Model(&storage.BusinessMenuItem{}).Where("tenant_id = ?", tenantID).Count(&count)
+
+	text := fmt.Sprintf("🍽 *Menu & Services*\nYou currently have %d items. Use the options below to add new offerings or review what Brancr knows.", count)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Add item", "business:menu_add"),
+			tgbotapi.NewInlineKeyboardButtonData("📋 View items", "business:menu_list"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back", "business:menu"),
+		),
+	)
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendMenuList(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	var items []storage.BusinessMenuItem
+	h.Manager.DB.Where("tenant_id = ?", tenantID).Order("updated_at DESC").Limit(10).Find(&items)
+
+	if len(items) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "You haven’t added any menu or service items yet.")
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Add item ➕", "business:menu_add"),
+				tgbotapi.NewInlineKeyboardButtonData("Back ⬅️", "business:menu_manager"),
+			),
+		)
+		bot.Send(msg)
+		return
+	}
+
+	var lines []string
+	lines = append(lines, "📋 *Latest Menu / Services*")
+	for i, item := range items {
+		price := fallbackValue(item.Price, "no price listed")
+		desc := fallbackValue(item.Description, "no description")
+		lines = append(lines, fmt.Sprintf("%d. *%s* — %s\n   %s", i+1, item.Name, price, desc))
+	}
+
+	msg := tgbotapi.NewMessage(chatID, strings.Join(lines, "\n\n"))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Add another ➕", "business:menu_add"),
+			tgbotapi.NewInlineKeyboardButtonData("Back ⬅️", "business:menu_manager"),
+		),
+	)
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendFAQManager(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	var count int64
+	h.Manager.DB.Model(&storage.BusinessFAQ{}).Where("tenant_id = ?", tenantID).Count(&count)
+
+	text := fmt.Sprintf("❓ *Frequently Asked Questions*\nYou’ve saved %d answers. Keep Brancr updated so it can respond perfectly.", count)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Add FAQ", "business:faq_add"),
+			tgbotapi.NewInlineKeyboardButtonData("📚 View FAQs", "business:faq_list"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back", "business:menu"),
+		),
+	)
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendFAQList(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	var faqs []storage.BusinessFAQ
+	h.Manager.DB.Where("tenant_id = ?", tenantID).Order("updated_at DESC").Limit(10).Find(&faqs)
+
+	if len(faqs) == 0 {
+		msg := tgbotapi.NewMessage(chatID, "No FAQs yet. Add questions customers usually ask so Brancr can answer for you.")
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Add FAQ ➕", "business:faq_add"),
+				tgbotapi.NewInlineKeyboardButtonData("Back ⬅️", "business:faq_manager"),
+			),
+		)
+		bot.Send(msg)
+		return
+	}
+
+	lines := []string{"📚 *Saved FAQs*"}
+	for i, faq := range faqs {
+		lines = append(lines, fmt.Sprintf("%d. *%s*\n   %s", i+1, faq.Question, faq.Answer))
+	}
+
+	msg := tgbotapi.NewMessage(chatID, strings.Join(lines, "\n\n"))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Add more ➕", "business:faq_add"),
+			tgbotapi.NewInlineKeyboardButtonData("Back ⬅️", "business:faq_manager"),
+		),
+	)
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) startIndustryUpdate(bot *tgbotapi.BotAPI, chatID int64) {
+	startBusinessSession(chatID, "industry")
+	msg := tgbotapi.NewMessage(chatID, "What industry or business type best describes you? (e.g., Bakery, E-commerce store, Marketing agency). Type 'cancel' to stop.")
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) startDescriptionUpdate(bot *tgbotapi.BotAPI, chatID int64) {
+	startBusinessSession(chatID, "description")
+	msg := tgbotapi.NewMessage(chatID, "Describe your business in a few sentences so I can speak about it accurately. Type 'cancel' to stop.")
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) startHoursUpdate(bot *tgbotapi.BotAPI, chatID int64) {
+	startBusinessSession(chatID, "hours")
+	msg := tgbotapi.NewMessage(chatID, "Share your operating hours (e.g., Mon-Fri 9am-6pm, Sat 10am-4pm). Type 'clear' to remove hours or 'cancel' to stop.")
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) startKnowledgeCapture(bot *tgbotapi.BotAPI, chatID int64) {
+	startBusinessSession(chatID, "knowledge")
+	msg := tgbotapi.NewMessage(chatID, "Teach Brancr something important (e.g., delivery fees, return policy, signature products). Send as many messages as you'd like, type 'done' when finished or 'cancel' to stop.")
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) startMenuAdd(bot *tgbotapi.BotAPI, chatID int64) {
+	sess := startBusinessSession(chatID, "menu_add")
+	sess.Step = 1
+	msg := tgbotapi.NewMessage(chatID, "Great! Let's add a product/service.\n\n1️⃣ What’s the name of the item? (Type 'cancel' to stop.)")
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) startFAQAdd(bot *tgbotapi.BotAPI, chatID int64) {
+	sess := startBusinessSession(chatID, "faq_add")
+	sess.Step = 1
+	msg := tgbotapi.NewMessage(chatID, "Let's add an FAQ.\n\n1️⃣ Send the question customers often ask. (Type 'cancel' to stop.)")
+	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) ensureBusinessProfile(tenantID uint) (*storage.BusinessProfile, error) {
+	var profile storage.BusinessProfile
+	err := h.Manager.DB.Where("tenant_id = ?", tenantID).First(&profile).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		profile = storage.BusinessProfile{TenantID: tenantID}
+		if createErr := h.Manager.DB.Create(&profile).Error; createErr != nil {
+			return nil, createErr
+		}
+		return &profile, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &profile, nil
+}
+
+func fallbackValue(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func (h *TenantWebhookHandler) handleBusinessSessionInput(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, text string) bool {
+	sess, ok := businessSessions[chatID]
+	if !ok {
+		return false
+	}
+
+	trimmed := strings.TrimSpace(text)
+	lower := strings.ToLower(trimmed)
+
+	if lower == "cancel" {
+		cancelBusinessSession(bot, chatID)
+		return true
+	}
+
+	profile, err := h.ensureBusinessProfile(tenantID)
+	if err != nil {
+		clearBusinessSession(chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't load your business profile. Please try again later."))
+		return true
+	}
+
+	switch sess.Mode {
+	case "industry":
+		if trimmed == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Please share a short industry description (e.g., Bakery, Digital agency)."))
+			return true
+		}
+		profile.Industry = trimmed
+		if err := h.Manager.DB.Save(profile).Error; err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't update your industry right now."))
+			clearBusinessSession(chatID)
+			return true
+		}
+		clearBusinessSession(chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Noted! I’ll treat you as a *%s* business.", trimmed)))
+		h.sendBusinessMenu(bot, chatID, tenantID)
+		return true
+
+	case "description":
+		if trimmed == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Please share a short description or type 'cancel' to stop."))
+			return true
+		}
+		profile.Description = text
+		if err := h.Manager.DB.Save(profile).Error; err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't update your description right now."))
+			clearBusinessSession(chatID)
+			return true
+		}
+		clearBusinessSession(chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, "✅ Description updated!"))
+		h.sendBusinessMenu(bot, chatID, tenantID)
+		return true
+
+	case "hours":
+		if lower == "clear" {
+			profile.OperatingHours = ""
+			if err := h.Manager.DB.Save(profile).Error; err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't clear hours right now."))
+				clearBusinessSession(chatID)
+				return true
+			}
+			clearBusinessSession(chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Operating hours removed."))
+			h.sendBusinessMenu(bot, chatID, tenantID)
+			return true
+		}
+		if trimmed == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Please share your operating hours, or type 'clear' to remove them."))
+			return true
+		}
+		profile.OperatingHours = text
+		if err := h.Manager.DB.Save(profile).Error; err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't update hours right now."))
+			clearBusinessSession(chatID)
+			return true
+		}
+		clearBusinessSession(chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, "✅ Operating hours saved!"))
+		h.sendBusinessMenu(bot, chatID, tenantID)
+		return true
+
+	case "knowledge":
+		if lower == "done" {
+			clearBusinessSession(chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "👍 All set. I’m keeping those details in mind."))
+			h.sendBusinessMenu(bot, chatID, tenantID)
+			return true
+		}
+		if trimmed == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Share a teaching (e.g., delivery fees, seasonal offers) or type 'done' when finished."))
+			return true
+		}
+		entry := trimmed
+		if profile.KnowledgeBase != "" {
+			profile.KnowledgeBase += "\n"
+		}
+		profile.KnowledgeBase += entry
+		if err := h.Manager.DB.Save(profile).Error; err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't save that detail right now."))
+			return true
+		}
+		bot.Send(tgbotapi.NewMessage(chatID, "🧠 Got it! Add more or type 'done' when finished."))
+		return true
+
+	case "menu_add":
+		switch sess.Step {
+		case 1:
+			if trimmed == "" {
+				bot.Send(tgbotapi.NewMessage(chatID, "Please provide a name for the item (or type 'cancel')."))
+				return true
+			}
+			sess.MenuItem.Name = trimmed
+			sess.Step = 2
+			bot.Send(tgbotapi.NewMessage(chatID, "2️⃣ What price do you charge? You can include currency, or type 'skip'."))
+			return true
+		case 2:
+			if lower != "skip" {
+				sess.MenuItem.Price = trimmed
+			}
+			sess.Step = 3
+			bot.Send(tgbotapi.NewMessage(chatID, "3️⃣ Add a short description or selling point (or type 'skip')."))
+			return true
+		case 3:
+			if lower != "skip" {
+				sess.MenuItem.Description = text
+			}
+			sess.Step = 4
+			bot.Send(tgbotapi.NewMessage(chatID, "4️⃣ Any tags or categories? (e.g., vegan, premium). Type them comma separated or 'skip'."))
+			return true
+		case 4:
+			if lower != "skip" {
+				sess.MenuItem.Tags = trimmed
+			}
+			sess.MenuItem.TenantID = tenantID
+			if err := h.Manager.DB.Create(&sess.MenuItem).Error; err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to save that item right now."))
+				clearBusinessSession(chatID)
+				return true
+			}
+			itemName := fallbackValue(sess.MenuItem.Name, "Item")
+			clearBusinessSession(chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Added *%s* to your menu/services!", itemName)))
+			h.sendMenuManager(bot, chatID, tenantID)
+			return true
+		default:
+			clearBusinessSession(chatID)
+			return true
+		}
+
+	case "faq_add":
+		switch sess.Step {
+		case 1:
+			if trimmed == "" {
+				bot.Send(tgbotapi.NewMessage(chatID, "Please share the full question or type 'cancel'."))
+				return true
+			}
+			sess.FAQ.Question = text
+			sess.Step = 2
+			bot.Send(tgbotapi.NewMessage(chatID, "2️⃣ What's the answer I should give customers?"))
+			return true
+		case 2:
+			if trimmed == "" {
+				bot.Send(tgbotapi.NewMessage(chatID, "Please provide an answer or type 'cancel'."))
+				return true
+			}
+			sess.FAQ.Answer = text
+			sess.FAQ.TenantID = tenantID
+			if err := h.Manager.DB.Create(&sess.FAQ).Error; err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't save that FAQ right now."))
+				clearBusinessSession(chatID)
+				return true
+			}
+			clearBusinessSession(chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ FAQ added! Brancr will use it when customers ask."))
+			h.sendFAQManager(bot, chatID, tenantID)
+			return true
+		default:
+			clearBusinessSession(chatID)
+			return true
+		}
+	}
+
+	// Unknown mode fallback
+	clearBusinessSession(chatID)
+	return true
 }
 
 func schedulePost(db *gorm.DB, tenantID uint, assetName string, when time.Time) {

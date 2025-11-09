@@ -36,7 +36,7 @@ func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID
 
 	switch platform {
 	case "instagram":
-		if m.sendMetaOAuthLink(bot, tenantID, chatID, platform, []string{"instagram", "facebook"}) {
+		if m.sendMetaOAuthLink(bot, tenantID, chatID, platform, []string{"instagram"}) {
 			return
 		}
 		sendPlain(bot, chatID, fmt.Sprintf("Meta OAuth is temporarily unavailable, so I'll fall back to manual setup. Please send a current %s page token from the Meta Graph API.", strings.Title(platform)))
@@ -86,16 +86,25 @@ func (m *TenantBotManager) sendMetaOAuthLink(bot *tgbotapi.BotAPI, tenantID uint
 	}
 
 	connectMsg := fmt.Sprintf(
-		"Meta connection for %s\n\n1. Open the secure link below in your browser.\n2. Approve Brancr in the Meta consent screen.\n3. Return here and run 'verify %s' so I can double-check the connection.\n\n%s",
-		strings.Title(platform), platform, oauthURL,
+		"Let’s connect your *%s* account.\n\n1️⃣ Open the secure link.\n2️⃣ Approve Brancr in the Meta consent screen.\n3️⃣ Come back and tap *Verify* so I can double-check the connection.",
+		strings.Title(platform),
 	)
 
-	if len(platforms) > 1 {
-		connectMsg += "\n\nNote: The Instagram flow also refreshes the linked Facebook Page permissions required for messaging."
-	}
+	buttonLabel := fmt.Sprintf("Open %s OAuth", strings.Title(platform))
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL(buttonLabel, oauthURL),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✔️ Verify now", fmt.Sprintf("verify:%s", platform)),
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),
+		),
+	)
 
 	msg := tgbotapi.NewMessage(chatID, connectMsg)
+	msg.ParseMode = "Markdown"
 	msg.DisableWebPagePreview = true
+	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
 	return true
 }
@@ -144,9 +153,22 @@ func (m *TenantBotManager) sendMetaEmbeddedSignup(bot *tgbotapi.BotAPI, tenantID
 
 	startURL := fmt.Sprintf("%s/api/oauth/meta/whatsapp/start?%s", baseURL, params.Encode())
 
-	info := "WhatsApp connection uses Meta's embedded business signup. Open the link below to authorize your number, then return here and run 'verify whatsapp'.\n\n" + startURL
+	info := "Meta handles WhatsApp onboarding in a separate window. Open the signup portal, finish the steps, then tap *Verify* so I can confirm the connection."
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("Open WhatsApp Signup", startURL),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✔️ Verify WhatsApp", "verify:whatsapp"),
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),
+		),
+	)
+
 	msg := tgbotapi.NewMessage(chatID, info)
+	msg.ParseMode = "Markdown"
 	msg.DisableWebPagePreview = true
+	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
 	return true
 }

@@ -21,6 +21,8 @@ func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&Tenant{},
 		&BusinessProfile{},
+		&BusinessMenuItem{},
+		&BusinessFAQ{},
 		&AdminUser{},
 		&Customer{},
 		&EventLog{},
