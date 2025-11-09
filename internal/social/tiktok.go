@@ -21,6 +21,7 @@ import (
 
 const (
 	tikTokBaseAPI            = "https://open.tiktokapis.com/v2"
+	tikTokAltContentBase     = "https://open-api.tiktok.com/v2"
 	tikTokInitUploadPath     = "/content/secure/video/init_upload/"
 	tikTokFinalizeUploadPath = "/content/secure/video/upload/"
 	tikTokPublishPath        = "/content/secure/video/publish/"
@@ -183,54 +184,68 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*
 	form := url.Values{}
 	form.Set("source", "FILE_UPLOAD")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokInitUploadPath, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	bases := []string{tikTokBaseAPI, tikTokAltContentBase}
+	var lastErr error
 
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	for _, base := range bases {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+tikTokInitUploadPath, strings.NewReader(form.Encode()))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+		resp, err := t.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			lastErr = fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+			continue
+		}
+
+		var parsed struct {
+			Data struct {
+				UploadURL string `json:"upload_url"`
+				UploadID  string `json:"upload_id"`
+				VideoID   string `json:"video_id"`
+			} `json:"data"`
+			Error      json.RawMessage `json:"error"`
+			Message    string          `json:"message"`
+			StatusCode int             `json:"status_code"`
+		}
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			lastErr = err
+			continue
+		}
+		apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+		if apiErr.Code != 0 {
+			lastErr = fmt.Errorf("tiktok init upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
+			continue
+		}
+		if parsed.Data.UploadURL == "" || parsed.Data.UploadID == "" || parsed.Data.VideoID == "" {
+			lastErr = errors.New("tiktok init upload missing data")
+			continue
+		}
+
+		return &tiktokSession{
+			UploadURL: parsed.Data.UploadURL,
+			UploadID:  parsed.Data.UploadID,
+			VideoID:   parsed.Data.VideoID,
+		}, nil
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	var parsed struct {
-		Data struct {
-			UploadURL string `json:"upload_url"`
-			UploadID  string `json:"upload_id"`
-			VideoID   string `json:"video_id"`
-		} `json:"data"`
-		Error      json.RawMessage `json:"error"`
-		Message    string          `json:"message"`
-		StatusCode int             `json:"status_code"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, err
-	}
-	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
-	if apiErr.Code != 0 {
-		return nil, fmt.Errorf("tiktok init upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
-	}
-	if parsed.Data.UploadURL == "" || parsed.Data.UploadID == "" || parsed.Data.VideoID == "" {
-		return nil, errors.New("tiktok init upload missing data")
-	}
-
-	return &tiktokSession{
-		UploadURL: parsed.Data.UploadURL,
-		UploadID:  parsed.Data.UploadID,
-		VideoID:   parsed.Data.VideoID,
-	}, nil
+	return nil, lastErr
 }
 
 func (t *TikTokConnector) uploadVideo(ctx context.Context, uploadURL, videoURL string) error {
