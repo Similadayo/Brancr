@@ -44,15 +44,16 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 		if err != nil {
 			return fmt.Errorf("failed to create carousel: %w", err)
 		}
-	case resolvedType == "video":
-		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "VIDEO")
-		if err != nil {
-			return fmt.Errorf("failed to create video media: %w", err)
-		}
 	case resolvedType == "reel":
 		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS")
 		if err != nil {
 			return fmt.Errorf("failed to create reel media: %w", err)
+		}
+	case resolvedType == "video":
+		// Instagram deprecated plain VIDEO uploads; treat feed videos as reels shared to feed.
+		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS")
+		if err != nil {
+			return fmt.Errorf("failed to create video media: %w", err)
 		}
 	default:
 		creationID, err = i.createImageMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption)
