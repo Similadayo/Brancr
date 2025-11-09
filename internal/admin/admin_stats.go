@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"time"
 )
 
@@ -32,7 +33,11 @@ func countActiveBots(ctx *AdminContext) int64 {
 }
 
 func getOpenRouterUsage(ctx *AdminContext, since time.Time) int64 {
-	val, err := ctx.Redis.Get(ctx.DB.Statement.Context, "openrouter_tokens_used").Int64()
+	if ctx.Redis == nil {
+		return 0
+	}
+
+	val, err := ctx.Redis.Get(context.Background(), "openrouter_tokens_used").Int64()
 	if err != nil {
 		return 0
 	}
