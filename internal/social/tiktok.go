@@ -89,8 +89,9 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	if err != nil {
 		return fmt.Errorf("tiktok init upload failed: %w", err)
 	}
+	session.VideoSize = videoSize
 
-	if err := t.uploadVideo(ctx, session.UploadURL, videoURL); err != nil {
+	if err := t.uploadVideo(ctx, session, videoURL); err != nil {
 		return fmt.Errorf("tiktok upload failed: %w", err)
 	}
 
@@ -190,6 +191,7 @@ type tiktokSession struct {
 	UploadID  string
 	VideoID   string
 	PublishID string
+	VideoSize int64
 }
 
 func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL string) (int64, error) {
@@ -319,8 +321,8 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	return nil, lastErr
 }
 
-func (t *TikTokConnector) uploadVideo(ctx context.Context, uploadURL, videoURL string) error {
-	if uploadURL == "" {
+func (t *TikTokConnector) uploadVideo(ctx context.Context, session *tiktokSession, videoURL string) error {
+	if session == nil || session.UploadURL == "" {
 		return errors.New("upload URL missing")
 	}
 	if videoURL == "" {
@@ -342,18 +344,25 @@ func (t *TikTokConnector) uploadVideo(ctx context.Context, uploadURL, videoURL s
 		return fmt.Errorf("download video failed (%d): %s", downloadResp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, downloadResp.Body)
+	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPut, session.UploadURL, downloadResp.Body)
 	if err != nil {
 		return err
-	}
-	if downloadResp.ContentLength > 0 {
-		uploadReq.ContentLength = downloadResp.ContentLength
 	}
 	contentType := downloadResp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 	uploadReq.Header.Set("Content-Type", contentType)
+
+	length := session.VideoSize
+	if length <= 0 && downloadResp.ContentLength > 0 {
+		length = downloadResp.ContentLength
+	}
+	if length > 0 {
+		uploadReq.ContentLength = length
+		uploadReq.Header.Set("Content-Length", strconv.FormatInt(length, 10))
+		uploadReq.Header.Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", length-1, length))
+	}
 
 	uploadResp, err := t.httpClient.Do(uploadReq)
 	if err != nil {
@@ -554,6 +563,16 @@ func (t *TikTokConnector) logCreatorInfo(ctx context.Context, acc *storage.Socia
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		t.Logger.Info("TikTok creator info skipped", zap.Uint("tenant_id", acc.TenantID), zap.String("reason", msg))
+		return nil
+	}
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
