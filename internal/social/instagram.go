@@ -34,51 +34,30 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 		return fmt.Errorf("failed to get Instagram account ID: %w", err)
 	}
 
-	// Step 2: Handle carousel vs single image
+	// Step 2: Handle the media type
 	var creationID string
-	if len(urls) > 1 {
-		// Carousel: Create individual media containers first, then combine
+	resolvedType := inferMediaType(asset.Type, urls)
+
+	switch {
+	case len(urls) > 1:
 		creationID, err = i.createCarousel(ctx, igAccountID, acc.AccessToken, urls, caption)
 		if err != nil {
 			return fmt.Errorf("failed to create carousel: %w", err)
 		}
-	} else {
-		// Single image: Create media container
-		createURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
-		payload := map[string]string{
-			"image_url":    urls[0],
-			"caption":      caption,
-			"access_token": acc.AccessToken,
-		}
-
-		jsonData, _ := json.Marshal(payload)
-		req, err := http.NewRequestWithContext(ctx, "POST", createURL, strings.NewReader(string(jsonData)))
+	case resolvedType == "video":
+		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "VIDEO")
 		if err != nil {
-			return fmt.Errorf("failed to create media request: %w", err)
+			return fmt.Errorf("failed to create video media: %w", err)
 		}
-
-		req.Header.Set("Content-Type", "application/json")
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
+	case resolvedType == "reel":
+		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS")
 		if err != nil {
-			return fmt.Errorf("API request failed: %w", err)
+			return fmt.Errorf("failed to create reel media: %w", err)
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			body, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
-		}
-
-		var createResult map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&createResult); err != nil {
-			return fmt.Errorf("failed to parse response: %w", err)
-		}
-
-		var ok bool
-		creationID, ok = createResult["id"].(string)
-		if !ok {
-			return fmt.Errorf("no creation ID returned: %v", createResult)
+	default:
+		creationID, err = i.createImageMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -117,6 +96,46 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 	return nil
 }
 
+func (i *InstagramConnector) createImageMedia(ctx context.Context, igAccountID, accessToken, imageURL, caption string) (string, error) {
+	createURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
+	payload := map[string]string{
+		"image_url":    imageURL,
+		"caption":      caption,
+		"access_token": accessToken,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", createURL, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create media request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var createResult map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&createResult); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	creationID, ok := createResult["id"].(string)
+	if !ok {
+		return "", fmt.Errorf("no creation ID returned: %v", createResult)
+	}
+
+	return creationID, nil
+}
+
 // createCarousel creates an Instagram carousel post
 // Instagram carousels require: 1) Create individual media containers, 2) Wait for each to be ready, 3) Create carousel container, 4) Publish
 func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, accessToken string, urls []string, caption string) (string, error) {
@@ -128,8 +147,15 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 
 	for _, url := range urls {
 		payload := map[string]string{
-			"image_url":    url,
 			"access_token": accessToken,
+		}
+
+		if isVideoURL(url) {
+			payload["media_type"] = "VIDEO"
+			payload["video_url"] = url
+			payload["thumb_offset"] = "0"
+		} else {
+			payload["image_url"] = url
 		}
 
 		jsonData, _ := json.Marshal(payload)
@@ -212,6 +238,56 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 	}
 
 	return carouselID, nil
+}
+
+func (i *InstagramConnector) createVideoMedia(ctx context.Context, igAccountID, accessToken, videoURL, caption, mediaType string) (string, error) {
+	client := &http.Client{Timeout: 45 * time.Second}
+	createURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
+
+	payload := map[string]string{
+		"video_url":    videoURL,
+		"caption":      caption,
+		"access_token": accessToken,
+		"thumb_offset": "0",
+	}
+
+	switch mediaType {
+	case "REELS":
+		payload["media_type"] = "REELS"
+		payload["share_to_feed"] = "true"
+	default:
+		payload["media_type"] = "VIDEO"
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", createURL, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return "", fmt.Errorf("failed to create video request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("video API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Instagram video API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var createResult map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&createResult); err != nil {
+		return "", fmt.Errorf("failed to parse video response: %w", err)
+	}
+
+	creationID, ok := createResult["id"].(string)
+	if !ok {
+		return "", fmt.Errorf("no creation ID returned: %v", createResult)
+	}
+
+	return creationID, nil
 }
 
 // waitForMediaReady polls Instagram to check if the media container is ready for publishing

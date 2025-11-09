@@ -117,16 +117,62 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		platforms = []string{"instagram"}
 	}
 
-	// Build media URLs
+	// Build media URLs and detect types
 	var urls []string
-	mediaType := "image"
+	mediaContext := "image"
+	primaryType := ""
+	hasExplicitReel := false
+
 	for _, a := range assets {
 		var arr []string
 		_ = json.Unmarshal([]byte(a.URLs), &arr)
 		urls = append(urls, arr...)
-		if a.Type == "video" {
-			mediaType = "video"
+
+		itemType := inferMediaType(a.Type, arr)
+		if primaryType == "" {
+			primaryType = itemType
 		}
+		if itemType == "reel" {
+			hasExplicitReel = true
+		}
+	}
+
+	if len(urls) > 1 {
+		mediaContext = "carousel"
+	} else if primaryType == "video" || primaryType == "reel" {
+		mediaContext = "video"
+	}
+
+	if mediaContext == "image" {
+		switch primaryType {
+		case "video", "reel":
+			mediaContext = "video"
+		case "carousel":
+			mediaContext = "carousel"
+		default:
+			mediaContext = "image"
+		}
+	}
+
+	assetType := primaryType
+	if assetType == "" {
+		assetType = mediaContext
+	}
+	if len(urls) > 1 && assetType != "carousel" && assetType != "reel" {
+		assetType = "carousel"
+	}
+
+	mediaTypeForAI := mediaContext
+	if hasExplicitReel {
+		mediaTypeForAI = "reel"
+	} else if primaryType != "" {
+		mediaTypeForAI = primaryType
+	}
+	if mediaTypeForAI == "" {
+		mediaTypeForAI = inferMediaType(assetType, urls)
+	}
+	if mediaTypeForAI == "" {
+		mediaTypeForAI = "image"
 	}
 
 	// AI Caption Optimization with logging
@@ -146,7 +192,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			req := OptimizeCaptionRequest{
 				OriginalCaption: originalCaption,
 				Platform:        platform,
-				MediaType:       mediaType,
+				MediaType:       mediaTypeForAI,
 				TenantID:        p.TenantID,
 			}
 
@@ -182,7 +228,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		// Log posting attempt
 		s.logPostActivity(p.TenantID, p.ID, platform, "posting", originalCaption, optimizedCaption, "in_progress", "")
 
-		if err := s.postToPlatform(ctx, p.TenantID, platform, urls, optimizedCaption); err != nil {
+		if err := s.postToPlatform(ctx, p.TenantID, platform, urls, optimizedCaption, assetType); err != nil {
 			s.Logger.Error("post failed",
 				zap.String("platform", platform),
 				zap.Error(err))
@@ -240,7 +286,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	}
 }
 
-func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform string, urls []string, caption string) error {
+func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform string, urls []string, caption string, assetType string) error {
 	// Load tenant's social account for this platform
 	var acc storage.SocialAccount
 	if err := s.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, platform, true).
@@ -260,7 +306,7 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 
 	platformKey := strings.ToLower(platform)
 
-	if platformKey == "instagram" {
+	if platformKey == "instagram" && assetType != "video" && assetType != "reel" {
 		if err := validateInstagramAspectRatio(ctx, urls); err != nil {
 			return fmt.Errorf("instagram media validation failed: %w", err)
 		}
@@ -274,9 +320,12 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 
 	// Create temporary MediaAsset for posting
 	urlsJSON, _ := json.Marshal(urls)
+	if assetType == "" {
+		assetType = inferMediaType("", urls)
+	}
 	asset := &storage.MediaAsset{
 		TenantID: tenantID,
-		Type:     "image", // simplified for now
+		Type:     assetType,
 		Caption:  caption,
 		URLs:     string(urlsJSON),
 	}

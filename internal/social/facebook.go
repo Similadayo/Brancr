@@ -30,11 +30,28 @@ func (f *FacebookConnector) PostMedia(ctx context.Context, acc *storage.SocialAc
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	resolvedType := inferMediaType(asset.Type, urls)
+	hasVideo := false
+	for _, u := range urls {
+		if isVideoURL(u) {
+			hasVideo = true
+			break
+		}
+	}
 
 	// Handle carousel (multiple images) vs single image
 	if len(urls) > 1 {
+		if hasVideo {
+			return fmt.Errorf("Facebook carousel videos are not supported yet")
+		}
+
 		// Carousel: Upload each photo first, then post with attached_media
 		return f.postCarousel(ctx, client, acc, urls, caption)
+	}
+
+	// Single media item
+	if resolvedType == "video" || hasVideo {
+		return f.postVideo(ctx, client, acc, urls[0], caption)
 	}
 
 	// Single image: Use photos endpoint
@@ -158,6 +175,40 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 	}
 
 	fmt.Printf("✅ [Facebook] Posted carousel (%d images) successfully to PageID=%s\n", len(urls), acc.PageID)
+	return nil
+}
+
+func (f *FacebookConnector) postVideo(ctx context.Context, client *http.Client, acc *storage.SocialAccount, videoURL, caption string) error {
+	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/videos", acc.PageID)
+	if acc.PageID == "" {
+		apiURL = "https://graph.facebook.com/v18.0/me/videos"
+	}
+
+	form := url.Values{}
+	form.Set("file_url", videoURL)
+	if strings.TrimSpace(caption) != "" {
+		form.Set("description", caption)
+	}
+	form.Set("access_token", acc.AccessToken)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create video request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("video request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Facebook video API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	fmt.Printf("✅ [Facebook] Posted video successfully to PageID=%s\n", acc.PageID)
 	return nil
 }
 
