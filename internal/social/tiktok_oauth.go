@@ -261,6 +261,25 @@ func (h *TikTokOAuthHandler) exchangeToken(ctx context.Context, code, verifier s
 	}
 
 	if parsed.Data.AccessToken == "" {
+		var direct struct {
+			AccessToken      string `json:"access_token"`
+			RefreshToken     string `json:"refresh_token"`
+			ExpiresIn        int64  `json:"expires_in"`
+			RefreshExpiresIn int64  `json:"refresh_expires_in"`
+			OpenID           string `json:"open_id"`
+			Scope            string `json:"scope"`
+		}
+		if err := json.Unmarshal(respBody, &direct); err == nil && direct.AccessToken != "" {
+			parsed.Data.AccessToken = direct.AccessToken
+			parsed.Data.RefreshToken = direct.RefreshToken
+			parsed.Data.ExpiresIn = direct.ExpiresIn
+			parsed.Data.RefreshExpiresIn = direct.RefreshExpiresIn
+			parsed.Data.OpenID = direct.OpenID
+			parsed.Data.Scope = direct.Scope
+		}
+	}
+
+	if parsed.Data.AccessToken == "" {
 		if h.Logger != nil {
 			h.Logger.Warn("TikTok token response missing access token",
 				zap.String("raw_response", strings.TrimSpace(string(respBody))))
