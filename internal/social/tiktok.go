@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +23,10 @@ import (
 const (
 	tikTokBaseAPI            = "https://open.tiktokapis.com/v2"
 	tikTokAltContentBase     = "https://open-api.tiktok.com/v2"
-	tikTokInitUploadPath     = "/content/secure/video/init_upload/"
-	tikTokFinalizeUploadPath = "/content/secure/video/upload/"
-	tikTokPublishPath        = "/content/secure/video/publish/"
+	tikTokInitUploadPath     = "/post/publish/video/init/"
+	tikTokFinalizeUploadPath = "/post/publish/video/publish/"
+	tikTokStatusPath         = "/post/publish/status/fetch/"
+	tikTokCreatorInfoPath    = "/post/publish/creator_info/query/"
 	tikTokRefreshPath        = "/oauth/token/"
 )
 
@@ -69,12 +71,21 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return err
 	}
 
+	videoSize, err := t.getRemoteVideoSize(ctx, videoURL)
+	if err != nil {
+		return err
+	}
+
+	if err := t.logCreatorInfo(ctx, acc); err != nil {
+		t.Logger.Warn("TikTok creator info query failed", zap.Error(err))
+	}
+
 	accessToken, err := t.ensureAccessToken(ctx, acc)
 	if err != nil {
 		return err
 	}
 
-	session, err := t.initUpload(ctx, accessToken)
+	session, err := t.initUpload(ctx, accessToken, caption, videoSize)
 	if err != nil {
 		return fmt.Errorf("tiktok init upload failed: %w", err)
 	}
@@ -83,12 +94,12 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return fmt.Errorf("tiktok upload failed: %w", err)
 	}
 
-	if err := t.finalizeUpload(ctx, accessToken, session.UploadID, session.VideoID); err != nil {
+	if err := t.finalizeUpload(ctx, accessToken, session); err != nil {
 		return fmt.Errorf("tiktok finalize upload failed: %w", err)
 	}
 
-	if err := t.publishVideo(ctx, accessToken, session.VideoID, caption); err != nil {
-		return fmt.Errorf("tiktok publish failed: %w", err)
+	if err := t.pollPublishStatus(ctx, accessToken, session.PublishID); err != nil {
+		return fmt.Errorf("tiktok publish status check failed: %w", err)
 	}
 
 	t.Logger.Info("✅ TikTok video published",
@@ -178,22 +189,80 @@ type tiktokSession struct {
 	UploadURL string
 	UploadID  string
 	VideoID   string
+	PublishID string
 }
 
-func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*tiktokSession, error) {
-	form := url.Values{}
-	form.Set("source", "FILE_UPLOAD")
+func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, videoURL, nil)
+	if err != nil {
+		return 0, err
+	}
 
+	resp, err := t.httpClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		if resp.ContentLength > 0 {
+			return resp.ContentLength, nil
+		}
+	} else {
+		t.Logger.Warn("HEAD request failed for video size", zap.Error(err))
+	}
+
+	rangeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	rangeReq.Header.Set("Range", "bytes=0-0")
+	rangeResp, err := t.httpClient.Do(rangeReq)
+	if err != nil {
+		return 0, err
+	}
+	defer rangeResp.Body.Close()
+
+	if cr := rangeResp.Header.Get("Content-Range"); cr != "" {
+		if parts := strings.Split(cr, "/"); len(parts) == 2 {
+			if size, parseErr := strconv.ParseInt(parts[1], 10, 64); parseErr == nil {
+				return size, nil
+			}
+		}
+	}
+
+	if rangeResp.ContentLength > 0 {
+		return rangeResp.ContentLength, nil
+	}
+
+	return 0, errors.New("unable to determine video size for TikTok upload")
+}
+
+func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string, videoSize int64) (*tiktokSession, error) {
+	if videoSize <= 0 {
+		return nil, errors.New("invalid video size for TikTok upload")
+	}
+
+	payload := map[string]interface{}{
+		"source_info": map[string]interface{}{
+			"source":            "FILE_UPLOAD",
+			"video_size":        videoSize,
+			"chunk_size":        videoSize,
+			"total_chunk_count": 1,
+		},
+		"post_info": map[string]interface{}{
+			"title":         truncateCaption(caption, 150),
+			"privacy_level": "PUBLIC",
+		},
+	}
+
+	body, _ := json.Marshal(payload)
 	bases := []string{tikTokBaseAPI, tikTokAltContentBase}
 	var lastErr error
 
 	for _, base := range bases {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+tikTokInitUploadPath, strings.NewReader(form.Encode()))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+tikTokInitUploadPath, bytes.NewReader(body))
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 
 		resp, err := t.httpClient.Do(req)
@@ -219,6 +288,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*
 				UploadURL string `json:"upload_url"`
 				UploadID  string `json:"upload_id"`
 				VideoID   string `json:"video_id"`
+				PublishID string `json:"publish_id"`
 			} `json:"data"`
 			Error      json.RawMessage `json:"error"`
 			Message    string          `json:"message"`
@@ -233,7 +303,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*
 			lastErr = fmt.Errorf("tiktok init upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 			continue
 		}
-		if parsed.Data.UploadURL == "" || parsed.Data.UploadID == "" || parsed.Data.VideoID == "" {
+		if parsed.Data.UploadURL == "" || parsed.Data.VideoID == "" || parsed.Data.PublishID == "" {
 			lastErr = errors.New("tiktok init upload missing data")
 			continue
 		}
@@ -242,6 +312,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*
 			UploadURL: parsed.Data.UploadURL,
 			UploadID:  parsed.Data.UploadID,
 			VideoID:   parsed.Data.VideoID,
+			PublishID: parsed.Data.PublishID,
 		}, nil
 	}
 
@@ -280,7 +351,7 @@ func (t *TikTokConnector) uploadVideo(ctx context.Context, uploadURL, videoURL s
 	}
 	contentType := downloadResp.Header.Get("Content-Type")
 	if contentType == "" {
-		contentType = "video/mp4"
+		contentType = "application/octet-stream"
 	}
 	uploadReq.Header.Set("Content-Type", contentType)
 
@@ -296,10 +367,10 @@ func (t *TikTokConnector) uploadVideo(ctx context.Context, uploadURL, videoURL s
 	return nil
 }
 
-func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken, uploadID, videoID string) error {
+func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken string, session *tiktokSession) error {
 	payload := map[string]string{
-		"upload_id": uploadID,
-		"video_id":  videoID,
+		"publish_id": session.PublishID,
+		"video_id":   session.VideoID,
 	}
 	body, _ := json.Marshal(payload)
 
@@ -340,56 +411,64 @@ func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken, uploa
 	return nil
 }
 
-func (t *TikTokConnector) publishVideo(ctx context.Context, accessToken, videoID, caption string) error {
-	if caption == "" {
-		caption = "Posted via Brancr"
+func (t *TikTokConnector) pollPublishStatus(ctx context.Context, accessToken, publishID string) error {
+	if publishID == "" {
+		return errors.New("publish id missing for status check")
 	}
-	caption = truncateCaption(caption, 150)
 
-	payload := map[string]interface{}{
-		"video_id": videoID,
-		"post_info": map[string]interface{}{
-			"description":   caption,
-			"privacy_level": "PUBLIC",
-		},
-	}
+	payload := map[string]string{"publish_id": publishID}
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokPublishPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokStatusPath, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := t.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err := t.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("tiktok publish status failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		}
+
+		var parsed struct {
+			Data struct {
+				Status string `json:"status"`
+			} `json:"data"`
+			Error      json.RawMessage `json:"error"`
+			Message    string          `json:"message"`
+			StatusCode int             `json:"status_code"`
+		}
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			return err
+		}
+		apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+		if apiErr.Code != 0 {
+			return fmt.Errorf("tiktok publish status error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
+		}
+
+		status := strings.ToUpper(parsed.Data.Status)
+		if status == "" || status == "PROCESSING" {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if status != "SUCCESS" {
+			return fmt.Errorf("tiktok publish reported status %s", status)
+		}
+		return nil
 	}
 
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("tiktok publish failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	var parsed struct {
-		Error      json.RawMessage `json:"error"`
-		Message    string          `json:"message"`
-		StatusCode int             `json:"status_code"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return err
-	}
-	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
-	if apiErr.Code != 0 {
-		return fmt.Errorf("tiktok publish error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
-	}
-
+	t.Logger.Warn("TikTok publish status polling timed out", zap.String("publish_id", publishID))
 	return nil
 }
 
@@ -460,6 +539,33 @@ func (t *TikTokConnector) refreshAccessToken(ctx context.Context, refreshToken s
 		ExpiresIn:        parsed.Data.ExpiresIn,
 		RefreshExpiresIn: parsed.Data.RefreshExpiresIn,
 	}, nil
+}
+
+func (t *TikTokConnector) logCreatorInfo(ctx context.Context, acc *storage.SocialAccount) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokCreatorInfoPath, bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("creator info query failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return err
+	}
+	t.Logger.Info("TikTok creator info", zap.Uint("tenant_id", acc.TenantID), zap.Any("info", payload["data"]))
+	return nil
 }
 
 func truncateCaption(input string, limit int) string {
