@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -391,19 +392,17 @@ func (t *TikTokConnector) refreshAccessToken(ctx context.Context, refreshToken s
 		return nil, errors.New("tiktok client credentials missing")
 	}
 
-	payload := map[string]string{
-		"client_key":    t.ClientKey,
-		"client_secret": t.ClientSecret,
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
-	}
-	body, _ := json.Marshal(payload)
+	form := url.Values{}
+	form.Set("client_key", t.ClientKey)
+	form.Set("client_secret", t.ClientSecret)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokRefreshPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokRefreshPath, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := t.httpClient.Do(req)
 	if err != nil {

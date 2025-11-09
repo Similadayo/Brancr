@@ -1,7 +1,6 @@
 package social
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -209,22 +208,19 @@ type tiktokTokenData struct {
 }
 
 func (h *TikTokOAuthHandler) exchangeToken(ctx context.Context, code, verifier string) (*tiktokTokenData, error) {
-	payload := map[string]string{
-		"client_key":    h.ClientKey,
-		"client_secret": h.ClientSecret,
-		"code":          code,
-		"grant_type":    "authorization_code",
-		"redirect_uri":  h.RedirectURI,
-		"code_verifier": verifier,
-	}
+	form := url.Values{}
+	form.Set("client_key", h.ClientKey)
+	form.Set("client_secret", h.ClientSecret)
+	form.Set("code", code)
+	form.Set("grant_type", "authorization_code")
+	form.Set("redirect_uri", h.RedirectURI)
+	form.Set("code_verifier", verifier)
 
-	body, _ := json.Marshal(payload)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.tiktokapis.com/v2/oauth/token/", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.tiktokapis.com/v2/oauth/token/", strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := h.HTTPClient.Do(req)
 	if err != nil {
