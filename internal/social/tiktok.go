@@ -1,25 +1,475 @@
 package social
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
 
+	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
-type TikTokConnector struct{}
+const (
+	tikTokBaseAPI            = "https://open.tiktokapis.com/v2"
+	tikTokInitUploadPath     = "/content/secure/video/init_upload/"
+	tikTokFinalizeUploadPath = "/content/secure/video/upload/"
+	tikTokPublishPath        = "/content/secure/video/publish/"
+	tikTokRefreshPath        = "/oauth/token/"
+)
+
+// TikTokConnector handles posting media to TikTok using the Content Posting API.
+type TikTokConnector struct {
+	DB           *gorm.DB
+	Logger       *zap.Logger
+	ClientKey    string
+	ClientSecret string
+	httpClient   *http.Client
+}
+
+// NewTikTokConnector wires dependencies for the TikTok connector.
+func NewTikTokConnector(db *gorm.DB, logger *zap.Logger, cfg *config.Config) SocialConnector {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	return &TikTokConnector{
+		DB:           db,
+		Logger:       logger,
+		ClientKey:    cfg.TikTokClientKey,
+		ClientSecret: cfg.TikTokClientSecret,
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+	}
+}
 
 func (t *TikTokConnector) Name() string { return "tiktok" }
 
 func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAccount, asset *storage.MediaAsset, caption string) error {
-	fmt.Printf("[TikTok] Uploading video... Caption=%s URLs=%s\n", caption, asset.URLs)
+	if acc == nil || acc.AccessToken == "" {
+		return errors.New("tiktok access token missing")
+	}
+
+	if asset == nil {
+		return errors.New("tiktok asset payload missing")
+	}
+
+	videoURL, err := firstVideoURL(asset)
+	if err != nil {
+		return err
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return err
+	}
+
+	session, err := t.initUpload(ctx, accessToken)
+	if err != nil {
+		return fmt.Errorf("tiktok init upload failed: %w", err)
+	}
+
+	if err := t.uploadVideo(ctx, session.UploadURL, videoURL); err != nil {
+		return fmt.Errorf("tiktok upload failed: %w", err)
+	}
+
+	if err := t.finalizeUpload(ctx, accessToken, session.UploadID, session.VideoID); err != nil {
+		return fmt.Errorf("tiktok finalize upload failed: %w", err)
+	}
+
+	if err := t.publishVideo(ctx, accessToken, session.VideoID, caption); err != nil {
+		return fmt.Errorf("tiktok publish failed: %w", err)
+	}
+
+	t.Logger.Info("✅ TikTok video published",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("video_id", session.VideoID))
+
 	return nil
 }
 
 func (t *TikTokConnector) HealthCheck(ctx context.Context, acc *storage.SocialAccount) error {
+	if acc == nil || acc.AccessToken == "" {
+		return errors.New("access token missing")
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, tikTokBaseAPI+"/user/info/?fields=open_id", nil)
+	req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("tiktok health check failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	return nil
 }
 
-func init() {
-	Connectors["tiktok"] = &TikTokConnector{}
+// ensureAccessToken refreshes the TikTok access token if it is close to expiry.
+func (t *TikTokConnector) ensureAccessToken(ctx context.Context, acc *storage.SocialAccount) (string, error) {
+	if acc.ExpiresAt == nil || time.Until(*acc.ExpiresAt) > 5*time.Minute {
+		return acc.AccessToken, nil
+	}
+
+	if acc.RefreshToken == "" {
+		return "", errors.New("tiktok access token expired and refresh token missing")
+	}
+
+	t.Logger.Info("🔄 Refreshing TikTok access token",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Uint("account_id", acc.ID))
+
+	newTokens, err := t.refreshAccessToken(ctx, acc.RefreshToken)
+	if err != nil {
+		return "", fmt.Errorf("tiktok token refresh failed: %w", err)
+	}
+
+	encryptedAccess, err := utils.EncryptToken(newTokens.AccessToken)
+	if err != nil {
+		return "", fmt.Errorf("encrypt access token: %w", err)
+	}
+
+	encryptedRefresh := ""
+	if newTokens.RefreshToken != "" {
+		if encryptedRefresh, err = utils.EncryptToken(newTokens.RefreshToken); err != nil {
+			t.Logger.Warn("failed to encrypt refreshed TikTok refresh token", zap.Error(err))
+		}
+	}
+
+	expiry := time.Now().Add(time.Duration(newTokens.ExpiresIn) * time.Second)
+	updates := map[string]interface{}{
+		"access_token": encryptedAccess,
+		"expires_at":   &expiry,
+	}
+	if encryptedRefresh != "" {
+		updates["refresh_token"] = encryptedRefresh
+	}
+
+	if t.DB != nil {
+		if err := t.DB.WithContext(ctx).
+			Model(&storage.SocialAccount{}).
+			Where("id = ?", acc.ID).
+			Updates(updates).Error; err != nil {
+			t.Logger.Warn("failed to persist refreshed TikTok token", zap.Error(err))
+		}
+	}
+
+	acc.AccessToken = newTokens.AccessToken
+	if newTokens.RefreshToken != "" {
+		acc.RefreshToken = newTokens.RefreshToken
+	}
+	acc.ExpiresAt = &expiry
+
+	return acc.AccessToken, nil
+}
+
+type tiktokSession struct {
+	UploadURL string
+	UploadID  string
+	VideoID   string
+}
+
+func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*tiktokSession, error) {
+	payload := map[string]string{
+		"source": "FILE_UPLOAD",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokInitUploadPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var parsed struct {
+		Data struct {
+			UploadURL string `json:"upload_url"`
+			UploadID  string `json:"upload_id"`
+			VideoID   string `json:"video_id"`
+		} `json:"data"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Error.Code != 0 {
+		return nil, fmt.Errorf("tiktok init upload error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	}
+	if parsed.Data.UploadURL == "" || parsed.Data.UploadID == "" || parsed.Data.VideoID == "" {
+		return nil, errors.New("tiktok init upload missing data")
+	}
+
+	return &tiktokSession{
+		UploadURL: parsed.Data.UploadURL,
+		UploadID:  parsed.Data.UploadID,
+		VideoID:   parsed.Data.VideoID,
+	}, nil
+}
+
+func (t *TikTokConnector) uploadVideo(ctx context.Context, uploadURL, videoURL string) error {
+	if uploadURL == "" {
+		return errors.New("upload URL missing")
+	}
+	if videoURL == "" {
+		return errors.New("video URL missing")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		return err
+	}
+	downloadResp, err := t.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("download video failed: %w", err)
+	}
+	defer downloadResp.Body.Close()
+
+	if downloadResp.StatusCode >= 400 {
+		body, _ := io.ReadAll(downloadResp.Body)
+		return fmt.Errorf("download video failed (%d): %s", downloadResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, downloadResp.Body)
+	if err != nil {
+		return err
+	}
+	if downloadResp.ContentLength > 0 {
+		uploadReq.ContentLength = downloadResp.ContentLength
+	}
+	contentType := downloadResp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	uploadReq.Header.Set("Content-Type", contentType)
+
+	uploadResp, err := t.httpClient.Do(uploadReq)
+	if err != nil {
+		return fmt.Errorf("upload video failed: %w", err)
+	}
+	defer uploadResp.Body.Close()
+	if uploadResp.StatusCode >= 400 {
+		body, _ := io.ReadAll(uploadResp.Body)
+		return fmt.Errorf("upload video failed (%d): %s", uploadResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken, uploadID, videoID string) error {
+	payload := map[string]string{
+		"upload_id": uploadID,
+		"video_id":  videoID,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokFinalizeUploadPath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("tiktok finalize upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var parsed struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return err
+	}
+	if parsed.Error.Code != 0 {
+		return fmt.Errorf("tiktok finalize upload error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	}
+	return nil
+}
+
+func (t *TikTokConnector) publishVideo(ctx context.Context, accessToken, videoID, caption string) error {
+	if caption == "" {
+		caption = "Posted via Brancr"
+	}
+	caption = truncateCaption(caption, 150)
+
+	payload := map[string]interface{}{
+		"video_id": videoID,
+		"post_info": map[string]interface{}{
+			"description":   caption,
+			"privacy_level": "PUBLIC",
+		},
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokPublishPath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("tiktok publish failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var parsed struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return err
+	}
+	if parsed.Error.Code != 0 {
+		return fmt.Errorf("tiktok publish error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	}
+
+	return nil
+}
+
+type tiktokTokenResponse struct {
+	AccessToken      string
+	RefreshToken     string
+	ExpiresIn        int64
+	RefreshExpiresIn int64
+}
+
+func (t *TikTokConnector) refreshAccessToken(ctx context.Context, refreshToken string) (*tiktokTokenResponse, error) {
+	if t.ClientKey == "" || t.ClientSecret == "" {
+		return nil, errors.New("tiktok client credentials missing")
+	}
+
+	payload := map[string]string{
+		"client_key":    t.ClientKey,
+		"client_secret": t.ClientSecret,
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokRefreshPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("tiktok refresh failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var parsed struct {
+		Data struct {
+			AccessToken      string `json:"access_token"`
+			RefreshToken     string `json:"refresh_token"`
+			ExpiresIn        int64  `json:"expires_in"`
+			RefreshExpiresIn int64  `json:"refresh_expires_in"`
+		} `json:"data"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Error.Code != 0 {
+		return nil, fmt.Errorf("tiktok refresh error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	}
+	if parsed.Data.AccessToken == "" {
+		return nil, errors.New("tiktok refresh returned empty access token")
+	}
+
+	return &tiktokTokenResponse{
+		AccessToken:      parsed.Data.AccessToken,
+		RefreshToken:     parsed.Data.RefreshToken,
+		ExpiresIn:        parsed.Data.ExpiresIn,
+		RefreshExpiresIn: parsed.Data.RefreshExpiresIn,
+	}, nil
+}
+
+func truncateCaption(input string, limit int) string {
+	input = strings.TrimSpace(input)
+	if limit <= 0 || len([]rune(input)) <= limit {
+		return input
+	}
+	runes := []rune(input)
+	return string(runes[:limit])
+}
+
+func firstVideoURL(asset *storage.MediaAsset) (string, error) {
+	var urls []string
+	if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil {
+		return "", fmt.Errorf("invalid media URLs: %w", err)
+	}
+	if len(urls) == 0 {
+		return "", errors.New("no media URLs provided for TikTok")
+	}
+	if !strings.HasSuffix(strings.ToLower(urls[0]), ".mp4") &&
+		!strings.Contains(strings.ToLower(urls[0]), "video") {
+		return "", errors.New("tiktok requires a video asset (mp4 recommended)")
+	}
+	return urls[0], nil
 }

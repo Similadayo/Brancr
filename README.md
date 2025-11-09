@@ -122,7 +122,9 @@ Copy `env.example` to `.env` (or export the values in your platform settings) an
 **Other Integrations**
 
 - `YOUTUBE_API_KEY`
-- `TIKTOK_APP_ID`
+- `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET`
+- `TIKTOK_REDIRECT_URI`
+- `TIKTOK_SCOPES` — Optional override (defaults to `user.info.basic,video.list,video.upload`)
 
 ### Running
 

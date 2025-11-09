@@ -29,6 +29,10 @@ type Config struct {
 	MetaEmbeddedConfigID string
 	MetaEmbeddedExtras   string
 	TenantJWTSecret      string
+	TikTokClientKey      string
+	TikTokClientSecret   string
+	TikTokRedirectURI    string
+	TikTokScopes         string
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -60,6 +64,10 @@ func Load() *Config {
 		MetaEmbeddedConfigID: os.Getenv("META_WHATSAPP_CONFIG_ID"),
 		MetaEmbeddedExtras:   os.Getenv("META_WHATSAPP_EXTRAS"),
 		TenantJWTSecret:      os.Getenv("TENANT_JWT_SECRET"),
+		TikTokClientKey:      os.Getenv("TIKTOK_CLIENT_KEY"),
+		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),
+		TikTokRedirectURI:    os.Getenv("TIKTOK_REDIRECT_URI"),
+		TikTokScopes:         getEnv("TIKTOK_SCOPES", "user.info.basic,video.list,video.upload"),
 	}
 
 	validateConfig(cfg)
@@ -97,6 +105,12 @@ func validateConfig(cfg *Config) {
 	}
 	if cfg.TenantJWTSecret == "" {
 		log.Println("⚠️  TENANT_JWT_SECRET missing — tenant authentication cookies will be insecure.")
+	}
+	if cfg.TikTokClientKey == "" || cfg.TikTokClientSecret == "" {
+		log.Println("ℹ️  TikTok credentials not configured — TikTok OAuth will be disabled.")
+	}
+	if cfg.TikTokRedirectURI == "" {
+		log.Println("ℹ️  TIKTOK_REDIRECT_URI not configured — TikTok OAuth callbacks will fail.")
 	}
 	log.Printf("🧩 Brancr Config loaded — ENV=%s PORT=%s\n", cfg.AppEnv, cfg.Port)
 }

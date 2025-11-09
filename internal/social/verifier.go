@@ -18,7 +18,7 @@ import (
 // VerifySocialConnection validates a tenant's social account token manually (until OAuth2 is ready)
 // If db is provided, it will also save the Instagram Business Account ID to ExternalID
 func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db *gorm.DB) (string, error) {
-	if strings.EqualFold(acc.Mode, "oauth2") {
+	if strings.EqualFold(acc.Mode, "oauth2") && !strings.EqualFold(acc.Platform, "tiktok") {
 		return verifyMetaOAuthConnection(ctx, acc, db)
 	}
 
@@ -267,7 +267,7 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 		return fmt.Sprintf("✅ YouTube connected as '%s' (channel verified)", title), nil
 
 	case "tiktok":
-		appID := os.Getenv("TIKTOK_APP_ID")
+		appID := os.Getenv("TIKTOK_CLIENT_KEY")
 		token := acc.AccessToken
 
 		if appID == "" {

@@ -52,9 +52,10 @@ func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID
 		tenantSessions[chatID] = tenantsession
 
 	case "tiktok":
-		sendPlain(bot, chatID, "TikTok connection uses a business access token. Paste it here whenever you're ready.")
-		tenantsession := &PostSession{Step: 99, Name: platform}
-		tenantSessions[chatID] = tenantsession
+		if m.sendTikTokOAuthLink(bot, tenantID, chatID) {
+			return
+		}
+		sendPlain(bot, chatID, "I couldn’t generate the TikTok OAuth link just now. Please try again in a minute or contact support.")
 
 	case "youtube":
 		sendPlain(bot, chatID, "Please send your YouTube API key or OAuth access token to connect the channel.")
@@ -133,6 +134,55 @@ func (m *TenantBotManager) buildMetaOAuthURL(tenantID uint, platforms []string) 
 	}
 
 	return fmt.Sprintf("%s/api/oauth/meta/start?%s", baseURL, params.Encode()), nil
+}
+
+func (m *TenantBotManager) sendTikTokOAuthLink(bot *tgbotapi.BotAPI, tenantID uint, chatID int64) bool {
+	oauthURL, err := m.buildTikTokOAuthURL(tenantID)
+	if err != nil {
+		if m.Logger != nil {
+			m.Logger.Warn("tiktok oauth link unavailable", zap.Error(err))
+		}
+		return false
+	}
+
+	text := "Connect TikTok so Brancr can schedule and publish videos on your behalf.\n\n1️⃣ Open the secure TikTok link.\n2️⃣ Approve Brancr in the consent screen.\n3️⃣ Return and tap *Verify TikTok* so I can confirm the connection."
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("Open TikTok OAuth", oauthURL),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✔️ Verify TikTok", "verify:tiktok"),
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	msg.DisableWebPagePreview = true
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+	return true
+}
+
+func (m *TenantBotManager) buildTikTokOAuthURL(tenantID uint) (string, error) {
+	baseURL, err := utils.GetPublicURL()
+	if err != nil {
+		return "", err
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return "", fmt.Errorf("public URL not configured")
+	}
+
+	params := url.Values{}
+	params.Set("tenant_id", fmt.Sprintf("%d", tenantID))
+	if m.Config != nil && m.Config.MetaSuccessURL != "" {
+		params.Set("success_redirect", m.Config.MetaSuccessURL)
+	}
+
+	return fmt.Sprintf("%s/api/oauth/tiktok/start?%s", baseURL, params.Encode()), nil
 }
 
 func (m *TenantBotManager) sendMetaEmbeddedSignup(bot *tgbotapi.BotAPI, tenantID uint, chatID int64) bool {

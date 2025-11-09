@@ -495,6 +495,9 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 			tgbotapi.NewInlineKeyboardButtonData("Connect WhatsApp 💬", "connect:whatsapp"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect TikTok 🎵", "connect:tiktok"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Verify & Status ✅", "status:"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
@@ -519,6 +522,7 @@ func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID
 		"instagram": "⚪️ Not connected",
 		"facebook":  "⚪️ Not connected",
 		"whatsapp":  "⚪️ Not connected",
+		"tiktok":    "⚪️ Not connected",
 	}
 
 	for _, acc := range accounts {
@@ -541,6 +545,7 @@ func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID
 		fmt.Sprintf("• Instagram: %s", status["instagram"]),
 		fmt.Sprintf("• Facebook: %s", status["facebook"]),
 		fmt.Sprintf("• WhatsApp: %s", status["whatsapp"]),
+		fmt.Sprintf("• TikTok: %s", status["tiktok"]),
 		"",
 		"Tap a button below to manage a specific platform.",
 	}
@@ -557,6 +562,10 @@ func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Connect WA", "connect:whatsapp"),
 			tgbotapi.NewInlineKeyboardButtonData("Verify WA", "verify:whatsapp"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Connect TikTok", "connect:tiktok"),
+			tgbotapi.NewInlineKeyboardButtonData("Verify TikTok", "verify:tiktok"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),

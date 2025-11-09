@@ -303,6 +303,11 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 		}
 		// If decryption fails, assume token is already in plain text and use as-is
 	}
+	if acc.RefreshToken != "" {
+		if decrypted, err := utils.DecryptToken(acc.RefreshToken); err == nil {
+			acc.RefreshToken = decrypted
+		}
+	}
 
 	platformKey := strings.ToLower(platform)
 

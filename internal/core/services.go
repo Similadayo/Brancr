@@ -38,6 +38,7 @@ type Services struct {
 	MetaOAuthHandler      *social.MetaOAuthHandler
 	Scheduler             *social.Scheduler
 	EmbeddedSignupHandler *social.EmbeddedSignupHandler
+	TikTokOAuthHandler    *social.TikTokOAuthHandler
 
 	// Analytics Services
 	AnalyticsService *analytics.Service
@@ -142,6 +143,10 @@ func (s *Services) initSocial() error {
 		s.MetaOAuthHandler = oauthHandler
 	}
 
+	if tikTokHandler := social.NewTikTokOAuthHandler(s.DB, s.Logger, s.Config); tikTokHandler != nil {
+		s.TikTokOAuthHandler = tikTokHandler
+	}
+
 	if embeddedHandler := social.NewEmbeddedSignupHandler(s.DB, s.Logger, s.Config); embeddedHandler != nil {
 		s.EmbeddedSignupHandler = embeddedHandler
 	}
@@ -149,6 +154,9 @@ func (s *Services) initSocial() error {
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
 	s.Scheduler = scheduler
+
+	// Register TikTok connector with services-aware implementation
+	social.Connectors["tiktok"] = social.NewTikTokConnector(s.DB, s.Logger, s.Config)
 
 	return nil
 }

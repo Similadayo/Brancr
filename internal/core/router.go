@@ -67,6 +67,11 @@ func SetupRouter(app *App) http.Handler {
 		r.Get("/api/oauth/meta/callback", app.Services.MetaOAuthHandler.Callback)
 	}
 
+	if app.Services.TikTokOAuthHandler != nil {
+		r.Get("/api/oauth/tiktok/start", app.Services.TikTokOAuthHandler.StartOAuth)
+		r.Get("/api/oauth/tiktok/callback", app.Services.TikTokOAuthHandler.Callback)
+	}
+
 	if app.Services.EmbeddedSignupHandler != nil {
 		r.Get("/api/oauth/meta/whatsapp/start", app.Services.EmbeddedSignupHandler.Start)
 		r.Post("/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Callback)
