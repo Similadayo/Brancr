@@ -43,13 +43,34 @@ func NewTikTokOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config) 
 
 	scopeParts := strings.Split(cfg.TikTokScopes, ",")
 	scopes := make([]string, 0, len(scopeParts))
+	scopeSet := make(map[string]struct{})
 	for _, raw := range scopeParts {
 		if trimmed := strings.TrimSpace(raw); trimmed != "" {
-			scopes = append(scopes, trimmed)
+			key := strings.ToLower(trimmed)
+			if _, exists := scopeSet[key]; !exists {
+				scopes = append(scopes, trimmed)
+				scopeSet[key] = struct{}{}
+			}
 		}
 	}
 	if len(scopes) == 0 {
-		scopes = []string{"user.info.basic", "video.list", "video.upload"}
+		scopes = []string{"user.info.basic", "video.list", "video.upload", "video.publish"}
+		scopeSet = map[string]struct{}{
+			"user.info.basic": {},
+			"video.list":      {},
+			"video.upload":    {},
+			"video.publish":   {},
+		}
+	}
+
+	// Ensure essential scopes are always present for Direct Post support.
+	essentialScopes := []string{"user.info.basic", "video.list", "video.upload", "video.publish"}
+	for _, s := range essentialScopes {
+		key := strings.ToLower(s)
+		if _, exists := scopeSet[key]; !exists {
+			scopes = append(scopes, s)
+			scopeSet[key] = struct{}{}
+		}
 	}
 
 	successRedirect := cfg.MetaSuccessURL
