@@ -250,18 +250,18 @@ func (h *TikTokOAuthHandler) exchangeToken(ctx context.Context, code, verifier s
 			OpenID           string `json:"open_id"`
 			Scope            string `json:"scope"`
 		} `json:"data"`
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error      json.RawMessage `json:"error"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"status_code"`
 	}
 
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	if parsed.Error.Code != 0 {
-		return nil, fmt.Errorf("tiktok token exchange error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+	if apiErr.Code != 0 {
+		return nil, fmt.Errorf("tiktok token exchange error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 
 	if parsed.Data.AccessToken == "" {
@@ -317,18 +317,18 @@ func (h *TikTokOAuthHandler) fetchUserProfile(ctx context.Context, accessToken s
 				PictureURL  string `json:"profile_image_url"`
 			} `json:"user"`
 		} `json:"data"`
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error      json.RawMessage `json:"error"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"status_code"`
 	}
 
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, err
 	}
 
-	if parsed.Error.Code != 0 {
-		return nil, fmt.Errorf("tiktok user info error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+	if apiErr.Code != 0 {
+		return nil, fmt.Errorf("tiktok user info error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 
 	profile := parsed.Data.User

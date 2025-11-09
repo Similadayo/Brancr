@@ -212,16 +212,16 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*
 			UploadID  string `json:"upload_id"`
 			VideoID   string `json:"video_id"`
 		} `json:"data"`
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error      json.RawMessage `json:"error"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"status_code"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, err
 	}
-	if parsed.Error.Code != 0 {
-		return nil, fmt.Errorf("tiktok init upload error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+	if apiErr.Code != 0 {
+		return nil, fmt.Errorf("tiktok init upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 	if parsed.Data.UploadURL == "" || parsed.Data.UploadID == "" || parsed.Data.VideoID == "" {
 		return nil, errors.New("tiktok init upload missing data")
@@ -312,16 +312,16 @@ func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken, uploa
 	}
 
 	var parsed struct {
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error      json.RawMessage `json:"error"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"status_code"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return err
 	}
-	if parsed.Error.Code != 0 {
-		return fmt.Errorf("tiktok finalize upload error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+	if apiErr.Code != 0 {
+		return fmt.Errorf("tiktok finalize upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 	return nil
 }
@@ -364,16 +364,16 @@ func (t *TikTokConnector) publishVideo(ctx context.Context, accessToken, videoID
 	}
 
 	var parsed struct {
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error      json.RawMessage `json:"error"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"status_code"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return err
 	}
-	if parsed.Error.Code != 0 {
-		return fmt.Errorf("tiktok publish error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+	if apiErr.Code != 0 {
+		return fmt.Errorf("tiktok publish error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 
 	return nil
@@ -427,16 +427,16 @@ func (t *TikTokConnector) refreshAccessToken(ctx context.Context, refreshToken s
 			ExpiresIn        int64  `json:"expires_in"`
 			RefreshExpiresIn int64  `json:"refresh_expires_in"`
 		} `json:"data"`
-		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error      json.RawMessage `json:"error"`
+		Message    string          `json:"message"`
+		StatusCode int             `json:"status_code"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, err
 	}
-	if parsed.Error.Code != 0 {
-		return nil, fmt.Errorf("tiktok refresh error (%d): %s", parsed.Error.Code, parsed.Error.Message)
+	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+	if apiErr.Code != 0 {
+		return nil, fmt.Errorf("tiktok refresh error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 	if parsed.Data.AccessToken == "" {
 		return nil, errors.New("tiktok refresh returned empty access token")
