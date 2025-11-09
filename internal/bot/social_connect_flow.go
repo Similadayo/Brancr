@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,6 +15,11 @@ import (
 	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 )
+
+func sendPlain(bot *tgbotapi.BotAPI, chatID int64, text string) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	bot.Send(msg)
+}
 
 // 🚀 StartSocialConnectFlow
 func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, platform string) {
@@ -29,51 +35,120 @@ func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID
 	}
 
 	switch platform {
-	case "instagram", "facebook":
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("🔗 Send your %s access token (from Meta Graph API).", strings.Title(platform))))
-		tenantSessions[chatID] = &PostSession{Step: 99, Name: platform}
+	case "instagram":
+		if m.sendMetaOAuthLink(bot, tenantID, chatID, platform, []string{"instagram", "facebook"}) {
+			return
+		}
+		sendPlain(bot, chatID, fmt.Sprintf("Meta OAuth is temporarily unavailable, so I'll fall back to manual setup. Please send a current %s page token from the Meta Graph API.", strings.Title(platform)))
+		tenantsession := &PostSession{Step: 99, Name: platform}
+		tenantSessions[chatID] = tenantsession
+
+	case "facebook":
+		if m.sendMetaOAuthLink(bot, tenantID, chatID, platform, []string{"facebook"}) {
+			return
+		}
+		sendPlain(bot, chatID, "Meta OAuth is temporarily unavailable. Please paste the latest Facebook page access token to connect.")
+		tenantsession := &PostSession{Step: 99, Name: platform}
+		tenantSessions[chatID] = tenantsession
 
 	case "tiktok":
-		bot.Send(tgbotapi.NewMessage(chatID, "🎵 Send your TikTok Business Access Token."))
-		tenantSessions[chatID] = &PostSession{Step: 99, Name: platform}
+		sendPlain(bot, chatID, "TikTok connection uses a business access token. Paste it here whenever you're ready.")
+		tenantsession := &PostSession{Step: 99, Name: platform}
+		tenantSessions[chatID] = tenantsession
 
 	case "youtube":
-		bot.Send(tgbotapi.NewMessage(chatID, "📺 Send your YouTube API key or OAuth token."))
-		tenantSessions[chatID] = &PostSession{Step: 99, Name: platform}
+		sendPlain(bot, chatID, "Please send your YouTube API key or OAuth access token to connect the channel.")
+		tenantsession := &PostSession{Step: 99, Name: platform}
+		tenantSessions[chatID] = tenantsession
 
 	case "whatsapp":
-		// ✅ WhatsApp now uses Twilio sandbox verification — no user input needed
-		bot.Send(tgbotapi.NewMessage(chatID, "📞 Connecting to WhatsApp (Twilio Sandbox Mode)... please wait."))
-
-		ctx := context.Background()
-		acc, err := social.AuthorizeManualToken(ctx, "whatsapp", "")
-		if err != nil {
-			m.Logger.Warn("whatsapp sandbox verification failed", zap.Error(err))
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to connect WhatsApp at this time. Please ensure Twilio is properly configured and try again later."))
+		if m.sendMetaEmbeddedSignup(bot, tenantID, chatID) {
 			return
 		}
 
-		acc.TenantID = tenantID
-		acc.Connected = true
-		acc.Mode = "sandbox"
-
-		if err := m.DB.Create(&acc).Error; err != nil {
-			m.Logger.Error("failed to save WhatsApp sandbox account", zap.Error(err))
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to save your WhatsApp connection. Please try again later or contact support if the issue persists."))
-			return
-		}
-
-		// Professional WhatsApp connection confirmation
-		confirmMsg := "✅ *WhatsApp Account Connected*\n\n📱 Your WhatsApp account is now connected via Twilio Sandbox and ready to use.\n\nYou can now:\n• Send messages to WhatsApp\n• Receive customer messages\n• Manage WhatsApp conversations\n\nTo verify the connection, use: `verify whatsapp`"
-		msg := tgbotapi.NewMessage(chatID, confirmMsg)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
+		sendPlain(bot, chatID, "I couldn't generate the Meta embedded-signup link right now. Please try again shortly or contact support to finish onboarding your WhatsApp number.")
 		return
 
 	default:
-		bot.Send(tgbotapi.NewMessage(chatID, "Unsupported platform."))
+		sendPlain(bot, chatID, "I can connect Instagram, Facebook, WhatsApp, TikTok, and YouTube right now. Let me know which one you’d like to set up.")
 		return
 	}
+}
+
+func (m *TenantBotManager) sendMetaOAuthLink(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, platform string, platforms []string) bool {
+	oauthURL, err := m.buildMetaOAuthURL(tenantID, platforms)
+	if err != nil {
+		if m.Logger != nil {
+			m.Logger.Warn("meta oauth link unavailable", zap.Error(err))
+		}
+		sendPlain(bot, chatID, "I couldn’t produce a Meta OAuth link. Please confirm that Brancr is reachable on the public URL configured in the dashboard and try again.")
+		return false
+	}
+
+	connectMsg := fmt.Sprintf(
+		"Meta connection for %s\n\n1. Open the secure link below in your browser.\n2. Approve Brancr in the Meta consent screen.\n3. Return here and run 'verify %s' so I can double-check the connection.\n\n%s",
+		strings.Title(platform), platform, oauthURL,
+	)
+
+	if len(platforms) > 1 {
+		connectMsg += "\n\nNote: The Instagram flow also refreshes the linked Facebook Page permissions required for messaging."
+	}
+
+	msg := tgbotapi.NewMessage(chatID, connectMsg)
+	msg.DisableWebPagePreview = true
+	bot.Send(msg)
+	return true
+}
+
+func (m *TenantBotManager) buildMetaOAuthURL(tenantID uint, platforms []string) (string, error) {
+	baseURL, err := utils.GetPublicURL()
+	if err != nil {
+		return "", err
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return "", fmt.Errorf("public URL not configured")
+	}
+
+	params := url.Values{}
+	params.Set("tenant_id", fmt.Sprintf("%d", tenantID))
+
+	if len(platforms) > 0 {
+		params.Set("platforms", strings.Join(platforms, ","))
+		params.Set("platform", platforms[0])
+	}
+
+	if m.Config != nil && m.Config.MetaSuccessURL != "" {
+		params.Set("success_redirect", m.Config.MetaSuccessURL)
+	}
+
+	return fmt.Sprintf("%s/api/oauth/meta/start?%s", baseURL, params.Encode()), nil
+}
+
+func (m *TenantBotManager) sendMetaEmbeddedSignup(bot *tgbotapi.BotAPI, tenantID uint, chatID int64) bool {
+	baseURL, err := utils.GetPublicURL()
+	if err != nil {
+		return false
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return false
+	}
+
+	params := url.Values{}
+	params.Set("tenant_id", fmt.Sprintf("%d", tenantID))
+	if m.Config != nil && m.Config.MetaSuccessURL != "" {
+		params.Set("success_redirect", m.Config.MetaSuccessURL)
+	}
+
+	startURL := fmt.Sprintf("%s/api/oauth/meta/whatsapp/start?%s", baseURL, params.Encode())
+
+	info := "WhatsApp connection uses Meta's embedded business signup. Open the link below to authorize your number, then return here and run 'verify whatsapp'.\n\n" + startURL
+	msg := tgbotapi.NewMessage(chatID, info)
+	msg.DisableWebPagePreview = true
+	bot.Send(msg)
+	return true
 }
 
 // 🚀 ContinueSocialConnect
@@ -86,12 +161,19 @@ func (m *TenantBotManager) ContinueSocialConnect(bot *tgbotapi.BotAPI, tenantID 
 	platform := sess.Name
 	ctx := context.Background()
 
-	bot.Send(tgbotapi.NewMessage(chatID, "🔍 Verifying your token... please wait."))
+	if platform == "instagram" || platform == "facebook" || platform == "whatsapp" {
+		notice := fmt.Sprintf("The %s integration now uses Meta OAuth. Run 'connect %s' to generate a fresh secure link.", platform, platform)
+		sendPlain(bot, chatID, notice)
+		delete(tenantSessions, chatID)
+		return
+	}
+
+	sendPlain(bot, chatID, "Verifying the token you sent. One moment...")
 
 	acc, err := social.AuthorizeManualToken(ctx, platform, text)
 	if err != nil {
 		m.Logger.Warn("manual token validation failed", zap.String("platform", platform), zap.Error(err))
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Unable to verify your %s access token. Please ensure:\n\n• The token is valid and not expired\n• You have the correct permissions\n• The token format is correct\n\nPlease try again with a new token.", strings.Title(platform))))
+		sendPlain(bot, chatID, fmt.Sprintf("I couldn’t verify your %s token. Please confirm it’s still active, includes the required permissions, and hasn’t expired, then try again.", strings.Title(platform)))
 		delete(tenantSessions, chatID)
 		return
 	}
@@ -149,10 +231,10 @@ func (m *TenantBotManager) ContinueSocialConnect(bot *tgbotapi.BotAPI, tenantID 
 	// Professional connection confirmation message
 	var confirmMsg string
 	if accountName != "" {
-		confirmMsg = fmt.Sprintf("✅ *%s Account Connected*\n\n📱 Your %s account is now connected and ready to use.\n\nAccount ID: `%s`\n\nYou can now:\n• Schedule posts to %s\n• Receive messages from %s\n• Manage your social media presence\n\nTo verify the connection, use: `verify %s`", 
+		confirmMsg = fmt.Sprintf("✅ *%s Account Connected*\n\n📱 Your %s account is now connected and ready to use.\n\nAccount ID: `%s`\n\nYou can now:\n• Schedule posts to %s\n• Receive messages from %s\n• Manage your social media presence\n\nTo verify the connection, use: `verify %s`",
 			strings.Title(platform), strings.Title(platform), accountName, strings.Title(platform), strings.Title(platform), platform)
 	} else {
-		confirmMsg = fmt.Sprintf("✅ *%s Account Connected*\n\n📱 Your %s account is now connected and ready to use.\n\nYou can now:\n• Schedule posts to %s\n• Receive messages from %s\n• Manage your social media presence\n\nTo verify the connection, use: `verify %s`", 
+		confirmMsg = fmt.Sprintf("✅ *%s Account Connected*\n\n📱 Your %s account is now connected and ready to use.\n\nYou can now:\n• Schedule posts to %s\n• Receive messages from %s\n• Manage your social media presence\n\nTo verify the connection, use: `verify %s`",
 			strings.Title(platform), strings.Title(platform), strings.Title(platform), strings.Title(platform), platform)
 	}
 
@@ -168,7 +250,7 @@ func (m *TenantBotManager) fetchInstagramBusinessAccountID(ctx context.Context, 
 
 	// Step 1: Get Facebook pages
 	var pageID string
-	
+
 	// Try /me/accounts first (works for User tokens)
 	pagesURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?access_token=%s", accessToken)
 	resp, err := client.Get(pagesURL)
@@ -182,7 +264,7 @@ func (m *TenantBotManager) fetchInstagramBusinessAccountID(ctx context.Context, 
 		m.Logger.Warn("⚠️ /me/accounts failed, trying /me (might be Page token)",
 			zap.Int("status", resp.StatusCode),
 			zap.String("response_preview", truncateString(string(body), 200)))
-		
+
 		// If /me/accounts fails, try /me - might be a Page Access Token
 		meURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me?access_token=%s", accessToken)
 		meResp, err := client.Get(meURL)
@@ -193,7 +275,7 @@ func (m *TenantBotManager) fetchInstagramBusinessAccountID(ctx context.Context, 
 			return "", fmt.Errorf("failed to fetch pages (status %d): %s. Make sure your token has 'pages_show_list' permission and is not expired.", resp.StatusCode, string(body))
 		}
 		defer meResp.Body.Close()
-		
+
 		if meResp.StatusCode == 200 {
 			var meData map[string]interface{}
 			if err := json.NewDecoder(meResp.Body).Decode(&meData); err == nil {
@@ -226,7 +308,7 @@ func (m *TenantBotManager) fetchInstagramBusinessAccountID(ctx context.Context, 
 
 		pageID = pages.Data[0].ID
 	}
-	
+
 	if pageID == "" {
 		return "", fmt.Errorf("could not determine page ID from token")
 	}

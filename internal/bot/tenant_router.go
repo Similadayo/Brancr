@@ -21,19 +21,21 @@ import (
 
 // TenantBotManager orchestrates all tenant bots & their AI brains
 type TenantBotManager struct {
-	DB         *gorm.DB
-	Bots       map[uint]*tgbotapi.BotAPI
-	Owners     map[uint]int64
-	Mutex      sync.RWMutex
-	Logger     *zap.Logger
-	Groups     *MediaGroupCollector
-	AIClient   *ai.AIClient
-	Memory     *ai.MemoryService
-	Classifier *ai.Classifier
-	Emotion    *ai.EmotionAnalyzer
-	Policy     *ai.PolicyEngine
-	Responder  *ai.Responder
-	AdminBot   *tgbotapi.BotAPI
+	DB               *gorm.DB
+	Bots             map[uint]*tgbotapi.BotAPI
+	Owners           map[uint]int64
+	Mutex            sync.RWMutex
+	Logger           *zap.Logger
+	Groups           *MediaGroupCollector
+	AIClient         *ai.AIClient
+	Memory           *ai.MemoryService
+	Classifier       *ai.Classifier
+	Emotion          *ai.EmotionAnalyzer
+	Policy           *ai.PolicyEngine
+	Responder        *ai.Responder
+	AdminBot         *tgbotapi.BotAPI
+	AnalyticsHandler *AnalyticsHandler // Analytics handler for tenant requests
+	Config           *config.Config
 }
 
 // ✅ Constructor — now initializes AI components too
@@ -75,6 +77,7 @@ func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *T
 		Emotion:    emotion,
 		Policy:     policy,
 		Responder:  responder,
+		Config:     cfg,
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/ai"
+	"github.com/similadayo/brancr/internal/analytics"
 	"github.com/similadayo/brancr/internal/bot"
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/social"
@@ -15,26 +16,31 @@ import (
 
 // Services holds all initialized services with proper separation
 type Services struct {
-	DB                *gorm.DB
-	Redis             *redis.Client
-	Logger            *zap.Logger
-	Config            *config.Config
-	Metrics           *metrics.Metrics
-	
+	DB      *gorm.DB
+	Redis   *redis.Client
+	Logger  *zap.Logger
+	Config  *config.Config
+	Metrics *metrics.Metrics
+
 	// AI Services
 	AIClient          *ai.AIClient
 	MemoryService     *ai.MemoryService
 	IntentDetector    *ai.IntentDetector
 	CustomerResponder *ai.CustomerResponder
 	CaptionOptimizer  *CaptionOptimizerImpl
-	
+
 	// Bot Services
-	BotManager        *bot.TenantBotManager
-	
+	BotManager *bot.TenantBotManager
+
 	// Social Services
-	MessageHandler    *social.MessageHandler
-	MetaWebhookHandler *social.MetaWebhookHandler
-	Scheduler         *social.Scheduler
+	MessageHandler        *social.MessageHandler
+	MetaWebhookHandler    *social.MetaWebhookHandler
+	MetaOAuthHandler      *social.MetaOAuthHandler
+	Scheduler             *social.Scheduler
+	EmbeddedSignupHandler *social.EmbeddedSignupHandler
+
+	// Analytics Services
+	AnalyticsService *analytics.Service
 }
 
 // NewServices initializes all services with proper dependency injection
@@ -58,6 +64,11 @@ func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *z
 
 	// Initialize Social Platform components (depends on AI)
 	if err := services.initSocial(); err != nil {
+		return nil, err
+	}
+
+	// Initialize Analytics components (depends on AI)
+	if err := services.initAnalytics(); err != nil {
 		return nil, err
 	}
 
@@ -125,6 +136,16 @@ func (s *Services) initSocial() error {
 	metaWebhookHandler := social.NewMetaWebhookHandler(s.DB, s.Logger, messageHandler)
 	s.MetaWebhookHandler = metaWebhookHandler
 
+	if oauthHandler, err := social.NewMetaOAuthHandler(s.DB, s.Logger, s.Config); err != nil {
+		s.Logger.Warn("failed to initialize Meta OAuth handler", zap.Error(err))
+	} else {
+		s.MetaOAuthHandler = oauthHandler
+	}
+
+	if embeddedHandler := social.NewEmbeddedSignupHandler(s.DB, s.Logger, s.Config); embeddedHandler != nil {
+		s.EmbeddedSignupHandler = embeddedHandler
+	}
+
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
 	s.Scheduler = scheduler
@@ -132,3 +153,30 @@ func (s *Services) initSocial() error {
 	return nil
 }
 
+func (s *Services) initAnalytics() error {
+	// Initialize analytics collector
+	collector := analytics.NewCollectorService(s.DB, s.Logger)
+
+	// Register platform analytics clients
+	// Note: Platform clients will be implemented and registered as needed
+	// For now, we'll skip registration until clients are fully implemented
+
+	// Initialize trend analyzer
+	trendAnalyzer := analytics.NewTrendAnalyzer(s.DB, s.Logger, s.AIClient)
+
+	// Initialize growth advisor
+	growthAdvisor := analytics.NewGrowthAdvisor(s.DB, s.Logger, s.AIClient)
+
+	// Initialize analytics service
+	analyticsService := analytics.NewService(s.DB, s.Logger, collector, trendAnalyzer, growthAdvisor)
+	s.AnalyticsService = analyticsService
+
+	// Initialize Telegram reporter
+	telegramReporter := analytics.NewTelegramReporter(s.DB, s.Logger, analyticsService)
+
+	// Initialize analytics handler for bot and attach to bot manager
+	analyticsHandler := bot.NewAnalyticsHandler(s.BotManager, analyticsService, telegramReporter)
+	s.BotManager.AnalyticsHandler = analyticsHandler
+
+	return nil
+}

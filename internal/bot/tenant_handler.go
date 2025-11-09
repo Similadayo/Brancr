@@ -65,6 +65,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 
 	sender := update.Message.From
 	text := strings.TrimSpace(update.Message.Text)
+	textLower := strings.ToLower(text)
 	chatID := update.Message.Chat.ID
 	senderID := sender.ID
 	ctx := context.Background()
@@ -72,26 +73,26 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	// 🧩 Step 1: Determine ownership FIRST (before tracking as customer)
 	ownerID := h.Manager.GetOwnerID(uint(tenantID))
 	isOwner := senderID == ownerID
-	
+
 	// Check if this is media (photo/video) - don't return early for media
 	hasMedia := len(update.Message.Photo) > 0 || update.Message.Video != nil
-	
+
 	// Only return if no text AND no media
 	if text == "" && !hasMedia {
 		return
 	}
 
 	if isOwner {
-		h.Manager.Logger.Info("👔 Owner detected - tenant conversation mode", 
-			zap.Uint("tenant_id", uint(tenantID)), 
+		h.Manager.Logger.Info("👔 Owner detected - tenant conversation mode",
+			zap.Uint("tenant_id", uint(tenantID)),
 			zap.Int64("owner_id", senderID))
 	}
 
 	// 🧠 Step 2: Only track as customer if NOT the owner
 	var customer *storage.Customer
 	if !isOwner {
-		h.Manager.Logger.Info("👥 Customer detected - customer service mode", 
-			zap.Uint("tenant_id", uint(tenantID)), 
+		h.Manager.Logger.Info("👥 Customer detected - customer service mode",
+			zap.Uint("tenant_id", uint(tenantID)),
 			zap.Int64("customer_id", senderID))
 		customer, _ = h.Manager.TrackOrCreateCustomer(
 			ctx,
@@ -107,16 +108,16 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	// 🖼 Step 2: Media uploads (owner only)
 	hasPhoto := len(update.Message.Photo) > 0
 	hasVideo := update.Message.Video != nil
-	
-	h.Manager.Logger.Info("📸 Media check", 
+
+	h.Manager.Logger.Info("📸 Media check",
 		zap.Bool("has_photo", hasPhoto),
 		zap.Bool("has_video", hasVideo),
 		zap.Bool("is_owner", isOwner))
-	
+
 	if (hasPhoto || hasVideo) && isOwner {
 		h.Manager.Logger.Info("🖼️ Media detected from owner - uploading to Cloudinary",
 			zap.Uint("tenant_id", uint(tenantID)))
-		
+
 		go func(u tgbotapi.Update) {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -132,6 +133,16 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	}
 
 	// Step 3️: Handle active sessions (post flow or social connect)
+	if isOwner && strings.HasPrefix(textLower, "verify ") {
+		platform := strings.TrimSpace(strings.TrimPrefix(textLower, "verify"))
+		if platform == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Please specify a platform to verify (e.g., 'verify facebook')."))
+		} else {
+			h.handleVerifyCommand(bot, uint(tenantID), chatID, platform)
+		}
+		return
+	}
+
 	if sess, ok := tenantSessions[chatID]; ok {
 		if isOwner {
 			// Check if this is social connect flow (Step 99) or post flow (Steps 1-5)
@@ -147,27 +158,27 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-		// Step 4️: AI-Powered Intent Routing (for owners)
-		if isOwner {
-			// Try AI intent routing first (before hardcoded commands)
-			intentRouter := NewIntentRouter(h.Manager)
-			handled, err := intentRouter.Route(ctx, uint(tenantID), chatID, text, true)
-			if err != nil {
-				h.Manager.Logger.Warn("intent routing failed", zap.Error(err))
-			}
-			if handled {
-				return // Intent router handled it
-			}
+	// Step 4️: AI-Powered Intent Routing (for owners)
+	if isOwner {
+		// Try AI intent routing first (before hardcoded commands)
+		intentRouter := NewIntentRouter(h.Manager)
+		handled, err := intentRouter.Route(ctx, uint(tenantID), chatID, text, true)
+		if err != nil {
+			h.Manager.Logger.Warn("intent routing failed", zap.Error(err))
+		}
+		if handled {
+			return // Intent router handled it
+		}
 
-			// Fallback to explicit commands (for backward compatibility)
-			switch {
-			case text == "/webhook" || strings.HasPrefix(strings.ToLower(text), "webhook info") || strings.HasPrefix(strings.ToLower(text), "webhook"):
-				h.showWebhookInfo(bot, chatID, uint(tenantID))
-				return
-			case text == "fix instagram" || text == "update instagram id" || strings.HasPrefix(strings.ToLower(text), "fix instagram"):
-				h.fixInstagramAccountID(bot, chatID, uint(tenantID))
-				return
-			case text == "/help" || text == "/menu" || text == "/commands":
+		// Fallback to explicit commands (for backward compatibility)
+		switch {
+		case text == "/webhook" || strings.HasPrefix(strings.ToLower(text), "webhook info") || strings.HasPrefix(strings.ToLower(text), "webhook"):
+			h.showWebhookInfo(bot, chatID, uint(tenantID))
+			return
+		case text == "fix instagram" || text == "update instagram id" || strings.HasPrefix(strings.ToLower(text), "fix instagram"):
+			h.fixInstagramAccountID(bot, chatID, uint(tenantID))
+			return
+		case text == "/help" || text == "/menu" || text == "/commands":
 			helpMsg := `🎛️ *Control Center Commands*
 
 *Social Media:*
@@ -209,17 +220,17 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 				if post.ScheduledAt != nil {
 					scheduledTime = post.ScheduledAt.Format("Jan 2, 3:04PM")
 				}
-				
+
 				var platforms []string
 				json.Unmarshal([]byte(post.Platforms), &platforms)
 				platformStr := strings.Join(platforms, ", ")
-				
+
 				response += fmt.Sprintf("%d. *%s*\n", i+1, post.Name)
 				response += fmt.Sprintf("   📱 Platforms: %s\n", platformStr)
 				response += fmt.Sprintf("   ⏰ Scheduled: %s\n", scheduledTime)
 				response += fmt.Sprintf("   Status: %s\n\n", post.Status)
 			}
-			
+
 			response += "Type `cancel <name>` to cancel a post."
 			msg := tgbotapi.NewMessage(chatID, response)
 			msg.ParseMode = "Markdown"
@@ -246,10 +257,10 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 				} else if log.Status == "failed" {
 					statusEmoji = "❌"
 				}
-				
+
 				response += fmt.Sprintf("%s *%s* - %s\n", statusEmoji, log.Platform, log.Action)
 				response += fmt.Sprintf("   📅 %s\n", log.CreatedAt.Format("Jan 2, 3:04PM"))
-				
+
 				if log.ErrorMessage != "" && log.Status == "failed" {
 					response += fmt.Sprintf("   ⚠️ Error: %s\n", log.ErrorMessage)
 				}
@@ -264,7 +275,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		case strings.HasPrefix(strings.ToLower(text), "cancel "):
 			postName := strings.TrimSpace(strings.TrimPrefix(text, "cancel "))
 			postName = strings.TrimPrefix(postName, "Cancel ")
-			
+
 			var post storage.ScheduledPost
 			if err := h.Manager.DB.Where("tenant_id = ? AND name = ? AND status = ?", tenantID, postName, "scheduled").
 				First(&post).Error; err != nil {
@@ -285,25 +296,9 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			go h.Manager.StartSocialConnectFlow(bot, uint(tenantID), chatID, platform)
 			return
 
-		case strings.HasPrefix(strings.ToLower(text), "verify "):
-			platform := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(text), "verify"))
-			go func() {
-				ctx := context.Background()
-				var acc storage.SocialAccount
-				if err := h.Manager.DB.Where("tenant_id = ? AND platform = ?", tenantID, platform).First(&acc).Error; err != nil {
-					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("No %s account connected.", platform)))
-					return
-				}
-				decrypted, _ := utils.DecryptToken(acc.AccessToken)
-				acc.AccessToken = decrypted
-
-				msg, err := social.VerifySocialConnection(ctx, &acc, h.Manager.DB)
-				if err != nil {
-					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Unable to verify your %s connection. Please check your account settings and try again.", strings.Title(platform))))
-					return
-				}
-				bot.Send(tgbotapi.NewMessage(chatID, msg))
-			}()
+		case strings.HasPrefix(textLower, "verify "):
+			platform := strings.TrimSpace(strings.TrimPrefix(textLower, "verify"))
+			h.handleVerifyCommand(bot, uint(tenantID), chatID, platform)
 			return
 		}
 	}
@@ -356,11 +351,11 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	var reply string
 	var replyErr error
 	var customerID uint
-	
+
 	if isOwner {
 		// Owner gets business management assistance with full context
 		reply, replyErr = contextGen.GenerateWithFullContext(ctx, uint(tenantID), text, true, 0)
-		
+
 		// Add proactive suggestions for owners (occasionally)
 		if replyErr == nil && reply != "" {
 			proactive := ai.NewProactiveAssistant(h.Manager.Responder.Client, h.Manager.DB, h.Manager.Memory)
@@ -379,17 +374,17 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		// Customer gets brand representation with customer context
 		reply, replyErr = contextGen.GenerateWithFullContext(ctx, uint(tenantID), text, false, customerID)
 	}
-	
+
 	if replyErr != nil {
 		h.Manager.Logger.Error("AI responder failed", zap.Error(replyErr))
-		
+
 		// Check for specific error types and provide appropriate responses
 		var errorMsg string
-		
+
 		// Check for moderation error
 		if ai.IsModerationError(replyErr) {
 			errorMsg = "I'm having trouble processing that request right now. Could you try rephrasing your message?"
-			h.Manager.Logger.Warn("AI moderation triggered", 
+			h.Manager.Logger.Warn("AI moderation triggered",
 				zap.Uint("tenant_id", uint(tenantID)),
 				zap.Error(replyErr))
 		} else if strings.Contains(replyErr.Error(), "timeout") || strings.Contains(replyErr.Error(), "deadline exceeded") {
@@ -399,7 +394,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		} else {
 			errorMsg = "I'm having trouble processing that right now. Please try again in a moment."
 		}
-		
+
 		bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
 		return
 	}
@@ -408,6 +403,39 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	msg := tgbotapi.NewMessage(chatID, reply)
 	msg.ParseMode = "Markdown"
 	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, platform string) {
+	platform = strings.TrimSpace(strings.ToLower(platform))
+	if platform == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "Please specify which platform to verify (e.g., 'verify facebook')."))
+		return
+	}
+
+	delete(tenantSessions, chatID)
+
+	go func() {
+		ctx := context.Background()
+		var acc storage.SocialAccount
+		if err := h.Manager.DB.Where("tenant_id = ? AND platform = ?", tenantID, platform).First(&acc).Error; err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("No %s account connected yet.", platform)))
+			return
+		}
+
+		if acc.AccessToken != "" {
+			if decrypted, err := utils.DecryptToken(acc.AccessToken); err == nil {
+				acc.AccessToken = decrypted
+			}
+		}
+
+		msg, err := social.VerifySocialConnection(ctx, &acc, h.Manager.DB)
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("I couldn't verify your %s connection: %v", strings.Title(platform), err)))
+			return
+		}
+
+		bot.Send(tgbotapi.NewMessage(chatID, msg))
+	}()
 }
 
 func schedulePost(db *gorm.DB, tenantID uint, assetName string, when time.Time) {
@@ -437,14 +465,14 @@ func renameLastUpload(db *gorm.DB, tenantID uint, name string) {
 func (h *TenantWebhookHandler) showWebhookInfo(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
 	ctx := context.Background()
 	_ = ctx // TODO: Use context if needed
-	
+
 	// Get public URL
 	publicURL, err := utils.GetPublicURL()
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Could not determine public URL. Set BRANCR_PUBLIC_URL environment variable."))
 		return
 	}
-	
+
 	// Get verify token from environment
 	verifyToken := os.Getenv("META_WEBHOOK_VERIFY_TOKEN")
 	if verifyToken == "" {
@@ -453,21 +481,21 @@ func (h *TenantWebhookHandler) showWebhookInfo(bot *tgbotapi.BotAPI, chatID int6
 	if verifyToken == "" {
 		verifyToken = "⚠️ Not set - set META_WEBHOOK_VERIFY_TOKEN environment variable"
 	}
-	
+
 	// Check connected Meta platforms
 	var accounts []storage.SocialAccount
 	h.Manager.DB.Where("tenant_id = ? AND platform IN (?)", tenantID, []string{"instagram", "facebook"}).Find(&accounts)
-	
+
 	var info []string
 	info = append(info, "📋 **Webhook Configuration for Meta Platforms**\n")
-	
+
 	if len(accounts) == 0 {
 		info = append(info, "⚠️ No Instagram or Facebook accounts connected.")
 		info = append(info, "\nConnect an account first using 'connect instagram' or 'connect facebook'")
 	} else {
 		// Single global webhook URL for all Meta platforms
 		webhookURL := fmt.Sprintf("%s/api/webhooks/meta", publicURL)
-		
+
 		info = append(info, fmt.Sprintf("**Verify Token:** `%s`\n", verifyToken))
 		info = append(info, fmt.Sprintf("\n**Webhook URL (Global):**\n`%s`\n", webhookURL))
 		info = append(info, "\n**Steps to configure in Meta Developer Console:**")
@@ -481,7 +509,7 @@ func (h *TenantWebhookHandler) showWebhookInfo(bot *tgbotapi.BotAPI, chatID int6
 		info = append(info, "- If verification fails, delete webhook, wait 30s, then retry")
 		info = append(info, "- Make sure ngrok tunnel is running and server is active")
 	}
-	
+
 	msg := tgbotapi.NewMessage(chatID, strings.Join(info, "\n"))
 	msg.ParseMode = "Markdown"
 	bot.Send(msg)
@@ -508,18 +536,18 @@ func (h *TenantWebhookHandler) fixInstagramAccountID(bot *tgbotapi.BotAPI, chatI
 	// Fetch Instagram Business Account ID
 	ctx := context.Background()
 	igID, err := h.Manager.fetchInstagramBusinessAccountID(ctx, decryptedToken)
-		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to fetch your Instagram Business Account ID. Please try reconnecting your Instagram account."))
-			return
-		}
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to fetch your Instagram Business Account ID. Please try reconnecting your Instagram account."))
+		return
+	}
 
 	// Update account
 	acc.ExternalID = igID
 	acc.PageID = igID
-		if err := h.Manager.DB.Save(&acc).Error; err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to update your account. Please try again later or contact support if the issue persists."))
-			return
-		}
+	if err := h.Manager.DB.Save(&acc).Error; err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to update your account. Please try again later or contact support if the issue persists."))
+		return
+	}
 
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Instagram Business Account ID updated!\n\nID: `%s`\n\nWebhook routing should work now. Try sending a message to your Instagram account.", igID)))
 }

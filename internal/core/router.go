@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/admin"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/tenantapi"
 	"github.com/similadayo/brancr/pkg/metrics"
 )
 
@@ -44,6 +45,11 @@ func SetupRouter(app *App) http.Handler {
 	r.Mount("/admin", admin.AdminRouter(adminCtx))
 	r.Mount("/bot", TenantRouter(app))
 
+	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config)
+	r.Route("/api", func(api chi.Router) {
+		apiHandler.RegisterRoutes(api)
+	})
+
 	// Meta webhook endpoint (single global endpoint for all tenants)
 	// This handles Instagram, Facebook, and WhatsApp webhooks
 	if app.Services.MetaWebhookHandler != nil {
@@ -54,6 +60,16 @@ func SetupRouter(app *App) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/meta","message":"Meta webhook endpoint is reachable"}`)
 		})
+	}
+
+	if app.Services.MetaOAuthHandler != nil {
+		r.Get("/api/oauth/meta/start", app.Services.MetaOAuthHandler.StartOAuth)
+		r.Get("/api/oauth/meta/callback", app.Services.MetaOAuthHandler.Callback)
+	}
+
+	if app.Services.EmbeddedSignupHandler != nil {
+		r.Get("/api/oauth/meta/whatsapp/start", app.Services.EmbeddedSignupHandler.Start)
+		r.Post("/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Callback)
 	}
 
 	return r

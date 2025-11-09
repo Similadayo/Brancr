@@ -106,6 +106,7 @@ type Services struct {
     // Social Services
     MessageHandler    *social.MessageHandler
     MetaWebhookHandler *social.MetaWebhookHandler
+    MetaOAuthHandler  *social.MetaOAuthHandler
     Scheduler         *social.Scheduler
 }
 ```

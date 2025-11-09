@@ -3,6 +3,7 @@ package social
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,26 +19,26 @@ import (
 
 // MessageHandler processes incoming messages from social platforms
 type MessageHandler struct {
-	DB              *gorm.DB
-	Logger          *zap.Logger
-	IntentDetector  *ai.IntentDetector
-	Responder       *ai.CustomerResponder
-	EscalationFunc  func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
+	DB             *gorm.DB
+	Logger         *zap.Logger
+	IntentDetector *ai.IntentDetector
+	Responder      *ai.CustomerResponder
+	EscalationFunc func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
 }
 
 // IncomingMessage represents a message from a social platform
 type IncomingMessage struct {
-	Platform        string // instagram, facebook, tiktok, youtube, whatsapp
-	TenantID        uint
-	CustomerID      string // Platform-specific customer ID
-	CustomerName    string
+	Platform         string // instagram, facebook, tiktok, youtube, whatsapp
+	TenantID         uint
+	CustomerID       string // Platform-specific customer ID
+	CustomerName     string
 	CustomerUsername string
-	MessageID       string // Platform-specific message ID
-	Content         string
-	MessageType     string // text, image, video, comment
-	ThreadID        string // For DMs/threads
-	Timestamp       time.Time
-	Metadata        map[string]interface{} // Platform-specific data
+	MessageID        string // Platform-specific message ID
+	Content          string
+	MessageType      string // text, image, video, comment
+	ThreadID         string // For DMs/threads
+	Timestamp        time.Time
+	Metadata         map[string]interface{} // Platform-specific data
 }
 
 // ProcessMessage handles an incoming message: detects intent, decides auto-reply or escalation
@@ -58,10 +59,10 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 
 	// Step 3: Log interaction
 	interaction := storage.Interaction{
-		TenantID:         msg.TenantID,
-		CustomerID:       customer.ID,
-		Platform:         msg.Platform,
-		Direction:        "incoming",
+		TenantID:          msg.TenantID,
+		CustomerID:        customer.ID,
+		Platform:          msg.Platform,
+		Direction:         "incoming",
 		MessageType:       msg.MessageType,
 		Content:           msg.Content,
 		PlatformMessageID: msg.MessageID,
@@ -169,7 +170,7 @@ func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessa
 			return err
 		}
 	}
-	
+
 	// Update interaction
 	interaction.ResponseType = "escalated"
 	interaction.ResponseStatus = "pending"
@@ -236,7 +237,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		h.Logger.Warn("⚠️ Instagram Business Account ID missing, attempting to auto-fetch",
 			zap.Uint("tenant_id", acc.TenantID),
 			zap.String("platform", acc.Platform))
-		
+
 		fetchedID, err := h.fetchAndSaveInstagramID(ctx, acc)
 		if err != nil {
 			h.Logger.Error("❌ Failed to auto-fetch Instagram Business Account ID",
@@ -258,7 +259,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		h.Logger.Info("🔑 Token type verified",
 			zap.String("token_type", tokenType),
 			zap.String("page_id", pageID))
-		
+
 		if tokenType != "PAGE" {
 			return fmt.Errorf("Instagram messaging requires a Page Access Token, but you're using a %s token. Please generate a Page Access Token from Meta Developer Console → Tools → Graph API Explorer → Select your Page → Generate Token with 'instagram_manage_messages' and 'pages_messaging' permissions", tokenType)
 		}
@@ -267,7 +268,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 	// Instagram DM API endpoint - use Instagram Business Account ID
 	// Note: This requires a Page Access Token with instagram_manage_messages permission
 	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
-	
+
 	h.Logger.Info("📤 Attempting to send Instagram DM",
 		zap.String("instagram_account_id", igAccountID),
 		zap.String("recipient_id", threadID),
@@ -284,7 +285,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			"text": reply,
 		},
 	}
-	
+
 	// Add access token as query parameter (Instagram API prefers this)
 	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, decryptedToken)
 
@@ -313,9 +314,9 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			} `json:"error"`
 		}
 		json.Unmarshal(body, &apiError)
-		
+
 		errorMsg := fmt.Sprintf("Instagram API error %d: %s", resp.StatusCode, string(body))
-		
+
 		// Provide specific guidance for common errors
 		if apiError.Error.Code == 3 {
 			errorMsg += "\n\n⚠️ Meta App Capability Issue:\n"
@@ -334,15 +335,15 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			errorMsg += "   - Live mode (not Development mode)\n"
 			errorMsg += "   - Valid business verification (for some use cases)"
 		}
-		
+
 		h.Logger.Error("Instagram DM API error",
 			zap.Int("status", resp.StatusCode),
 			zap.String("error_code", fmt.Sprintf("%d", apiError.Error.Code)),
 			zap.String("error_type", apiError.Error.Type),
 			zap.String("error_message", apiError.Error.Message),
 			zap.String("response", string(body)))
-		
-		return fmt.Errorf(errorMsg)
+
+		return errors.New(errorMsg)
 	}
 
 	h.Logger.Info("✅ Instagram DM sent",
@@ -506,7 +507,7 @@ func (h *MessageHandler) fetchAndSaveInstagramID(ctx context.Context, acc *stora
 // Returns: tokenType ("PAGE" or "USER"), pageID, error
 func (h *MessageHandler) verifyTokenType(ctx context.Context, token string) (string, string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	
+
 	// Try to get /me/accounts - this works for both User and Page tokens
 	// But for Page tokens, it returns the page info
 	pagesURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?access_token=%s", token)
@@ -515,9 +516,9 @@ func (h *MessageHandler) verifyTokenType(ctx context.Context, token string) (str
 		return "", "", err
 	}
 	defer resp.Body.Close()
-	
+
 	body, _ := io.ReadAll(resp.Body)
-	
+
 	if resp.StatusCode != 200 {
 		// If /me/accounts fails, try /me to see if it's a Page token
 		meURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me?access_token=%s", token)
@@ -526,7 +527,7 @@ func (h *MessageHandler) verifyTokenType(ctx context.Context, token string) (str
 			return "", "", fmt.Errorf("failed to verify token: %w", err)
 		}
 		defer meResp.Body.Close()
-		
+
 		if meResp.StatusCode == 200 {
 			// This might be a Page token - try to get page info directly
 			var pageInfo struct {
@@ -546,10 +547,10 @@ func (h *MessageHandler) verifyTokenType(ctx context.Context, token string) (str
 				}
 			}
 		}
-		
+
 		return "", "", fmt.Errorf("token verification failed (status %d): %s", resp.StatusCode, string(body))
 	}
-	
+
 	var pages struct {
 		Data []struct {
 			ID   string `json:"id"`
@@ -559,16 +560,14 @@ func (h *MessageHandler) verifyTokenType(ctx context.Context, token string) (str
 	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(&pages); err != nil {
 		return "", "", err
 	}
-	
+
 	if len(pages.Data) == 0 {
 		// No pages found - this is likely a User token without page access
 		return "USER", "", nil
 	}
-	
+
 	// If we get pages, it's a User token that has page access
 	// But for Instagram messaging, we need the actual Page Access Token
 	// So we return USER here to indicate they need to generate a Page token
 	return "USER", pages.Data[0].ID, nil
 }
-
-

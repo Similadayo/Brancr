@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
@@ -228,12 +229,26 @@ func (r *IntentRouter) handleConnectAccount(bot *tgbotapi.BotAPI, tenantID uint,
 	return true, nil
 }
 
-// handleViewStats handles viewing statistics
+// handleViewStats handles viewing statistics - now uses analytics service
 func (r *IntentRouter) handleViewStats(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, intent *TenantIntent) (bool, error) {
-	// Get recent stats
+	// Use analytics handler if available
+	if r.Manager.AnalyticsHandler != nil {
+		ctx := context.Background()
+		text := intent.RawMessage
+		if text == "" {
+			text = "analytics"
+		}
+		err := r.Manager.AnalyticsHandler.HandleAnalyticsRequest(ctx, tenantID, chatID, text)
+		if err == nil {
+			return true, nil
+		}
+		// Fall through to basic stats if analytics handler fails
+	}
+
+	// Fallback to basic stats
 	var postLogs []storage.PostLog
 	r.Manager.DB.Where("tenant_id = ?", tenantID).
-		Where("created_at > ?", "NOW() - INTERVAL '7 days'").
+		Where("created_at > ?", time.Now().AddDate(0, 0, -7)).
 		Order("created_at DESC").
 		Limit(10).
 		Find(&postLogs)
@@ -248,7 +263,7 @@ func (r *IntentRouter) handleViewStats(bot *tgbotapi.BotAPI, tenantID uint, chat
 		}
 	}
 
-	msg := fmt.Sprintf("📊 *Last 7 Days Stats:*\n\n✅ Successful posts: %d\n❌ Failed posts: %d\n📱 Total activity: %d",
+	msg := fmt.Sprintf("📊 *Last 7 Days Stats:*\n\n✅ Successful posts: %d\n❌ Failed posts: %d\n📱 Total activity: %d\n\n_Ask for 'analytics', 'insights', or 'growth suggestions' for detailed reports!_",
 		successCount, failedCount, len(postLogs))
 
 	response := tgbotapi.NewMessage(chatID, msg)

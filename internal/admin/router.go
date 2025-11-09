@@ -23,6 +23,8 @@ func AdminRouter(ctx *AdminContext) http.Handler {
 		r.Get("/logs/_partial", LogsPartialHandler(ctx))
 		r.Get("/tenants", TenantsHandler(ctx))
 		r.Get("/tenants/{id}", TenantDetailHandler(ctx))
+		r.Get("/tenants/{id}/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetTenantAnalytics(ctx))
+		r.Get("/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetAnalyticsDashboard(ctx))
 		r.Get("/scheduled", ScheduledHandler(ctx))
 		r.Get("/scheduled/force_cancel_form", ForceCancelFormHandler(ctx))
 		r.Post("/scheduled/force_cancel", ForceCancelHandler(ctx))

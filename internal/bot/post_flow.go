@@ -20,15 +20,20 @@ type PostSession struct {
 	IsCarousel     bool   // user confirmed carousel
 	Name           string
 	Caption        string
-	UseAICaption    bool
+	UseAICaption   bool
 	Platforms      []string // Selected platforms
 	ScheduleInput  string
-	BatchSchedule  bool   // Batch scheduling multiple posts
-	BatchSpacing   string // e.g., "24 hours apart"
+	BatchSchedule  bool     // Batch scheduling multiple posts
+	BatchSpacing   string   // e.g., "24 hours apart"
 	OriginalInputs []string // For batch scheduling
 }
 
 var tenantSessions = make(map[int64]*PostSession) // chatID → session
+
+func sendStepMessage(bot *tgbotapi.BotAPI, chatID int64, stepTitle, body string) {
+	text := fmt.Sprintf("%s\n%s", stepTitle, body)
+	sendPlain(bot, chatID, text)
+}
 
 func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, assetID uint) {
 	// Load media asset to check type
@@ -50,12 +55,12 @@ func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, ass
 	if ma.Type == "carousel" {
 		var urls []string
 		json.Unmarshal([]byte(ma.URLs), &urls)
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("📸 I see %d images. Should I make this a carousel? (yes/no)", len(urls))))
+		sendStepMessage(bot, chatID, "Step 1 — Carousel Layout", fmt.Sprintf("This upload contains %d images. Should I publish them as a carousel set? Reply yes or no.", len(urls)))
 		return
 	}
 
 	// Step 1: Name (for single media) - conversational
-	bot.Send(tgbotapi.NewMessage(chatID, "Want to name this post? (or type 'skip')"))
+	sendStepMessage(bot, chatID, "Step 1 — Post Name", "Give this post a short internal name so you can find it later. Type 'skip' to continue without one.")
 }
 
 func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, text string) {
@@ -74,11 +79,11 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			} else if text == "no" || text == "n" {
 				sess.IsCarousel = false
 			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "Just say 'yes' or 'no' 😊"))
+				sendPlain(bot, chatID, "Please reply with yes or no so I know whether to create a carousel.")
 				return
 			}
 			sess.Step = 2 // Move to name step
-			bot.Send(tgbotapi.NewMessage(chatID, "Want to name this post? (or type 'skip')"))
+			sendStepMessage(bot, chatID, "Step 2 — Post Name", "Give this post a short internal name so you can find it later. Type 'skip' to continue without one.")
 			return
 		}
 		// Name step (single media)
@@ -86,7 +91,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			sess.Name = text
 		}
 		sess.Step = 3 // Move to caption step
-		bot.Send(tgbotapi.NewMessage(chatID, "Use your caption or should I generate one with AI? (type your caption, 'AI caption', or 'skip')"))
+		sendStepMessage(bot, chatID, "Step 2 — Caption", "Send the caption you’d like to use. Type 'AI caption' for an AI draft or 'skip' to leave it blank.")
 		return
 
 	case 2: // Name (if carousel confirmed) OR Caption (if single media)
@@ -97,22 +102,22 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 				sess.Name = text
 			}
 			sess.Step = 3 // Move to caption
-			bot.Send(tgbotapi.NewMessage(chatID, "Use your caption or should I generate one with AI? (type your caption, 'AI caption', or 'skip')"))
+			sendStepMessage(bot, chatID, "Step 3 — Caption", "Send the caption you’d like to use. Type 'AI caption' for an AI draft or 'skip' to leave it blank.")
 			return
 		}
 		// Otherwise this is caption step (single media - step 2 was name)
 		if strings.EqualFold(text, "ai caption") || strings.EqualFold(text, "ai") || strings.EqualFold(text, "generate") {
 			sess.UseAICaption = true
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "Got it! Which platforms should I post this to? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')"))
+			sendStepMessage(bot, chatID, "Step 3 — Caption", "Understood. I'll prepare the caption. Now tell me which platforms should receive this post (e.g., Instagram and Facebook, or 'all').")
 		} else if text == "skip" || text == "" {
 			sess.Caption = ""
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "Which platforms? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')"))
+			sendStepMessage(bot, chatID, "Step 3 — Platforms", "Which platforms should receive this post? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')")
 		} else {
 			sess.Caption = text
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "Which platforms should I post this to? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')"))
+			sendStepMessage(bot, chatID, "Step 3 — Platforms", "Great. Which platforms should receive this post? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')")
 		}
 		return
 
@@ -120,33 +125,33 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		if strings.EqualFold(text, "ai caption") || strings.EqualFold(text, "ai") || strings.EqualFold(text, "generate") {
 			sess.UseAICaption = true
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "Got it! Which platforms should I post this to? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')"))
+			sendStepMessage(bot, chatID, "Step 3 — Platforms", "Understood. Which platforms should receive this post? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')")
 		} else if text == "skip" || text == "" {
 			sess.Caption = ""
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "Which platforms? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')"))
+			sendStepMessage(bot, chatID, "Step 3 — Platforms", "Which platforms should receive this post? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')")
 		} else {
 			sess.Caption = text
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "Which platforms should I post this to? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')"))
+			sendStepMessage(bot, chatID, "Step 3 — Platforms", "Great. Which platforms should receive this post? (Instagram, Facebook, YouTube, TikTok, WhatsApp, or 'all')")
 		}
 		return
 
 	case 4: // Platform selection
 		platforms := m.parsePlatforms(text)
 		if len(platforms) == 0 {
-			bot.Send(tgbotapi.NewMessage(chatID, "I didn't catch that. Which platforms? (e.g., 'Instagram and Facebook' or 'all')"))
+			sendPlain(bot, chatID, "I didn’t catch the platform names. Try 'Instagram and Facebook' or simply 'all'.")
 			return
 		}
 		sess.Platforms = platforms
 		sess.Step = 5
-		
+
 		// Check for batch scheduling hints
 		lower := strings.ToLower(text)
 		if strings.Contains(lower, "batch") || strings.Contains(lower, "each") || strings.Contains(lower, "apart") {
-			bot.Send(tgbotapi.NewMessage(chatID, "When should I start? (e.g., 'tomorrow morning', 'next week at 10am') and I'll space them out."))
+			sendStepMessage(bot, chatID, "Step 4 — Schedule", "When should I start publishing? For batch spacing, try 'tomorrow morning, each 12 hours apart'.")
 		} else {
-			bot.Send(tgbotapi.NewMessage(chatID, "When should I post it? (e.g., 'now', 'tomorrow morning', 'next week at 10am', or 'schedule each 24 hours apart' for batch)"))
+			sendStepMessage(bot, chatID, "Step 4 — Schedule", "When should I publish it? For example: 'now', 'tomorrow at 9am', or 'next week at 10am'.")
 		}
 		return
 
@@ -160,7 +165,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 				sess.BatchSpacing = fmt.Sprintf("%d hours", spacing)
 			}
 		}
-		
+
 		sess.ScheduleInput = text
 		m.finalizePostFlow(bot, tenantID, chatID, sess)
 		delete(tenantSessions, chatID)
@@ -170,7 +175,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 // parsePlatforms extracts platform names from natural language input
 func (m *TenantBotManager) parsePlatforms(input string) []string {
 	input = strings.ToLower(strings.TrimSpace(input))
-	
+
 	if input == "all" || input == "everywhere" {
 		return []string{"instagram", "facebook", "tiktok", "youtube", "whatsapp"}
 	}
@@ -192,7 +197,7 @@ func (m *TenantBotManager) parsePlatforms(input string) []string {
 	input = strings.ReplaceAll(input, " and ", ",")
 	input = strings.ReplaceAll(input, " & ", ",")
 	input = strings.ReplaceAll(input, ", ", ",")
-	
+
 	// Split by comma and process each part
 	parts := strings.Split(input, ",")
 	for _, part := range parts {
@@ -200,7 +205,7 @@ func (m *TenantBotManager) parsePlatforms(input string) []string {
 		if part == "" {
 			continue
 		}
-		
+
 		// Check if this part matches a platform
 		partLower := strings.ToLower(part)
 		if platform, ok := platformMap[partLower]; ok {
@@ -331,7 +336,7 @@ func (m *TenantBotManager) parseNaturalSchedule(input string) (time.Time, error)
 	// Handle "tomorrow morning" / "tomorrow afternoon" / "tomorrow evening"
 	if strings.Contains(input, "tomorrow") {
 		tomorrow := now.AddDate(0, 0, 1)
-		
+
 		if strings.Contains(input, "morning") {
 			return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 9, 0, 0, 0, loc), nil
 		}
@@ -374,7 +379,7 @@ func (m *TenantBotManager) parseNaturalSchedule(input string) (time.Time, error)
 // extractSpacing extracts hours from phrases like "24 hours apart", "each 12 hours", etc.
 func (m *TenantBotManager) extractSpacing(input string) int {
 	lower := strings.ToLower(input)
-	
+
 	// Look for patterns like "24 hours", "12 hours", etc.
 	parts := strings.Fields(lower)
 	for i, part := range parts {
@@ -387,7 +392,7 @@ func (m *TenantBotManager) extractSpacing(input string) int {
 			}
 		}
 	}
-	
+
 	// Default spacing: 24 hours
 	return 24
 }
@@ -396,20 +401,20 @@ func (m *TenantBotManager) extractSpacing(input string) int {
 func (m *TenantBotManager) createBatchPosts(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sess *PostSession, ma storage.MediaAsset, startTime time.Time, platforms []string) {
 	logger := m.Logger.With(zap.Uint("tenant", tenantID))
 	spacing := m.extractSpacing(sess.BatchSpacing)
-	
+
 	var createdPosts []string
-	
+
 	for i, platform := range platforms {
 		scheduledAt := startTime.Add(time.Duration(i*spacing) * time.Hour)
-		
+
 		idsJSON, _ := json.Marshal([]uint{ma.ID})
 		platformsJSON, _ := json.Marshal([]string{platform})
-		
+
 		caption := sess.Caption
 		if sess.UseAICaption && caption == "" {
 			caption = fmt.Sprintf("AI-generated caption for %s", ma.Name)
 		}
-		
+
 		sp := storage.ScheduledPost{
 			TenantID:      tenantID,
 			Name:          ma.Name,
@@ -419,17 +424,17 @@ func (m *TenantBotManager) createBatchPosts(bot *tgbotapi.BotAPI, tenantID uint,
 			ScheduledAt:   &scheduledAt,
 			Status:        "scheduled",
 		}
-		
+
 		if err := m.DB.Create(&sp).Error; err != nil {
 			logger.Error("failed to create batch post", zap.Error(err), zap.String("platform", platform))
 			continue
 		}
-		
+
 		createdPosts = append(createdPosts, fmt.Sprintf("%s at %s", strings.Title(platform), scheduledAt.Format("Jan 2, 3:04 PM")))
 	}
-	
+
 	if len(createdPosts) > 0 {
-		summary := fmt.Sprintf("✅ Scheduled %d posts:\n\n%s\n\nEach %d hours apart. I'll handle them! 🚀", 
+		summary := fmt.Sprintf("✅ Scheduled %d posts:\n\n%s\n\nEach %d hours apart. I'll handle them! 🚀",
 			len(createdPosts), strings.Join(createdPosts, "\n"), spacing)
 		bot.Send(tgbotapi.NewMessage(chatID, summary))
 	} else {
@@ -440,7 +445,7 @@ func (m *TenantBotManager) createBatchPosts(bot *tgbotapi.BotAPI, tenantID uint,
 // generateConfirmationMessage creates a friendly, conversational confirmation message
 func (m *TenantBotManager) generateConfirmationMessage(ma storage.MediaAsset, platforms []string, scheduledAt time.Time, useAI bool) string {
 	var parts []string
-	
+
 	// Post name
 	name := ma.Name
 	if name == "" {

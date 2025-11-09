@@ -37,6 +37,12 @@ func AutoMigrate(db *gorm.DB) error {
 		&PostLog{},
 		&Conversation{},
 		&Interaction{},
+		// Analytics models
+		&PostAnalytics{},
+		&CampaignAnalytics{},
+		&TrendInsight{},
+		&PlatformMetricsSnapshot{},
+		&AudienceSegment{},
 	)
 }
 

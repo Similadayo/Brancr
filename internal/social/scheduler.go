@@ -4,8 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"io"
+	"net/http"
 	"strings"
 	"time"
+
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -88,7 +95,7 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	ctx := context.Background()
 
-	s.Logger.Info("📤 Starting post execution", 
+	s.Logger.Info("📤 Starting post execution",
 		zap.Uint("post_id", p.ID),
 		zap.Uint("tenant_id", p.TenantID),
 		zap.String("name", p.Name))
@@ -99,7 +106,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	var assets []storage.MediaAsset
 	if err := s.DB.Where("id IN ?", ids).Find(&assets).Error; err != nil {
 		s.Logger.Error("scheduler: failed to load assets", zap.Error(err))
-		s.markFailed(p, "failed to load assets: "+err.Error())
+		s.markFailed(p, "failed to load assets: "+err.Error(), false, false)
 		return
 	}
 
@@ -126,10 +133,10 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	originalCaption := p.Caption
 	optimizedCaption := originalCaption
 	var improvements string
-	
+
 	if s.CaptionOptimizer != nil {
 		for _, platform := range platforms {
-			s.Logger.Info("🤖 Optimizing caption with AI", 
+			s.Logger.Info("🤖 Optimizing caption with AI",
 				zap.String("platform", platform),
 				zap.Uint("tenant_id", p.TenantID))
 
@@ -147,7 +154,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			if err == nil && result != nil {
 				optimizedCaption = result.OptimizedCaption
 				improvements = result.Improvements
-				s.Logger.Info("✨ Caption optimized", 
+				s.Logger.Info("✨ Caption optimized",
 					zap.String("original_length", fmt.Sprintf("%d chars", len(originalCaption))),
 					zap.String("optimized_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
 					zap.Strings("hashtags", result.Hashtags))
@@ -164,9 +171,11 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	// Post to each platform
 	successCount := 0
 	var lastError error
+	succeeded := make([]string, 0, len(platforms))
+	failed := make([]string, 0, len(platforms))
 
 	for _, platform := range platforms {
-		s.Logger.Info("📱 Posting to platform", 
+		s.Logger.Info("📱 Posting to platform",
 			zap.String("platform", platform),
 			zap.Int("media_count", len(urls)))
 
@@ -174,15 +183,17 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		s.logPostActivity(p.TenantID, p.ID, platform, "posting", originalCaption, optimizedCaption, "in_progress", "")
 
 		if err := s.postToPlatform(ctx, p.TenantID, platform, urls, optimizedCaption); err != nil {
-			s.Logger.Error("post failed", 
-				zap.String("platform", platform), 
+			s.Logger.Error("post failed",
+				zap.String("platform", platform),
 				zap.Error(err))
 			lastError = err
+			failed = append(failed, platform)
 
 			// Log failure
 			s.logPostActivity(p.TenantID, p.ID, platform, "failed", originalCaption, optimizedCaption, "failed", err.Error())
 		} else {
 			successCount++
+			succeeded = append(succeeded, platform)
 			s.Logger.Info("✅ Posted successfully", zap.String("platform", platform))
 
 			// Log success
@@ -202,22 +213,29 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			}).Error; err != nil {
 			s.Logger.Error("failed to mark posted", zap.Error(err))
 		}
-		s.Logger.Info("🎉 Post completed successfully", 
+		s.Logger.Info("🎉 Post completed successfully",
 			zap.Uint("post_id", p.ID),
 			zap.Int("platforms", successCount))
 	} else if successCount > 0 {
-		// Partial success
-		errMsg := fmt.Sprintf("Posted to %d/%d platforms", successCount, len(platforms))
-		if lastError != nil {
-			errMsg += ": " + lastError.Error()
+		// Partial success – do not retry
+		msgParts := []string{}
+		if len(succeeded) > 0 {
+			msgParts = append(msgParts, fmt.Sprintf("succeeded: %s", strings.Join(succeeded, ", ")))
 		}
-		s.markFailed(p, errMsg)
+		if len(failed) > 0 {
+			msgParts = append(msgParts, fmt.Sprintf("failed: %s", strings.Join(failed, ", ")))
+		}
+		if lastError != nil {
+			msgParts = append(msgParts, lastError.Error())
+		}
+		reason := fmt.Sprintf("Posted to %d/%d platforms (%s)", successCount, len(platforms), strings.Join(msgParts, " | "))
+		s.markFailed(p, reason, false, true)
 	} else {
 		// Complete failure
 		if lastError != nil {
-			s.markFailed(p, lastError.Error())
+			s.markFailed(p, lastError.Error(), true, false)
 		} else {
-			s.markFailed(p, "all platforms failed")
+			s.markFailed(p, "all platforms failed", true, false)
 		}
 	}
 }
@@ -240,8 +258,16 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 		// If decryption fails, assume token is already in plain text and use as-is
 	}
 
+	platformKey := strings.ToLower(platform)
+
+	if platformKey == "instagram" {
+		if err := validateInstagramAspectRatio(ctx, urls); err != nil {
+			return fmt.Errorf("instagram media validation failed: %w", err)
+		}
+	}
+
 	// Get platform connector
-	connector, exists := Connectors[strings.ToLower(platform)]
+	connector, exists := Connectors[platformKey]
 	if !exists {
 		return fmt.Errorf("unsupported platform: %s", platform)
 	}
@@ -263,21 +289,25 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 	return nil
 }
 
-func (s *Scheduler) markFailed(p storage.ScheduledPost, reason string) {
+func (s *Scheduler) markFailed(p storage.ScheduledPost, reason string, allowRetry bool, partial bool) {
 	// Increment attempts and set status with exponential backoff
 	attempts := p.Attempts + 1
 	status := "failed"
 	var nextSchedule *time.Time
 
 	// Retry logic with exponential backoff
-	if attempts < 3 {
+	if partial {
+		status = "partial_failed"
+	}
+
+	if allowRetry && attempts < 3 {
 		status = "scheduled"
 		// Retry after 5min, 15min, then fail
 		backoffMinutes := []int{5, 15, 60}
 		if attempts-1 < len(backoffMinutes) {
 			retry := time.Now().Add(time.Duration(backoffMinutes[attempts-1]) * time.Minute)
 			nextSchedule = &retry
-			s.Logger.Info("⏱️ Scheduling retry", 
+			s.Logger.Info("⏱️ Scheduling retry",
 				zap.Uint("post_id", p.ID),
 				zap.Int("attempt", attempts),
 				zap.Time("retry_at", retry))
@@ -294,11 +324,13 @@ func (s *Scheduler) markFailed(p storage.ScheduledPost, reason string) {
 	}
 
 	s.DB.Model(&storage.ScheduledPost{}).Where("id = ?", p.ID).Updates(updates)
-	
-	s.Logger.Warn("❌ Post attempt failed", 
+
+	s.Logger.Warn("❌ Post attempt failed",
 		zap.Uint("post_id", p.ID),
 		zap.Int("attempt", attempts),
 		zap.String("reason", reason))
+
+	s.notifyTenantFailure(p, status, reason)
 }
 
 // logPostActivity creates a detailed log entry for post activity
@@ -312,7 +344,7 @@ func (s *Scheduler) logPostActivityWithMeta(tenantID, postID uint, platform, act
 	if metadata == "" {
 		metadata = "{}"
 	}
-	
+
 	log := storage.PostLog{
 		TenantID:         tenantID,
 		ScheduledPostID:  postID,
@@ -330,4 +362,66 @@ func (s *Scheduler) logPostActivityWithMeta(tenantID, postID uint, platform, act
 	if err := s.DB.Create(&log).Error; err != nil {
 		s.Logger.Error("failed to log post activity", zap.Error(err))
 	}
+}
+
+func (s *Scheduler) notifyTenantFailure(p storage.ScheduledPost, status, reason string) {
+	entry := storage.EventLog{
+		TenantID:   p.TenantID,
+		EventType:  "posting",
+		SenderName: "scheduler",
+		Message:    fmt.Sprintf("Post '%s' status: %s. %s", p.Name, status, reason),
+	}
+	if err := s.DB.Create(&entry).Error; err != nil {
+		s.Logger.Warn("failed to record posting failure event", zap.Error(err))
+	}
+}
+
+const (
+	instagramMinAspectRatio = 0.8
+	instagramMaxAspectRatio = 1.91
+)
+
+func validateInstagramAspectRatio(ctx context.Context, urls []string) error {
+	if len(urls) == 0 {
+		return fmt.Errorf("no media provided")
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	for _, mediaURL := range urls {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
+		if err != nil {
+			return fmt.Errorf("failed to build request for %s: %w", mediaURL, err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to download media %s: %w", mediaURL, err)
+		}
+
+		contentType := resp.Header.Get("Content-Type")
+		if contentType != "" && !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+			resp.Body.Close()
+			// Skip non-image media (video/reels) - Instagram will handle validation
+			continue
+		}
+
+		// Decode image dimensions without loading the full image into memory
+		cfg, _, err := image.DecodeConfig(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("unable to inspect image %s: %w", mediaURL, err)
+		}
+
+		if cfg.Height == 0 {
+			return fmt.Errorf("image %s has invalid dimensions", mediaURL)
+		}
+
+		ratio := float64(cfg.Width) / float64(cfg.Height)
+		if ratio < instagramMinAspectRatio || ratio > instagramMaxAspectRatio {
+			return fmt.Errorf("image %s has aspect ratio %.2f. Instagram requires between %.2f and %.2f", mediaURL, ratio, instagramMinAspectRatio, instagramMaxAspectRatio)
+		}
+	}
+
+	return nil
 }

@@ -15,12 +15,14 @@ type Tenant struct {
 	Name             string
 	Email            string
 	OwnerName        string
-	OwnerTelegramID  int64  `gorm:"index;not null"` // identifies the business owner in Telegram
-	TelegramBotToken string `gorm:"not null"`       // encrypted token
+	OwnerTelegramID  int64  `gorm:"index"` // identifies the business owner in Telegram
+	TelegramBotToken string // encrypted token, optional in dashboard sign-up
 	BotUsername      string `gorm:"index"`
 	PlanType         string
 	Status           string // active, suspended, pending
 	BusinessProfile  BusinessProfile
+	PasswordHash     string
+	OwnerPhone       string
 }
 
 // BusinessProfile represents the personality and niche of the tenant’s bot
@@ -125,18 +127,18 @@ type ScheduledPost struct {
 
 type SocialAccount struct {
 	gorm.Model
-	TenantID         uint
-	Platform         string // instagram, facebook, whatsapp, tiktok, youtube
-	AccessToken      string `gorm:"type:text"`
-	RefreshToken     string `gorm:"type:text"`
-	ExpiresAt        *time.Time
-	Username         string
-	PageID           string // For Facebook: page_id, for Instagram: instagram_business_account.id, for WhatsApp: phone_number_id
-	ExternalID       string `gorm:"index"` // Platform-specific external ID used for webhook routing (page_id, instagram_business_account.id, phone_number_id)
-	Connected        bool
-	Mode             string // manual, sandbox, oauth2
+	TenantID           uint
+	Platform           string // instagram, facebook, whatsapp, tiktok, youtube
+	AccessToken        string `gorm:"type:text"`
+	RefreshToken       string `gorm:"type:text"`
+	ExpiresAt          *time.Time
+	Username           string
+	PageID             string // For Facebook: page_id, for Instagram: instagram_business_account.id, for WhatsApp: phone_number_id
+	ExternalID         string `gorm:"index"` // Platform-specific external ID used for webhook routing (page_id, instagram_business_account.id, phone_number_id)
+	Connected          bool
+	Mode               string // manual, sandbox, oauth2
 	WebhookVerifyToken string `gorm:"size:100"` // Verification token for webhook setup (Meta requires this)
-	CreatedAt        time.Time
+	CreatedAt          time.Time
 }
 
 // Persona — each tenant’s bot personality profile
@@ -194,16 +196,16 @@ type Escalation struct {
 
 // PostLog tracks detailed posting activity for analytics
 type PostLog struct {
-	ID              uint `gorm:"primaryKey"`
-	TenantID        uint `gorm:"index"`
-	ScheduledPostID uint `gorm:"index"`
-	Platform        string
-	Action          string `gorm:"size:50"` // optimizing, posting, posted, failed, retrying
-	OriginalCaption string `gorm:"type:text"`
+	ID               uint `gorm:"primaryKey"`
+	TenantID         uint `gorm:"index"`
+	ScheduledPostID  uint `gorm:"index"`
+	Platform         string
+	Action           string `gorm:"size:50"` // optimizing, posting, posted, failed, retrying
+	OriginalCaption  string `gorm:"type:text"`
 	OptimizedCaption string `gorm:"type:text"`
-	Status          string `gorm:"size:20"` // success, failed, partial
-	ErrorMessage    string `gorm:"type:text"`
-	Improvements    string `gorm:"type:text"` // AI improvements made
-	Metadata        string `gorm:"type:jsonb"` // Additional data (hashtags, timing, etc.)
-	CreatedAt       time.Time
+	Status           string `gorm:"size:20"` // success, failed, partial
+	ErrorMessage     string `gorm:"type:text"`
+	Improvements     string `gorm:"type:text"`  // AI improvements made
+	Metadata         string `gorm:"type:jsonb"` // Additional data (hashtags, timing, etc.)
+	CreatedAt        time.Time
 }
