@@ -278,7 +278,7 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 			return "⚠️ TikTok manual token mode active — token not yet connected.\nYou’ll be able to post after verification.", nil
 		}
 
-		url := "https://open.tiktokapis.com/v2/user/info/"
+		url := "https://open.tiktokapis.com/v2/user/info/?fields=display_name,username,open_id,profile_image_url"
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 
