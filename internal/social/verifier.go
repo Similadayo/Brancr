@@ -289,7 +289,20 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 		defer res.Body.Close()
 
 		body, _ := io.ReadAll(res.Body)
-		if res.StatusCode != 200 {
+		if res.StatusCode == http.StatusUnauthorized {
+			var payload struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			_ = json.Unmarshal(body, &payload)
+			if strings.EqualFold(payload.Error.Code, "scope_not_authorized") {
+				persistSocialAccount(acc, acc.AccessToken, db)
+				return "✅ TikTok connected (no profile info — please re-connect and approve basic profile access if you need it).", nil
+			}
+		}
+		if res.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("TikTok verification failed: %s", string(body))
 		}
 
