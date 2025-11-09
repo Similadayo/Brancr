@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -143,35 +144,19 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 	}
 
 	if token == "" {
-		h.Logger.Warn("embedded signup payload missing token", zap.String("phone_number_id", phoneID), zap.Any("payload", payload))
-		http.Error(w, "token missing", http.StatusBadRequest)
-		return
+		h.Logger.Warn("embedded signup payload missing token", zap.String("phone_number_id", phoneID))
 	}
 
-	encrypted, err := encryptIfPossible(token)
-	if err != nil {
-		h.Logger.Error("failed to encrypt whatsapp token", zap.Error(err))
-		http.Error(w, "encryption error", http.StatusInternalServerError)
-		return
-	}
-
-	account := storage.SocialAccount{
-		TenantID:     tenantID,
-		Platform:     "whatsapp",
-		AccessToken:  encrypted,
-		RefreshToken: "",
-		PageID:       phoneID,
-		ExternalID:   phoneID,
-		Username:     phoneNumber,
-		Mode:         "oauth2",
-		Connected:    strings.ToUpper(status) == "APPROVED" || status == "",
-	}
-
-	if err := h.DB.Save(&account).Error; err != nil {
+	if err := h.upsertWhatsAppAccount(tenantID, phoneID, phoneNumber, token, status); err != nil {
 		h.Logger.Error("failed to save whatsapp account", zap.Error(err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
+
+	h.Logger.Info("✅ WhatsApp embedded signup stored",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("phone_number_id", phoneID),
+		zap.String("status", status))
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -182,26 +167,13 @@ func (h *EmbeddedSignupHandler) handleLegacyCallback(w http.ResponseWriter, payl
 		return
 	}
 
-	encrypted, err := encryptIfPossible(payload.AccessToken)
-	if err != nil {
-		h.Logger.Error("failed to encrypt whatsapp token", zap.Error(err))
-		http.Error(w, "encryption error", http.StatusInternalServerError)
-		return
-	}
-
-	account := storage.SocialAccount{
-		TenantID:     parseTenantID(payload.TenantID),
-		Platform:     "whatsapp",
-		AccessToken:  encrypted,
-		RefreshToken: "",
-		PageID:       payload.PhoneNumberID,
-		ExternalID:   payload.PhoneNumberID,
-		Username:     payload.PhoneNumber,
-		Mode:         "oauth2",
-		Connected:    true,
-	}
-
-	if err := h.DB.Save(&account).Error; err != nil {
+	if err := h.upsertWhatsAppAccount(
+		parseTenantID(payload.TenantID),
+		payload.PhoneNumberID,
+		payload.PhoneNumber,
+		payload.AccessToken,
+		"APPROVED",
+	); err != nil {
 		h.Logger.Error("failed to save whatsapp account", zap.Error(err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
@@ -291,4 +263,34 @@ func getString(data map[string]any, path ...string) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func (h *EmbeddedSignupHandler) upsertWhatsAppAccount(tenantID uint, phoneID, phoneNumber, token, status string) error {
+	var account storage.SocialAccount
+	err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		account = storage.SocialAccount{
+			TenantID: tenantID,
+			Platform: "whatsapp",
+		}
+	} else if err != nil {
+		return err
+	}
+
+	encrypted, err := encryptIfPossible(token)
+	if err != nil {
+		return err
+	}
+
+	if encrypted != "" {
+		account.AccessToken = encrypted
+	}
+
+	account.PageID = phoneID
+	account.ExternalID = phoneID
+	account.Username = phoneNumber
+	account.Mode = "oauth2"
+	account.Connected = strings.ToUpper(status) == "APPROVED" || status == ""
+
+	return h.DB.Save(&account).Error
 }

@@ -49,7 +49,7 @@ func Load() *Config {
 		CloudName:            os.Getenv("CLOUDINARY_CLOUD_NAME"),
 		CloudAPIKey:          os.Getenv("CLOUDINARY_API_KEY"),
 		CloudAPISecret:       os.Getenv("CLOUDINARY_API_SECRET"),
-		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisAddr:            getEnv("REDIS_ADDR", ""),
 		AdminBotToken:        os.Getenv("BRANCR_ADMIN_BOT_TOKEN"),
 		AdminEmail:           os.Getenv("ADMIN_EMAIL"),
 		AdminPassword:        os.Getenv("ADMIN_PASSWORD"),

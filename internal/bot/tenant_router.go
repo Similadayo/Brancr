@@ -40,7 +40,19 @@ type TenantBotManager struct {
 
 // ✅ Constructor — now initializes AI components too
 func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *TenantBotManager {
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	var rdb *redis.Client
+	addr := strings.TrimSpace(cfg.RedisAddr)
+	if addr != "" {
+		client := redis.NewClient(&redis.Options{Addr: addr})
+		if err := client.Ping(context.Background()).Err(); err != nil {
+			logger.Warn("redis unavailable, falling back to in-memory collectors",
+				zap.Error(err))
+		} else {
+			rdb = client
+		}
+	} else if logger != nil {
+		logger.Info("Redis not configured — using in-memory collectors for bot media.")
+	}
 
 	// ✅ Initialize AI Embedding engine
 	embedder := ai.NewEmbeddingClient()

@@ -34,19 +34,19 @@ func (c *CaptionOptimizerImpl) OptimizeCaption(ctx context.Context, req social.O
 		Client: c.Client,
 		DB:     c.DB,
 	}
-	
+
 	aiReq := ai.OptimizeCaptionRequest{
 		OriginalCaption: req.OriginalCaption,
 		Platform:        req.Platform,
 		MediaType:       req.MediaType,
 		TenantID:        req.TenantID,
 	}
-	
+
 	result, err := optimizer.OptimizeCaption(ctx, aiReq)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &social.OptimizeCaptionResult{
 		OptimizedCaption: result.OptimizedCaption,
 		Hashtags:         result.Hashtags,
@@ -57,10 +57,10 @@ func (c *CaptionOptimizerImpl) OptimizeCaption(ctx context.Context, req social.O
 
 // ✅ App represents the core Brancr system
 type App struct {
-	Config            *config.Config
-	Services          *Services
-	Server            *http.Server
-	SchedulerCancel   context.CancelFunc
+	Config          *config.Config
+	Services        *Services
+	Server          *http.Server
+	SchedulerCancel context.CancelFunc
 }
 
 // ✅ NewApp initializes all components using the Services pattern
@@ -85,10 +85,19 @@ func NewApp(cfg *config.Config) (*App, error) {
 		logger.Warn("seed admin failed", zap.Error(err))
 	}
 
-	// 🧠 Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	// 🧠 Redis (optional)
+	var rdb *redis.Client
+	if addr := strings.TrimSpace(cfg.RedisAddr); addr != "" {
+		client := redis.NewClient(&redis.Options{Addr: addr})
+		if err := client.Ping(context.Background()).Err(); err != nil {
+			logger.Warn("redis unavailable, proceeding without it", zap.Error(err))
+		} else {
+			rdb = client
+			logger.Info("redis connected", zap.String("addr", addr))
+		}
+	} else {
+		logger.Info("redis not configured; queueing and cache features running in-memory")
+	}
 
 	// ✅ Initialize all services with proper dependency injection
 	services, err := NewServices(cfg, db, rdb, logger)

@@ -80,7 +80,7 @@ Copy `env.example` to `.env` (or export the values in your platform settings) an
 
 - `POSTGRES_DSN` — PostgreSQL connection string
 - `TEST_POSTGRES_DSN` — Optional DSN for integration tests
-- `REDIS_ADDR` — Redis address (default `localhost:6379`)
+- `REDIS_ADDR` — Redis address (optional; leave empty to run without Redis)
 
 **AI Providers**
 
