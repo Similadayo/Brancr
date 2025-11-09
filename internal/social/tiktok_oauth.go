@@ -261,6 +261,10 @@ func (h *TikTokOAuthHandler) exchangeToken(ctx context.Context, code, verifier s
 	}
 
 	if parsed.Data.AccessToken == "" {
+		if h.Logger != nil {
+			h.Logger.Warn("TikTok token response missing access token",
+				zap.String("raw_response", strings.TrimSpace(string(respBody))))
+		}
 		return nil, errors.New("tiktok access token missing in response")
 	}
 
