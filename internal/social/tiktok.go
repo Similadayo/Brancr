@@ -180,16 +180,14 @@ type tiktokSession struct {
 }
 
 func (t *TikTokConnector) initUpload(ctx context.Context, accessToken string) (*tiktokSession, error) {
-	payload := map[string]string{
-		"source": "FILE_UPLOAD",
-	}
-	body, _ := json.Marshal(payload)
+	form := url.Values{}
+	form.Set("source", "FILE_UPLOAD")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokInitUploadPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokInitUploadPath, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	resp, err := t.httpClient.Do(req)
