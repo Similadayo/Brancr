@@ -22,9 +22,9 @@ import (
 
 const (
 	tikTokBaseAPI            = "https://open.tiktokapis.com"
-	tikTokInitUploadPath     = "/v2/post/publish/inbox/video/init/"
-	tikTokFinalizeUploadPath = "/v2/post/publish/inbox/video/complete/"
-	tikTokStatusPath         = "/v2/post/publish/inbox/video/query/"
+	tikTokInitUploadPath     = "/v2/post/publish/video/init/"
+	tikTokFinalizeUploadPath = "/v2/post/publish/video/complete/"
+	tikTokStatusPath         = "/v2/post/publish/video/query/"
 	tikTokCreatorInfoPath    = "/v2/post/publish/creator_info/query/"
 	tikTokRefreshPath        = "/v2/oauth/token/"
 )
@@ -235,11 +235,12 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string) (*tiktokSession, error) {
 	payload := map[string]interface{}{
 		"post_info": map[string]interface{}{
-			"title":            defaultTikTokTitle(caption),
-			"privacy_level":    "PUBLIC_TO_EVERYONE",
-			"disable_duet":     false,
-			"disable_stitch":   false,
-			"comment_disabled": false,
+			"title":           defaultTikTokTitle(caption),
+			"description":     "",
+			"privacy_level":   "PUBLIC_TO_EVERYONE",
+			"disable_duet":    false,
+			"disable_stitch":  false,
+			"disable_comment": false,
 		},
 		"source_info": map[string]interface{}{
 			"source": "FILE_UPLOAD",
