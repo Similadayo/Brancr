@@ -85,13 +85,8 @@ func (f *FacebookConnector) PostMedia(ctx context.Context, acc *storage.SocialAc
 
 // postCarousel posts multiple images as a Facebook carousel/album
 func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Client, acc *storage.SocialAccount, urls []string, caption string) error {
-	type mediaRef struct {
-		ID   string
-		Type string
-	}
-
 	// Step 1: Upload each media to get media IDs
-	var mediaRefs []mediaRef
+	var mediaIDs []string
 	uploadURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/photos", acc.PageID)
 	if acc.PageID == "" {
 		uploadURL = "https://graph.facebook.com/v18.0/me/photos"
@@ -99,24 +94,18 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 
 	for _, url := range urls {
 		var mediaID string
-		var mediaType string
 		var err error
 
 		if isVideoURL(url) {
 			mediaID, err = f.uploadCarouselVideo(ctx, client, acc, url)
-			mediaType = "video"
 		} else {
 			mediaID, err = f.uploadCarouselPhoto(ctx, client, acc, uploadURL, url)
-			mediaType = "photo"
 		}
 		if err != nil {
 			return err
 		}
 
-		mediaRefs = append(mediaRefs, mediaRef{
-			ID:   mediaID,
-			Type: mediaType,
-		})
+		mediaIDs = append(mediaIDs, mediaID)
 	}
 
 	// Step 2: Create post with attached_media (carousel)
@@ -130,8 +119,8 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 	formData.Set("message", caption)
 	formData.Set("access_token", acc.AccessToken)
 
-	for idx, ref := range mediaRefs {
-		formData.Set(fmt.Sprintf("attached_media[%d][media_fbid]", idx), ref.ID)
+	for idx, mediaID := range mediaIDs {
+		formData.Set(fmt.Sprintf("attached_media[%d]media_fbid", idx), mediaID)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", feedURL, strings.NewReader(formData.Encode()))
