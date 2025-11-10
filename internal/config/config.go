@@ -33,6 +33,7 @@ type Config struct {
 	TikTokClientSecret   string
 	TikTokRedirectURI    string
 	TikTokScopes         string
+	TikTokDefaultPrivacy string
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -68,6 +69,7 @@ func Load() *Config {
 		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),
 		TikTokRedirectURI:    os.Getenv("TIKTOK_REDIRECT_URI"),
 		TikTokScopes:         getEnv("TIKTOK_SCOPES", "user.info.basic,video.list,video.upload,video.publish"),
+		TikTokDefaultPrivacy: os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
 	}
 
 	validateConfig(cfg)

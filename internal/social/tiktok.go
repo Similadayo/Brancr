@@ -34,7 +34,36 @@ type TikTokConnector struct {
 	Logger       *zap.Logger
 	ClientKey    string
 	ClientSecret string
+	PrivacyLevel string
 	httpClient   *http.Client
+}
+
+var allowedTikTokPrivacyLevels = map[string]struct{}{
+	"PUBLIC_TO_EVERYONE":    {},
+	"MUTUAL_FOLLOW_FRIENDS": {},
+	"SELF_ONLY":             {},
+}
+
+func normalizeTikTokPrivacyLevel(logger *zap.Logger, raw string) string {
+	level := strings.ToUpper(strings.TrimSpace(raw))
+	if level == "" {
+		level = "SELF_ONLY"
+	}
+	if _, ok := allowedTikTokPrivacyLevels[level]; !ok {
+		if logger != nil {
+			logger.Warn("Unsupported TikTok privacy level provided; defaulting to SELF_ONLY", zap.String("requested_privacy", raw))
+		}
+		return "SELF_ONLY"
+	}
+	return level
+}
+
+func normalizePrivacyForPayload(level string) string {
+	level = strings.ToUpper(strings.TrimSpace(level))
+	if _, ok := allowedTikTokPrivacyLevels[level]; ok {
+		return level
+	}
+	return "SELF_ONLY"
 }
 
 // NewTikTokConnector wires dependencies for the TikTok connector.
@@ -47,6 +76,7 @@ func NewTikTokConnector(db *gorm.DB, logger *zap.Logger, cfg *config.Config) Soc
 		Logger:       logger,
 		ClientKey:    cfg.TikTokClientKey,
 		ClientSecret: cfg.TikTokClientSecret,
+		PrivacyLevel: normalizeTikTokPrivacyLevel(logger, cfg.TikTokDefaultPrivacy),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -87,9 +117,19 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return err
 	}
 
-	session, err := t.initUpload(ctx, accessToken, caption, videoSize)
+	session, err := t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel)
 	if err != nil {
-		return fmt.Errorf("tiktok init upload failed: %w", err)
+		if apiErr := (*TikTokAPIError)(nil); errors.As(err, &apiErr) {
+			if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
+				t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
+					zap.Uint("tenant_id", acc.TenantID),
+					zap.String("current_privacy", t.PrivacyLevel))
+				session, err = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY")
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("tiktok init upload failed: %w", err)
+		}
 	}
 
 	if err := t.uploadVideo(ctx, session, videoURL); err != nil {
@@ -225,15 +265,17 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 	return 0, errors.New("unable to determine video size for TikTok upload")
 }
 
-func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string, videoSize int64) (*tiktokSession, error) {
+func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string, videoSize int64, privacyLevel string) (*tiktokSession, error) {
 	if videoSize <= 0 {
 		return nil, errors.New("invalid video size for TikTok upload")
 	}
 
+	level := normalizePrivacyForPayload(privacyLevel)
+
 	payload := map[string]interface{}{
 		"post_info": map[string]interface{}{
 			"title":           defaultTikTokTitle(caption),
-			"privacy_level":   "PUBLIC_TO_EVERYONE",
+			"privacy_level":   level,
 			"disable_duet":    false,
 			"disable_stitch":  false,
 			"disable_comment": false,
@@ -268,8 +310,9 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	if resp.StatusCode >= 400 {
-		t.Logger.Warn("TikTok init upload response", zap.Int("status", resp.StatusCode), zap.String("body", strings.TrimSpace(string(respBody))))
-		return nil, fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		errResp := parseTikTokError(resp.StatusCode, respBody)
+		t.Logger.Warn("TikTok init upload response", zap.Int("status", resp.StatusCode), zap.String("body", errResp.Body))
+		return nil, errResp
 	}
 
 	var parsed struct {
@@ -288,8 +331,14 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	if parsed.Error.Code != "" && parsed.Error.Code != "ok" {
-		t.Logger.Warn("TikTok init logical error", zap.String("code", parsed.Error.Code), zap.String("message", parsed.Error.Message), zap.String("log_id", parsed.Error.LogID))
-		return nil, fmt.Errorf("tiktok init upload error: %s - %s (log_id: %s)", parsed.Error.Code, parsed.Error.Message, parsed.Error.LogID)
+		apiErr := &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    parsed.Error.Code,
+			Message: parsed.Error.Message,
+			LogID:   parsed.Error.LogID,
+		}
+		t.Logger.Warn("TikTok init logical error", zap.String("code", apiErr.Code), zap.String("message", apiErr.Message), zap.String("log_id", apiErr.LogID))
+		return nil, apiErr
 	}
 
 	if parsed.Data.UploadURL == "" || parsed.Data.PublishID == "" {
@@ -303,15 +352,17 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}, nil
 }
 
-func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, caption, videoURL string) (*tiktokSession, error) {
+func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, caption, videoURL, privacyLevel string) (*tiktokSession, error) {
 	if videoURL == "" {
 		return nil, errors.New("video URL is required for TikTok upload")
 	}
 
+	level := normalizePrivacyForPayload(privacyLevel)
+
 	payload := map[string]interface{}{
 		"post_info": map[string]interface{}{
 			"title":           defaultTikTokTitle(caption),
-			"privacy_level":   "PUBLIC_TO_EVERYONE",
+			"privacy_level":   level,
 			"disable_duet":    false,
 			"disable_stitch":  false,
 			"disable_comment": false,
@@ -344,7 +395,7 @@ func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, ca
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, parseTikTokError(resp.StatusCode, respBody)
 	}
 
 	var parsed struct {
@@ -362,7 +413,12 @@ func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, ca
 	}
 
 	if parsed.Error.Code != "" && parsed.Error.Code != "ok" {
-		return nil, fmt.Errorf("tiktok init upload error: %s - %s (log_id: %s)", parsed.Error.Code, parsed.Error.Message, parsed.Error.LogID)
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    parsed.Error.Code,
+			Message: parsed.Error.Message,
+			LogID:   parsed.Error.LogID,
+		}
 	}
 
 	if parsed.Data.PublishID == "" {
@@ -550,4 +606,45 @@ func firstVideoURL(asset *storage.MediaAsset) (string, error) {
 		return "", errors.New("tiktok requires a video asset (mp4 recommended)")
 	}
 	return urls[0], nil
+}
+
+type TikTokAPIError struct {
+	Status  int
+	Code    string
+	Message string
+	LogID   string
+	Body    string
+}
+
+func (e *TikTokAPIError) Error() string {
+	if e == nil {
+		return ""
+	}
+	code := e.Code
+	if code == "" {
+		code = strconv.Itoa(e.Status)
+	}
+	if e.LogID != "" {
+		return fmt.Sprintf("tiktok API error (%s): %s (log_id: %s)", code, e.Message, e.LogID)
+	}
+	return fmt.Sprintf("tiktok API error (%s): %s", code, e.Message)
+}
+
+func parseTikTokError(status int, body []byte) *TikTokAPIError {
+	errBody := strings.TrimSpace(string(body))
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	return &TikTokAPIError{
+		Status:  status,
+		Code:    payload.Error.Code,
+		Message: payload.Error.Message,
+		LogID:   payload.Error.LogID,
+		Body:    errBody,
+	}
 }
