@@ -119,7 +119,8 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 
 	session, err := t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel)
 	if err != nil {
-		if apiErr := (*TikTokAPIError)(nil); errors.As(err, &apiErr) {
+		var apiErr *TikTokAPIError
+		if errors.As(err, &apiErr) {
 			if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
 				t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
 					zap.Uint("tenant_id", acc.TenantID),
