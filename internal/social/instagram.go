@@ -154,10 +154,11 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 		payload["is_carousel_item"] = "true"
 
 		if isVideoURL(url) {
-			// Carousel child items accept VIDEO media type.
-			payload["media_type"] = "VIDEO"
+			// Instagram requires REELS media type for feed videos, even inside carousels.
+			payload["media_type"] = "REELS"
 			payload["video_url"] = url
 			payload["thumb_offset"] = "0"
+			payload["share_to_feed"] = "true"
 		} else {
 			payload["image_url"] = url
 		}

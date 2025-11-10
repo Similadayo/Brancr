@@ -85,8 +85,13 @@ func (f *FacebookConnector) PostMedia(ctx context.Context, acc *storage.SocialAc
 
 // postCarousel posts multiple images as a Facebook carousel/album
 func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Client, acc *storage.SocialAccount, urls []string, caption string) error {
+	type mediaRef struct {
+		ID   string
+		Type string
+	}
+
 	// Step 1: Upload each media to get media IDs
-	var mediaIDs []string
+	var mediaRefs []mediaRef
 	uploadURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/photos", acc.PageID)
 	if acc.PageID == "" {
 		uploadURL = "https://graph.facebook.com/v18.0/me/photos"
@@ -94,18 +99,24 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 
 	for _, url := range urls {
 		var mediaID string
+		var mediaType string
 		var err error
 
 		if isVideoURL(url) {
 			mediaID, err = f.uploadCarouselVideo(ctx, client, acc, url)
+			mediaType = "video"
 		} else {
 			mediaID, err = f.uploadCarouselPhoto(ctx, client, acc, uploadURL, url)
+			mediaType = "photo"
 		}
 		if err != nil {
 			return err
 		}
 
-		mediaIDs = append(mediaIDs, mediaID)
+		mediaRefs = append(mediaRefs, mediaRef{
+			ID:   mediaID,
+			Type: mediaType,
+		})
 	}
 
 	// Step 2: Create post with attached_media (carousel)
@@ -114,21 +125,21 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 		feedURL = "https://graph.facebook.com/v18.0/me/feed"
 	}
 
-	// Build attached_media array as JSON string
-	var attachedMedia []map[string]string
-	for _, mediaID := range mediaIDs {
-		attachedMedia = append(attachedMedia, map[string]string{
-			"media_fbid": mediaID,
-		})
-	}
-
-	attachedMediaJSON, _ := json.Marshal(attachedMedia)
-
 	// Facebook requires form-urlencoded data for attached_media
 	formData := url.Values{}
 	formData.Set("message", caption)
-	formData.Set("attached_media", string(attachedMediaJSON))
 	formData.Set("access_token", acc.AccessToken)
+
+	for idx, ref := range mediaRefs {
+		payload := map[string]string{
+			"media_fbid": ref.ID,
+		}
+		if ref.Type != "" {
+			payload["type"] = ref.Type
+		}
+		jsonStr, _ := json.Marshal(payload)
+		formData.Set(fmt.Sprintf("attached_media[%d]", idx), string(jsonStr))
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", feedURL, strings.NewReader(formData.Encode()))
 	if err != nil {
