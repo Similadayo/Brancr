@@ -135,7 +135,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
 	var tenant storage.Tenant
-	if err := h.DB.Where("email = ?", req.Email).First(&tenant).Error; err != nil {
+	if err := h.DB.Where("LOWER(email) = ?", req.Email).First(&tenant).Error; err != nil {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
