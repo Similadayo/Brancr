@@ -298,7 +298,7 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 			}
 			_ = json.Unmarshal(body, &payload)
 			if strings.EqualFold(payload.Error.Code, "scope_not_authorized") {
-				persistSocialAccount(acc, acc.AccessToken, db)
+				persistSocialAccount(acc, acc.Username, db)
 				return "✅ TikTok connected (no profile info — please re-connect and approve basic profile access if you need it).", nil
 			}
 		}
