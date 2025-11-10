@@ -152,9 +152,12 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 		}
 
 		if isVideoURL(url) {
-			payload["media_type"] = "VIDEO"
+			// Instagram deprecated the VIDEO media_type for feed uploads.
+			// Use REELS instead and share to feed to maintain similar behaviour.
+			payload["media_type"] = "REELS"
 			payload["video_url"] = url
 			payload["thumb_offset"] = "0"
+			payload["share_to_feed"] = "true"
 		} else {
 			payload["image_url"] = url
 		}
