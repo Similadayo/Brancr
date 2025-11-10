@@ -471,6 +471,11 @@ func (t *TikTokConnector) uploadVideo(ctx context.Context, session *tiktokSessio
 	if length > 0 {
 		uploadReq.ContentLength = length
 		uploadReq.Header.Set("Content-Length", strconv.FormatInt(length, 10))
+		if strings.HasPrefix(contentType, "video/") {
+			uploadReq.Header.Set("X-Upload-Content-Type", contentType)
+		}
+		uploadReq.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, length-1, length))
+		uploadReq.Header.Set("X-Upload-Content-Length", strconv.FormatInt(length, 10))
 	}
 
 	uploadResp, err := t.httpClient.Do(uploadReq)
