@@ -131,14 +131,7 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 	formData.Set("access_token", acc.AccessToken)
 
 	for idx, ref := range mediaRefs {
-		payload := map[string]string{
-			"media_fbid": ref.ID,
-		}
-		if ref.Type != "" {
-			payload["type"] = ref.Type
-		}
-		jsonStr, _ := json.Marshal(payload)
-		formData.Set(fmt.Sprintf("attached_media[%d]", idx), string(jsonStr))
+		formData.Set(fmt.Sprintf("attached_media[%d]media_fbid", idx), ref.ID)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", feedURL, strings.NewReader(formData.Encode()))
