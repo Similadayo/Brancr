@@ -143,7 +143,7 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 	authURL := url.URL{
 		Scheme: "https",
 		Host:   "www.tiktok.com",
-		Path:   "/auth/authorize/",
+		Path:   "/v2/auth/authorize/",
 	}
 
 	params := url.Values{}
