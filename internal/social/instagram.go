@@ -151,6 +151,8 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 			"access_token": accessToken,
 		}
 
+		payload["is_carousel_item"] = "true"
+
 		if isVideoURL(url) {
 			// Carousel child items accept VIDEO media type.
 			payload["media_type"] = "VIDEO"
