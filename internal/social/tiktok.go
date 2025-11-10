@@ -241,6 +241,91 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 		return nil, errors.New("invalid video size for TikTok upload")
 	}
 
+	bases := []string{tikTokBaseAPI, tikTokAltContentBase}
+	var lastErr error
+
+	for _, base := range bases {
+		payloads := []map[string]interface{}{
+			buildTikTokInitPayload(caption, videoSize, false),
+			buildTikTokInitPayload(caption, videoSize, true),
+		}
+
+		for idx, payload := range payloads {
+			body, _ := json.Marshal(payload)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+tikTokInitUploadPath, bytes.NewReader(body))
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+
+			resp, err := t.httpClient.Do(req)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			respBody, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			if resp.StatusCode >= 400 {
+				errMsg := strings.TrimSpace(string(respBody))
+				if idx == 0 && isTikTokInvalidParams(respBody) {
+					lastErr = fmt.Errorf("tiktok init upload legacy retry: %s", errMsg)
+					continue
+				}
+				lastErr = fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, errMsg)
+				break
+			}
+
+			var parsed struct {
+				Data struct {
+					UploadURL string `json:"upload_url"`
+					UploadID  string `json:"upload_id"`
+					VideoID   string `json:"video_id"`
+					PublishID string `json:"publish_id"`
+				} `json:"data"`
+				Error      json.RawMessage `json:"error"`
+				Message    string          `json:"message"`
+				StatusCode int             `json:"status_code"`
+			}
+			if err := json.Unmarshal(respBody, &parsed); err != nil {
+				lastErr = err
+				continue
+			}
+			apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
+			if apiErr.Code != 0 {
+				if idx == 0 && strings.Contains(strings.ToLower(apiErr.Message), "invalid request parameters") {
+					lastErr = fmt.Errorf("tiktok init upload legacy retry: %s", apiErr.Message)
+					continue
+				}
+				lastErr = fmt.Errorf("tiktok init upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
+				continue
+			}
+			if parsed.Data.UploadURL == "" || parsed.Data.VideoID == "" || parsed.Data.PublishID == "" {
+				lastErr = errors.New("tiktok init upload missing data")
+				continue
+			}
+
+			return &tiktokSession{
+				UploadURL: parsed.Data.UploadURL,
+				UploadID:  parsed.Data.UploadID,
+				VideoID:   parsed.Data.VideoID,
+				PublishID: parsed.Data.PublishID,
+			}, nil
+		}
+	}
+
+	return nil, lastErr
+}
+
+func buildTikTokInitPayload(caption string, videoSize int64, legacy bool) map[string]interface{} {
 	payload := map[string]interface{}{
 		"post_info": map[string]interface{}{
 			"title": defaultTikTokTitle(caption),
@@ -250,71 +335,33 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 		},
 	}
 
-	body, _ := json.Marshal(payload)
-	bases := []string{tikTokBaseAPI, tikTokAltContentBase}
-	var lastErr error
+	if legacy {
+		postInfo := payload["post_info"].(map[string]interface{})
+		postInfo["privacy_level"] = "PUBLIC_TO_EVERYONE"
+		postInfo["disable_duet"] = false
+		postInfo["disable_stitch"] = false
 
-	for _, base := range bases {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+tikTokInitUploadPath, bytes.NewReader(body))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-
-		resp, err := t.httpClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		if resp.StatusCode >= 400 {
-			lastErr = fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-			continue
-		}
-
-		var parsed struct {
-			Data struct {
-				UploadURL string `json:"upload_url"`
-				UploadID  string `json:"upload_id"`
-				VideoID   string `json:"video_id"`
-				PublishID string `json:"publish_id"`
-			} `json:"data"`
-			Error      json.RawMessage `json:"error"`
-			Message    string          `json:"message"`
-			StatusCode int             `json:"status_code"`
-		}
-		if err := json.Unmarshal(respBody, &parsed); err != nil {
-			lastErr = err
-			continue
-		}
-		apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
-		if apiErr.Code != 0 {
-			lastErr = fmt.Errorf("tiktok init upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
-			continue
-		}
-		if parsed.Data.UploadURL == "" || parsed.Data.VideoID == "" || parsed.Data.PublishID == "" {
-			lastErr = errors.New("tiktok init upload missing data")
-			continue
-		}
-
-		return &tiktokSession{
-			UploadURL: parsed.Data.UploadURL,
-			UploadID:  parsed.Data.UploadID,
-			VideoID:   parsed.Data.VideoID,
-			PublishID: parsed.Data.PublishID,
-		}, nil
+		sourceInfo := payload["source_info"].(map[string]interface{})
+		sourceInfo["video_size"] = videoSize
+		sourceInfo["chunk_size"] = videoSize
+		sourceInfo["total_chunk_count"] = 1
 	}
 
-	return nil, lastErr
+	return payload
+}
+
+func isTikTokInvalidParams(body []byte) bool {
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(envelope.Error.Message + " " + envelope.Message))
+	return strings.Contains(msg, "invalid request parameters")
 }
 
 func (t *TikTokConnector) uploadVideo(ctx context.Context, session *tiktokSession, videoURL string) error {
