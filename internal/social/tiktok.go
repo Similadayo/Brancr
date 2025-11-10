@@ -21,13 +21,13 @@ import (
 )
 
 const (
-	tikTokBaseAPI            = "https://open.tiktokapis.com/v2"
-	tikTokAltContentBase     = "https://open-api.tiktok.com/v2"
-	tikTokInitUploadPath     = "/post/publish/inbox/video/init/"
-	tikTokFinalizeUploadPath = "/post/publish/inbox/video/publish/"
-	tikTokStatusPath         = "/post/publish/status/fetch/"
-	tikTokCreatorInfoPath    = "/post/publish/creator_info/query/"
-	tikTokRefreshPath        = "/oauth/token/"
+	tikTokBaseAPI            = "https://open.tiktokapis.com"
+	tikTokAltContentBase     = "https://open-api.tiktok.com"
+	tikTokInitUploadPath     = "/v2/post/publish/inbox/video/init/"
+	tikTokFinalizeUploadPath = "/v2/post/publish/inbox/video/publish/"
+	tikTokStatusPath         = "/v2/post/publish/inbox/video/query/"
+	tikTokCreatorInfoPath    = "/v2/post/publish/creator_info/query/"
+	tikTokRefreshPath        = "/v2/oauth/token/"
 )
 
 // TikTokConnector handles posting media to TikTok using the Content Posting API.
