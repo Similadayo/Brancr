@@ -82,12 +82,10 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return err
 	}
 
-	session, err := t.initUpload(ctx, accessToken, caption)
+	session, err := t.initUpload(ctx, accessToken, caption, videoSize)
 	if err != nil {
 		return fmt.Errorf("tiktok init upload failed: %w", err)
 	}
-
-	session.VideoSize = videoSize
 
 	if err := t.uploadVideo(ctx, session, videoURL); err != nil {
 		return fmt.Errorf("tiktok upload failed: %w", err)
@@ -222,7 +220,11 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 	return 0, errors.New("unable to determine video size for TikTok upload")
 }
 
-func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string) (*tiktokSession, error) {
+func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string, videoSize int64) (*tiktokSession, error) {
+	if videoSize <= 0 {
+		return nil, errors.New("invalid video size for TikTok upload")
+	}
+
 	payload := map[string]interface{}{
 		"post_info": map[string]interface{}{
 			"title":           defaultTikTokTitle(caption),
@@ -232,7 +234,10 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 			"disable_comment": false,
 		},
 		"source_info": map[string]interface{}{
-			"source": "FILE_UPLOAD",
+			"source":            "FILE_UPLOAD",
+			"video_size":        videoSize,
+			"chunk_size":        videoSize,
+			"total_chunk_count": 1,
 		},
 	}
 
@@ -287,6 +292,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	return &tiktokSession{
 		UploadURL: parsed.Data.UploadURL,
 		PublishID: parsed.Data.PublishID,
+		VideoSize: videoSize,
 	}, nil
 }
 
