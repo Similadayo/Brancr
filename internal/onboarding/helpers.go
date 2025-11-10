@@ -3,6 +3,7 @@ package onboarding
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/storage"
@@ -10,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func RegisterTenant(db *gorm.DB, ownerTelegramID int64, businessName, botToken string) (*storage.Tenant, error) {
+func RegisterTenant(db *gorm.DB, ownerTelegramID int64, businessName, email, botToken string) (*storage.Tenant, error) {
 	// Prevent duplicates
 	var existing storage.Tenant
 	if err := db.Where("owner_telegram_id = ?", ownerTelegramID).First(&existing).Error; err == nil {
@@ -37,7 +38,7 @@ func RegisterTenant(db *gorm.DB, ownerTelegramID int64, businessName, botToken s
 
 	tenant := storage.Tenant{
 		Name:             businessName,
-		Email:            "",
+		Email:            strings.TrimSpace(email),
 		TelegramBotToken: encryptedToken,
 		OwnerTelegramID:  ownerTelegramID,
 		PlanType:         "Free",

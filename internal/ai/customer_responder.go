@@ -46,38 +46,31 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 	// Load conversation history
 	conversationHistory := r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30) // Last 30 days
 
-	// Build context-aware prompt
-	systemPrompt := fmt.Sprintf(`You're %s from %s.
-Business: %s
-Niche: %s
-Tone: %s
-
-Detected intent: %s
-
-Reply naturally. Be brief. Help the customer.`,
-		persona.BotName,
-		biz.Name,
-		biz.Description,
-		biz.Niche,
-		persona.Tone,
-		intent,
-	)
-
-	// Add platform formatting
-	platformFormat := getPlatformFormatting(platform)
-	if platformFormat != "" {
-		systemPrompt += "\n" + platformFormat
-	}
-
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
-	}
+	base := BuildBaseMessages(persona, biz)
+	messages := append([]Message{}, base...)
 
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
 
 	// Add current message
-	messages = append(messages, Message{Role: "user", Content: message})
+	intro := BuildIntroTone(persona, biz)
+	formatHint := getPlatformFormatting(platform)
+	task := fmt.Sprintf(`%s
+
+Task: Reply to the latest customer message on %s. Keep it natural, empathetic, and on-brand. Use the conversation history above as context.
+
+Detected intent: %s
+Formatting notes: %s
+
+Customer message: %s`,
+		intro,
+		strings.ToUpper(platform),
+		intent,
+		formatHint,
+		message,
+	)
+
+	messages = append(messages, Message{Role: "user", Content: task})
 
 	reply, err := r.Client.Generate(ctx, messages)
 	if err != nil {

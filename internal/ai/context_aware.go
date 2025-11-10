@@ -51,11 +51,13 @@ func (g *ContextAwareResponseGenerator) GenerateWithFullContext(
 	stats := g.getBusinessStats(ctx, tenantID)
 
 	// Build rich context prompt
-	systemPrompt := g.buildContextPrompt(persona, biz, stats, isOwner, len(history))
+	contextPrompt := g.buildContextPrompt(persona, biz, stats, isOwner, len(history))
 
 	// Build messages
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
+	base := BuildBaseMessages(persona, biz)
+	messages := append([]Message{}, base...)
+	if strings.TrimSpace(contextPrompt) != "" {
+		messages = append(messages, Message{Role: "system", Content: contextPrompt})
 	}
 
 	// Add conversation history (last 10 exchanges for context)
@@ -64,7 +66,19 @@ func (g *ContextAwareResponseGenerator) GenerateWithFullContext(
 		history = history[len(history)-maxHistory*2:]
 	}
 	messages = append(messages, history...)
-	messages = append(messages, Message{Role: "user", Content: userMsg})
+
+	intro := BuildIntroTone(persona, biz)
+	speaker := "the customer"
+	if isOwner {
+		speaker = "the business owner"
+	}
+	task := fmt.Sprintf(`%s
+
+Task: Reply to the latest message from %s. Stay human, emotionally aware, and on-brand. Use the conversation history above for context.
+
+Latest message: %s`, intro, speaker, userMsg)
+
+	messages = append(messages, Message{Role: "user", Content: task})
 
 	// Generate response with retry on moderation error
 	reply, err := g.Client.Generate(ctx, messages)
@@ -74,7 +88,7 @@ func (g *ContextAwareResponseGenerator) GenerateWithFullContext(
 			// Retry with a simpler, safer prompt
 			safePrompt := GenerateSafePrompt(persona, biz, isOwner)
 			messages[0].Content = SanitizePrompt(safePrompt)
-			
+
 			reply, err = g.Client.Generate(ctx, messages)
 			if err != nil {
 				// If still fails, use fallback
@@ -108,39 +122,23 @@ func (g *ContextAwareResponseGenerator) buildContextPrompt(
 	var prompt strings.Builder
 
 	if isOwner {
-		prompt.WriteString(fmt.Sprintf(`You're %s, helping %s manage their social media.
+		prompt.WriteString(fmt.Sprintf(`Owner context:
+- Recent conversations remembered: %d
+- Scheduled posts awaiting publish: %d
+- Posts published in the last week: %d
+- Posts needing attention (failed in last week): %d
+- Connected social accounts: %d
 
-About the business: %s (they're in %s). Your tone should be %s.
-
-You've been chatting with them - you have %d recent conversations to remember.
-
-What's happening:
-- They have %d posts scheduled
-- %d posts went out recently
-- %d posts failed (you can help with these)
-
-What you can help with:
-- Scheduling posts (they might say "schedule this for tomorrow" or "post to Instagram")
-- Connecting accounts ("connect Instagram" or "link my Facebook")
-- Checking stats ("show me my stats" or "how am I doing")
-- Managing content ("what posts are scheduled?" or "what's coming up?")
-
-Talk like a real person helping a friend. Use casual language, contractions, and be genuinely helpful. Don't sound like a robot or customer service rep. Just be helpful and friendly.`,
-			persona.BotName, biz.Name,
-			biz.Name, biz.Niche, persona.Tone,
+Use these details only when they help the owner decide what to do next. Keep suggestions pragmatic.`,
 			historyCount,
-			stats.ScheduledPosts, stats.RecentPosts, stats.FailedPosts))
+			stats.ScheduledPosts, stats.RecentPosts, stats.FailedPosts, stats.ConnectedAccounts))
 	} else {
-		prompt.WriteString(fmt.Sprintf(`You're %s from %s.
+		prompt.WriteString(fmt.Sprintf(`Customer context:
+- Previous touchpoints with this customer: %d
+- Tone to mirror: %s
+- Industry focus: %s
 
-About the business: %s (they do %s). Your tone should be %s.
-
-You're chatting with a customer - you've talked %d times before, so remember what you've discussed.
-
-Talk like a real person who works at this business. Be genuine, friendly, and helpful. Use natural language, contractions, and sound human. Don't be overly formal or robotic. Just be yourself - helpful and personable.`,
-			persona.BotName, biz.Name,
-			biz.Name, biz.Niche, persona.Tone,
-			historyCount))
+Use their history to stay consistent and caring.`, historyCount, persona.Tone, fallback(biz.Niche, biz.Industry)))
 	}
 
 	return prompt.String()
@@ -148,9 +146,9 @@ Talk like a real person who works at this business. Be genuine, friendly, and he
 
 // BusinessStats represents current business statistics
 type BusinessStats struct {
-	ScheduledPosts int
-	RecentPosts    int
-	FailedPosts    int
+	ScheduledPosts    int
+	RecentPosts       int
+	FailedPosts       int
 	ConnectedAccounts int
 }
 
@@ -189,4 +187,3 @@ func (g *ContextAwareResponseGenerator) getBusinessStats(ctx context.Context, te
 
 	return stats
 }
-

@@ -48,33 +48,23 @@ func (r *Responder) GenerateTenantAssistantReply(ctx context.Context, tenantID u
 	var biz storage.BusinessProfile
 	_ = r.Memory.DB.First(&biz, "tenant_id = ?", tenantID).Error
 
-	// Retrieve conversation history (last 10 exchanges = 20 messages)  
+	// Retrieve conversation history (last 10 exchanges = 20 messages)
 	conversationHistory := r.Memory.GetRecentTenantConversationHistory(ctx, tenantID, 10)
 
-	// Compose a natural, concise system prompt
-	systemPrompt := fmt.Sprintf(`
-You're %s from %s.
+	base := BuildBaseMessages(persona, biz)
+	messages := append([]Message{}, base...)
 
-About the business: %s
-Your tone: %s
-
-Talk like a real person. Be casual, friendly, and natural. Use contractions and everyday language. Don't sound like a customer service bot.
-`, persona.BotName,
-		biz.Name,
-		biz.Description,
-		persona.Tone,
-	)
-
-	// Build messages with conversation history
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
-	}
-	
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
-	
-	// Add current user message
-	messages = append(messages, Message{Role: "user", Content: userMsg})
+
+	intro := BuildIntroTone(persona, biz)
+	task := fmt.Sprintf(`%s
+
+Task: Reply to the latest message from the business team. Stay human, warm, and efficient. Use the conversation history above for context.
+
+Latest message: %s`, intro, userMsg)
+
+	messages = append(messages, Message{Role: "user", Content: task})
 	reply, err := r.Client.Generate(ctx, messages)
 	if err != nil {
 		return "", fmt.Errorf("AI generation failed: %w", err)
@@ -102,23 +92,28 @@ func (r *Responder) GenerateHumanlikeReply(ctx context.Context, tenantID uint, u
 
 	contexts := r.Memory.SearchContext(ctx, tenantID, userMsg, 5)
 	contextText := strings.Join(contexts, "\n- ")
-	moodHint := fmt.Sprintf("User emotion: %s", emotion.Label)
 
-	systemPrompt := fmt.Sprintf(`
-You're %s.
+	var biz storage.BusinessProfile
+	_ = r.Memory.DB.First(&biz, "tenant_id = ?", tenantID).Error
 
-Context: %s
-Tone: %s
-%s
-Previous conversation: %s
+	base := BuildBaseMessages(persona, biz)
+	intro := BuildIntroTone(persona, biz)
 
-Talk like a real person. Be casual and natural. Use everyday language.
-`, persona.BotName, intent.Intent, persona.Tone, moodHint, contextText)
+	taskBuilder := strings.Builder{}
+	taskBuilder.WriteString(intro)
+	taskBuilder.WriteString("\n\nTask: Reply to the latest message using the intent and emotion cues provided. Stay natural and on-brand.\n")
+	taskBuilder.WriteString(fmt.Sprintf("Detected intent: %s\n", intent.Intent))
+	taskBuilder.WriteString(fmt.Sprintf("Detected emotion: %s\n", emotion.Label))
+	if strings.TrimSpace(contextText) != "" {
+		taskBuilder.WriteString("Relevant context:\n")
+		taskBuilder.WriteString(contextText)
+		taskBuilder.WriteString("\n")
+	}
+	taskBuilder.WriteString(fmt.Sprintf("\nUser message: %s", userMsg))
 
-	reply, err := r.Client.Generate(ctx, []Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userMsg},
-	})
+	messages := append(base, Message{Role: "user", Content: taskBuilder.String()})
+
+	reply, err := r.Client.Generate(ctx, messages)
 	if err != nil {
 		return "", err
 	}
@@ -176,36 +171,20 @@ func (r *Responder) GenerateTenantOwnerReply(ctx context.Context, tenantID uint,
 	// Retrieve ALL tenant conversation history (no time limit, capped at 500 exchanges to avoid token overflow)
 	conversationHistory := r.Memory.GetAllTenantConversationHistory(ctx, tenantID)
 
-	// Owner-focused system prompt
-	systemPrompt := fmt.Sprintf(`
-You're %s, helping %s manage their business.
+	base := BuildBaseMessages(persona, biz)
+	messages := append([]Message{}, base...)
 
-Important: You're talking to the BUSINESS OWNER, not a customer. Don't sell them anything - just help them run things.
-
-About the business: %s
-
-You can help with:
-- Connecting accounts (they might say "connect instagram" or "link my Facebook")
-- Scheduling posts (they can send photos/videos and schedule them)
-- Checking things out ("verify instagram" or "show me my stats")
-- General help
-
-Talk like a real person helping a friend. Be casual, friendly, and genuinely helpful. Use natural language and contractions. Don't sound formal or robotic.
-`,
-		persona.BotName, biz.Name,
-		biz.Description,
-	)
-
-	// Build messages with conversation history
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
-	}
-	
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
-	
-	// Add current user message
-	messages = append(messages, Message{Role: "user", Content: userMsg})
+
+	intro := BuildIntroTone(persona, biz)
+	task := fmt.Sprintf(`%s
+
+Task: Reply to the business owner. Help them run operations—think connecting accounts, scheduling posts, checking stats, or answering workflow questions. Stay human, candid, and proactive.
+
+Owner message: %s`, intro, userMsg)
+
+	messages = append(messages, Message{Role: "user", Content: task})
 
 	reply, err := r.Client.Generate(ctx, messages)
 	if err != nil {
@@ -252,33 +231,29 @@ func (r *Responder) GenerateTenantAssistantReplyForCustomer(
 	// 🧠 3️⃣ Retrieve conversation history (last month for customers)
 	conversationHistory := r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30)
 
-	// 🧩 4️⃣ Customer-facing system prompt with platform-specific formatting
-	platformFormat := getPlatformFormatting(cust.Channel)
-	
-	systemPrompt := fmt.Sprintf(`
-You're %s from %s.
+	base := BuildBaseMessages(persona, biz)
+	messages := append([]Message{}, base...)
 
-About the business: %s
-Your tone: %s
-
-You're chatting with a customer. Talk like a real person who works here - be genuine, friendly, and helpful. Use natural language, contractions, and sound human. Don't be overly formal.
-%s
-`,
-		persona.BotName, biz.Name,
-		biz.Description, persona.Tone,
-		platformFormat,
-	)
-
-	// 🗣️ 5️⃣ Build messages with conversation history
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
-	}
-	
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
-	
-	// Add current user message
-	messages = append(messages, Message{Role: "user", Content: userMsg})
+
+	intro := BuildIntroTone(persona, biz)
+	platformFormat := getPlatformFormatting(cust.Channel)
+	task := fmt.Sprintf(`%s
+
+Task: Reply to %s on %s. Be human, warm, and helpful. Use the conversation history above to stay consistent.
+
+Formatting notes: %s
+
+Customer message: %s`,
+		intro,
+		displayName,
+		strings.ToUpper(cust.Channel),
+		platformFormat,
+		userMsg,
+	)
+
+	messages = append(messages, Message{Role: "user", Content: task})
 
 	reply, err := r.Client.Generate(ctx, messages)
 	if err != nil {

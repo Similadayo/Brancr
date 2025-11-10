@@ -47,54 +47,39 @@ func (o *CaptionOptimizer) OptimizeCaption(ctx context.Context, req OptimizeCapt
 	// Get platform-specific guidance
 	platformGuide := getPlatformCaptionGuidance(req.Platform)
 
-	// Build optimization prompt with platform-specific instructions
-	hashtagCount := "5-10"
-	if req.Platform == "facebook" || req.Platform == "youtube" {
-		hashtagCount = "1-3"
-	} else if req.Platform == "tiktok" {
-		hashtagCount = "3-5 trending"
-	}
+	// Build layered prompt
+	base := BuildBaseMessages(persona, biz)
+	intro := BuildIntroTone(persona, biz)
 
-	systemPrompt := fmt.Sprintf(`
-You're an expert social media copywriter optimizing captions for %s on %s.
+	taskPrompt := fmt.Sprintf(`%s
 
-Business: %s
-Niche: %s
-Brand tone: %s
+Task: Write a social media caption for %s.
 
-Platform: %s
+Context:
+- Platform: %s
+- Media type: %s
+- Original caption: %q
+
+Guidance:
 %s
 
-Original caption:
-"%s"
+Rules:
+1. Reflect the brand tone and vibe described above.
+2. Keep the caption to one or two natural sentences.
+3. Use emojis only if they fit the brand personality. Include no more than three relevant hashtags.
+4. Sound human and conversational—never robotic or overly promotional.
+5. End with a brand-flavored hook or light invitation to engage.
 
-Optimize this caption to:
-1. Match the brand tone (%s)
-2. Follow %s best practices exactly
-3. Add %s relevant hashtags tailored to %s
-4. Make it engaging, natural, and platform-appropriate
-5. Preserve the core message while enhancing engagement
-
-Return ONLY the optimized caption with hashtags at the end. No explanations.
-`,
-		biz.Name,
+Return only the finished caption with hashtags at the end.`,
+		intro,
 		strings.ToUpper(req.Platform),
-		biz.Description,
-		biz.Niche,
-		persona.Tone,
 		strings.ToUpper(req.Platform),
-		platformGuide,
+		strings.ToLower(req.MediaType),
 		req.OriginalCaption,
-		persona.Tone,
-		strings.ToUpper(req.Platform),
-		hashtagCount,
-		strings.ToUpper(req.Platform),
+		platformGuide,
 	)
 
-	messages := []Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: "Optimize this caption."},
-	}
+	messages := append(base, Message{Role: "user", Content: taskPrompt})
 
 	optimized, err := o.Client.Generate(ctx, messages)
 	if err != nil {

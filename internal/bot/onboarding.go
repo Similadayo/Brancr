@@ -72,7 +72,7 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 
 	if text == "/start" && step == "ask_business_name" {
 		msg := tgbotapi.NewMessage(chatID,
-			"Hey! I'm Brancr. Let's set up your business.\n\nWhat's your business name?")
+			"Hey there! I’m Brancr — your AI automation partner. Let’s get your business assistant running in under a minute.\n\nFirst up, what’s your business called?")
 		bot.Send(msg)
 		return
 	}
@@ -83,34 +83,43 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 		state["business_name"] = text
 		state["step"] = "ask_email"
 		h.sessions.Store(chatID, state)
-		bot.Send(tgbotapi.NewMessage(chatID, "Cool. What's your business email?"))
+
+		msg := tgbotapi.NewMessage(chatID, "Beautiful. Do you have a business email you’d like me to keep on file? (You can reply with your email or type *skip*.)")
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
 		return
 
 	case "ask_email":
-		state["email"] = text
+		if strings.EqualFold(text, "skip") {
+			state["email"] = ""
+		} else {
+			state["email"] = text
+		}
 		state["step"] = "ask_token"
 		h.sessions.Store(chatID, state)
-		bot.Send(tgbotapi.NewMessage(chatID, "Got it. Now send me your Telegram bot token (from @BotFather)."))
+		bot.Send(tgbotapi.NewMessage(chatID, "Great! Now paste your Telegram bot token from @BotFather so I can connect to your assistant."))
 		return
 
 	case "ask_token":
-		bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
 		state["token"] = text
 		h.sessions.Store(chatID, state)
 
 		business := state["business_name"]
 		token := state["token"]
 
-		// ✅ Register tenant (verifies bot token & sets webhook)
-		tenant, err := onboarding.RegisterTenant(h.DB, chatID, business, token)
+		loading := tgbotapi.NewMessage(chatID, "✨ Setting things up… give me a second while I connect everything.")
+		bot.Send(loading)
+
+		bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
+
+		tenant, err := onboarding.RegisterTenant(h.DB, chatID, business, state["email"], token)
 		if err != nil {
 			h.Manager.Logger.Error("tenant registration failed", zap.Error(err))
-			msg := tgbotapi.NewMessage(chatID, "Couldn't complete setup. Check your bot token and try again.")
+			msg := tgbotapi.NewMessage(chatID, "Hmm, I couldn’t connect with that token.\n\nMake sure the bot is started in Telegram, privacy mode is turned off, and try pasting the token again.")
 			bot.Send(msg)
 			return
 		}
 
-		// ✅ Fetch bot username for display
 		decrypted, _ := utils.DecryptToken(tenant.TelegramBotToken)
 		tbot, err := tgbotapi.NewBotAPI(decrypted)
 		var handle string
@@ -120,40 +129,44 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 			handle = "your new bot"
 		}
 
-		// ✅ Confirmation message with clickable handle
-		confirm := tgbotapi.NewMessage(chatID,
-			fmt.Sprintf("Done! %s is connected. Your assistant %s is live.\n\nYou can schedule posts, manage AI replies, and view analytics.\n\nLet's personalize your assistant now.", business, handle))
-		confirm.ParseMode = "Markdown"
-		bot.Send(confirm)
+		success := tgbotapi.NewMessage(chatID,
+			fmt.Sprintf("🎉 Perfect! %s is now live.\nYour assistant %s is connected and ready to help.", business, handle))
+		success.ParseMode = "Markdown"
+		bot.Send(success)
 
-		// ✅ Clear session
+		next := tgbotapi.NewMessage(chatID,
+			"Next, let’s give your assistant a voice that matches your brand. I’ll send a quick intro to your bot so we can personalize everything.")
+		bot.Send(next)
+
+		menu := tgbotapi.NewMessage(chatID,
+			"🎛️ *Brancr Control Center*\nWhen you’re ready, you can:\n\n• Connect social accounts\n• Manage your business info\n• View analytics\n• Customize how your assistant speaks\n• Get help and tutorials\n\nJust message your assistant and say “menu” any time to open these options.")
+		menu.ParseMode = "Markdown"
+		bot.Send(menu)
+
 		h.sessions.Delete(chatID)
 
-		// ✅ Start tenant bot instance
 		if err := h.Manager.StartBotForTenant(tenant); err != nil {
 			h.Manager.Logger.Error("failed to start tenant bot", zap.Error(err))
-			bot.Send(tgbotapi.NewMessage(chatID, "Connected, but couldn't start your bot. Contact support."))
+			bot.Send(tgbotapi.NewMessage(chatID, "Setup finished, but I couldn’t start the assistant. Ping support and we’ll take care of it."))
 			return
 		}
 
-		// ✅ Wait until tenant bot is ready (fixes race condition)
 		tenantBot := h.Manager.WaitForBot(tenant.ID, 5*time.Second)
 		if tenantBot == nil {
 			h.Manager.Logger.Warn("tenant bot not ready after timeout", zap.Uint("tenant_id", tenant.ID))
-			bot.Send(tgbotapi.NewMessage(chatID, "Still setting up, wait a few seconds and try again."))
+			bot.Send(tgbotapi.NewMessage(chatID, "Your assistant is still warming up. Give it a moment and say hi again."))
 			return
 		}
 
-		// ✅ Start persona onboarding INSIDE tenant bot
 		ownerID := tenant.OwnerTelegramID
 		intro := tgbotapi.NewMessage(ownerID,
-			fmt.Sprintf("Hey %s! Let's personalize how I sound. What do you want to call me?", tenant.Name))
+			fmt.Sprintf("Hey! I’m your new assistant for %s. What should I call myself?", tenant.Name))
 		tenantBot.Send(intro)
 
 		go ai.StartPersonaOnboarding(ctx, h.DB, tenantBot, tenant.ID, ownerID, h.Manager.Responder.Client, h.Manager.Logger)
 		return
 
 	default:
-		bot.Send(tgbotapi.NewMessage(chatID, "Type /start to set up your business."))
+		bot.Send(tgbotapi.NewMessage(chatID, "Type /start whenever you’re ready to set up your business assistant."))
 	}
 }

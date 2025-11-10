@@ -21,7 +21,7 @@ func StartAIOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.BotAPI, c
 	session := map[string]string{"step": "ask_business_name"}
 	OnboardingSessions.Store(chatID, session)
 
-	bot.Send(tgbotapi.NewMessage(chatID, "Hey! I'm Brancr. Let's set up your business.\n\nWhat's your business name?"))
+	bot.Send(tgbotapi.NewMessage(chatID, "Hey there! I’m Brancr—ready to spin up your business assistant. What’s the name of your business?"))
 }
 
 // ContinueAIOnboarding handles next questions dynamically
@@ -43,15 +43,22 @@ func ContinueAIOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.BotAPI
 		state["step"] = "ask_email"
 		OnboardingSessions.Store(chatID, state)
 
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Cool. What's your business email for %s?", text)))
+		msg := fmt.Sprintf("Love it. Do you have a business email for %s? (Reply with the email or type *skip*.)", text)
+		out := tgbotapi.NewMessage(chatID, msg)
+		out.ParseMode = "Markdown"
+		bot.Send(out)
 		return
 
 	case "ask_email":
-		state["email"] = text
+		if strings.EqualFold(text, "skip") {
+			state["email"] = ""
+		} else {
+			state["email"] = text
+		}
 		state["step"] = "ask_token"
 		OnboardingSessions.Store(chatID, state)
 
-		bot.Send(tgbotapi.NewMessage(chatID, "Got it. Now send me your Telegram bot token (from @BotFather)."))
+		bot.Send(tgbotapi.NewMessage(chatID, "Great! Drop your Telegram bot token from @BotFather and I’ll connect straight away."))
 		return
 
 	case "ask_token":
@@ -63,11 +70,12 @@ func ContinueAIOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.BotAPI
 		business := state["business_name"]
 		token := state["token"]
 
-		// ✅ Register Tenant using centralized helper (handles bot verification + webhook)
-		tenant, err := onboarding.RegisterTenant(db, chatID, business, token)
+		bot.Send(tgbotapi.NewMessage(chatID, "✨ Nice! I’m plugging everything in now—hang tight."))
+
+		tenant, err := onboarding.RegisterTenant(db, chatID, business, state["email"], token)
 		if err != nil {
 			logger.Error("tenant registration failed", zap.Error(err))
-			msg := fmt.Sprintf("Couldn't finish setup: %v\n\nCheck your bot token and try again.", err)
+			msg := "Hmm, I couldn’t connect with that token. Make sure your bot is active in Telegram, privacy mode is off, and try pasting the token again."
 			bot.Send(tgbotapi.NewMessage(chatID, msg))
 			return
 		}
@@ -75,7 +83,13 @@ func ContinueAIOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.BotAPI
 		OnboardingSessions.Delete(chatID)
 
 		// ✅ Confirmation Message
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Done! %s is connected. You can schedule posts, manage AI replies, and view analytics.\n\nLet's personalize your assistant now.", business)))
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("🎉 All set! %s is live and ready to work.", business)))
+		bot.Send(tgbotapi.NewMessage(chatID, "Next up, we’ll teach your assistant how to speak like your brand."))
+
+		control := tgbotapi.NewMessage(chatID,
+			"🎛️ *Brancr Control Center*\nWhenever you say “menu” to your assistant you can:\n\n• Connect social accounts\n• Manage business info\n• Peek at analytics\n• Customize AI responses\n• Grab tutorials\n\nPing your assistant anytime to explore.")
+		control.ParseMode = "Markdown"
+		bot.Send(control)
 
 		// ⏳ Wait briefly for clarity before starting persona onboarding
 		time.Sleep(2 * time.Second)

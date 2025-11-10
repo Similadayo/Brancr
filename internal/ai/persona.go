@@ -59,36 +59,50 @@ func ContinuePersonaOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.B
 		state["step"] = "ask_tone"
 		PersonaSessions.Store(chatID, state)
 
-		reply := fmt.Sprintf("Cool, %s it is. How should %s sound when talking to customers? (e.g., friendly, calm, confident, witty)", text, text)
+		reply := fmt.Sprintf("Awesome — %s it is 💁🏽‍♀️\n\nHow would you like me to sound?\n• Friendly & confident\n• Calm & kind\n• Bold & witty\n• Corporate & clear", text)
 		bot.Send(tgbotapi.NewMessage(chatID, reply))
 		return
 
 	// --------------------------------------------
 	case "ask_tone":
-		state["tone"] = text
+		canonical, ok := normalizeToneChoice(text)
+		if !ok {
+			bot.Send(tgbotapi.NewMessage(chatID, "Got it! Pick a style from the list (Friendly & confident, Calm & kind, Bold & witty, Corporate & clear)."))
+			return
+		}
+		state["tone"] = canonical
 		state["step"] = "ask_humor"
 		PersonaSessions.Store(chatID, state)
 
-		bot.Send(tgbotapi.NewMessage(chatID, "Got it. Should I have a sense of humor? (yes/no)"))
+		bot.Send(tgbotapi.NewMessage(chatID, "Should I have a sense of humor? (Yes or No)"))
 		return
 
 	// --------------------------------------------
 	case "ask_humor":
-		humor := strings.Contains(strings.ToLower(text), "y")
-		state["humor"] = fmt.Sprintf("%v", humor)
+		humor := strings.TrimSpace(strings.ToLower(text))
+		if humor != "yes" && humor != "no" && humor != "y" && humor != "n" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Just say Yes or No — do you want me to keep things playful?"))
+			return
+		}
+		state["humor"] = fmt.Sprintf("%v", humor == "yes" || humor == "y")
 		state["step"] = "ask_style"
 		PersonaSessions.Store(chatID, state)
 
-		bot.Send(tgbotapi.NewMessage(chatID, "Last thing - describe my vibe. (e.g., luxury, bold, youthful, corporate, relaxed)"))
+		bot.Send(tgbotapi.NewMessage(chatID, "Last thing — what’s the overall vibe?\n• Luxury\n• Youthful\n• Relaxed\n• Corporate\n• Trendy"))
 		return
 
 	// --------------------------------------------
 	case "ask_style":
-		state["style"] = text
+		style, ok := normalizeVibeChoice(text)
+		if !ok {
+			bot.Send(tgbotapi.NewMessage(chatID, "Pick whichever fits best: Luxury, Youthful, Relaxed, Corporate, or Trendy."))
+			return
+		}
+		state["style"] = style
 		botName := state["bot_name"]
 		tone := state["tone"]
 		humor := state["humor"] == "true"
-		style := state["style"]
+		styleChoice := state["style"]
 
 		persona := storage.Persona{
 			TenantID:   tenantID,
@@ -96,7 +110,7 @@ func ContinuePersonaOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.B
 			Tone:       tone,
 			Language:   "en",
 			Humor:      humor,
-			StyleNotes: style,
+			StyleNotes: styleChoice,
 		}
 
 		if err := db.Where("tenant_id = ?", tenantID).Assign(persona).FirstOrCreate(&persona).Error; err != nil {
@@ -107,8 +121,49 @@ func ContinuePersonaOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.B
 
 		PersonaSessions.Delete(chatID)
 
-		reply := fmt.Sprintf("Done! I'm %s now.\nTone: %s | Humor: %v | Style: %s\n\nReady to go.", botName, tone, humor, style)
-		bot.Send(tgbotapi.NewMessage(chatID, reply))
+		humorLine := "not really into jokes"
+		if humor {
+			humorLine = "always ready with a light joke"
+		}
+		summary := fmt.Sprintf("✨ All set!\nI’m %s, your %s assistant with a %s vibe.\nI’m %s and ready to help with content, captions, and customer chats.", botName, tone, styleChoice, humorLine)
+		bot.Send(tgbotapi.NewMessage(chatID, summary))
+
+		hint := "Send me any media or say “menu” when you want to connect accounts, schedule posts, or check stats."
+		bot.Send(tgbotapi.NewMessage(chatID, hint))
 	}
 	go StartBusinessProfileOnboarding(ctx, db, bot, tenantID, chatID, client, logger)
+}
+
+func normalizeToneChoice(input string) (string, bool) {
+	value := strings.ToLower(strings.TrimSpace(input))
+	switch value {
+	case "friendly & confident", "friendly confident", "friendly", "confident", "friendly and confident":
+		return "Friendly & confident", true
+	case "calm & kind", "calm kind", "calm", "kind", "calm and kind":
+		return "Calm & kind", true
+	case "bold & witty", "bold witty", "bold", "witty", "bold and witty":
+		return "Bold & witty", true
+	case "corporate & clear", "corporate clear", "corporate", "clear", "corporate and clear":
+		return "Corporate & clear", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeVibeChoice(input string) (string, bool) {
+	value := strings.ToLower(strings.TrimSpace(input))
+	switch value {
+	case "luxury":
+		return "Luxury", true
+	case "youthful":
+		return "Youthful", true
+	case "relaxed":
+		return "Relaxed", true
+	case "corporate":
+		return "Corporate", true
+	case "trendy":
+		return "Trendy", true
+	default:
+		return "", false
+	}
 }

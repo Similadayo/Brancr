@@ -32,7 +32,7 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 	logger := m.Logger.With(zap.Uint("tenant_id", tenantID))
 
 	// Send immediate acknowledgment
-	bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "📤 Uploading to Cloudinary..."))
+	bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "🤔 Got it! Give me a second to prep your upload."))
 
 	cloudURL := os.Getenv("CLOUDINARY_URL")
 	if cloudURL == "" {
@@ -40,7 +40,7 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "❌ Media storage is not configured. Please contact support."))
 		return
 	}
-	
+
 	logger.Info("🖼️ HandleMediaUpdate started",
 		zap.Int("photo_count", len(msg.Photo)),
 		zap.Bool("has_video", msg.Video != nil))
@@ -148,13 +148,6 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, bot *tgb
 		zap.Int("count", len(items)))
 
 	// ✅ Trigger interactive post creation flow with conversational message
-	if assetType == "carousel" {
-		var urls []string
-		json.Unmarshal([]byte(asset.URLs), &urls)
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Got %d images! Ready to set up your post.", len(urls))))
-	} else {
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ %s uploaded! Let's set it up.", strings.Title(assetType))))
-	}
 	m.StartPostFlow(bot, chatID, asset.ID)
 
 }
