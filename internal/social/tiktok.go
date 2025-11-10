@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	tikTokBaseAPI            = "https://open.tiktokapis.com"
-	tikTokInitUploadPath     = "/v2/post/publish/video/init/"
-	tikTokFinalizeUploadPath = "/v2/post/publish/video/complete/"
-	tikTokStatusPath         = "/v2/post/publish/video/query/"
-	tikTokCreatorInfoPath    = "/v2/post/publish/creator_info/query/"
-	tikTokRefreshPath        = "/v2/oauth/token/"
+	tikTokBaseAPI         = "https://open.tiktokapis.com"
+	tikTokInitUploadPath  = "/v2/post/publish/inbox/video/init/"
+	tikTokPublishPath     = "/v2/post/publish/video/init/"
+	tikTokStatusPath      = "/v2/post/publish/status/fetch/"
+	tikTokCreatorInfoPath = "/v2/post/publish/creator_info/query/"
+	tikTokRefreshPath     = "/v2/oauth/token/"
 )
 
 // TikTokConnector handles posting media to TikTok using the Content Posting API.
@@ -94,12 +94,8 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return fmt.Errorf("tiktok upload failed: %w", err)
 	}
 
-	if err := t.finalizeUpload(ctx, accessToken, session); err != nil {
-		return fmt.Errorf("tiktok finalize upload failed: %w", err)
-	}
-
-	if err := t.pollPublishStatus(ctx, accessToken, session.PublishID); err != nil {
-		return fmt.Errorf("tiktok publish status check failed: %w", err)
+	if err := t.publishVideo(ctx, accessToken, session, caption); err != nil {
+		return fmt.Errorf("tiktok publish failed: %w", err)
 	}
 
 	t.Logger.Info("✅ TikTok video published",
@@ -356,18 +352,31 @@ func (t *TikTokConnector) uploadVideo(ctx context.Context, session *tiktokSessio
 	return nil
 }
 
-func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken string, session *tiktokSession) error {
-	payload := map[string]string{
-		"publish_id": session.PublishID,
-		"video_id":   session.VideoID,
+func (t *TikTokConnector) publishVideo(ctx context.Context, accessToken string, session *tiktokSession, caption string) error {
+	payload := map[string]interface{}{
+		"post_info": map[string]interface{}{
+			"title":                    defaultTikTokTitle(caption),
+			"description":              "",
+			"privacy_level":            "PUBLIC_TO_EVERYONE",
+			"disable_duet":             false,
+			"disable_stitch":           false,
+			"disable_comment":          false,
+			"video_cover_timestamp_ms": 1000,
+		},
+		"source_info": map[string]interface{}{
+			"source":    "PULL_FROM_URL",
+			"video_url": "", // Not used in inbox flow
+		},
+		"post_mode":  "DIRECT_POST",
+		"media_type": "VIDEO",
 	}
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokFinalizeUploadPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokPublishPath, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	resp, err := t.httpClient.Do(req)
@@ -381,11 +390,16 @@ func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken string
 		return err
 	}
 
+	t.Logger.Debug("TikTok publish response", zap.String("resp", string(respBody)))
+
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("tiktok finalize upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return fmt.Errorf("tiktok publish failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var parsed struct {
+		Data struct {
+			PublishID string `json:"publish_id"`
+		} `json:"data"`
 		Error      json.RawMessage `json:"error"`
 		Message    string          `json:"message"`
 		StatusCode int             `json:"status_code"`
@@ -393,71 +407,16 @@ func (t *TikTokConnector) finalizeUpload(ctx context.Context, accessToken string
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return err
 	}
+
 	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
 	if apiErr.Code != 0 {
-		return fmt.Errorf("tiktok finalize upload error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
-	}
-	return nil
-}
-
-func (t *TikTokConnector) pollPublishStatus(ctx context.Context, accessToken, publishID string) error {
-	if publishID == "" {
-		return errors.New("publish id missing for status check")
+		return fmt.Errorf("tiktok publish error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 
-	payload := map[string]string{"publish_id": publishID}
-	body, _ := json.Marshal(payload)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokStatusPath, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	for attempt := 0; attempt < 3; attempt++ {
-		resp, err := t.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		respBody, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return readErr
-		}
-
-		if resp.StatusCode >= 400 {
-			return fmt.Errorf("tiktok publish status failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-		}
-
-		var parsed struct {
-			Data struct {
-				Status string `json:"status"`
-			} `json:"data"`
-			Error      json.RawMessage `json:"error"`
-			Message    string          `json:"message"`
-			StatusCode int             `json:"status_code"`
-		}
-		if err := json.Unmarshal(respBody, &parsed); err != nil {
-			return err
-		}
-		apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
-		if apiErr.Code != 0 {
-			return fmt.Errorf("tiktok publish status error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
-		}
-
-		status := strings.ToUpper(parsed.Data.Status)
-		if status == "" || status == "PROCESSING" {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if status != "SUCCESS" {
-			return fmt.Errorf("tiktok publish reported status %s", status)
-		}
-		return nil
+	if parsed.Data.PublishID != "" {
+		session.PublishID = parsed.Data.PublishID
 	}
 
-	t.Logger.Warn("TikTok publish status polling timed out", zap.String("publish_id", publishID))
 	return nil
 }
 
