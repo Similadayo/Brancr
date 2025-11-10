@@ -35,6 +35,7 @@ type Config struct {
 	TikTokScopes         string
 	TikTokDefaultPrivacy string
 	CORSAllowedOrigins   string
+	TenantCookieDomain   string
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -72,6 +73,7 @@ func Load() *Config {
 		TikTokScopes:         getEnv("TIKTOK_SCOPES", "user.info.basic,video.list,video.upload,video.publish"),
 		TikTokDefaultPrivacy: os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
 		CORSAllowedOrigins:   getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+		TenantCookieDomain:   getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
 	}
 
 	validateConfig(cfg)

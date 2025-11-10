@@ -164,9 +164,10 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
+		Domain:   h.cookieDomain(),
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   h.secureCookies(),
+		SameSite: http.SameSiteNoneMode,
+		Secure:   true,
 	}
 	http.SetCookie(w, cookie)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
@@ -243,28 +244,27 @@ func (h *Handler) setSessionCookie(w http.ResponseWriter, tenantID uint, email s
 		Value:    token,
 		Path:     "/",
 		Expires:  time.Now().Add(sessionTTL),
+		Domain:   h.cookieDomain(),
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   h.secureCookies(),
-	}
-
-	// ensure domain is set if provided
-	if h.Config.PublicURL != "" {
-		if u, err := url.Parse(h.Config.PublicURL); err == nil && u.Host != "" {
-			cookie.Domain = u.Hostname()
-		}
+		SameSite: http.SameSiteNoneMode,
+		Secure:   true,
 	}
 
 	http.SetCookie(w, cookie)
 	return nil
 }
 
-func (h *Handler) secureCookies() bool {
-	env := strings.ToLower(h.Config.AppEnv)
-	if env == "production" || env == "prod" || env == "staging" || env == "stage" {
-		return true
+func (h *Handler) cookieDomain() string {
+	if h.Config.TenantCookieDomain != "" {
+		return h.Config.TenantCookieDomain
 	}
-	return false
+
+	if h.Config.PublicURL != "" {
+		if u, err := url.Parse(h.Config.PublicURL); err == nil && u.Host != "" {
+			return u.Hostname()
+		}
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
