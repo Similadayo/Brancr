@@ -23,8 +23,8 @@ import (
 const (
 	tikTokBaseAPI            = "https://open.tiktokapis.com/v2"
 	tikTokAltContentBase     = "https://open-api.tiktok.com/v2"
-	tikTokInitUploadPath     = "/post/publish/video/init/"
-	tikTokFinalizeUploadPath = "/post/publish/video/publish/"
+	tikTokInitUploadPath     = "/post/publish/inbox/video/init/"
+	tikTokFinalizeUploadPath = "/post/publish/inbox/video/publish/"
 	tikTokStatusPath         = "/post/publish/status/fetch/"
 	tikTokCreatorInfoPath    = "/post/publish/creator_info/query/"
 	tikTokRefreshPath        = "/oauth/token/"
@@ -242,15 +242,14 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	payload := map[string]interface{}{
-		"source_info": map[string]interface{}{
-			"source":            "FILE_UPLOAD",
-			"video_size":        videoSize,
-			"chunk_size":        videoSize,
-			"total_chunk_count": 1,
-		},
 		"post_info": map[string]interface{}{
-			"title":         truncateCaption(caption, 150),
-			"privacy_level": "PUBLIC",
+			"title":          defaultTikTokTitle(caption),
+			"privacy_level":  "PUBLIC_TO_EVERYONE",
+			"disable_duet":   false,
+			"disable_stitch": false,
+		},
+		"source_info": map[string]interface{}{
+			"source": "FILE_UPLOAD",
 		},
 	}
 
@@ -594,6 +593,14 @@ func truncateCaption(input string, limit int) string {
 	}
 	runes := []rune(input)
 	return string(runes[:limit])
+}
+
+func defaultTikTokTitle(caption string) string {
+	title := truncateCaption(caption, 150)
+	if strings.TrimSpace(title) != "" {
+		return title
+	}
+	return "Posted via Brancr"
 }
 
 func firstVideoURL(asset *storage.MediaAsset) (string, error) {
