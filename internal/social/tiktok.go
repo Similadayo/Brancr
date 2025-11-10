@@ -243,10 +243,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 
 	payload := map[string]interface{}{
 		"post_info": map[string]interface{}{
-			"title":          defaultTikTokTitle(caption),
-			"privacy_level":  "PUBLIC_TO_EVERYONE",
-			"disable_duet":   false,
-			"disable_stitch": false,
+			"title": defaultTikTokTitle(caption),
 		},
 		"source_info": map[string]interface{}{
 			"source": "FILE_UPLOAD",
