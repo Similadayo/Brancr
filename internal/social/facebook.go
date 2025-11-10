@@ -39,7 +39,7 @@ func (f *FacebookConnector) PostMedia(ctx context.Context, acc *storage.SocialAc
 		}
 	}
 
-	// Handle carousel (multiple media items)
+	// Handle carousel (multiple images) vs single image
 	if len(urls) > 1 {
 		return f.postCarousel(ctx, client, acc, urls, caption)
 	}
@@ -85,27 +85,49 @@ func (f *FacebookConnector) PostMedia(ctx context.Context, acc *storage.SocialAc
 
 // postCarousel posts multiple images as a Facebook carousel/album
 func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Client, acc *storage.SocialAccount, urls []string, caption string) error {
-	// Step 1: Upload each media to get media IDs
-	var mediaIDs []string
+	// Step 1: Upload each photo to get photo IDs
+	var photoIDs []string
 	uploadURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/photos", acc.PageID)
 	if acc.PageID == "" {
 		uploadURL = "https://graph.facebook.com/v18.0/me/photos"
 	}
 
 	for _, url := range urls {
-		var mediaID string
-		var err error
-
-		if isVideoURL(url) {
-			mediaID, err = f.uploadCarouselVideo(ctx, client, acc, url)
-		} else {
-			mediaID, err = f.uploadCarouselPhoto(ctx, client, acc, uploadURL, url)
+		payload := map[string]string{
+			"url":          url,
+			"published":    "false", // Don't publish yet, just upload
+			"access_token": acc.AccessToken,
 		}
+
+		jsonData, _ := json.Marshal(payload)
+		req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, strings.NewReader(string(jsonData)))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to create upload request: %w", err)
 		}
 
-		mediaIDs = append(mediaIDs, mediaID)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("upload request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("Facebook upload error %d: %s", resp.StatusCode, string(body))
+		}
+
+		var uploadResult map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&uploadResult); err != nil {
+			return fmt.Errorf("failed to parse upload response: %w", err)
+		}
+
+		photoID, ok := uploadResult["id"].(string)
+		if !ok {
+			return fmt.Errorf("no photo ID returned: %v", uploadResult)
+		}
+
+		photoIDs = append(photoIDs, photoID)
 	}
 
 	// Step 2: Create post with attached_media (carousel)
@@ -116,9 +138,9 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 
 	// Build attached_media array as JSON string
 	var attachedMedia []map[string]string
-	for _, mediaID := range mediaIDs {
+	for _, photoID := range photoIDs {
 		attachedMedia = append(attachedMedia, map[string]string{
-			"media_fbid": mediaID,
+			"media_fbid": photoID,
 		})
 	}
 
@@ -149,85 +171,6 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 
 	fmt.Printf("✅ [Facebook] Posted carousel (%d images) successfully to PageID=%s\n", len(urls), acc.PageID)
 	return nil
-}
-
-func (f *FacebookConnector) uploadCarouselPhoto(ctx context.Context, client *http.Client, acc *storage.SocialAccount, uploadURL, mediaURL string) (string, error) {
-	payload := map[string]string{
-		"url":          mediaURL,
-		"published":    "false",
-		"access_token": acc.AccessToken,
-	}
-
-	jsonData, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, strings.NewReader(string(jsonData)))
-	if err != nil {
-		return "", fmt.Errorf("failed to create upload request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("upload request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Facebook upload error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var uploadResult map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&uploadResult); err != nil {
-		return "", fmt.Errorf("failed to parse upload response: %w", err)
-	}
-
-	photoID, ok := uploadResult["id"].(string)
-	if !ok {
-		return "", fmt.Errorf("no photo ID returned: %v", uploadResult)
-	}
-
-	return photoID, nil
-}
-
-func (f *FacebookConnector) uploadCarouselVideo(ctx context.Context, client *http.Client, acc *storage.SocialAccount, mediaURL string) (string, error) {
-	uploadURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/videos", acc.PageID)
-	if acc.PageID == "" {
-		uploadURL = "https://graph.facebook.com/v18.0/me/videos"
-	}
-
-	form := url.Values{}
-	form.Set("file_url", mediaURL)
-	form.Set("published", "false")
-	form.Set("access_token", acc.AccessToken)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", uploadURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("failed to create video upload request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("video upload request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Facebook video upload error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var uploadResult map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&uploadResult); err != nil {
-		return "", fmt.Errorf("failed to parse video upload response: %w", err)
-	}
-
-	videoID, ok := uploadResult["id"].(string)
-	if !ok {
-		return "", fmt.Errorf("no video ID returned: %v", uploadResult)
-	}
-
-	return videoID, nil
 }
 
 func (f *FacebookConnector) postVideo(ctx context.Context, client *http.Client, acc *storage.SocialAccount, videoURL, caption string) error {

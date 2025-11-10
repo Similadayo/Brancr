@@ -23,6 +23,7 @@ func SetupRouter(app *App) http.Handler {
 	r.Use(middleware.RecoveryMiddleware(app.Services.Logger))
 	r.Use(middleware.LoggingMiddleware(app.Services.Logger))
 	r.Use(middleware.MetricsMiddleware(appMetrics))
+	r.Use(middleware.CORSMiddleware(app.Config.CORSAllowedOrigins))
 
 	// Static file serving for admin assets
 	fileServer := http.FileServer(http.Dir("static"))
