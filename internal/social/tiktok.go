@@ -87,9 +87,13 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return err
 	}
 
-	session, err := t.initUploadWithURL(ctx, accessToken, caption, videoURL)
+	session, err := t.initUpload(ctx, accessToken, caption, videoSize)
 	if err != nil {
 		return fmt.Errorf("tiktok init upload failed: %w", err)
+	}
+
+	if err := t.uploadVideo(ctx, session, videoURL); err != nil {
+		return fmt.Errorf("tiktok upload failed: %w", err)
 	}
 
 	t.Logger.Info("✅ TikTok video published",
@@ -243,7 +247,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	body, _ := json.Marshal(payload)
-	t.Logger.Debug("TikTok init payload", zap.String("json", string(body)))
+	t.Logger.Info("TikTok init payload", zap.String("json", string(body)))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokInitUploadPath, bytes.NewReader(body))
 	if err != nil {
@@ -264,6 +268,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	if resp.StatusCode >= 400 {
+		t.Logger.Warn("TikTok init upload response", zap.Int("status", resp.StatusCode), zap.String("body", strings.TrimSpace(string(respBody))))
 		return nil, fmt.Errorf("tiktok init upload failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
@@ -283,6 +288,7 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	if parsed.Error.Code != "" && parsed.Error.Code != "ok" {
+		t.Logger.Warn("TikTok init logical error", zap.String("code", parsed.Error.Code), zap.String("message", parsed.Error.Message), zap.String("log_id", parsed.Error.LogID))
 		return nil, fmt.Errorf("tiktok init upload error: %s - %s (log_id: %s)", parsed.Error.Code, parsed.Error.Message, parsed.Error.LogID)
 	}
 

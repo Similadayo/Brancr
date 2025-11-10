@@ -7,6 +7,7 @@ import (
 	"image"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -312,9 +313,11 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 	platformKey := strings.ToLower(platform)
 
 	if platformKey == "instagram" && assetType != "video" && assetType != "reel" {
-		if err := validateInstagramAspectRatio(ctx, urls); err != nil {
+		sanitized, err := normalizeInstagramAspectRatio(ctx, urls, s.Logger)
+		if err != nil {
 			return fmt.Errorf("instagram media validation failed: %w", err)
 		}
+		urls = sanitized
 	}
 
 	// Get platform connector
@@ -435,47 +438,116 @@ const (
 	instagramMaxAspectRatio = 1.91
 )
 
-func validateInstagramAspectRatio(ctx context.Context, urls []string) error {
+func normalizeInstagramAspectRatio(ctx context.Context, urls []string, logger *zap.Logger) ([]string, error) {
 	if len(urls) == 0 {
-		return fmt.Errorf("no media provided")
+		return nil, fmt.Errorf("no media provided")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
+	result := make([]string, len(urls))
 
-	for _, mediaURL := range urls {
+	for idx, mediaURL := range urls {
+		result[idx] = mediaURL
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
 		if err != nil {
-			return fmt.Errorf("failed to build request for %s: %w", mediaURL, err)
+			return nil, fmt.Errorf("failed to build request for %s: %w", mediaURL, err)
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("failed to download media %s: %w", mediaURL, err)
+			return nil, fmt.Errorf("failed to download media %s: %w", mediaURL, err)
 		}
 
 		contentType := resp.Header.Get("Content-Type")
 		if contentType != "" && !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 			resp.Body.Close()
-			// Skip non-image media (video/reels) - Instagram will handle validation
+			// Skip non-image media (video/reels)
 			continue
 		}
 
-		// Decode image dimensions without loading the full image into memory
 		cfg, _, err := image.DecodeConfig(io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
 		if err != nil {
-			return fmt.Errorf("unable to inspect image %s: %w", mediaURL, err)
+			return nil, fmt.Errorf("unable to inspect image %s: %w", mediaURL, err)
 		}
 
 		if cfg.Height == 0 {
-			return fmt.Errorf("image %s has invalid dimensions", mediaURL)
+			return nil, fmt.Errorf("image %s has invalid dimensions", mediaURL)
 		}
 
 		ratio := float64(cfg.Width) / float64(cfg.Height)
-		if ratio < instagramMinAspectRatio || ratio > instagramMaxAspectRatio {
-			return fmt.Errorf("image %s has aspect ratio %.2f. Instagram requires between %.2f and %.2f", mediaURL, ratio, instagramMinAspectRatio, instagramMaxAspectRatio)
+		if ratio >= instagramMinAspectRatio && ratio <= instagramMaxAspectRatio {
+			continue
 		}
+
+		transformation := "c_fill,g_auto,ar_4:5"
+		targetRatio := instagramMinAspectRatio
+		if ratio > instagramMaxAspectRatio {
+			transformation = "c_fill,g_auto,ar_1.91:1"
+			targetRatio = instagramMaxAspectRatio
+		}
+
+		transformedURL, err := applyCloudinaryTransformation(mediaURL, transformation)
+		if err != nil {
+			return nil, fmt.Errorf("image %s has aspect ratio %.2f. Instagram requires between %.2f and %.2f (automatic resize failed: %w)", mediaURL, ratio, instagramMinAspectRatio, instagramMaxAspectRatio, err)
+		}
+
+		if logger != nil {
+			logger.Info("Adjusted Instagram carousel image",
+				zap.String("original_url", mediaURL),
+				zap.String("transformed_url", transformedURL),
+				zap.Float64("original_ratio", ratio),
+				zap.Float64("target_ratio", targetRatio))
+		}
+
+		result[idx] = transformedURL
 	}
 
-	return nil
+	return result, nil
+}
+
+func applyCloudinaryTransformation(mediaURL, transformation string) (string, error) {
+	parsed, err := url.Parse(mediaURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid media URL: %w", err)
+	}
+
+	if !strings.Contains(parsed.Host, "cloudinary.com") {
+		return "", fmt.Errorf("media host %s is not Cloudinary", parsed.Host)
+	}
+
+	const uploadSegment = "/upload/"
+	idx := strings.Index(parsed.Path, uploadSegment)
+	if idx == -1 {
+		return "", fmt.Errorf("media URL does not contain an upload segment")
+	}
+
+	prefix := parsed.Path[:idx+len(uploadSegment)]
+	suffix := parsed.Path[idx+len(uploadSegment):]
+	if suffix == "" {
+		return "", fmt.Errorf("cloudinary path suffix missing")
+	}
+
+	segments := strings.Split(suffix, "/")
+	if len(segments) == 0 {
+		return "", fmt.Errorf("cloudinary path malformed")
+	}
+
+	// Strip existing transformations until we reach the version segment (starts with 'v').
+	for len(segments) > 0 && !strings.HasPrefix(segments[0], "v") {
+		if segments[0] == transformation {
+			return mediaURL, nil
+		}
+		segments = segments[1:]
+	}
+
+	if len(segments) == 0 {
+		return "", fmt.Errorf("cloudinary path missing version segment")
+	}
+
+	newSegments := append([]string{transformation}, segments...)
+	parsed.Path = prefix + strings.Join(newSegments, "/")
+
+	return parsed.String(), nil
 }
