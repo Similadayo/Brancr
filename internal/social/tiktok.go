@@ -230,14 +230,6 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 
 func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string) (*tiktokSession, error) {
 	payload := map[string]interface{}{
-		"post_info": map[string]interface{}{
-			"title":           defaultTikTokTitle(caption),
-			"description":     "",
-			"privacy_level":   "PUBLIC_TO_EVERYONE",
-			"disable_duet":    false,
-			"disable_stitch":  false,
-			"disable_comment": false,
-		},
 		"source_info": map[string]interface{}{
 			"source": "FILE_UPLOAD",
 		},
