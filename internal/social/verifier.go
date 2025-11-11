@@ -176,11 +176,17 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 		return fmt.Sprintf("✅ Facebook connected as %s (user ID: %s)\n📄 Pages: %v", name, id, pageList), nil
 
 	case "whatsapp":
-		if acc.PageID == "" {
-			return "", fmt.Errorf("WhatsApp phone_number_id missing — reconnect the account")
+		if acc.AccessToken != "" {
+			if decrypted, err := utils.DecryptToken(acc.AccessToken); err == nil {
+				acc.AccessToken = decrypted
+			}
 		}
 
-		endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,display_phone_number,verified_name,quality_rating&access_token=%s",
+		if acc.PageID == "" || acc.AccessToken == "" {
+			return "", fmt.Errorf("WhatsApp configuration incomplete — reconnect the account")
+		}
+
+		endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,display_phone_number,verified_name,quality_rating,status&access_token=%s",
 			acc.PageID, acc.AccessToken)
 		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 		if err != nil {
@@ -203,10 +209,23 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 			DisplayPhoneNumber string `json:"display_phone_number"`
 			VerifiedName       string `json:"verified_name"`
 			QualityRating      string `json:"quality_rating"`
+			Status             string `json:"status"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return "", fmt.Errorf("invalid WhatsApp response: %w", err)
 		}
+
+		if payload.ID != "" {
+			acc.ExternalID = payload.ID
+			acc.PageID = payload.ID
+		}
+		if payload.VerifiedName != "" {
+			acc.Username = payload.VerifiedName
+		} else if payload.DisplayPhoneNumber != "" {
+			acc.Username = payload.DisplayPhoneNumber
+		}
+
+		persistSocialAccount(acc, acc.AccessToken, db)
 
 		name := payload.VerifiedName
 		if name == "" {
@@ -216,11 +235,12 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 			name = acc.Username
 		}
 
-		persistSocialAccount(acc, acc.AccessToken, db)
-
 		msg := fmt.Sprintf("✅ WhatsApp Business number verified: %s", name)
 		if payload.QualityRating != "" {
 			msg += fmt.Sprintf("\nQuality rating: %s", payload.QualityRating)
+		}
+		if payload.Status != "" {
+			msg += fmt.Sprintf("\nStatus: %s", payload.Status)
 		}
 		return msg, nil
 
