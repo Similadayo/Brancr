@@ -94,10 +94,11 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 	if _, already := m.sessionFinalizers.LoadOrStore(key, struct{}{}); already {
 		return
 	}
-	go func() {
-		defer m.sessionFinalizers.Delete(key)
-		m.FinalizeCarouselSession(ctx, bot, tenantID, msg.Chat.ID, sessionID)
-	}()
+	// cleanup guard after a short window so future uploads can reuse the key
+	time.AfterFunc(2*time.Minute, func() {
+		m.sessionFinalizers.Delete(key)
+	})
+	go m.FinalizeCarouselSession(ctx, bot, tenantID, msg.Chat.ID, sessionID)
 }
 
 func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sessionID string) {

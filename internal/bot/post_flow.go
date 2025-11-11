@@ -31,10 +31,9 @@ type PostSession struct {
 var tenantSessions = make(map[int64]*PostSession) // chatID → session
 
 func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, assetID uint) {
-	// Load media asset to check type
 	var ma storage.MediaAsset
 	if err := m.DB.First(&ma, assetID).Error; err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find that media."))
+		bot.Send(tgbotapi.NewMessage(chatID, "I couldn’t find that upload. Mind sending it again?"))
 		return
 	}
 
@@ -46,148 +45,120 @@ func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, ass
 	}
 	tenantSessions[chatID] = sess
 
+	prompt := fmt.Sprintf("✅ %s uploaded and ready. Want me to turn it into a post?", strings.Title(ma.Type))
 	if ma.Type == "carousel" {
 		var urls []string
 		_ = json.Unmarshal([]byte(ma.URLs), &urls)
-		sendPlain(bot, chatID, fmt.Sprintf("✅ Fresh drop! I’ve got %d shots lined up. Turn them into a post now?", len(urls)))
-	} else {
-		sendPlain(bot, chatID, fmt.Sprintf("✅ %s uploaded. Want me to shape it into a post?", strings.Title(ma.Type)))
+		prompt = fmt.Sprintf("✅ Got %d shots queued. Want me to turn them into a post?", len(urls))
 	}
+
+	msg := tgbotapi.NewMessage(chatID, prompt)
+	msg.ReplyMarkup = yesNoKeyboard()
+	bot.Send(msg)
+}
+
+func yesNoKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Yes", "postflow:yes"),
+			tgbotapi.NewInlineKeyboardButtonData("Not now", "postflow:skip"),
+		),
+	)
 }
 
 func (m *TenantBotManager) promptFirstStep(bot *tgbotapi.BotAPI, chatID int64, sess *PostSession) {
 	var ma storage.MediaAsset
 	if err := m.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find that media."))
+		bot.Send(tgbotapi.NewMessage(chatID, "Couldn’t find that media anymore—try re-uploading."))
 		delete(tenantSessions, chatID)
 		return
 	}
 
 	if sess.MediaType == "carousel" {
-		var urls []string
-		_ = json.Unmarshal([]byte(ma.URLs), &urls)
-		sendPlain(bot, chatID, "Keep everything together as one carousel? (Yes or No)")
-	} else {
-		sendPlain(bot, chatID, "Want to give this a quick internal nickname? (Type it or say 'skip').")
+		sess.Step = 1
+		msg := tgbotapi.NewMessage(chatID, "Keep this together as one carousel?")
+		msg.ReplyMarkup = yesNoKeyboard()
+		bot.Send(msg)
+		return
 	}
+
+	sess.Step = 2
+	msg := tgbotapi.NewMessage(chatID, "Want to give this a quick internal nickname? (Type it or say 'skip'.)")
+	bot.Send(msg)
 }
 
 func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, text string) {
 	sess, ok := tenantSessions[chatID]
 	if !ok {
-		return // no active session
+		return
 	}
-	rawText := strings.TrimSpace(text)
-	lower := strings.ToLower(rawText)
+
+	lower := strings.ToLower(strings.TrimSpace(text))
 
 	switch sess.Step {
 	case 0:
-		if lower == "yes" || lower == "y" || lower == "sure" || lower == "let's go" || lower == "lets go" {
-			sess.Step = 1
+		if lower == "yes" || lower == "y" {
 			m.promptFirstStep(bot, chatID, sess)
 			return
 		}
-		if lower == "no" || lower == "not now" || lower == "later" || lower == "stop" {
+		if lower == "no" || lower == "not now" || lower == "skip" {
 			delete(tenantSessions, chatID)
-			sendPlain(bot, chatID, "All right, I’ll keep it on standby. Ping me when you’re ready.")
+			bot.Send(tgbotapi.NewMessage(chatID, "No problem—just drop me a note when you want to schedule it."))
 			return
 		}
-		sendPlain(bot, chatID, "Just say yes if you want me to prep it now, or ‘not now’ to leave it for later.")
-		return
+		bot.Send(tgbotapi.NewMessage(chatID, "Just say yes if you want me to prep it now, or "+"‘not now’ to leave it for later."))
 
-	case 1: // Carousel confirmation OR name
-		if sess.MediaType == "carousel" {
-			// Carousel confirmation
-			if lower == "yes" || lower == "y" || lower == "yeah" || lower == "sure" {
-				sess.IsCarousel = true
-			} else if lower == "no" || lower == "n" {
-				sess.IsCarousel = false
-			} else {
-				sendPlain(bot, chatID, "Give me a quick yes or no so I know whether to keep these together.")
-				return
-			}
-			sess.Step = 2 // Move to name step
-			sendPlain(bot, chatID, "Perfect. Want to tag it with an internal name? (Or reply 'skip').")
+	case 1:
+		if lower == "yes" || lower == "y" {
+			sess.IsCarousel = true
+			sess.Step = 2
+			bot.Send(tgbotapi.NewMessage(chatID, "Perfect. Want to tag it with an internal name? (Type it or say 'skip'.)"))
 			return
 		}
-		// Name step (single media)
-		if lower != "skip" && rawText != "" {
-			sess.Name = rawText
+		if lower == "no" || lower == "n" {
+			sess.IsCarousel = false
+			sess.Step = 2
+			bot.Send(tgbotapi.NewMessage(chatID, "Got it. Want to tag it with an internal name? (Type it or say 'skip'.)"))
+			return
 		}
-		sess.Step = 3 // Move to caption step
-		sendPlain(bot, chatID, "Want me to spin a caption for you, or do you have something in mind? (Reply 'AI caption', type yours, or say 'skip').")
-		return
+		bot.Send(tgbotapi.NewMessage(chatID, "Give me a quick yes or no so I know whether to keep these together."))
 
-	case 2: // Name (if carousel confirmed) OR Caption (if single media)
-		// Check if this is name step (after carousel confirmation)
-		if sess.MediaType == "carousel" && sess.Name == "" {
-			// This is the name step after carousel confirmation
-			if lower != "skip" && rawText != "" {
-				sess.Name = rawText
-			}
-			sess.Step = 3 // Move to caption
-			sendPlain(bot, chatID, "Want me to craft a caption? Reply 'AI caption', type your own, or say 'skip'.")
-			return
+	case 2:
+		if lower != "skip" && text != "" {
+			sess.Name = text
 		}
-		// Otherwise this is caption step (single media - step 2 was name)
+		sess.Step = 3
+		bot.Send(tgbotapi.NewMessage(chatID, "Want me to spin a caption, or do you have something in mind? (Reply 'AI caption', type yours, or say 'skip')."))
+
+	case 3:
 		if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
 			sess.UseAICaption = true
 			sess.Step = 4
-			sendPlain(bot, chatID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all').")
-		} else if lower == "skip" || rawText == "" {
+			bot.Send(tgbotapi.NewMessage(chatID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all')."))
+			return
+		}
+		if lower == "skip" || text == "" {
 			sess.Caption = ""
 			sess.Step = 4
-			sendPlain(bot, chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
-		} else {
-			sess.Caption = text
-			sess.Step = 4
-			sendPlain(bot, chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
+			bot.Send(tgbotapi.NewMessage(chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+			return
 		}
-		return
+		sess.Caption = text
+		sess.Step = 4
+		bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 
-	case 3: // Caption (fallthrough - shouldn't normally hit this)
-		if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
-			sess.UseAICaption = true
-			sess.Step = 4
-			sendPlain(bot, chatID, "Got it. Where should it live?")
-		} else if lower == "skip" || rawText == "" {
-			sess.Caption = ""
-			sess.Step = 4
-			sendPlain(bot, chatID, "No caption yet—where do you want it scheduled? (Instagram, Facebook, TikTok, etc.)")
-		} else {
-			sess.Caption = text
-			sess.Step = 4
-			sendPlain(bot, chatID, "Great. Which platforms should we push it to? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
-		}
-		return
-
-	case 4: // Platform selection
-		platforms := m.parsePlatforms(rawText)
+	case 4:
+		platforms := m.parsePlatforms(text)
 		if len(platforms) == 0 {
-			sendPlain(bot, chatID, "I didn’t catch the platforms. Try “Instagram and Facebook” or just “all”.")
+			bot.Send(tgbotapi.NewMessage(chatID, "I didn’t catch the platforms. Try “Instagram and Facebook” or just “all”."))
 			return
 		}
 		sess.Platforms = platforms
 		sess.Step = 5
+		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try “now”, “tomorrow at 9am”, or “next week at 10am”."))
 
-		if strings.Contains(lower, "batch") || strings.Contains(lower, "each") || strings.Contains(lower, "apart") {
-			sendPlain(bot, chatID, "When should the first one go out? You can say things like “tomorrow morning, each 12 hours apart”.")
-		} else {
-			sendPlain(bot, chatID, "When should I publish it? Try “now”, “tomorrow at 9am”, or “next week at 10am”.")
-		}
-		return
-
-	case 5: // Schedule
-		// Check for batch scheduling with spacing
-		if strings.Contains(lower, "each") || strings.Contains(lower, "apart") {
-			spacing := m.extractSpacing(lower)
-			if spacing > 0 {
-				sess.BatchSchedule = true
-				sess.BatchSpacing = fmt.Sprintf("%d hours", spacing)
-			}
-		}
-
-		sess.ScheduleInput = rawText
+	case 5:
+		sess.ScheduleInput = text
 		m.finalizePostFlow(bot, tenantID, chatID, sess)
 		delete(tenantSessions, chatID)
 	}
