@@ -1,14 +1,17 @@
 # Bot & AI Chat Improvements
 
 ## Overview
+
 The bot has been significantly enhanced to be more intelligent, context-aware, and proactive. The AI and bot chat are now fully intertwined, allowing the bot to understand tenant intent without relying on rigid command structures.
 
 ## Key Improvements
 
 ### 1. **AI-Powered Intent Router** (`internal/bot/intent_router.go`)
+
 The bot now uses AI to understand what tenants want to do, rather than requiring exact command syntax.
 
 **How it works:**
+
 - Analyzes tenant messages using AI to detect intent
 - Understands natural language requests like:
   - "Schedule a post for Instagram tomorrow"
@@ -19,6 +22,7 @@ The bot now uses AI to understand what tenants want to do, rather than requiring
 - Falls back to keyword-based detection if AI fails
 
 **Supported Actions:**
+
 - `schedule_post` - Schedule social media posts
 - `connect_account` - Connect social platforms
 - `view_stats` - View analytics and statistics
@@ -29,9 +33,11 @@ The bot now uses AI to understand what tenants want to do, rather than requiring
 - `chat` - General conversation (handled by AI)
 
 ### 2. **Context-Aware Response Generator** (`internal/ai/context_aware.go`)
+
 Responses are now generated with full business and conversation context.
 
 **Features:**
+
 - Loads business profile, persona, and recent conversation history
 - Includes business statistics (scheduled posts, recent activity, failures)
 - Uses up to 15 recent conversation exchanges for context
@@ -39,6 +45,7 @@ Responses are now generated with full business and conversation context.
 - Provides richer, more relevant responses
 
 **Context Includes:**
+
 - Business name, niche, and description
 - Persona tone and bot name
 - Recent conversation history (last 10-15 exchanges)
@@ -46,9 +53,11 @@ Responses are now generated with full business and conversation context.
 - Role-specific context (owner vs customer)
 
 ### 3. **Proactive Assistant** (`internal/ai/proactive_assistant.go`)
+
 The bot now proactively suggests actions and improvements.
 
 **Features:**
+
 - Analyzes current business state
 - Suggests actionable next steps based on context
 - Provides tips like:
@@ -59,6 +68,7 @@ The bot now proactively suggests actions and improvements.
 - Avoids repeating suggestions too frequently
 
 ### 4. **Improved Message Flow**
+
 The bot now follows an AI-first approach:
 
 1. **Intent Detection** - Uses AI to understand what the tenant wants
@@ -67,6 +77,7 @@ The bot now follows an AI-first approach:
 4. **Proactive Suggestions** - Adds helpful tips when appropriate
 
 ### 5. **Natural Language Understanding**
+
 Tenants can now interact naturally without memorizing commands:
 
 **Before:**
@@ -90,6 +101,7 @@ Bot: [Displays scheduled posts with details]
 ## Technical Implementation
 
 ### Intent Detection Flow
+
 ```
 User Message
     ↓
@@ -152,6 +164,7 @@ Response to User
 ## Usage Examples
 
 ### Scheduling Posts
+
 ```
 User: "I want to post something tomorrow"
 Bot: "📅 Starting scheduling for your latest media. Or specify which post: 'schedule [post name]'."
@@ -159,6 +172,7 @@ Bot: "📅 Starting scheduling for your latest media. Or specify which post: 'sc
 ```
 
 ### Connecting Accounts
+
 ```
 User: "How do I connect Instagram?"
 Bot: [Detects connect_account intent]
@@ -166,6 +180,7 @@ Bot: [Detects connect_account intent]
 ```
 
 ### Viewing Stats
+
 ```
 User: "What's my posting performance?"
 Bot: "📊 *Last 7 Days Stats:*
@@ -175,6 +190,7 @@ Bot: "📊 *Last 7 Days Stats:*
 ```
 
 ### Natural Conversation
+
 ```
 User: "I'm having trouble with my posts"
 Bot: [Analyzes context, understands issue]

@@ -501,6 +501,8 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	case "ai":
 		// TODO: Implement AI customization flow
 		bot.Send(tgbotapi.NewMessage(chatID, "AI customization is coming soon!"))
+	case "postflow":
+		h.handlePostFlowCallback(bot, tenantID, chatID, arg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
@@ -648,6 +650,44 @@ func (h *TenantWebhookHandler) handleBusinessCallback(bot *tgbotapi.BotAPI, tena
 	default:
 		h.Manager.Logger.Debug("unhandled business callback", zap.String("arg", arg))
 	}
+}
+
+func (h *TenantWebhookHandler) handlePostFlowCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	sess, ok := tenantSessions[chatID]
+	if !ok {
+		return
+	}
+
+	choice := strings.ToLower(strings.TrimSpace(arg))
+
+	switch sess.Step {
+	case 0:
+		if choice == "yes" {
+			h.Manager.promptFirstStep(bot, chatID, sess)
+			return
+		}
+		if choice == "skip" || choice == "no" || choice == "not now" {
+			delete(tenantSessions, chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "No problem—just let me know when you want to schedule it."))
+			return
+		}
+	case 1:
+		if choice == "yes" {
+			sess.IsCarousel = true
+			sess.Step = 2
+			bot.Send(tgbotapi.NewMessage(chatID, "Perfect. Want to tag it with an internal name? (Type it or say 'skip'.)"))
+			return
+		}
+		if choice == "no" || choice == "skip" {
+			sess.IsCarousel = false
+			sess.Step = 2
+			bot.Send(tgbotapi.NewMessage(chatID, "Got it. Want to tag it with an internal name? (Type it or say 'skip'.)"))
+			return
+		}
+	}
+
+	// Fallback: prompt user to respond with text
+	bot.Send(tgbotapi.NewMessage(chatID, "Go ahead and reply with your choice so we can keep going."))
 }
 
 func (h *TenantWebhookHandler) sendBusinessMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
