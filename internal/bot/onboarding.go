@@ -123,8 +123,10 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 		decrypted, _ := utils.DecryptToken(tenant.TelegramBotToken)
 		tbot, err := tgbotapi.NewBotAPI(decrypted)
 		var handle string
+		botUsername := ""
 		if err == nil && tbot.Self.UserName != "" {
-			handle = fmt.Sprintf("[@%s](https://t.me/%s)", tbot.Self.UserName, tbot.Self.UserName)
+			botUsername = tbot.Self.UserName
+			handle = fmt.Sprintf("[@%s](https://t.me/%s)", botUsername, botUsername)
 		} else {
 			handle = "your new bot"
 		}
@@ -135,13 +137,31 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 		bot.Send(success)
 
 		next := tgbotapi.NewMessage(chatID,
-			"Next, let’s give your assistant a voice that matches your brand. I’ll send a quick intro to your bot so we can personalize everything.")
+			"Next up, let’s give your assistant a voice that matches your brand. I’ll nudge them in a second so you can personalize everything.")
 		bot.Send(next)
 
-		menu := tgbotapi.NewMessage(chatID,
-			"🎛️ *Brancr Control Center*\nWhen you’re ready, you can:\n\n• Connect social accounts\n• Manage your business info\n• View analytics\n• Customize how your assistant speaks\n• Get help and tutorials\n\nJust message your assistant and say “menu” any time to open these options.")
-		menu.ParseMode = "Markdown"
-		bot.Send(menu)
+		controlCenter := tgbotapi.NewMessage(chatID,
+			"🎛️ *Brancr Control Center*\nWhen you’re ready, you can:\n\n• Connect social accounts\n• Manage your business info\n• View analytics\n• Customize how your assistant speaks\n• Get help and tutorials\n\nSay “menu” anytime to pull this back up.")
+		controlCenter.ParseMode = "Markdown"
+		buttons := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("OPEN CONTROL CENTER", "menu:main"),
+			),
+		)
+		controlCenter.ReplyMarkup = buttons
+		bot.Send(controlCenter)
+
+		if botUsername != "" {
+			personalize := tgbotapi.NewMessage(chatID,
+				"Ready to make that assistant feel human?")
+			personalize.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonURL("✨ Personalize Assistant", fmt.Sprintf("https://t.me/%s?start=personalize", botUsername)),
+					tgbotapi.NewInlineKeyboardButtonData("Skip for now", "menu:main"),
+				),
+			)
+			bot.Send(personalize)
+		}
 
 		h.sessions.Delete(chatID)
 

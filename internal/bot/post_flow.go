@@ -49,9 +49,9 @@ func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, ass
 	if ma.Type == "carousel" {
 		var urls []string
 		_ = json.Unmarshal([]byte(ma.URLs), &urls)
-		sendPlain(bot, chatID, fmt.Sprintf("✅ Your %d-image set looks perfect. Want me to turn it into a post now? (Yes or Not now)", len(urls)))
+		sendPlain(bot, chatID, fmt.Sprintf("✅ Fresh drop! I’ve got %d shots lined up. Turn them into a post now?", len(urls)))
 	} else {
-		sendPlain(bot, chatID, fmt.Sprintf("✅ %s uploaded and ready. Want me to schedule it now? (Yes or Not now)", strings.Title(ma.Type)))
+		sendPlain(bot, chatID, fmt.Sprintf("✅ %s uploaded. Want me to shape it into a post?", strings.Title(ma.Type)))
 	}
 }
 
@@ -66,9 +66,9 @@ func (m *TenantBotManager) promptFirstStep(bot *tgbotapi.BotAPI, chatID int64, s
 	if sess.MediaType == "carousel" {
 		var urls []string
 		_ = json.Unmarshal([]byte(ma.URLs), &urls)
-		sendPlain(bot, chatID, fmt.Sprintf("You sent %d images—want me to share them as one carousel post? (Yes or No)", len(urls)))
+		sendPlain(bot, chatID, "Keep everything together as one carousel? (Yes or No)")
 	} else {
-		sendPlain(bot, chatID, "Want to give this post a quick internal nickname? (Type it now or say 'skip'.)")
+		sendPlain(bot, chatID, "Want to give this a quick internal nickname? (Type it or say 'skip').")
 	}
 }
 
@@ -89,10 +89,10 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		}
 		if lower == "no" || lower == "not now" || lower == "later" || lower == "stop" {
 			delete(tenantSessions, chatID)
-			sendPlain(bot, chatID, "No problem—drop me a note when you want to schedule it.")
+			sendPlain(bot, chatID, "All right, I’ll keep it on standby. Ping me when you’re ready.")
 			return
 		}
-		sendPlain(bot, chatID, "Give me a quick yes if you want me to set it up now, or say “not now” to leave it for later.")
+		sendPlain(bot, chatID, "Just say yes if you want me to prep it now, or ‘not now’ to leave it for later.")
 		return
 
 	case 1: // Carousel confirmation OR name
@@ -103,11 +103,11 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			} else if lower == "no" || lower == "n" {
 				sess.IsCarousel = false
 			} else {
-				sendPlain(bot, chatID, "Just say yes or no so I know whether to keep these together.")
+				sendPlain(bot, chatID, "Give me a quick yes or no so I know whether to keep these together.")
 				return
 			}
 			sess.Step = 2 // Move to name step
-			sendPlain(bot, chatID, "Great! Want to give this post a quick internal nickname? (Or reply 'skip'.)")
+			sendPlain(bot, chatID, "Perfect. Want to tag it with an internal name? (Or reply 'skip').")
 			return
 		}
 		// Name step (single media)
@@ -115,7 +115,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			sess.Name = rawText
 		}
 		sess.Step = 3 // Move to caption step
-		sendPlain(bot, chatID, "Want me to draft a caption or do you have one ready? (Reply 'AI caption', type your own, or say 'skip'.)")
+		sendPlain(bot, chatID, "Want me to spin a caption for you, or do you have something in mind? (Reply 'AI caption', type yours, or say 'skip').")
 		return
 
 	case 2: // Name (if carousel confirmed) OR Caption (if single media)
@@ -126,22 +126,22 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 				sess.Name = rawText
 			}
 			sess.Step = 3 // Move to caption
-			sendPlain(bot, chatID, "Want me to spin up a caption? Reply 'AI caption', type your own, or say 'skip'.")
+			sendPlain(bot, chatID, "Want me to craft a caption? Reply 'AI caption', type your own, or say 'skip'.")
 			return
 		}
 		// Otherwise this is caption step (single media - step 2 was name)
 		if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
 			sess.UseAICaption = true
 			sess.Step = 4
-			sendPlain(bot, chatID, "Love it. I’ll craft the caption—where should we publish this? (Instagram, Facebook, TikTok, etc., or say 'all').")
+			sendPlain(bot, chatID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all').")
 		} else if lower == "skip" || rawText == "" {
 			sess.Caption = ""
 			sess.Step = 4
-			sendPlain(bot, chatID, "No worries. Which platforms should we push this to? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
+			sendPlain(bot, chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
 		} else {
 			sess.Caption = text
 			sess.Step = 4
-			sendPlain(bot, chatID, "Nice! Which platforms should we queue it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
+			sendPlain(bot, chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all').")
 		}
 		return
 
@@ -149,11 +149,11 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
 			sess.UseAICaption = true
 			sess.Step = 4
-			sendPlain(bot, chatID, "Got it. I’ll handle the caption—where should we post it?")
+			sendPlain(bot, chatID, "Got it. Where should it live?")
 		} else if lower == "skip" || rawText == "" {
 			sess.Caption = ""
 			sess.Step = 4
-			sendPlain(bot, chatID, "No caption yet—where should I schedule it? (Instagram, Facebook, TikTok, etc.)")
+			sendPlain(bot, chatID, "No caption yet—where do you want it scheduled? (Instagram, Facebook, TikTok, etc.)")
 		} else {
 			sess.Caption = text
 			sess.Step = 4
@@ -164,13 +164,12 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	case 4: // Platform selection
 		platforms := m.parsePlatforms(rawText)
 		if len(platforms) == 0 {
-			sendPlain(bot, chatID, "I didn’t catch the platform names. Try 'Instagram and Facebook' or simply 'all'.")
+			sendPlain(bot, chatID, "I didn’t catch the platforms. Try “Instagram and Facebook” or just “all”.")
 			return
 		}
 		sess.Platforms = platforms
 		sess.Step = 5
 
-		// Check for batch scheduling hints
 		if strings.Contains(lower, "batch") || strings.Contains(lower, "each") || strings.Contains(lower, "apart") {
 			sendPlain(bot, chatID, "When should the first one go out? You can say things like “tomorrow morning, each 12 hours apart”.")
 		} else {

@@ -460,7 +460,26 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 
 	switch action {
 	case "menu":
-		h.sendOwnerMenu(bot, chatID, tenantID)
+		switch arg {
+		case "", "main":
+			h.sendOwnerMenu(bot, chatID, tenantID)
+		case "connect":
+			h.sendConnectionStatus(bot, chatID, tenantID)
+		case "business":
+			h.sendBusinessMenu(bot, chatID, tenantID)
+		case "analytics":
+			h.sendAnalyticsPeek(bot, chatID, tenantID)
+		case "ai":
+			persona := ai.GetPersona(h.Manager.DB, tenantID)
+			if persona.BotName == "" {
+				go ai.StartPersonaOnboarding(context.Background(), h.Manager.DB, bot, tenantID, chatID, h.Manager.Responder.Client, h.Manager.Logger)
+			} else {
+				msg := fmt.Sprintf("I’m already answering as %s with a %s vibe. Want to tweak anything? Just tell me how you’d like me to sound.", persona.BotName, fallbackValue(persona.StyleNotes, persona.Tone))
+				bot.Send(tgbotapi.NewMessage(chatID, msg))
+			}
+		default:
+			h.Manager.Logger.Debug("unhandled menu callback", zap.String("arg", arg))
+		}
 	case "connect":
 		if arg == "" {
 			return
@@ -477,34 +496,29 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		h.sendHelpOverview(bot, chatID)
 	case "business":
 		h.handleBusinessCallback(bot, tenantID, chatID, arg)
+	case "analytics":
+		h.sendAnalyticsPeek(bot, chatID, tenantID)
+	case "ai":
+		// TODO: Implement AI customization flow
+		bot.Send(tgbotapi.NewMessage(chatID, "AI customization is coming soon!"))
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
 }
 
 func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
-	text := "🎛️ *Brancr Control Center*\nChoose what you’d like to do next."
+	text := "🎛️ *Brancr Control Center*\nWhat would you like to do today?"
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Connect Instagram 📸", "connect:instagram"),
+			tgbotapi.NewInlineKeyboardButtonData("📱 Connect Social Accounts", "menu:connect"),
+			tgbotapi.NewInlineKeyboardButtonData("💬 Manage Business Info", "menu:business"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Connect Facebook 📘", "connect:facebook"),
+			tgbotapi.NewInlineKeyboardButtonData("📊 View Analytics", "menu:analytics"),
+			tgbotapi.NewInlineKeyboardButtonData("🤖 Customize AI Assistant", "menu:ai"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Connect WhatsApp 💬", "connect:whatsapp"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Connect TikTok 🎵", "connect:tiktok"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Verify & Status ✅", "status:"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Manage Business Info 🗂", "business:menu"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Help & Tutorials 💡", "help:menu"),
+			tgbotapi.NewInlineKeyboardButtonData("🧩 Help & Tutorials", "help:menu"),
 		),
 	)
 
@@ -512,6 +526,17 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 	msg.ParseMode = "Markdown"
 	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
+}
+
+func (h *TenantWebhookHandler) sendAnalyticsPeek(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	if h.Manager.AnalyticsHandler == nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "Analytics aren’t ready just yet. Check back soon."))
+		return
+	}
+	ctx := context.Background()
+	if err := h.Manager.AnalyticsHandler.SendQuickSummary(ctx, bot, tenantID, chatID); err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "I couldn’t pull analytics right now. Try again shortly."))
+	}
 }
 
 func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {

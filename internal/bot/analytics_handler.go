@@ -6,15 +6,15 @@ import (
 	"strings"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/analytics"
 	"github.com/similadayo/brancr/internal/storage"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/zap"
 )
 
 // AnalyticsHandler handles analytics requests from tenants via Telegram
 type AnalyticsHandler struct {
-	Manager         *TenantBotManager
+	Manager          *TenantBotManager
 	AnalyticsService interface{} // *analytics.Service
 	TelegramReporter *analytics.TelegramReporter
 }
@@ -140,13 +140,13 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 		Order("created_at DESC").
 		Limit(5).
 		Find(&suggestions).Error
-	
+
 	if err != nil {
 		h.Manager.Logger.Error("failed to fetch growth suggestions", zap.Error(err))
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Couldn't generate suggestions right now. Try again in a moment."))
 		return err
 	}
-	
+
 	suggestionsInterface := make([]interface{}, len(suggestions))
 	for i, s := range suggestions {
 		suggestionsInterface[i] = s
@@ -166,14 +166,14 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 		if i >= 3 {
 			break
 		}
-		
+
 		// Type assert to BusinessGrowthSuggestion
 		suggestion, ok := suggestionInterface.(*analytics.BusinessGrowthSuggestion)
 		if !ok {
 			// Try to extract fields if type assertion fails
 			continue
 		}
-		
+
 		// Impact emoji
 		impactEmoji := "📈"
 		if suggestion.Impact == "high" {
@@ -184,7 +184,7 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 
 		msg += fmt.Sprintf("%s *%s*\n", impactEmoji, suggestion.Title)
 		msg += fmt.Sprintf("%s\n\n", suggestion.Description)
-		
+
 		// Action items
 		if len(suggestion.ActionItems) > 0 {
 			msg += "*Action Items:*\n"
@@ -229,45 +229,45 @@ func (h *AnalyticsHandler) sendAnalyticsSummary(ctx context.Context, bot *tgbota
 func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64) error {
 	periodEnd := time.Now()
 	periodStart := periodEnd.AddDate(0, 0, -30)
-	
+
 	// Fetch analytics
 	var analytics []storage.PostAnalytics
 	err := h.Manager.DB.Where("tenant_id = ? AND posted_at >= ? AND posted_at <= ?",
 		tenantID, periodStart, periodEnd).
 		Order("posted_at DESC").
 		Find(&analytics).Error
-	
+
 	if err != nil {
 		h.Manager.Logger.Error("failed to fetch analytics", zap.Error(err))
 		return h.sendBasicStats(ctx, bot, tenantID, chatID)
 	}
-	
+
 	// Build summary message
 	msg := "📊 *Analytics Summary*\n\n"
-	msg += fmt.Sprintf("📅 *Period:* Last 30 days\n\n")
-	
+	msg += "📅 *Period:* Last 30 days\n\n"
+
 	if len(analytics) > 0 {
 		totalReach := int64(0)
 		totalLikes := int64(0)
 		totalComments := int64(0)
 		totalShares := int64(0)
 		avgEngagement := 0.0
-		
+
 		platformStats := make(map[string]struct {
-			count int
-			reach int64
-			likes int64
-			comments int64
+			count      int
+			reach      int64
+			likes      int64
+			comments   int64
 			engagement float64
 		})
-		
+
 		for _, a := range analytics {
 			totalReach += a.Reach
 			totalLikes += a.Likes
 			totalComments += a.Comments
 			totalShares += a.Shares
 			avgEngagement += a.EngagementRate
-			
+
 			stats := platformStats[a.Platform]
 			stats.count++
 			stats.reach += a.Reach
@@ -276,18 +276,18 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 			stats.engagement += a.EngagementRate
 			platformStats[a.Platform] = stats
 		}
-		
+
 		if len(analytics) > 0 {
 			avgEngagement = avgEngagement / float64(len(analytics))
 		}
-		
-		msg += fmt.Sprintf("📈 *Performance*\n")
+
+		msg += "📈 *Performance*\n"
 		msg += fmt.Sprintf("• Posts: %d\n", len(analytics))
 		msg += fmt.Sprintf("• Total Reach: %d\n", totalReach)
 		msg += fmt.Sprintf("• Total Likes: %d\n", totalLikes)
 		msg += fmt.Sprintf("• Total Comments: %d\n", totalComments)
 		msg += fmt.Sprintf("• Avg Engagement: %.1f%%\n\n", avgEngagement)
-		
+
 		// Platform breakdown
 		if len(platformStats) > 0 {
 			msg += "📱 *By Platform*\n"
@@ -301,7 +301,7 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 			}
 			msg += "\n"
 		}
-		
+
 		// Fetch insights
 		var insights []storage.TrendInsight
 		h.Manager.DB.Where("tenant_id = ? AND period_start >= ? AND period_end <= ? AND status = ?",
@@ -309,7 +309,7 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 			Order("created_at DESC").
 			Limit(2).
 			Find(&insights)
-		
+
 		if len(insights) > 0 {
 			msg += "💡 *Key Insights*\n"
 			for _, insight := range insights {
@@ -334,19 +334,19 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 func (h *AnalyticsHandler) sendPlatformBreakdown(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64) error {
 	periodEnd := time.Now()
 	periodStart := periodEnd.AddDate(0, 0, -30)
-	
+
 	// Fetch analytics by platform
 	var analytics []storage.PostAnalytics
 	err := h.Manager.DB.Where("tenant_id = ? AND posted_at >= ? AND posted_at <= ?",
 		tenantID, periodStart, periodEnd).
 		Find(&analytics).Error
-	
+
 	if err != nil {
 		return h.sendBasicStats(ctx, bot, tenantID, chatID)
 	}
-	
+
 	msg := "📱 *Platform Performance*\n\n"
-	
+
 	if len(analytics) == 0 {
 		msg += "No platform data available yet. Connect your accounts and start posting!\n"
 		response := tgbotapi.NewMessage(chatID, msg)
@@ -354,16 +354,16 @@ func (h *AnalyticsHandler) sendPlatformBreakdown(ctx context.Context, bot *tgbot
 		bot.Send(response)
 		return nil
 	}
-	
+
 	// Group by platform
 	platformStats := make(map[string]struct {
-		count int
-		reach int64
-		likes int64
-		comments int64
+		count      int
+		reach      int64
+		likes      int64
+		comments   int64
 		engagement float64
 	})
-	
+
 	for _, a := range analytics {
 		stats := platformStats[a.Platform]
 		stats.count++
@@ -373,7 +373,7 @@ func (h *AnalyticsHandler) sendPlatformBreakdown(ctx context.Context, bot *tgbot
 		stats.engagement += a.EngagementRate
 		platformStats[a.Platform] = stats
 	}
-	
+
 	for platform, stats := range platformStats {
 		avgRate := 0.0
 		if stats.count > 0 {
@@ -408,7 +408,7 @@ func (h *AnalyticsHandler) sendBasicStats(ctx context.Context, bot *tgbotapi.Bot
 		Where("tenant_id = ? AND status = ?", tenantID, "scheduled").
 		Count(&scheduledCount)
 
-	msg := fmt.Sprintf("📊 *Quick Stats*\n\n")
+	msg := "📊 *Quick Stats*\n\n"
 	msg += fmt.Sprintf("• Posted: %d\n", postCount)
 	msg += fmt.Sprintf("• Scheduled: %d\n\n", scheduledCount)
 	msg += "_Full analytics coming soon! Post more content to see detailed insights._"
@@ -420,3 +420,11 @@ func (h *AnalyticsHandler) sendBasicStats(ctx context.Context, bot *tgbotapi.Bot
 	return nil
 }
 
+// SendQuickSummary sends a lightweight analytics snapshot for the control center menu.
+func (h *AnalyticsHandler) SendQuickSummary(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64) error {
+	if h.AnalyticsService == nil {
+		return h.sendBasicStats(ctx, bot, tenantID, chatID)
+	}
+
+	return h.sendAnalyticsFromDB(ctx, bot, tenantID, chatID)
+}
