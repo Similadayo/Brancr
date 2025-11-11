@@ -261,7 +261,14 @@ func (h *Handler) cookieDomain() string {
 
 	if h.Config.PublicURL != "" {
 		if u, err := url.Parse(h.Config.PublicURL); err == nil && u.Host != "" {
-			return u.Hostname()
+			host := u.Hostname()
+			if strings.Count(host, ".") >= 2 {
+				parts := strings.Split(host, ".")
+				host = "." + strings.Join(parts[len(parts)-2:], ".")
+			} else {
+				host = "." + host
+			}
+			return host
 		}
 	}
 	return ""
