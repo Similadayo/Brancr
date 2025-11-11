@@ -97,7 +97,20 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 		}
 		state["step"] = "ask_token"
 		h.sessions.Store(chatID, state)
-		bot.Send(tgbotapi.NewMessage(chatID, "Great! Now paste your Telegram bot token from @BotFather so I can connect to your assistant."))
+
+		tokenHelp := `
+Perfect! Last step — grab the bot token from *@BotFather* and paste it here.
+
+1. Open Telegram and message **@BotFather**
+2. Send */newbot* and follow the prompts (give it a display name + username)
+3. BotFather replies with a token that looks like ` + "`123456:ABC-DEF...`" + `
+4. Copy that token and send it to me here
+
+Already have a token? Just paste it now.`
+
+		msg := tgbotapi.NewMessage(chatID, strings.TrimSpace(tokenHelp))
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
 		return
 
 	case "ask_token":
@@ -182,6 +195,10 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 		intro := tgbotapi.NewMessage(ownerID,
 			fmt.Sprintf("Hey! I’m your new assistant for %s. What should I call myself?", tenant.Name))
 		tenantBot.Send(intro)
+
+		followUp := tgbotapi.NewMessage(ownerID, "You can reply with the style, tone, or any must-know info so I sound on-brand. Type *menu* anytime to see what I can do.")
+		followUp.ParseMode = "Markdown"
+		tenantBot.Send(followUp)
 
 		go ai.StartPersonaOnboarding(ctx, h.DB, tenantBot, tenant.ID, ownerID, h.Manager.Responder.Client, h.Manager.Logger)
 		return
