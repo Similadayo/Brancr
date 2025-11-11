@@ -90,7 +90,14 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 		zap.String("type", resourceType))
 
 	// ✅ Launch background finalizer (only once per session)
-	go m.FinalizeCarouselSession(ctx, bot, tenantID, msg.Chat.ID, sessionID)
+	key := fmt.Sprintf("%d:%s", tenantID, sessionID)
+	if _, already := m.sessionFinalizers.LoadOrStore(key, struct{}{}); already {
+		return
+	}
+	go func() {
+		defer m.sessionFinalizers.Delete(key)
+		m.FinalizeCarouselSession(ctx, bot, tenantID, msg.Chat.ID, sessionID)
+	}()
 }
 
 func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sessionID string) {

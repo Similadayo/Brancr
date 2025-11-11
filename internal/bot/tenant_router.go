@@ -21,21 +21,22 @@ import (
 
 // TenantBotManager orchestrates all tenant bots & their AI brains
 type TenantBotManager struct {
-	DB               *gorm.DB
-	Bots             map[uint]*tgbotapi.BotAPI
-	Owners           map[uint]int64
-	Mutex            sync.RWMutex
-	Logger           *zap.Logger
-	Groups           *MediaGroupCollector
-	AIClient         *ai.AIClient
-	Memory           *ai.MemoryService
-	Classifier       *ai.Classifier
-	Emotion          *ai.EmotionAnalyzer
-	Policy           *ai.PolicyEngine
-	Responder        *ai.Responder
-	AdminBot         *tgbotapi.BotAPI
-	AnalyticsHandler *AnalyticsHandler // Analytics handler for tenant requests
-	Config           *config.Config
+	DB                *gorm.DB
+	Bots              map[uint]*tgbotapi.BotAPI
+	Owners            map[uint]int64
+	Mutex             sync.RWMutex
+	Logger            *zap.Logger
+	Groups            *MediaGroupCollector
+	AIClient          *ai.AIClient
+	Memory            *ai.MemoryService
+	Classifier        *ai.Classifier
+	Emotion           *ai.EmotionAnalyzer
+	Policy            *ai.PolicyEngine
+	Responder         *ai.Responder
+	AdminBot          *tgbotapi.BotAPI
+	AnalyticsHandler  *AnalyticsHandler // Analytics handler for tenant requests
+	Config            *config.Config
+	sessionFinalizers sync.Map
 }
 
 // ✅ Constructor — now initializes AI components too
