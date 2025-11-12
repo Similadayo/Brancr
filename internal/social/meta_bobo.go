@@ -73,12 +73,16 @@ func (h *EmbeddedSignupHandler) Start(w http.ResponseWriter, r *http.Request) {
 }
 
 type EmbeddedSignupCallbackRequest struct {
-	WABAID        string `json:"waba_id"`
-	PhoneNumberID string `json:"phone_number_id"`
-	PhoneNumber   string `json:"phone_number"`
-	BusinessName  string `json:"business_name"`
-	TenantID      string `json:"tenant_id"`
-	AccessToken   string `json:"access_token"`
+	WABAID         string `json:"waba_id"`
+	PhoneNumberID  string `json:"phone_number_id"`
+	PhoneNumber    string `json:"phone_number"`
+	BusinessName   string `json:"business_name"`
+	TenantID       string `json:"tenant_id"`
+	ClientState    string `json:"client_state"`
+	State          string `json:"state"`
+	AccessToken    string `json:"access_token"`
+	PermanentToken string `json:"permanent_token"`
+	Token          string `json:"token"`
 }
 
 func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +207,38 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 			}
 		}
 
+		if len(rawBody) > 0 {
+			if err := json.Unmarshal(rawBody, &legacy); err != nil {
+				h.Logger.Error("embedded signup: missing signed_request and fallback decode failed",
+					zap.ByteString("body", rawBody),
+					zap.Error(err))
+			}
+		}
+
+		if legacy.AccessToken == "" {
+			switch {
+			case legacy.Token != "":
+				legacy.AccessToken = legacy.Token
+			case legacy.PermanentToken != "":
+				legacy.AccessToken = legacy.PermanentToken
+			}
+		}
+
+		if legacy.TenantID == "" {
+			if tid := extractTenantID(legacy.ClientState); tid != "" {
+				legacy.TenantID = tid
+			} else if tid := extractTenantID(legacy.State); tid != "" {
+				legacy.TenantID = tid
+			}
+		}
+
+		if legacy.AccessToken == "" || legacy.WABAID == "" || legacy.PhoneNumberID == "" || strings.TrimSpace(legacy.TenantID) == "" {
+			h.Logger.Error("embedded signup: legacy payload missing core identifiers",
+				zap.Any("legacy_payload", legacy))
+			http.Error(w, "missing signed_request", http.StatusBadRequest)
+			return
+		}
+
 		h.handleLegacyCallback(w, legacy)
 		return
 	}
@@ -301,6 +337,22 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *EmbeddedSignupHandler) handleLegacyCallback(w http.ResponseWriter, payload EmbeddedSignupCallbackRequest) {
+	if payload.AccessToken == "" {
+		if payload.Token != "" {
+			payload.AccessToken = payload.Token
+		} else if payload.PermanentToken != "" {
+			payload.AccessToken = payload.PermanentToken
+		}
+	}
+
+	if payload.TenantID == "" {
+		if tid := extractTenantID(payload.ClientState); tid != "" {
+			payload.TenantID = tid
+		} else if tid := extractTenantID(payload.State); tid != "" {
+			payload.TenantID = tid
+		}
+	}
+
 	if strings.TrimSpace(payload.TenantID) == "" || payload.WABAID == "" || payload.PhoneNumberID == "" || payload.AccessToken == "" {
 		h.Logger.Error("legacy embedded signup payload incomplete", zap.Any("payload", payload))
 		http.Error(w, "missing fields", http.StatusBadRequest)
@@ -354,6 +406,25 @@ func parseTenantState(state string) uint {
 		return 0
 	}
 	return parseTenantID(parts[1])
+}
+
+func extractTenantID(state string) string {
+	if state == "" {
+		return ""
+	}
+	if strings.HasPrefix(state, "tenant:") {
+		parts := strings.Split(state, ":")
+		if len(parts) >= 2 {
+			return parts[1]
+		}
+	}
+	parts := strings.Split(state, ":")
+	for _, part := range parts {
+		if _, err := strconv.Atoi(part); err == nil {
+			return part
+		}
+	}
+	return ""
 }
 
 func decodeSignedRequest(sr, secret string) ([]byte, error) {
