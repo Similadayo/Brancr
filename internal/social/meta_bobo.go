@@ -1,14 +1,17 @@
 package social
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -78,21 +81,84 @@ type EmbeddedSignupCallbackRequest struct {
 	AccessToken   string `json:"access_token"`
 }
 
+func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
+	mode := r.URL.Query().Get("hub.mode")
+	token := r.URL.Query().Get("hub.verify_token")
+	challenge := r.URL.Query().Get("hub.challenge")
+
+	if h.Logger != nil {
+		h.Logger.Info("WhatsApp embedded signup verification request",
+			zap.String("mode", mode),
+			zap.String("verify_token", token),
+			zap.String("challenge", challenge))
+	}
+
+	expected := os.Getenv("META_WEBHOOK_VERIFY_TOKEN")
+	if expected == "" {
+		expected = os.Getenv("WEBHOOK_VERIFY_TOKEN")
+	}
+
+	if expected == "" {
+		http.Error(w, "server misconfiguration", http.StatusInternalServerError)
+		return
+	}
+
+	if mode != "subscribe" || token == "" || token != expected || challenge == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = fmt.Fprint(w, challenge)
+}
+
 func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request) {
+	var rawBody []byte
+	// Preserve request body for later inspection/logging
+	if r.Body != nil {
+		rawBody, _ = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+	}
+
 	if err := r.ParseForm(); err != nil {
+		h.Logger.Error("embedded signup: failed to parse form", zap.Error(err))
 		http.Error(w, "invalid form payload", http.StatusBadRequest)
 		return
 	}
 
+	if len(r.PostForm) > 0 {
+		h.Logger.Debug("embedded signup form payload", zap.Any("form", r.PostForm))
+	}
+
 	signedRequest := r.PostFormValue("signed_request")
 	if signedRequest == "" {
-		// Fallback to the legacy JSON payload for easier testing
-		var legacy EmbeddedSignupCallbackRequest
-		if err := json.NewDecoder(r.Body).Decode(&legacy); err != nil {
-			http.Error(w, "missing signed_request", http.StatusBadRequest)
-			return
+		legacy := EmbeddedSignupCallbackRequest{
+			WABAID:        r.PostFormValue("waba_id"),
+			PhoneNumberID: r.PostFormValue("phone_number_id"),
+			PhoneNumber:   r.PostFormValue("phone_number"),
+			BusinessName:  r.PostFormValue("business_name"),
+			TenantID:      r.PostFormValue("tenant_id"),
+			AccessToken:   r.PostFormValue("access_token"),
 		}
+
+		if legacy.WABAID == "" && legacy.PhoneNumberID == "" && legacy.AccessToken == "" && len(rawBody) > 0 {
+			// Attempt to decode JSON payload (legacy testing flow)
+			if err := json.Unmarshal(rawBody, &legacy); err != nil {
+				h.Logger.Error("embedded signup: missing signed_request and fallback decode failed",
+					zap.ByteString("body", rawBody),
+					zap.Error(err))
+				http.Error(w, "missing signed_request", http.StatusBadRequest)
+				return
+			}
+		}
+
 		h.handleLegacyCallback(w, legacy)
+		return
+	}
+
+	if h.Config.MetaAppSecret == "" {
+		h.Logger.Error("embedded signup: META_APP_SECRET not configured; cannot verify signed_request")
+		http.Error(w, "server misconfiguration", http.StatusInternalServerError)
 		return
 	}
 
@@ -113,6 +179,9 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 	}
 
 	clientState := getString(payload, "client_state")
+	if clientState == "" {
+		clientState = getString(payload, "state")
+	}
 	tenantID := parseTenantState(clientState)
 	if tenantID == 0 {
 		tenantID = parseTenantID(r.PostFormValue("tenant_id"))
@@ -124,6 +193,9 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 	if wabaID == "" {
 		wabaID = getString(payload, "waba_info", "waba_id")
 	}
+	if wabaID == "" {
+		wabaID = getString(payload, "waba_id")
+	}
 
 	token := getString(payload, "token")
 	if token == "" {
@@ -132,6 +204,9 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 	if token == "" {
 		token = getString(payload, "waba_info", "permanent_token")
 	}
+	if token == "" {
+		token = getString(payload, "permanent_token")
+	}
 
 	status := strings.ToUpper(getString(payload, "phone_number_status"))
 	if status == "" {
@@ -139,6 +214,11 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 	}
 
 	if tenantID == 0 || phoneID == "" || wabaID == "" {
+		h.Logger.Error("embedded signup payload missing identifiers",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("phone_id", phoneID),
+			zap.String("waba_id", wabaID),
+			zap.Any("payload", payload))
 		http.Error(w, "missing identifiers in payload", http.StatusBadRequest)
 		return
 	}
@@ -163,6 +243,7 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 
 func (h *EmbeddedSignupHandler) handleLegacyCallback(w http.ResponseWriter, payload EmbeddedSignupCallbackRequest) {
 	if strings.TrimSpace(payload.TenantID) == "" || payload.WABAID == "" || payload.PhoneNumberID == "" || payload.AccessToken == "" {
+		h.Logger.Error("legacy embedded signup payload incomplete", zap.Any("payload", payload))
 		http.Error(w, "missing fields", http.StatusBadRequest)
 		return
 	}
@@ -338,7 +419,12 @@ func (h *EmbeddedSignupHandler) subscribeAppToWABA(tenantID uint, wabaID string)
 
 	if resp.StatusCode >= 400 {
 		if h.Logger != nil {
-			h.Logger.Warn("whatsapp subscription returned non-200", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID), zap.Int("status", resp.StatusCode))
+			body, _ := io.ReadAll(resp.Body)
+			h.Logger.Warn("whatsapp subscription returned non-200",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
 		}
 		return
 	}

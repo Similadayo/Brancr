@@ -75,7 +75,8 @@ func SetupRouter(app *App) http.Handler {
 
 	if app.Services.EmbeddedSignupHandler != nil {
 		r.Get("/api/oauth/meta/whatsapp/start", app.Services.EmbeddedSignupHandler.Start)
-		r.Post("/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Callback)
+		r.MethodFunc(http.MethodGet, "/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Verify)
+		r.MethodFunc(http.MethodPost, "/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Callback)
 	}
 
 	return r
