@@ -86,13 +86,6 @@ func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("hub.verify_token")
 	challenge := r.URL.Query().Get("hub.challenge")
 
-	if h.Logger != nil {
-		h.Logger.Info("WhatsApp embedded signup verification request",
-			zap.String("mode", mode),
-			zap.String("verify_token", token),
-			zap.String("challenge", challenge))
-	}
-
 	expected := strings.TrimSpace(os.Getenv("META_WEBHOOK_VERIFY_TOKEN"))
 	if expected == "" {
 		expected = strings.TrimSpace(os.Getenv("WEBHOOK_VERIFY_TOKEN"))
@@ -103,7 +96,46 @@ func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if mode != "subscribe" || token == "" || token != expected || challenge == "" {
+	if h.Logger != nil {
+		h.Logger.Info("WhatsApp embedded signup verification request",
+			zap.String("mode", mode),
+			zap.String("verify_token", token),
+			zap.String("challenge", challenge),
+			zap.String("expected_token", expected))
+	}
+
+	if mode != "subscribe" {
+		if h.Logger != nil {
+			h.Logger.Warn("WhatsApp embedded signup verification rejected: invalid mode",
+				zap.String("received_mode", mode))
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	if token == "" {
+		if h.Logger != nil {
+			h.Logger.Warn("WhatsApp embedded signup verification rejected: token missing")
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	if token != expected {
+		if h.Logger != nil {
+			h.Logger.Warn("WhatsApp embedded signup verification rejected: token mismatch",
+				zap.String("received", token),
+				zap.Int("received_len", len(token)),
+				zap.Int("expected_len", len(expected)))
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	if challenge == "" {
+		if h.Logger != nil {
+			h.Logger.Warn("WhatsApp embedded signup verification rejected: challenge missing")
+		}
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -113,6 +145,14 @@ func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request) {
+	if h.Logger != nil {
+		h.Logger.Info("WhatsApp embedded signup callback hit",
+			zap.String("method", r.Method),
+			zap.String("content_type", r.Header.Get("Content-Type")),
+			zap.String("user_agent", r.Header.Get("User-Agent")),
+			zap.String("remote_addr", r.RemoteAddr))
+	}
+
 	var rawBody []byte
 	// Preserve request body for later inspection/logging
 	if r.Body != nil {
@@ -132,6 +172,17 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 
 	signedRequest := r.PostFormValue("signed_request")
 	if signedRequest == "" {
+		if h.Logger != nil {
+			preview := rawBody
+			if len(preview) > 300 {
+				preview = preview[:300]
+			}
+			h.Logger.Warn("embedded signup: signed_request missing",
+				zap.Int("post_form_len", len(r.PostForm)),
+				zap.Int("raw_body_len", len(rawBody)),
+				zap.ByteString("raw_body_preview", preview))
+		}
+
 		legacy := EmbeddedSignupCallbackRequest{
 			WABAID:        r.PostFormValue("waba_id"),
 			PhoneNumberID: r.PostFormValue("phone_number_id"),
@@ -169,7 +220,15 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.Logger.Info("WhatsApp embedded signup payload", zap.ByteString("payload", payloadBytes))
+	if h.Logger != nil {
+		preview := payloadBytes
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		h.Logger.Info("WhatsApp embedded signup payload decoded",
+			zap.Int("payload_len", len(payloadBytes)),
+			zap.ByteString("payload_preview", preview))
+	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {

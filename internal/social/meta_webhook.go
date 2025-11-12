@@ -77,7 +77,19 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 	}
 
 	// Meta requires: mode=subscribe AND verify_token matches exactly (case-sensitive)
+	if h.Logger != nil {
+		h.Logger.Info("Meta webhook verification request",
+			zap.String("mode", mode),
+			zap.String("token", token),
+			zap.String("challenge", challenge),
+			zap.String("expected_token", expectedToken))
+	}
+
 	if mode != "subscribe" {
+		if h.Logger != nil {
+			h.Logger.Warn("Meta webhook verification rejected: invalid mode",
+				zap.String("received_mode", mode))
+		}
 		h.Logger.Warn("❌ Webhook verification failed — invalid mode",
 			zap.String("mode", mode),
 			zap.String("expected", "subscribe"))
@@ -86,6 +98,9 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 	}
 
 	if token == "" {
+		if h.Logger != nil {
+			h.Logger.Warn("Meta webhook verification rejected: token missing")
+		}
 		h.Logger.Warn("❌ Webhook verification failed — no verify token provided")
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -93,6 +108,12 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 
 	// Verify token matches exactly (case-sensitive, no trimming)
 	if token != expectedToken {
+		if h.Logger != nil {
+			h.Logger.Warn("Meta webhook verification rejected: token mismatch",
+				zap.String("received", token),
+				zap.Int("received_len", len(token)),
+				zap.Int("expected_len", len(expectedToken)))
+		}
 		h.Logger.Warn("❌ Webhook verification failed — token mismatch",
 			zap.String("expected", expectedToken),
 			zap.String("received", token),
@@ -104,6 +125,9 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 	}
 
 	if challenge == "" {
+		if h.Logger != nil {
+			h.Logger.Warn("Meta webhook verification rejected: challenge missing")
+		}
 		h.Logger.Warn("❌ Webhook verification failed — no challenge provided")
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
