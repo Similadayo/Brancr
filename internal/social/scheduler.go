@@ -22,10 +22,13 @@ import (
 	"github.com/similadayo/brancr/internal/utils"
 )
 
+type PostNotifier func(ctx context.Context, tenantID uint, platform string, success bool, message string)
+
 type Scheduler struct {
 	DB               *gorm.DB
 	Logger           *zap.Logger
 	CaptionOptimizer CaptionOptimizer
+	PostNotifier     PostNotifier
 	// Platform adapters will be injected here as needed
 }
 
@@ -238,6 +241,15 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 
 			// Log failure
 			s.logPostActivity(p.TenantID, p.ID, platform, "failed", originalCaption, optimizedCaption, "failed", err.Error())
+
+			postLabel := strings.TrimSpace(p.Name)
+			if postLabel == "" {
+				postLabel = "Scheduled post"
+			} else {
+				postLabel = fmt.Sprintf("'%s'", postLabel)
+			}
+			failMsg := fmt.Sprintf("%s failed on %s: %s", postLabel, platform, err.Error())
+			s.notifyPostResult(ctx, p.TenantID, platform, false, failMsg)
 		} else {
 			successCount++
 			succeeded = append(succeeded, platform)
@@ -245,6 +257,15 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 
 			// Log success
 			s.logPostActivity(p.TenantID, p.ID, platform, "posted", originalCaption, optimizedCaption, "success", "")
+
+			postLabel := strings.TrimSpace(p.Name)
+			if postLabel == "" {
+				postLabel = "Scheduled post"
+			} else {
+				postLabel = fmt.Sprintf("'%s'", postLabel)
+			}
+			successMsg := fmt.Sprintf("%s went live on %s.", postLabel, platform)
+			s.notifyPostResult(ctx, p.TenantID, platform, true, successMsg)
 		}
 	}
 
@@ -285,6 +306,13 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			s.markFailed(p, "all platforms failed", true, false)
 		}
 	}
+}
+
+func (s *Scheduler) notifyPostResult(ctx context.Context, tenantID uint, platform string, success bool, message string) {
+	if s.PostNotifier == nil {
+		return
+	}
+	s.PostNotifier(ctx, tenantID, platform, success, message)
 }
 
 func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform string, urls []string, caption string, assetType string) error {

@@ -48,7 +48,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.TenantAuth([]byte(h.Config.TenantJWTSecret), SessionCookie))
-		r.Get("/tenant/social-accounts", h.listSocialAccounts)
+		r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
+		r.Get("/tenant/integrations", h.listIntegrations)
+		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
 		r.Get("/tenant/overview", h.overview)
 	})
 }
@@ -196,6 +198,10 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listSocialAccounts(w http.ResponseWriter, r *http.Request) {
+	h.listIntegrations(w, r)
+}
+
+func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -209,8 +215,31 @@ func (h *Handler) listSocialAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	type integration struct {
+		Platform   string    `json:"platform"`
+		Connected  bool      `json:"connected"`
+		Username   string    `json:"username"`
+		ExternalID string    `json:"external_id"`
+		PageID     string    `json:"page_id"`
+		Mode       string    `json:"mode"`
+		UpdatedAt  time.Time `json:"updated_at"`
+	}
+
+	resp := make([]integration, 0, len(accounts))
+	for _, acc := range accounts {
+		resp = append(resp, integration{
+			Platform:   acc.Platform,
+			Connected:  acc.Connected,
+			Username:   acc.Username,
+			ExternalID: acc.ExternalID,
+			PageID:     acc.PageID,
+			Mode:       acc.Mode,
+			UpdatedAt:  acc.UpdatedAt,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accounts": accounts,
+		"integrations": resp,
 	})
 }
 
@@ -230,6 +259,69 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"conversations":  convoCount,
 		"scheduledPosts": scheduledCount,
+	})
+}
+
+func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var posts []storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).
+		Order("scheduled_at ASC, created_at ASC").
+		Limit(100).
+		Find(&posts).Error; err != nil {
+		h.Logger.Error("fetch scheduled posts", zap.Error(err))
+		http.Error(w, "could not fetch scheduled posts", http.StatusInternalServerError)
+		return
+	}
+
+	type scheduledPost struct {
+		ID            uint       `json:"id"`
+		Name          string     `json:"name"`
+		Caption       string     `json:"caption"`
+		Status        string     `json:"status"`
+		ScheduledAt   *time.Time `json:"scheduled_at"`
+		Platforms     []string   `json:"platforms"`
+		MediaAssetIDs []uint     `json:"media_asset_ids"`
+		Attempts      int        `json:"attempts"`
+		LastError     string     `json:"last_error"`
+		CreatedAt     time.Time  `json:"created_at"`
+		PostedAt      *time.Time `json:"posted_at"`
+	}
+
+	resp := make([]scheduledPost, 0, len(posts))
+	for _, post := range posts {
+		var platforms []string
+		if strings.TrimSpace(post.Platforms) != "" {
+			_ = json.Unmarshal([]byte(post.Platforms), &platforms)
+		}
+
+		var mediaIDs []uint
+		if strings.TrimSpace(post.MediaAssetIDs) != "" {
+			_ = json.Unmarshal([]byte(post.MediaAssetIDs), &mediaIDs)
+		}
+
+		resp = append(resp, scheduledPost{
+			ID:            post.ID,
+			Name:          post.Name,
+			Caption:       post.Caption,
+			Status:        post.Status,
+			ScheduledAt:   post.ScheduledAt,
+			Platforms:     platforms,
+			MediaAssetIDs: mediaIDs,
+			Attempts:      post.Attempts,
+			LastError:     post.LastError,
+			CreatedAt:     post.CreatedAt,
+			PostedAt:      post.PostedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scheduled_posts": resp,
 	})
 }
 

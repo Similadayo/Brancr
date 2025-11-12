@@ -153,6 +153,19 @@ func (s *Services) initSocial() error {
 
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
+	if s.BotManager != nil {
+		scheduler.PostNotifier = func(ctx context.Context, tenantID uint, platform string, success bool, message string) {
+			if s.BotManager == nil {
+				return
+			}
+			prefix := "✅"
+			if !success {
+				prefix = "⚠️"
+			}
+			final := prefix + " " + message
+			s.BotManager.NotifyOwner(tenantID, final)
+		}
+	}
 	s.Scheduler = scheduler
 
 	// Register TikTok connector with services-aware implementation
