@@ -28,6 +28,7 @@ type Config struct {
 	MetaSuccessURL       string
 	MetaEmbeddedConfigID string
 	MetaEmbeddedExtras   string
+	MetaSystemUserToken  string
 	TenantJWTSecret      string
 	TikTokClientKey      string
 	TikTokClientSecret   string
@@ -66,6 +67,7 @@ func Load() *Config {
 		MetaSuccessURL:       os.Getenv("META_SUCCESS_REDIRECT"),
 		MetaEmbeddedConfigID: os.Getenv("META_WHATSAPP_CONFIG_ID"),
 		MetaEmbeddedExtras:   os.Getenv("META_WHATSAPP_EXTRAS"),
+		MetaSystemUserToken:  getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
 		TenantJWTSecret:      os.Getenv("TENANT_JWT_SECRET"),
 		TikTokClientKey:      os.Getenv("TIKTOK_CLIENT_KEY"),
 		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),
@@ -108,6 +110,9 @@ func validateConfig(cfg *Config) {
 	}
 	if cfg.MetaEmbeddedConfigID == "" {
 		log.Println("ℹ️  META_WHATSAPP_CONFIG_ID not set — WhatsApp embedded signup will fallback to sandbox.")
+	}
+	if cfg.MetaSystemUserToken == "" {
+		log.Println("ℹ️  META_SYSTEM_USER_TOKEN not set — WhatsApp webhook subscription may require manual setup.")
 	}
 	if cfg.TenantJWTSecret == "" {
 		log.Println("⚠️  TENANT_JWT_SECRET missing — tenant authentication cookies will be insecure.")
