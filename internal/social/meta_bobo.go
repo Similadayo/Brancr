@@ -501,7 +501,7 @@ func (h *EmbeddedSignupHandler) upsertWhatsAppAccount(tenantID uint, wabaID, pho
 	account.PageID = phoneID
 	account.ExternalID = phoneID
 	if strings.TrimSpace(phoneNumber) != "" {
-		account.Username = phoneNumber
+	account.Username = phoneNumber
 	}
 	account.Mode = "oauth2"
 	account.Connected = strings.ToUpper(status) == "APPROVED" || status == ""
