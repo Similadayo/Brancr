@@ -56,6 +56,10 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 	token := r.URL.Query().Get("hub.verify_token")
 	challenge := r.URL.Query().Get("hub.challenge")
 
+	if h.Logger != nil {
+		h.Logger.Info("Meta verification incoming from", zap.String("remote_addr", r.RemoteAddr))
+	}
+
 	// Log all incoming parameters for debugging
 	h.Logger.Info("🔍 Meta webhook verification request received",
 		zap.String("method", r.Method),

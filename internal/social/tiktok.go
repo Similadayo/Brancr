@@ -128,8 +128,8 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 				session, err = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY")
 			}
 		}
-		if err != nil {
-			return fmt.Errorf("tiktok init upload failed: %w", err)
+	if err != nil {
+		return fmt.Errorf("tiktok init upload failed: %w", err)
 		}
 	}
 

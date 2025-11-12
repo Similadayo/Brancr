@@ -1,3 +1,5 @@
+//go:build legacy
+
 package social
 
 import (
@@ -15,6 +17,7 @@ import (
 )
 
 // WebhookHandler handles incoming webhooks from social platforms
+// Deprecated: This handler is kept for potential non-Meta webhook integrations.
 type WebhookHandler struct {
 	DB             *gorm.DB
 	Logger         *zap.Logger
