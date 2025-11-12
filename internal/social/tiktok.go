@@ -148,7 +148,7 @@ func (t *TikTokConnector) HealthCheck(ctx context.Context, acc *storage.SocialAc
 	if acc == nil || acc.AccessToken == "" {
 		return errors.New("access token missing")
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, tikTokBaseAPI+"/user/info/?fields=open_id", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, tikTokBaseAPI+"/user/info/?fields=open_id,display_name,username", nil)
 	req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
 	resp, err := t.httpClient.Do(req)
 	if err != nil {
@@ -159,6 +159,42 @@ func (t *TikTokConnector) HealthCheck(ctx context.Context, acc *storage.SocialAc
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("tiktok health check failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+
+	var payload struct {
+		Data struct {
+			DisplayName string `json:"display_name"`
+			Username    string `json:"username"`
+			OpenID      string `json:"open_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil {
+		update := map[string]interface{}{}
+		if payload.Data.DisplayName != "" {
+			update["username"] = payload.Data.DisplayName
+		} else if payload.Data.Username != "" {
+			update["username"] = payload.Data.Username
+		}
+		if payload.Data.OpenID != "" {
+			update["external_id"] = payload.Data.OpenID
+		}
+
+		if len(update) > 0 && t.DB != nil {
+			if err := t.DB.WithContext(ctx).
+				Model(&storage.SocialAccount{}).
+				Where("id = ?", acc.ID).
+				Updates(update).Error; err != nil {
+				t.Logger.Warn("tiktok health check: failed to persist profile info", zap.Error(err))
+			} else {
+				if val, ok := update["username"]; ok {
+					acc.Username, _ = val.(string)
+				}
+				if val, ok := update["external_id"]; ok {
+					acc.ExternalID, _ = val.(string)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
