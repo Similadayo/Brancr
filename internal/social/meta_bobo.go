@@ -93,9 +93,9 @@ func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
 			zap.String("challenge", challenge))
 	}
 
-	expected := os.Getenv("META_WEBHOOK_VERIFY_TOKEN")
+	expected := strings.TrimSpace(os.Getenv("META_WEBHOOK_VERIFY_TOKEN"))
 	if expected == "" {
-		expected = os.Getenv("WEBHOOK_VERIFY_TOKEN")
+		expected = strings.TrimSpace(os.Getenv("WEBHOOK_VERIFY_TOKEN"))
 	}
 
 	if expected == "" {

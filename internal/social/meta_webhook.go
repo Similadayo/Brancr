@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -64,9 +65,9 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 		zap.String("challenge", challenge))
 
 	// Get verify token from environment variable
-	expectedToken := os.Getenv("META_WEBHOOK_VERIFY_TOKEN")
+	expectedToken := strings.TrimSpace(os.Getenv("META_WEBHOOK_VERIFY_TOKEN"))
 	if expectedToken == "" {
-		expectedToken = os.Getenv("WEBHOOK_VERIFY_TOKEN")
+		expectedToken = strings.TrimSpace(os.Getenv("WEBHOOK_VERIFY_TOKEN"))
 	}
 
 	if expectedToken == "" {
@@ -112,14 +113,14 @@ func (h *MetaWebhookHandler) handleWebhookVerification(w http.ResponseWriter, r 
 	// Content-Type must be text/plain, HTTP 200 OK
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	
+
 	// Write ONLY the challenge string - no newlines, no extra characters
 	n, err := fmt.Fprint(w, challenge)
 	if err != nil {
 		h.Logger.Error("❌ Failed to write challenge response", zap.Error(err))
 		return
 	}
-	
+
 	h.Logger.Info("✅ Meta webhook verified successfully",
 		zap.String("challenge", challenge),
 		zap.Int("bytes_written", n))
@@ -200,7 +201,7 @@ func min(a, b int) int {
 // Instagram messaging uses the same structure as Facebook but with object="instagram"
 func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body []byte) {
 	h.Logger.Info("📱 Parsing Instagram webhook payload")
-	
+
 	// Log full payload for debugging
 	var rawPayload map[string]interface{}
 	if err := json.Unmarshal(body, &rawPayload); err == nil {
@@ -310,7 +311,7 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 // processFacebookWebhook processes Facebook webhook events
 func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []byte) {
 	h.Logger.Info("📱 Parsing Facebook webhook payload")
-	
+
 	var payload struct {
 		Object string `json:"object"`
 		Entry  []struct {
@@ -433,13 +434,13 @@ func (h *MetaWebhookHandler) processWhatsAppWebhook(ctx context.Context, body []
 
 		for j, change := range entry.Changes {
 			phoneNumberID := change.Value.Metadata.PhoneNumberID
-			
+
 			h.Logger.Info("📞 Processing WhatsApp change",
 				zap.Int("change_index", j),
 				zap.String("phone_number_id", phoneNumberID),
 				zap.String("display_phone_number", change.Value.Metadata.DisplayPhoneNumber),
 				zap.Int("messages_count", len(change.Value.Messages)))
-			
+
 			// Resolve tenant from phone_number_id
 			tenantID, err := h.resolveTenantFromExternalID(phoneNumberID, "whatsapp")
 			if err != nil {
@@ -490,11 +491,11 @@ func (h *MetaWebhookHandler) processWhatsAppWebhook(ctx context.Context, body []
 // resolveTenantFromExternalID finds the tenant ID by matching external ID (page_id, instagram_business_account.id, phone_number_id)
 func (h *MetaWebhookHandler) resolveTenantFromExternalID(externalID, platform string) (uint, error) {
 	var account storage.SocialAccount
-	
+
 	h.Logger.Debug("🔍 Resolving tenant",
 		zap.String("external_id", externalID),
 		zap.String("platform", platform))
-	
+
 	// Try ExternalID first (most reliable)
 	if err := h.DB.Where("external_id = ? AND platform = ? AND connected = ?", externalID, platform, true).First(&account).Error; err == nil {
 		h.Logger.Info("✅ Tenant found via ExternalID",
@@ -527,4 +528,3 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
-
