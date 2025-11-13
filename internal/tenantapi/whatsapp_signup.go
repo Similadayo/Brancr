@@ -27,7 +27,8 @@ const (
 var errWhatsAppSignupNotFound = errors.New("whatsapp signup payload not found")
 
 type whatsAppCodeRequest struct {
-	Code string `json:"code"`
+	Code        string `json:"code"`
+	RedirectURI string `json:"redirect_uri"`
 }
 
 type whatsAppSessionPayload struct {
@@ -203,7 +204,12 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 			zap.String("code_prefix", prefix))
 	}
 
-	tokenResp, err := h.exchangeWhatsAppCode(r.Context(), req.Code)
+	redirectURI := strings.TrimSpace(req.RedirectURI)
+	if redirectURI == "" {
+		redirectURI = h.Config.MetaRedirectURI
+	}
+
+	tokenResp, err := h.exchangeWhatsAppCode(r.Context(), req.Code, redirectURI)
 	if err != nil {
 		h.Logger.Error("failed to exchange whatsapp code", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
 		http.Error(w, "failed to exchange code", http.StatusBadGateway)
@@ -270,15 +276,15 @@ func (h *Handler) finalizeWhatsAppSignup(ctx context.Context, tenantID uint, ses
 	return nil
 }
 
-func (h *Handler) exchangeWhatsAppCode(ctx context.Context, code string) (*metaTokenResponse, error) {
-	if h.Config.MetaAppID == "" || h.Config.MetaAppSecret == "" || h.Config.MetaRedirectURI == "" {
+func (h *Handler) exchangeWhatsAppCode(ctx context.Context, code, redirectURI string) (*metaTokenResponse, error) {
+	if h.Config.MetaAppID == "" || h.Config.MetaAppSecret == "" {
 		return nil, errors.New("meta app credentials not configured")
 	}
 
 	form := url.Values{}
 	form.Set("client_id", h.Config.MetaAppID)
 	form.Set("client_secret", h.Config.MetaAppSecret)
-	form.Set("redirect_uri", h.Config.MetaRedirectURI)
+	form.Set("redirect_uri", redirectURI)
 	form.Set("code", code)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://graph.facebook.com/v18.0/oauth/access_token", strings.NewReader(form.Encode()))
