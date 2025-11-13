@@ -209,6 +209,8 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 		redirectURI = h.Config.MetaRedirectURI
 	}
 
+	h.Logger.Info("processing whatsapp code exchange", zap.Uint("tenant_id", claims.TenantID), zap.String("redirect_uri", redirectURI))
+
 	tokenResp, err := h.exchangeWhatsAppCode(r.Context(), req.Code, redirectURI)
 	if err != nil {
 		h.Logger.Error("failed to exchange whatsapp code", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
