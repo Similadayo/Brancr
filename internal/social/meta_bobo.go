@@ -501,7 +501,7 @@ func (h *EmbeddedSignupHandler) upsertWhatsAppAccount(tenantID uint, wabaID, pho
 	account.PageID = phoneID
 	account.ExternalID = phoneID
 	if strings.TrimSpace(phoneNumber) != "" {
-	account.Username = phoneNumber
+		account.Username = phoneNumber
 	}
 	account.Mode = "oauth2"
 	account.Connected = strings.ToUpper(status) == "APPROVED" || status == ""
@@ -510,8 +510,53 @@ func (h *EmbeddedSignupHandler) upsertWhatsAppAccount(tenantID uint, wabaID, pho
 		return err
 	}
 
+	go h.subscribePhoneNumber(phoneID, token)
 	go h.subscribeAppToWABA(tenantID, wabaID)
 	return nil
+}
+
+func (h *EmbeddedSignupHandler) subscribePhoneNumber(phoneID string, tenantToken string) {
+	phoneID = strings.TrimSpace(phoneID)
+	tenantToken = strings.TrimSpace(tenantToken)
+	if phoneID == "" || tenantToken == "" {
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps?access_token=%s", phoneID, tenantToken)
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("whatsapp phone subscription build failed", zap.String("phone_number_id", phoneID), zap.Error(err))
+		}
+		return
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("whatsapp phone subscription request failed", zap.String("phone_number_id", phoneID), zap.Error(err))
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if h.Logger != nil {
+			h.Logger.Warn("whatsapp phone subscription returned non-200",
+				zap.String("phone_number_id", phoneID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return
+	}
+
+	if h.Logger != nil {
+		h.Logger.Info("WhatsApp phone number subscribed",
+			zap.String("phone_number_id", phoneID),
+			zap.ByteString("response", body))
+	}
 }
 
 func (h *EmbeddedSignupHandler) subscribeAppToWABA(tenantID uint, wabaID string) {
