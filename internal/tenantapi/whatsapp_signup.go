@@ -630,6 +630,9 @@ func normalizeBrancrRedirect(value string) string {
 	if value == "" {
 		return ""
 	}
+	if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+		value = "https://" + value
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Host == "" {
 		return value
