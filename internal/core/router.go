@@ -46,7 +46,7 @@ func SetupRouter(app *App) http.Handler {
 	r.Mount("/admin", admin.AdminRouter(adminCtx))
 	r.Mount("/bot", TenantRouter(app))
 
-	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config)
+	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis)
 	r.Route("/api", func(api chi.Router) {
 		apiHandler.RegisterRoutes(api)
 	})

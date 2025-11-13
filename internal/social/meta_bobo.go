@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	"github.com/similadayo/brancr/internal/config"
-	"github.com/similadayo/brancr/internal/storage"
-	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -330,7 +327,7 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 		h.Logger.Warn("embedded signup payload missing token", zap.String("phone_number_id", phoneID))
 	}
 
-	if err := h.upsertWhatsAppAccount(tenantID, wabaID, phoneID, phoneNumber, token, status); err != nil {
+	if err := SaveWhatsAppAccount(h.DB, h.Logger, h.Config, tenantID, wabaID, phoneID, phoneNumber, token, status); err != nil {
 		h.Logger.Error("failed to save whatsapp account", zap.Error(err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
@@ -367,7 +364,10 @@ func (h *EmbeddedSignupHandler) handleLegacyCallback(w http.ResponseWriter, payl
 		return
 	}
 
-	if err := h.upsertWhatsAppAccount(
+	if err := SaveWhatsAppAccount(
+		h.DB,
+		h.Logger,
+		h.Config,
 		parseTenantID(payload.TenantID),
 		payload.WABAID,
 		payload.PhoneNumberID,
@@ -381,17 +381,6 @@ func (h *EmbeddedSignupHandler) handleLegacyCallback(w http.ResponseWriter, payl
 	}
 
 	w.WriteHeader(http.StatusOK)
-}
-
-func encryptIfPossible(token string) (string, error) {
-	if token == "" {
-		return "", nil
-	}
-	enc, err := utils.EncryptToken(token)
-	if err != nil {
-		return token, nil
-	}
-	return enc, nil
 }
 
 func parseTenantID(raw string) uint {
@@ -482,137 +471,5 @@ func getString(data map[string]any, path ...string) string {
 		return ""
 	default:
 		return fmt.Sprintf("%v", v)
-	}
-}
-
-func (h *EmbeddedSignupHandler) upsertWhatsAppAccount(tenantID uint, wabaID, phoneID, phoneNumber, token, status string) error {
-	var account storage.SocialAccount
-	err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		account = storage.SocialAccount{
-			TenantID: tenantID,
-			Platform: "whatsapp",
-		}
-	} else if err != nil {
-		return err
-	}
-
-	encrypted, err := encryptIfPossible(token)
-	if err != nil {
-		return err
-	}
-
-	if encrypted != "" {
-		account.AccessToken = encrypted
-	}
-
-	account.PageID = phoneID
-	account.ExternalID = phoneID
-	if strings.TrimSpace(phoneNumber) != "" {
-		account.Username = phoneNumber
-	}
-	account.Mode = "oauth2"
-	account.Connected = strings.ToUpper(status) == "APPROVED" || status == ""
-
-	if err := h.DB.Save(&account).Error; err != nil {
-		return err
-	}
-
-	go h.subscribePhoneNumber(phoneID, token)
-	go h.subscribeAppToWABA(tenantID, wabaID)
-	return nil
-}
-
-func (h *EmbeddedSignupHandler) subscribePhoneNumber(phoneID string, tenantToken string) {
-	phoneID = strings.TrimSpace(phoneID)
-	tenantToken = strings.TrimSpace(tenantToken)
-	if phoneID == "" || tenantToken == "" {
-		return
-	}
-
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps?access_token=%s", phoneID, tenantToken)
-
-	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
-	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("whatsapp phone subscription build failed", zap.String("phone_number_id", phoneID), zap.Error(err))
-		}
-		return
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("whatsapp phone subscription request failed", zap.String("phone_number_id", phoneID), zap.Error(err))
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		if h.Logger != nil {
-			h.Logger.Warn("whatsapp phone subscription returned non-200",
-				zap.String("phone_number_id", phoneID),
-				zap.Int("status", resp.StatusCode),
-				zap.ByteString("body", body))
-		}
-		return
-	}
-
-	if h.Logger != nil {
-		h.Logger.Info("WhatsApp phone number subscribed",
-			zap.String("phone_number_id", phoneID),
-			zap.ByteString("response", body))
-	}
-}
-
-func (h *EmbeddedSignupHandler) subscribeAppToWABA(tenantID uint, wabaID string) {
-	if strings.TrimSpace(wabaID) == "" {
-		return
-	}
-	if h.Config == nil {
-		if h.Logger != nil {
-			h.Logger.Warn("whatsapp subscription skipped: no config", zap.Uint("tenant_id", tenantID))
-		}
-		return
-	}
-
-	sysToken := strings.TrimSpace(h.Config.MetaSystemUserToken)
-	if sysToken == "" {
-		if h.Logger != nil {
-			h.Logger.Warn("whatsapp subscription skipped: missing system user token", zap.Uint("tenant_id", tenantID))
-		}
-		return
-	}
-
-	data := url.Values{}
-	data.Set("access_token", sysToken)
-	data.Set("subscribed_fields", "messages")
-
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", wabaID)
-	resp, err := http.PostForm(endpoint, data)
-	if err != nil {
-		if h.Logger != nil {
-			h.Logger.Warn("whatsapp subscription request failed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID), zap.Error(err))
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		if h.Logger != nil {
-			body, _ := io.ReadAll(resp.Body)
-			h.Logger.Warn("whatsapp subscription returned non-200",
-				zap.Uint("tenant_id", tenantID),
-				zap.String("waba_id", wabaID),
-				zap.Int("status", resp.StatusCode),
-				zap.ByteString("body", body))
-		}
-		return
-	}
-
-	if h.Logger != nil {
-		h.Logger.Info("WhatsApp WABA subscribed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
 	}
 }
