@@ -150,11 +150,19 @@ func (h *EmbeddedSignupHandler) Verify(w http.ResponseWriter, r *http.Request) {
 
 func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	if h.Logger != nil {
+		metaVerifyToken := strings.TrimSpace(os.Getenv("META_WEBHOOK_VERIFY_TOKEN"))
+		legacyVerifyToken := strings.TrimSpace(os.Getenv("WEBHOOK_VERIFY_TOKEN"))
+
 		h.Logger.Info("WhatsApp embedded signup callback hit",
 			zap.String("method", r.Method),
 			zap.String("content_type", r.Header.Get("Content-Type")),
 			zap.String("user_agent", r.Header.Get("User-Agent")),
-			zap.String("remote_addr", r.RemoteAddr))
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("mode", r.URL.Query().Get("hub.mode")),
+			zap.String("verify_token", r.URL.Query().Get("hub.verify_token")),
+			zap.String("challenge", r.URL.Query().Get("hub.challenge")),
+			zap.String("expected_meta_token", metaVerifyToken),
+			zap.String("expected_legacy_token", legacyVerifyToken))
 	}
 
 	var rawBody []byte
