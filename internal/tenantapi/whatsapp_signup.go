@@ -145,6 +145,12 @@ func (h *Handler) handleWhatsAppSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if h.Logger != nil {
+		h.Logger.Info("whatsapp signup session raw data",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("data", string(payload.Data)))
+	}
+
 	session := whatsAppSessionData{
 		Event:           payload.Event,
 		WABAID:          sessionBody.WABAID,
