@@ -229,6 +229,13 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 	}
 	hasSession := sessionErr == nil
 
+	if hasSession && h.Logger != nil {
+		h.Logger.Info("whatsapp session redirect hints",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("callback_uri", sessionData.CallbackURI),
+			zap.String("fallback_uri", sessionData.FallbackURI))
+	}
+
 	redirectURI := strings.TrimSpace(req.RedirectURI)
 	if redirectURI == "" {
 		redirectURI = firstNonEmpty(sessionData.CallbackURI, sessionData.FallbackURI, h.Config.MetaRedirectURI)
