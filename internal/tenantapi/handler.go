@@ -52,6 +52,11 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/integrations", h.listIntegrations)
 		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
 		r.Get("/tenant/overview", h.overview)
+
+		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
+			r.Post("/code", h.handleWhatsAppExchangeCode)
+			r.Post("/session", h.handleWhatsAppSession)
+		})
 	})
 }
 
@@ -370,4 +375,68 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+type whatsAppCodeRequest struct {
+	Code string `json:"code"`
+}
+
+type whatsAppSessionPayload struct {
+	Type  string          `json:"type"`
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
+}
+
+func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Request) {
+	var req whatsAppCodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		http.Error(w, "code required", http.StatusBadRequest)
+		return
+	}
+
+	if h.Logger != nil {
+		if claims, ok := middleware.TenantFromContext(r.Context()); ok {
+			prefix := req.Code
+			if len(prefix) > 6 {
+				prefix = prefix[:6]
+			}
+			h.Logger.Info("received WhatsApp exchange code",
+				zap.Uint("tenant_id", claims.TenantID),
+				zap.String("code_prefix", prefix))
+		} else {
+			h.Logger.Info("received WhatsApp exchange code")
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) handleWhatsAppSession(w http.ResponseWriter, r *http.Request) {
+	var payload whatsAppSessionPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	if payload.Type != "WA_EMBEDDED_SIGNUP" {
+		http.Error(w, "unsupported payload type", http.StatusBadRequest)
+		return
+	}
+
+	if h.Logger != nil {
+		if claims, ok := middleware.TenantFromContext(r.Context()); ok {
+			h.Logger.Info("received WhatsApp embedded signup session payload",
+				zap.Uint("tenant_id", claims.TenantID),
+				zap.String("event", payload.Event))
+		} else {
+			h.Logger.Info("received WhatsApp embedded signup session payload",
+				zap.String("event", payload.Event))
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
