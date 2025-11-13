@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/storage"
@@ -83,33 +84,56 @@ func subscribePhoneNumber(logger *zap.Logger, phoneID, tenantToken string) {
 		return
 	}
 
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps?access_token=%s", phoneID, tenantToken)
+	go attemptPhoneSubscription(logger, phoneID, tenantToken, 0)
+}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+func attemptPhoneSubscription(logger *zap.Logger, phoneID, tenantToken string, attempt int) {
+	const maxAttempts = 5
+	backoff := []time.Duration{
+		5 * time.Second,
+		15 * time.Second,
+		30 * time.Second,
+		2 * time.Minute,
+		5 * time.Minute,
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", phoneID)
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader("subscribed_fields=messages"))
 	if err != nil {
 		if logger != nil {
 			logger.Warn("whatsapp phone subscription build failed", zap.String("phone_number_id", phoneID), zap.Error(err))
 		}
 		return
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	q := make(url.Values)
+	q.Set("access_token", tenantToken)
+	req.URL.RawQuery = q.Encode()
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if logger != nil {
-			logger.Warn("whatsapp phone subscription request failed", zap.String("phone_number_id", phoneID), zap.Error(err))
+			logger.Warn("whatsapp phone subscription request failed",
+				zap.String("phone_number_id", phoneID),
+				zap.Int("attempt", attempt+1),
+				zap.Error(err))
 		}
+		retryPhoneSubscription(logger, phoneID, tenantToken, attempt, backoff, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
+		err = fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 		if logger != nil {
 			logger.Warn("whatsapp phone subscription returned non-200",
 				zap.String("phone_number_id", phoneID),
+				zap.Int("attempt", attempt+1),
 				zap.Int("status", resp.StatusCode),
 				zap.ByteString("body", body))
 		}
+		retryPhoneSubscription(logger, phoneID, tenantToken, attempt, backoff, err)
 		return
 	}
 
@@ -118,6 +142,30 @@ func subscribePhoneNumber(logger *zap.Logger, phoneID, tenantToken string) {
 			zap.String("phone_number_id", phoneID),
 			zap.ByteString("response", body))
 	}
+}
+
+func retryPhoneSubscription(logger *zap.Logger, phoneID, tenantToken string, attempt int, backoff []time.Duration, reason error) {
+	const maxAttempts = 5
+	if attempt >= maxAttempts-1 || attempt >= len(backoff) {
+		if logger != nil {
+			logger.Error("max retries reached for whatsapp phone subscription",
+				zap.String("phone_number_id", phoneID),
+				zap.Error(reason))
+		}
+		return
+	}
+
+	wait := backoff[attempt]
+	if logger != nil {
+		logger.Info("retrying whatsapp phone subscription",
+			zap.String("phone_number_id", phoneID),
+			zap.Int("next_attempt", attempt+2),
+			zap.Duration("wait", wait))
+	}
+
+	time.AfterFunc(wait, func() {
+		attemptPhoneSubscription(logger, phoneID, tenantToken, attempt+1)
+	})
 }
 
 func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID string) {
