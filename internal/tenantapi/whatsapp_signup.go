@@ -51,6 +51,8 @@ type whatsAppSessionData struct {
 	VerifiedName    string `json:"verified_name"`
 	SessionID       string `json:"session_id,omitempty"`
 	ConfigurationID string `json:"config_id,omitempty"`
+	CallbackURI     string `json:"callback_uri,omitempty"`
+	FallbackURI     string `json:"fallback_redirect_uri,omitempty"`
 }
 
 type whatsAppTokenData struct {
@@ -127,6 +129,9 @@ func (h *Handler) handleWhatsAppSession(w http.ResponseWriter, r *http.Request) 
 		DatasetIDs    []string `json:"dataset_ids"`
 		SessionID     string   `json:"session_id"`
 		ConfigID      string   `json:"config_id"`
+		CallbackURI   string   `json:"callback_uri"`
+		RedirectURI   string   `json:"redirect_uri"`
+		FallbackURI   string   `json:"fallback_redirect_uri"`
 	}
 
 	if len(payload.Data) > 0 {
@@ -152,6 +157,20 @@ func (h *Handler) handleWhatsAppSession(w http.ResponseWriter, r *http.Request) 
 		Raw:             payload.Data,
 		SessionID:       sessionBody.SessionID,
 		ConfigurationID: sessionBody.ConfigID,
+		CallbackURI:     firstNonEmpty(sessionBody.CallbackURI, sessionBody.RedirectURI),
+		FallbackURI:     sessionBody.FallbackURI,
+	}
+
+	if session.CallbackURI == "" || session.FallbackURI == "" {
+		var generic map[string]interface{}
+		if err := json.Unmarshal(payload.Data, &generic); err == nil {
+			if session.CallbackURI == "" {
+				session.CallbackURI = pickString(generic, "callback_uri", "redirect_uri", "callback_url")
+			}
+			if session.FallbackURI == "" {
+				session.FallbackURI = pickString(generic, "fallback_redirect_uri", "fallback_redirect_url", "fallback_uri")
+			}
+		}
 	}
 
 	if err := h.storeWhatsAppSession(r.Context(), claims.TenantID, session); err != nil {
@@ -204,9 +223,15 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 			zap.String("code_prefix", prefix))
 	}
 
+	sessionData, sessionErr := h.getWhatsAppSession(r.Context(), claims.TenantID)
+	if sessionErr != nil && !errors.Is(sessionErr, errWhatsAppSignupNotFound) {
+		h.Logger.Warn("failed to load whatsapp session while exchanging code", zap.Error(sessionErr), zap.Uint("tenant_id", claims.TenantID))
+	}
+	hasSession := sessionErr == nil
+
 	redirectURI := strings.TrimSpace(req.RedirectURI)
 	if redirectURI == "" {
-		redirectURI = h.Config.MetaRedirectURI
+		redirectURI = firstNonEmpty(sessionData.CallbackURI, sessionData.FallbackURI, h.Config.MetaRedirectURI)
 	}
 
 	h.Logger.Info("processing whatsapp code exchange", zap.Uint("tenant_id", claims.TenantID), zap.String("redirect_uri", redirectURI))
@@ -231,7 +256,7 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if sessionData, err := h.getWhatsAppSession(r.Context(), claims.TenantID); err == nil {
+	if hasSession {
 		if err := h.finalizeWhatsAppSignup(r.Context(), claims.TenantID, sessionData, tokenData); err != nil {
 			h.Logger.Error("failed to finalize WhatsApp signup (token path)", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
 			http.Error(w, "failed to finalize signup", http.StatusBadGateway)
@@ -550,6 +575,17 @@ func decodeTokenPayload(payload []byte) (whatsAppTokenData, error) {
 		return whatsAppTokenData{}, err
 	}
 	return token, nil
+}
+
+func pickString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if val, ok := m[key]; ok {
+			if str, ok := val.(string); ok && strings.TrimSpace(str) != "" {
+				return str
+			}
+		}
+	}
+	return ""
 }
 
 func sessionKey(tenantID uint) string {
