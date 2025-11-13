@@ -254,6 +254,13 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 		))
 	}
 
+	if shouldOmitRedirect(redirectURI) {
+		h.Logger.Info("omitting redirect uri for meta exchange (embedded signup detected)",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("original_redirect_uri", redirectURI))
+		redirectURI = ""
+	}
+
 	h.Logger.Info("processing whatsapp code exchange", zap.Uint("tenant_id", claims.TenantID), zap.String("redirect_uri", redirectURI))
 
 	tokenResp, err := h.exchangeWhatsAppCode(r.Context(), req.Code, redirectURI)
@@ -331,7 +338,9 @@ func (h *Handler) exchangeWhatsAppCode(ctx context.Context, code, redirectURI st
 	form := url.Values{}
 	form.Set("client_id", h.Config.MetaAppID)
 	form.Set("client_secret", h.Config.MetaAppSecret)
-	form.Set("redirect_uri", redirectURI)
+	if strings.TrimSpace(redirectURI) != "" {
+		form.Set("redirect_uri", redirectURI)
+	}
 	form.Set("code", code)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://graph.facebook.com/v18.0/oauth/access_token", strings.NewReader(form.Encode()))
@@ -650,4 +659,27 @@ func normalizeBrancrRedirect(value string) string {
 		return parsed.String()
 	}
 	return value
+}
+
+func shouldOmitRedirect(redirectURI string) bool {
+	if strings.TrimSpace(redirectURI) == "" {
+		return false
+	}
+	host := hostFromURL(redirectURI)
+	if host == "" {
+		return false
+	}
+	host = strings.ToLower(host)
+	return strings.HasSuffix(host, "brancr.com")
+}
+
+func hostFromURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
 }
