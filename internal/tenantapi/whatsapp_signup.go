@@ -242,9 +242,16 @@ func (h *Handler) handleWhatsAppExchangeCode(w http.ResponseWriter, r *http.Requ
 			zap.String("fallback_uri", sessionData.FallbackURI))
 	}
 
-	redirectURI := strings.TrimSpace(req.RedirectURI)
+	redirectURI := normalizeBrancrRedirect(strings.TrimSpace(req.RedirectURI))
 	if redirectURI == "" {
-		redirectURI = firstNonEmpty(sessionData.CallbackURI, sessionData.FallbackURI, h.Config.MetaRedirectURI)
+		redirectURI = normalizeBrancrRedirect(firstNonEmpty(
+			sessionData.CallbackURI,
+			sessionData.FallbackURI,
+			h.Config.MetaSuccessURL,
+			h.Config.PublicURL,
+			h.Config.MetaRedirectURI,
+			"https://www.brancr.com/",
+		))
 	}
 
 	h.Logger.Info("processing whatsapp code exchange", zap.Uint("tenant_id", claims.TenantID), zap.String("redirect_uri", redirectURI))
@@ -616,4 +623,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeBrancrRedirect(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return value
+	}
+
+	host := strings.ToLower(parsed.Host)
+	if strings.HasSuffix(host, "brancr.com") {
+		if parsed.Path == "" || parsed.Path == "/" {
+			parsed.Path = "/"
+		} else {
+			parsed.Path = "/"
+		}
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String()
+	}
+	return value
 }
