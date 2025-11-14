@@ -1,0 +1,247 @@
+{{define "title"}}WhatsApp Numbers — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>WhatsApp Phone Numbers</h1>
+  <p>Manage phone numbers in Brancr's provider-owned WABA</p>
+</div>
+
+<!-- Action Buttons -->
+<div style="margin-bottom: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
+  <button onclick="syncNumbers()" class="btn-primary" style="padding: 10px 20px;">
+    🔄 Sync from Meta
+  </button>
+  <a href="https://business.facebook.com/settings/whatsapp-manager/phone-numbers" target="_blank" class="btn-secondary" style="padding: 10px 20px; text-decoration: none; display: inline-block;">
+    ➕ Add Number in Meta BM
+  </a>
+</div>
+
+<!-- Stats Cards -->
+<div class="grid" style="margin-bottom: 24px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Total Numbers</div>
+        <div class="stat-card-value">{{.Total}}</div>
+      </div>
+      <div class="stat-card-icon blue">📱</div>
+    </div>
+  </div>
+  
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Available</div>
+        <div class="stat-card-value">{{.Available}}</div>
+      </div>
+      <div class="stat-card-icon green">✅</div>
+    </div>
+  </div>
+  
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Assigned</div>
+        <div class="stat-card-value">{{.Assigned}}</div>
+      </div>
+      <div class="stat-card-icon orange">👤</div>
+    </div>
+  </div>
+</div>
+
+<!-- Numbers Table -->
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Phone Number</th>
+        <th>Display Name</th>
+        <th>Verified Name</th>
+        <th>Status</th>
+        <th>Quality</th>
+        <th>Tenant</th>
+        <th>Assigned At</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Numbers}}
+      <tr>
+        <td style="font-weight: 500;">{{.PhoneNumber}}</td>
+        <td>{{.DisplayName}}</td>
+        <td>{{.VerifiedName}}</td>
+        <td>
+          {{if eq .Status "available"}}
+            <span class="badge success">Available</span>
+          {{else if eq .Status "assigned"}}
+            <span class="badge info">Assigned</span>
+          {{else if eq .Status "pending_verification"}}
+            <span class="badge warning">Pending</span>
+          {{else if eq .Status "suspended"}}
+            <span class="badge danger">Suspended</span>
+          {{else}}
+            <span class="badge">{{.Status}}</span>
+          {{end}}
+        </td>
+        <td>
+          {{if eq .QualityRating "GREEN"}}
+            <span class="badge success">🟢 Green</span>
+          {{else if eq .QualityRating "YELLOW"}}
+            <span class="badge warning">🟡 Yellow</span>
+          {{else if eq .QualityRating "RED"}}
+            <span class="badge danger">🔴 Red</span>
+          {{else}}
+            <span class="badge">—</span>
+          {{end}}
+        </td>
+        <td>
+          {{if .TenantName}}
+            <a href="/admin/tenants/{{.TenantID}}" style="color: var(--accent); text-decoration: none;">{{.TenantName}}</a>
+          {{else}}
+            <span style="color: var(--text-secondary);">—</span>
+          {{end}}
+        </td>
+        <td style="color: var(--text-secondary);">
+          {{if .AssignedAt}}
+            {{.AssignedAt.Format "Jan 2, 2006 15:04"}}
+          {{else}}
+            —
+          {{end}}
+        </td>
+        <td>
+          {{if eq .Status "available"}}
+            <button onclick="requestVerificationCode('{{.PhoneNumberID}}', '{{.PhoneNumber}}')" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; margin-right: 8px;">
+              🔑 Request Code
+            </button>
+          {{end}}
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="8" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+          No phone numbers found. Click "Sync from Meta" to import numbers from your WABA.
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<!-- Verification Modal -->
+<div id="verifyModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+  <div class="card" style="max-width: 500px; width: 90%; padding: 24px;">
+    <h2 style="margin-top: 0;">Verify Phone Number</h2>
+    <p id="verifyModalPhone" style="color: var(--text-secondary); margin-bottom: 16px;"></p>
+    <form id="verifyForm" onsubmit="submitVerification(event)">
+      <input type="hidden" id="verifyPhoneNumberID" />
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; margin-bottom: 8px; font-weight: 500;">Verification Code</label>
+        <input type="text" id="verifyCode" required placeholder="Enter 6-digit code" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" maxlength="6" />
+      </div>
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button type="button" onclick="closeVerifyModal()" class="btn-secondary" style="padding: 10px 20px;">Cancel</button>
+        <button type="submit" class="btn-primary" style="padding: 10px 20px;">Verify</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+let currentPhoneNumberID = null;
+
+function syncNumbers() {
+  if (!confirm('Sync phone numbers from Meta? This will update the database with current numbers from your WABA.')) {
+    return;
+  }
+  
+  fetch('/admin/whatsapp/sync', {
+    method: 'POST',
+    credentials: 'include'
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + data.message);
+    } else {
+      alert('✅ ' + data.message + '\n\nAvailable: ' + data.available_count + '\nTotal: ' + data.total_count);
+      location.reload();
+    }
+  })
+  .catch(err => {
+    alert('Error syncing: ' + err.message);
+  });
+}
+
+function requestVerificationCode(phoneNumberID, phoneNumber) {
+  if (!confirm('Request verification code for ' + phoneNumber + '?\n\nMeta will send a code to this phone number via SMS.')) {
+    return;
+  }
+  
+  fetch('/admin/whatsapp/request-code', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      phone_number: phoneNumber
+    })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + data.message);
+    } else {
+      currentPhoneNumberID = phoneNumberID;
+      document.getElementById('verifyPhoneNumberID').value = phoneNumberID;
+      document.getElementById('verifyModalPhone').textContent = 'Phone: ' + phoneNumber;
+      document.getElementById('verifyModal').style.display = 'flex';
+      document.getElementById('verifyCode').focus();
+      alert('✅ Verification code sent! Check the phone number for the SMS code.');
+    }
+  })
+  .catch(err => {
+    alert('Error requesting code: ' + err.message);
+  });
+}
+
+function closeVerifyModal() {
+  document.getElementById('verifyModal').style.display = 'none';
+  document.getElementById('verifyForm').reset();
+  currentPhoneNumberID = null;
+}
+
+function submitVerification(event) {
+  event.preventDefault();
+  
+  const phoneNumberID = document.getElementById('verifyPhoneNumberID').value;
+  const code = document.getElementById('verifyCode').value;
+  
+  fetch('/admin/whatsapp/verify', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      phone_number_id: phoneNumberID,
+      verification_code: code
+    })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + data.message);
+    } else {
+      alert('✅ ' + data.message);
+      closeVerifyModal();
+      location.reload();
+    }
+  })
+  .catch(err => {
+    alert('Error verifying: ' + err.message);
+  });
+}
+</script>
+{{end}}
+{{template "layout.html" .}}
+

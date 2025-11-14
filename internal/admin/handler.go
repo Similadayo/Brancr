@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// WhatsAppNumbersHandler lists all WhatsApp phone numbers in the pool
+// WhatsAppNumbersHandler lists all WhatsApp phone numbers (JSON API endpoint)
 func WhatsAppNumbersHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var numbers []storage.WhatsAppPhoneNumber
@@ -47,6 +47,53 @@ func WhatsAppNumbersHandler(ctx *AdminContext) http.HandlerFunc {
 			"numbers": response,
 			"total":   len(response),
 		})
+	}
+}
+
+// WhatsAppNumbersPageHandler renders the WhatsApp numbers admin page (HTML)
+func WhatsAppNumbersPageHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var numbers []storage.WhatsAppPhoneNumber
+		if err := ctx.DB.Order("created_at DESC").Find(&numbers).Error; err != nil {
+			ctx.Logger.Error("failed to fetch phone numbers", zap.Error(err))
+			http.Error(w, "failed to fetch phone numbers", http.StatusInternalServerError)
+			return
+		}
+
+		// Get tenant info for assigned numbers and prepare display data
+		type displayNumber struct {
+			storage.WhatsAppPhoneNumber
+			TenantName string
+			TenantID   uint // For display purposes in template
+		}
+		
+		displayNumbers := make([]displayNumber, 0, len(numbers))
+		var availableCount, assignedCount int
+		
+		for _, num := range numbers {
+			item := displayNumber{WhatsAppPhoneNumber: num}
+			if num.TenantID != nil && *num.TenantID != 0 {
+				var tenant storage.Tenant
+				if err := ctx.DB.First(&tenant, *num.TenantID).Error; err == nil {
+					item.TenantName = tenant.Name
+					item.TenantID = *num.TenantID // Extract uint value from pointer
+				}
+				assignedCount++
+			} else {
+				availableCount++
+			}
+			displayNumbers = append(displayNumbers, item)
+		}
+
+		data := map[string]any{
+			"Numbers":   displayNumbers,
+			"Total":     len(numbers),
+			"Available": availableCount,
+			"Assigned":  assignedCount,
+			"Page":      "whatsapp",
+		}
+
+		renderTemplate(w, "whatsapp.html", data, ctx.Logger)
 	}
 }
 
