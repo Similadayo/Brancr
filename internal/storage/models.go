@@ -180,6 +180,19 @@ type WhatsAppPhoneNumber struct {
 	AssignedAt      *time.Time
 }
 
+// WhatsAppPhoneNumberRequest represents a tenant's request to add their own phone number
+type WhatsAppPhoneNumberRequest struct {
+	gorm.Model
+	TenantID        uint      `gorm:"index"` // Tenant who requested the number
+	PhoneNumber     string    // Display format: +1234567890
+	DisplayName     string    // Tenant's business name
+	Status          string    // pending, added_to_meta, verification_code_sent, verified, rejected
+	PhoneNumberID   string    // Meta's phone_number_id (filled after admin adds to Meta)
+	VerificationCode string   // Code provided by tenant (filled when tenant provides code)
+	RejectedReason  string    // Reason if rejected
+	ProcessedAt     *time.Time // When admin processed the request
+}
+
 // Persona — each tenant’s bot personality profile
 type Persona struct {
 	TenantID   uint   `gorm:"primaryKey"`

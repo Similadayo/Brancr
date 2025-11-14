@@ -36,6 +36,13 @@ func AdminRouter(ctx *AdminContext) http.Handler {
 		r.Post("/whatsapp/sync", WhatsAppSyncHandler(ctx))
 		r.Post("/whatsapp/request-code", WhatsAppAddNumberHandler(ctx)) // Request verification code for existing number
 		r.Post("/whatsapp/verify", WhatsAppVerifyNumberHandler(ctx))
+		
+		// WhatsApp phone number requests from tenants
+		r.Get("/whatsapp/requests", WhatsAppRequestsHandler(ctx))                    // List all requests
+		r.Post("/whatsapp/requests/mark-added", WhatsAppMarkAddedHandler(ctx))       // Mark as added to Meta
+		r.Post("/whatsapp/requests/verify", WhatsAppVerifyRequestHandler(ctx))       // Verify with code from tenant
+		r.Post("/whatsapp/requests/reject", WhatsAppRejectRequestHandler(ctx))       // Reject request
+		
 		r.Post("/logout", LogoutHandler(ctx))
 
 	})

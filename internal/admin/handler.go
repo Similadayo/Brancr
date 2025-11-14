@@ -85,11 +85,34 @@ func WhatsAppNumbersPageHandler(ctx *AdminContext) http.HandlerFunc {
 			displayNumbers = append(displayNumbers, item)
 		}
 
+		// Get phone number requests
+		var requests []storage.WhatsAppPhoneNumberRequest
+		ctx.DB.Where("status IN (?)", []string{"pending", "added_to_meta", "verification_code_sent"}).Order("created_at DESC").Find(&requests)
+		
+		type requestWithTenant struct {
+			storage.WhatsAppPhoneNumberRequest
+			TenantName  string
+			TenantEmail string
+		}
+		
+		displayRequests := make([]requestWithTenant, 0, len(requests))
+		for _, req := range requests {
+			item := requestWithTenant{WhatsAppPhoneNumberRequest: req}
+			var tenant storage.Tenant
+			if err := ctx.DB.First(&tenant, req.TenantID).Error; err == nil {
+				item.TenantName = tenant.Name
+				item.TenantEmail = tenant.Email
+			}
+			displayRequests = append(displayRequests, item)
+		}
+
 		data := map[string]any{
 			"Numbers":   displayNumbers,
 			"Total":     len(numbers),
 			"Available": availableCount,
 			"Assigned":  assignedCount,
+			"Requests":  displayRequests,
+			"RequestsCount": len(displayRequests),
 			"Page":      "whatsapp",
 		}
 
@@ -286,6 +309,260 @@ func WhatsAppVerifyNumberHandler(ctx *AdminContext) http.HandlerFunc {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"message": "Phone number verified successfully. It will appear in the pool after sync.",
+		})
+	}
+}
+
+// WhatsAppRequestsHandler lists all phone number requests from tenants
+func WhatsAppRequestsHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var requests []storage.WhatsAppPhoneNumberRequest
+		if err := ctx.DB.Order("created_at DESC").Find(&requests).Error; err != nil {
+			ctx.Logger.Error("failed to fetch phone number requests", zap.Error(err))
+			http.Error(w, "failed to fetch requests", http.StatusInternalServerError)
+			return
+		}
+
+		// Get tenant info for each request
+		type requestWithTenant struct {
+			storage.WhatsAppPhoneNumberRequest
+			TenantName string `json:"tenant_name"`
+			TenantEmail string `json:"tenant_email"`
+		}
+		
+		displayRequests := make([]requestWithTenant, 0, len(requests))
+		for _, req := range requests {
+			item := requestWithTenant{WhatsAppPhoneNumberRequest: req}
+			var tenant storage.Tenant
+			if err := ctx.DB.First(&tenant, req.TenantID).Error; err == nil {
+				item.TenantName = tenant.Name
+				item.TenantEmail = tenant.Email
+			}
+			displayRequests = append(displayRequests, item)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"requests": displayRequests,
+			"total": len(displayRequests),
+		})
+	}
+}
+
+// WhatsAppMarkAddedHandler marks a request as added to Meta (after admin adds it in Meta BM)
+func WhatsAppMarkAddedHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			RequestID     uint   `json:"request_id"`
+			PhoneNumberID string `json:"phone_number_id"` // Meta's phone_number_id after adding to Meta
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		var phoneRequest storage.WhatsAppPhoneNumberRequest
+		if err := ctx.DB.First(&phoneRequest, req.RequestID).Error; err != nil {
+			http.Error(w, "request not found", http.StatusNotFound)
+			return
+		}
+
+		phoneRequest.Status = "added_to_meta"
+		phoneRequest.PhoneNumberID = req.PhoneNumberID
+		now := time.Now()
+		phoneRequest.ProcessedAt = &now
+
+		if err := ctx.DB.Save(&phoneRequest).Error; err != nil {
+			ctx.Logger.Error("failed to update request", zap.Error(err))
+			http.Error(w, "failed to update request", http.StatusInternalServerError)
+			return
+		}
+
+		ctx.Logger.Info("phone number request marked as added to Meta",
+			zap.Uint("request_id", req.RequestID),
+			zap.String("phone_number", phoneRequest.PhoneNumber))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Request marked as added to Meta. Tenant should provide the verification code they receive.",
+		})
+	}
+}
+
+// WhatsAppVerifyRequestHandler verifies a phone number request with code provided by tenant
+func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			RequestID uint `json:"request_id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		var phoneRequest storage.WhatsAppPhoneNumberRequest
+		if err := ctx.DB.First(&phoneRequest, req.RequestID).Error; err != nil {
+			http.Error(w, "request not found", http.StatusNotFound)
+			return
+		}
+
+		if phoneRequest.VerificationCode == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "no_verification_code",
+				"message": "Tenant has not provided the verification code yet.",
+			})
+			return
+		}
+
+		if phoneRequest.PhoneNumberID == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "phone_number_id_missing",
+				"message": "Phone number ID is missing. Make sure you marked the request as added to Meta first.",
+			})
+			return
+		}
+
+		// Verify phone number with code
+		if err := social.VerifyPhoneNumberWithCode(ctx.Logger, ctx.Config, phoneRequest.PhoneNumberID, phoneRequest.VerificationCode); err != nil {
+			ctx.Logger.Error("failed to verify phone number", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "verification_failed",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		// Sync to get the phone number details
+		if err := social.SyncPhoneNumbersFromMeta(ctx.DB, ctx.Logger, ctx.Config); err != nil {
+			ctx.Logger.Warn("phone number verified but sync failed", zap.Error(err))
+		}
+
+		// Find the verified phone number and assign to tenant
+		var phoneNum storage.WhatsAppPhoneNumber
+		if err := ctx.DB.Where("phone_number_id = ?", phoneRequest.PhoneNumberID).First(&phoneNum).Error; err != nil {
+			ctx.Logger.Error("verified phone number not found in database after sync", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": "Phone number verified. Please sync and assign it manually.",
+			})
+			return
+		}
+
+		// Assign to tenant
+		now := time.Now()
+		phoneNum.TenantID = &phoneRequest.TenantID
+		phoneNum.Status = "assigned"
+		phoneNum.AssignedAt = &now
+		phoneNum.DisplayName = phoneRequest.DisplayName
+
+		if err := ctx.DB.Save(&phoneNum).Error; err != nil {
+			ctx.Logger.Error("failed to assign verified phone number", zap.Error(err))
+		}
+
+		// Update request status
+		phoneRequest.Status = "verified"
+		ctx.DB.Save(&phoneRequest)
+
+		// Create/update social account
+		var account storage.SocialAccount
+		if err := ctx.DB.Where("tenant_id = ? AND platform = ?", phoneRequest.TenantID, "whatsapp").First(&account).Error; err != nil {
+			account = storage.SocialAccount{
+				TenantID:   phoneRequest.TenantID,
+				Platform:   "whatsapp",
+				PageID:     phoneNum.PhoneNumberID,
+				ExternalID: phoneNum.PhoneNumberID,
+				Username:   phoneNum.PhoneNumber,
+				Connected:  true,
+				Mode:       "provider_owned",
+			}
+			ctx.DB.Create(&account)
+		} else {
+			account.PageID = phoneNum.PhoneNumberID
+			account.ExternalID = phoneNum.PhoneNumberID
+			account.Username = phoneNum.PhoneNumber
+			account.Connected = true
+			account.Mode = "provider_owned"
+			ctx.DB.Save(&account)
+		}
+
+		ctx.Logger.Info("phone number request verified and assigned",
+			zap.Uint("request_id", req.RequestID),
+			zap.String("phone_number", phoneRequest.PhoneNumber),
+			zap.Uint("tenant_id", phoneRequest.TenantID))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Phone number verified and assigned successfully!",
+			"phone_number": phoneNum.PhoneNumber,
+		})
+	}
+}
+
+// WhatsAppRejectRequestHandler rejects a phone number request
+func WhatsAppRejectRequestHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			RequestID      uint   `json:"request_id"`
+			RejectedReason string `json:"rejected_reason"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		var phoneRequest storage.WhatsAppPhoneNumberRequest
+		if err := ctx.DB.First(&phoneRequest, req.RequestID).Error; err != nil {
+			http.Error(w, "request not found", http.StatusNotFound)
+			return
+		}
+
+		phoneRequest.Status = "rejected"
+		phoneRequest.RejectedReason = req.RejectedReason
+		now := time.Now()
+		phoneRequest.ProcessedAt = &now
+
+		if err := ctx.DB.Save(&phoneRequest).Error; err != nil {
+			ctx.Logger.Error("failed to reject request", zap.Error(err))
+			http.Error(w, "failed to reject request", http.StatusInternalServerError)
+			return
+		}
+
+		ctx.Logger.Info("phone number request rejected",
+			zap.Uint("request_id", req.RequestID),
+			zap.String("phone_number", phoneRequest.PhoneNumber),
+			zap.String("reason", req.RejectedReason))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Request rejected.",
 		})
 	}
 }

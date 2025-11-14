@@ -12,7 +12,7 @@
     <div>
       <strong style="color: var(--text-primary);">For Admin-Provided Numbers:</strong>
       <ol style="margin: 8px 0 0 0; padding-left: 20px; color: var(--text-secondary); line-height: 1.8;">
-        <li>Add the phone number in <a href="https://business.facebook.com/settings/whatsapp-manager/phone-numbers" target="_blank" style="color: var(--accent);">Meta Business Manager</a></li>
+        <li>Add the phone number in <a href="https://business.facebook.com/latest/whatsapp_manager/phone_numbers/?business_id=3193061764188941&tab=phone-numbers&nav_ref=whatsapp_manager&asset_id=761025876954971" target="_blank" style="color: var(--accent);">Meta Business Manager</a></li>
         <li>Meta will send a verification code to the phone number</li>
         <li>Enter the verification code in Meta's UI to complete verification</li>
         <li>Click <strong>"🔄 Sync from Meta"</strong> below to import the number into Brancr's database</li>
@@ -23,7 +23,7 @@
       <strong style="color: var(--text-primary);">For Tenant-Provided Numbers:</strong>
       <ol style="margin: 8px 0 0 0; padding-left: 20px; color: var(--text-secondary); line-height: 1.8;">
         <li>Tenant requests their phone number to be added (via support/dashboard)</li>
-        <li>Admin adds the tenant's phone number in <a href="https://business.facebook.com/settings/whatsapp-manager/phone-numbers" target="_blank" style="color: var(--accent);">Meta Business Manager</a></li>
+        <li>Admin adds the tenant's phone number in <a href="https://business.facebook.com/latest/whatsapp_manager/phone_numbers/?business_id=3193061764188941&tab=phone-numbers&nav_ref=whatsapp_manager&asset_id=761025876954971" target="_blank" style="color: var(--accent);">Meta Business Manager</a></li>
         <li>Meta will send a verification code to the tenant's phone number</li>
         <li>Tenant provides the verification code to admin, or admin enters it in Meta's UI</li>
         <li>Click <strong>"🔄 Sync from Meta"</strong> below to import the number into Brancr's database</li>
@@ -44,7 +44,7 @@
   <button onclick="syncNumbers()" class="btn-primary" style="padding: 10px 20px;">
     🔄 Sync from Meta
   </button>
-  <a href="https://business.facebook.com/settings/whatsapp-manager/phone-numbers" target="_blank" class="btn-secondary" style="padding: 10px 20px; text-decoration: none; display: inline-block;">
+  <a href="https://business.facebook.com/latest/whatsapp_manager/phone_numbers/?business_id=3193061764188941&tab=phone-numbers&nav_ref=whatsapp_manager&asset_id=761025876954971" target="_blank" class="btn-secondary" style="padding: 10px 20px; text-decoration: none; display: inline-block;">
     ➕ Add Number in Meta BM
   </a>
 </div>
@@ -163,6 +163,73 @@
     </tbody>
   </table>
 </div>
+
+<!-- Tenant Phone Number Requests -->
+{{if gt .RequestsCount 0}}
+<div style="margin-top: 40px;">
+  <h2 style="margin-bottom: 20px;">📥 Tenant Phone Number Requests</h2>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Tenant</th>
+          <th>Phone Number</th>
+          <th>Display Name</th>
+          <th>Status</th>
+          <th>Requested</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Requests}}
+        <tr>
+          <td>
+            <div style="font-weight: 500;">{{.TenantName}}</div>
+            <div style="font-size: 12px; color: var(--text-secondary);">{{.TenantEmail}}</div>
+          </td>
+          <td style="font-weight: 500;">{{.PhoneNumber}}</td>
+          <td>{{.DisplayName}}</td>
+          <td>
+            {{if eq .Status "pending"}}
+              <span class="badge warning">Pending</span>
+            {{else if eq .Status "added_to_meta"}}
+              <span class="badge info">Added to Meta</span>
+            {{else if eq .Status "verification_code_sent"}}
+              <span class="badge success">Code Received</span>
+            {{else if eq .Status "verified"}}
+              <span class="badge success">Verified</span>
+            {{else if eq .Status "rejected"}}
+              <span class="badge danger">Rejected</span>
+            {{else}}
+              <span class="badge">{{.Status}}</span>
+            {{end}}
+          </td>
+          <td style="color: var(--text-secondary);">
+            {{.CreatedAt.Format "Jan 2, 2006 15:04"}}
+          </td>
+          <td>
+            {{if eq .Status "pending"}}
+              <button onclick="markAddedToMeta({{.ID}}, '{{.PhoneNumber}}')" class="btn-primary" style="padding: 6px 12px; font-size: 12px; margin-right: 8px;">
+                ✅ Mark Added
+              </button>
+              <button onclick="rejectRequest({{.ID}}, '{{.PhoneNumber}}')" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;">
+                ❌ Reject
+              </button>
+            {{else if eq .Status "added_to_meta"}}
+              <span style="color: var(--text-secondary); font-size: 12px;">Waiting for tenant to provide code...</span>
+            {{else if eq .Status "verification_code_sent"}}
+              <button onclick="verifyRequest({{.ID}}, '{{.PhoneNumber}}', '{{.VerificationCode}}')" class="btn-primary" style="padding: 6px 12px; font-size: 12px;">
+                ✅ Verify with Code
+              </button>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
 
 <!-- Verification Modal -->
 <div id="verifyModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
@@ -321,6 +388,122 @@ function submitVerification(event) {
   })
   .catch(err => {
     alert('Error verifying: ' + err.message);
+  });
+}
+
+// Phone number request management functions
+function markAddedToMeta(requestID, phoneNumber) {
+  const phoneNumberID = prompt(`Enter the Meta phone_number_id for ${phoneNumber}:\n\n(After adding the number in Meta BM, you can find this ID in the phone number details)`);
+  if (!phoneNumberID || phoneNumberID.trim() === '') {
+    return;
+  }
+  
+  fetch('/admin/whatsapp/requests/mark-added', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      request_id: requestID,
+      phone_number_id: phoneNumberID.trim()
+    })
+  })
+  .then(async res => {
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server error (${res.status}): ${text || res.statusText}`);
+    }
+    return res.json();
+  })
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + (data.message || data.error));
+    } else {
+      alert('✅ ' + data.message + '\n\nMeta will send a verification code to ' + phoneNumber + '. Please ask the tenant to provide the code they receive.');
+      location.reload();
+    }
+  })
+  .catch(err => {
+    console.error('Request error:', err);
+    alert('Error: ' + err.message);
+  });
+}
+
+function verifyRequest(requestID, phoneNumber, verificationCode) {
+  if (!confirm(`Verify ${phoneNumber} with code ${verificationCode}?`)) {
+    return;
+  }
+  
+  fetch('/admin/whatsapp/requests/verify', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      request_id: requestID
+    })
+  })
+  .then(async res => {
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server error (${res.status}): ${text || res.statusText}`);
+    }
+    return res.json();
+  })
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + (data.message || data.error));
+    } else {
+      alert('✅ ' + data.message);
+      location.reload();
+    }
+  })
+  .catch(err => {
+    console.error('Request error:', err);
+    alert('Error: ' + err.message);
+  });
+}
+
+function rejectRequest(requestID, phoneNumber) {
+  const reason = prompt(`Reject request for ${phoneNumber}?\n\nEnter rejection reason (optional):`);
+  if (reason === null) {
+    return; // User cancelled
+  }
+  
+  fetch('/admin/whatsapp/requests/reject', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      request_id: requestID,
+      rejected_reason: reason || 'No reason provided'
+    })
+  })
+  .then(async res => {
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server error (${res.status}): ${text || res.statusText}`);
+    }
+    return res.json();
+  })
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + (data.message || data.error));
+    } else {
+      alert('✅ Request rejected.');
+      location.reload();
+    }
+  })
+  .catch(err => {
+    console.error('Request error:', err);
+    alert('Error: ' + err.message);
   });
 }
 </script>

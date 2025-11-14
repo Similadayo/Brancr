@@ -32,6 +32,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&ScheduledPost{},
 		&SocialAccount{},
 		&WhatsAppPhoneNumber{},
+		&WhatsAppPhoneNumberRequest{},
 		&Persona{},
 		&MemoryItem{},
 		&IntentCatalog{},
