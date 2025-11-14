@@ -83,6 +83,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// Tenant-provided phone numbers
 		r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
 		r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
+		r.Post("/tenant/whatsapp/check-number", h.checkTenantPhoneNumber) // Check if number is ready to verify
 
 		// Legacy embedded signup (keep for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -949,20 +950,30 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 	}
 
 	// IMPORTANT: Phone numbers must be added MANUALLY in Meta Business Manager first
-	// Tenant provides phone number → Admin adds it in Meta Business Manager → Admin syncs → Then tenant can verify
+	// Flow: Tenant provides number → Admin adds in Meta BM (Meta sends code to phone → Admin verifies in Meta UI) → Admin syncs → Tenant verifies via API
+	
+	// Format phone number (ensure + prefix)
+	phoneNumber := strings.TrimSpace(req.PhoneNumber)
+	if !strings.HasPrefix(phoneNumber, "+") {
+		phoneNumber = "+" + phoneNumber
+	}
 	
 	// Check if phone number exists in database (must be synced first)
 	var phoneNum storage.WhatsAppPhoneNumber
-	if err := h.DB.Where("phone_number = ?", req.PhoneNumber).First(&phoneNum).Error; err != nil {
+	if err := h.DB.Where("phone_number = ?", phoneNumber).First(&phoneNum).Error; err != nil {
 		h.Logger.Warn("phone number not found in database",
-			zap.String("phone_number", req.PhoneNumber),
+			zap.String("phone_number", phoneNumber),
 			zap.Uint("tenant_id", claims.TenantID),
 			zap.String("note", "Phone number must be added manually in Meta Business Manager first, then synced"))
 		
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": "phone_number_not_found",
-			"message": "Phone number must be added manually in Meta Business Manager first. Please contact support to add your phone number, or select an available number from the pool.",
+			"message": "Phone number not found in our system. Please contact support to add your phone number. " +
+				"Admin will add it in Meta Business Manager (Meta will send a verification code to this phone - you'll need to provide the code to admin), " +
+				"then sync it to our system. Note: If this number is already registered with WhatsApp, you may need to delete it from WhatsApp first, " +
+				"or use Meta's Coexistence feature if available in your region.",
 			"action_required": "contact_support_or_select_from_pool",
+			"phone_number": phoneNumber,
 		})
 		return
 	}
@@ -1084,6 +1095,62 @@ func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request
 		"phone_number":   phoneNum.PhoneNumber,
 		"phone_number_id": phoneNum.PhoneNumberID,
 		"message":        "Phone number verified and assigned successfully! Your WhatsApp number is now ready to use.",
+	})
+}
+
+func (h *Handler) checkTenantPhoneNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		PhoneNumber string `json:"phone_number"` // e.g., "+1234567890"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PhoneNumber == "" {
+		http.Error(w, "phone_number is required", http.StatusBadRequest)
+		return
+	}
+
+	// Format phone number (ensure + prefix)
+	phoneNumber := strings.TrimSpace(req.PhoneNumber)
+	if !strings.HasPrefix(phoneNumber, "+") {
+		phoneNumber = "+" + phoneNumber
+	}
+
+	// Check if phone number exists in database (already synced)
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("phone_number = ?", phoneNumber).First(&phoneNum).Error; err == nil {
+		// Number exists - ready to verify
+		writeJSON(w, http.StatusOK, map[string]any{
+			"found":          true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"phone_number":   phoneNum.PhoneNumber,
+			"status":         phoneNum.Status,
+			"message":        "Phone number found! You can now request a verification code.",
+			"ready":          true,
+		})
+		return
+	}
+
+	// Number not found - needs to be added by admin
+	h.Logger.Info("tenant checked for phone number - not found",
+		zap.String("phone_number", phoneNumber),
+		zap.Uint("tenant_id", claims.TenantID))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"found":   false,
+		"phone_number": phoneNumber,
+		"message": "Phone number not found in our system. Please contact support to add it first. Admin will add it in Meta Business Manager, then sync it to our system.",
+		"ready":   false,
+		"action_required": "contact_support",
 	})
 }
 

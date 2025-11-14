@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/social"
@@ -68,12 +69,17 @@ func WhatsAppSyncHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
+		// Get count of available numbers after sync
+		var availableCount int64
+		ctx.DB.Model(&storage.WhatsAppPhoneNumber{}).Where("status = ? AND (tenant_id IS NULL OR tenant_id = 0)", "available").Count(&availableCount)
+
 		ctx.Logger.Info("phone numbers synced from Meta", zap.String("waba_id", ctx.Config.BrancrWABAID))
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Phone numbers synced successfully",
+			"success":        true,
+			"message":        "Phone numbers synced successfully",
+			"available_count": availableCount,
 		})
 	}
 }
@@ -107,17 +113,30 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		// IMPORTANT: Phone numbers must be added MANUALLY in Meta Business Manager first
-		// This endpoint assumes the phone number already exists in the WABA
-		// Admin should add it via Meta Business Manager, then sync to get phone_number_id
+		// When admin adds a phone number in Meta BM:
+		// 1. Meta sends verification code to the phone number
+		// 2. Admin (or tenant) provides code in Meta UI
+		// 3. Number is verified and added to WABA
+		// 4. Admin syncs to Brancr: POST /admin/whatsapp/sync
+		// 5. Then tenant can request another verification code via API for ownership
+		
+		// Format phone number (ensure + prefix)
+		phoneNumber := strings.TrimSpace(req.PhoneNumber)
+		if !strings.HasPrefix(phoneNumber, "+") {
+			phoneNumber = "+" + phoneNumber
+		}
 		
 		// Try to find the phone number in database (must be synced first)
 		var phoneNum storage.WhatsAppPhoneNumber
-		if err := ctx.DB.Where("phone_number = ?", req.PhoneNumber).First(&phoneNum).Error; err != nil {
+		if err := ctx.DB.Where("phone_number = ?", phoneNumber).First(&phoneNum).Error; err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"error": "phone number not found",
-				"message": "Phone number must be added manually in Meta Business Manager first. After adding, sync phone numbers using POST /admin/whatsapp/sync, then use POST /admin/whatsapp/request-code with the phone_number_id.",
+				"message": "Phone number must be added manually in Meta Business Manager first. " +
+					"When adding in Meta BM, Meta will send a verification code to the phone number. " +
+					"After adding and verifying in Meta, sync phone numbers using POST /admin/whatsapp/sync, " +
+					"then use POST /admin/whatsapp/request-code to request a verification code for tenant access.",
 			})
 			return
 		}
