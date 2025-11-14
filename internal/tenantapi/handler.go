@@ -12,6 +12,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -56,8 +57,20 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.TenantAuth([]byte(h.Config.TenantJWTSecret), SessionCookie))
 		r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
+
+		// Integration CRUD
 		r.Get("/tenant/integrations", h.listIntegrations)
+		r.Get("/tenant/integrations/{platform}", h.getIntegration)
+		r.Delete("/tenant/integrations/{platform}", h.deleteIntegration)
+		r.Post("/tenant/integrations/{platform}/verify", h.verifyIntegration)
+		r.Post("/tenant/integrations/{platform}/repair", h.repairIntegration)
+
+		// Scheduled posts CRUD
 		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
+		r.Get("/tenant/scheduled-posts/{id}", h.getScheduledPost)
+		r.Delete("/tenant/scheduled-posts/{id}", h.deleteScheduledPost)
+
+		// Overview and stats
 		r.Get("/tenant/overview", h.overview)
 
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -200,12 +213,52 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get social accounts summary
+	var accounts []storage.SocialAccount
+	h.DB.Where("tenant_id = ?", claims.TenantID).Find(&accounts)
+
+	connectedCount := 0
+	platforms := make(map[string]bool)
+	for _, acc := range accounts {
+		if acc.Connected {
+			connectedCount++
+		}
+		platforms[acc.Platform] = true
+	}
+
+	// Get scheduled posts count
+	var scheduledCount, postedCount int64
+	h.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ?", claims.TenantID).
+		Count(&scheduledCount)
+	h.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "posted").
+		Count(&postedCount)
+
+	platformList := make([]string, 0, len(platforms))
+	for p := range platforms {
+		platformList = append(platformList, p)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tenant_id": tenant.ID,
-		"name":      tenant.Name,
-		"email":     tenant.Email,
-		"plan":      tenant.PlanType,
-		"status":    tenant.Status,
+		"tenant_id":   tenant.ID,
+		"name":        tenant.Name,
+		"email":       tenant.Email,
+		"plan":        tenant.PlanType,
+		"status":      tenant.Status,
+		"owner_name":  tenant.OwnerName,
+		"owner_phone": tenant.OwnerPhone,
+		"integrations": map[string]any{
+			"total":     len(accounts),
+			"connected": connectedCount,
+			"platforms": platformList,
+		},
+		"scheduled_posts": map[string]any{
+			"total":  scheduledCount,
+			"posted": postedCount,
+		},
+		"created_at": tenant.CreatedAt,
+		"updated_at": tenant.UpdatedAt,
 	})
 }
 
@@ -228,24 +281,30 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type integration struct {
-		Platform   string    `json:"platform"`
-		Connected  bool      `json:"connected"`
-		Username   string    `json:"username"`
-		ExternalID string    `json:"external_id"`
-		PageID     string    `json:"page_id"`
-		Mode       string    `json:"mode"`
-		UpdatedAt  time.Time `json:"updated_at"`
+		ID         uint       `json:"id"`
+		Platform   string     `json:"platform"`
+		Connected  bool       `json:"connected"`
+		Username   string     `json:"username"`
+		ExternalID string     `json:"external_id"`
+		PageID     string     `json:"page_id"`
+		Mode       string     `json:"mode"`
+		ExpiresAt  *time.Time `json:"expires_at"`
+		CreatedAt  time.Time  `json:"created_at"`
+		UpdatedAt  time.Time  `json:"updated_at"`
 	}
 
 	resp := make([]integration, 0, len(accounts))
 	for _, acc := range accounts {
 		resp = append(resp, integration{
+			ID:         acc.ID,
 			Platform:   acc.Platform,
 			Connected:  acc.Connected,
 			Username:   acc.Username,
 			ExternalID: acc.ExternalID,
 			PageID:     acc.PageID,
 			Mode:       acc.Mode,
+			ExpiresAt:  acc.ExpiresAt,
+			CreatedAt:  acc.CreatedAt,
 			UpdatedAt:  acc.UpdatedAt,
 		})
 	}
@@ -376,6 +435,261 @@ func (h *Handler) cookieDomain() string {
 		}
 	}
 	return ""
+}
+
+func (h *Handler) getIntegration(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	platform := chi.URLParam(r, "platform")
+	if platform == "" {
+		http.Error(w, "platform required", http.StatusBadRequest)
+		return
+	}
+
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error; err != nil {
+		http.Error(w, "integration not found", http.StatusNotFound)
+		return
+	}
+
+	type integrationDetail struct {
+		ID         uint       `json:"id"`
+		Platform   string     `json:"platform"`
+		Connected  bool       `json:"connected"`
+		Username   string     `json:"username"`
+		ExternalID string     `json:"external_id"`
+		PageID     string     `json:"page_id"`
+		Mode       string     `json:"mode"`
+		ExpiresAt  *time.Time `json:"expires_at"`
+		CreatedAt  time.Time  `json:"created_at"`
+		UpdatedAt  time.Time  `json:"updated_at"`
+	}
+
+	writeJSON(w, http.StatusOK, integrationDetail{
+		ID:         account.ID,
+		Platform:   account.Platform,
+		Connected:  account.Connected,
+		Username:   account.Username,
+		ExternalID: account.ExternalID,
+		PageID:     account.PageID,
+		Mode:       account.Mode,
+		ExpiresAt:  account.ExpiresAt,
+		CreatedAt:  account.CreatedAt,
+		UpdatedAt:  account.UpdatedAt,
+	})
+}
+
+func (h *Handler) deleteIntegration(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	platform := chi.URLParam(r, "platform")
+	if platform == "" {
+		http.Error(w, "platform required", http.StatusBadRequest)
+		return
+	}
+
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error; err != nil {
+		http.Error(w, "integration not found", http.StatusNotFound)
+		return
+	}
+
+	// Soft delete by setting Connected to false and clearing sensitive data
+	account.Connected = false
+	account.AccessToken = ""
+	account.RefreshToken = ""
+	account.ExternalID = ""
+	account.PageID = ""
+
+	if err := h.DB.Save(&account).Error; err != nil {
+		h.Logger.Error("failed to disconnect integration", zap.Error(err), zap.String("platform", platform))
+		http.Error(w, "failed to disconnect", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message":  "integration disconnected successfully",
+		"platform": platform,
+	})
+}
+
+func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	platform := chi.URLParam(r, "platform")
+	if platform == "" {
+		http.Error(w, "platform required", http.StatusBadRequest)
+		return
+	}
+
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error; err != nil {
+		http.Error(w, "integration not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify the connection using the social package
+	message, err := social.VerifySocialConnection(r.Context(), &account, h.DB)
+	if err != nil {
+		h.Logger.Error("integration verification failed", zap.Error(err), zap.String("platform", platform))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":    "verification failed",
+			"message":  err.Error(),
+			"platform": platform,
+		})
+		return
+	}
+
+	// Reload the account to get updated fields
+	h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":     message,
+		"platform":    platform,
+		"connected":   account.Connected,
+		"username":    account.Username,
+		"external_id": account.ExternalID,
+	})
+}
+
+func (h *Handler) repairIntegration(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	platform := chi.URLParam(r, "platform")
+	if platform == "" {
+		http.Error(w, "platform required", http.StatusBadRequest)
+		return
+	}
+
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error; err != nil {
+		http.Error(w, "integration not found", http.StatusNotFound)
+		return
+	}
+
+	// For now, just mark as needing repair
+	// In the future, this could trigger re-verification or token refresh
+	message := "⚠️ Repair functionality will be implemented based on platform requirements"
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message":  message,
+		"platform": platform,
+	})
+}
+
+func (h *Handler) getScheduledPost(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	postID := chi.URLParam(r, "id")
+	if postID == "" {
+		http.Error(w, "post id required", http.StatusBadRequest)
+		return
+	}
+
+	var post storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, postID).First(&post).Error; err != nil {
+		http.Error(w, "scheduled post not found", http.StatusNotFound)
+		return
+	}
+
+	var platforms []string
+	if strings.TrimSpace(post.Platforms) != "" {
+		_ = json.Unmarshal([]byte(post.Platforms), &platforms)
+	}
+
+	var mediaIDs []uint
+	if strings.TrimSpace(post.MediaAssetIDs) != "" {
+		_ = json.Unmarshal([]byte(post.MediaAssetIDs), &mediaIDs)
+	}
+
+	type scheduledPostDetail struct {
+		ID            uint       `json:"id"`
+		Name          string     `json:"name"`
+		Caption       string     `json:"caption"`
+		Status        string     `json:"status"`
+		ScheduledAt   *time.Time `json:"scheduled_at"`
+		Platforms     []string   `json:"platforms"`
+		MediaAssetIDs []uint     `json:"media_asset_ids"`
+		Attempts      int        `json:"attempts"`
+		LastError     string     `json:"last_error"`
+		CreatedAt     time.Time  `json:"created_at"`
+		UpdatedAt     time.Time  `json:"updated_at"`
+		PostedAt      *time.Time `json:"posted_at"`
+	}
+
+	writeJSON(w, http.StatusOK, scheduledPostDetail{
+		ID:            post.ID,
+		Name:          post.Name,
+		Caption:       post.Caption,
+		Status:        post.Status,
+		ScheduledAt:   post.ScheduledAt,
+		Platforms:     platforms,
+		MediaAssetIDs: mediaIDs,
+		Attempts:      post.Attempts,
+		LastError:     post.LastError,
+		CreatedAt:     post.CreatedAt,
+		UpdatedAt:     post.UpdatedAt,
+		PostedAt:      post.PostedAt,
+	})
+}
+
+func (h *Handler) deleteScheduledPost(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	postID := chi.URLParam(r, "id")
+	if postID == "" {
+		http.Error(w, "post id required", http.StatusBadRequest)
+		return
+	}
+
+	var post storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, postID).First(&post).Error; err != nil {
+		http.Error(w, "scheduled post not found", http.StatusNotFound)
+		return
+	}
+
+	// Only allow cancellation of posts that haven't been posted yet
+	if post.Status == "posted" {
+		http.Error(w, "cannot delete already posted content", http.StatusBadRequest)
+		return
+	}
+
+	// Mark as cancelled instead of deleting (soft delete)
+	post.Status = "cancelled"
+	if err := h.DB.Save(&post).Error; err != nil {
+		h.Logger.Error("failed to cancel scheduled post", zap.Error(err), zap.Uint("post_id", post.ID))
+		http.Error(w, "failed to cancel post", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "scheduled post cancelled successfully",
+		"post_id": postID,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

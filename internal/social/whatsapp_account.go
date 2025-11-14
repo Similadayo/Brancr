@@ -58,8 +58,14 @@ func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, te
 		return err
 	}
 
-	// Stage 2: Claim the tenant's business and WABA (2025 automated access flow)
+	// Stage 2: Set up billing first (may be required for ownership claims)
+	// Then claim the tenant's business and WABA (2025 automated access flow)
 	if cfg != nil && businessID != "" && wabaID != "" {
+		// Set up billing first - this may be required for successful ownership claims
+		// Meta often requires payment method to be configured before claiming ownership
+		setupWhatsAppBillingSync(logger, cfg, wabaID, tenantID)
+
+		// Then proceed with claiming (billing should be set up first)
 		go claimTenantBusinessAndWABA(logger, cfg, businessID, wabaID, tenantID, phoneID, token)
 	}
 
@@ -231,27 +237,37 @@ func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBu
 	}
 
 	// Step 1: Claim business ownership (non-fatal - might already be claimed)
+	// Note: Billing should be set up BEFORE claiming (done in SaveWhatsAppAccount)
 	if err := claimBusinessOwnership(logger, sysBusinessID, tenantBusinessID, sysToken, tenantID); err != nil {
 		if logger != nil {
 			logger.Warn("whatsapp business claiming failed (continuing anyway)",
 				zap.Uint("tenant_id", tenantID),
 				zap.Error(err),
-				zap.String("note", "business might already be claimed or relationship exists"))
+				zap.String("note", "business might already be claimed, or billing setup may be required first"))
 		}
 		// Continue to WABA claiming - embedded signup might have already established business relationship
 	}
 
-	// Step 2: Claim WABA ownership
+	// Step 2: Claim WABA ownership (non-fatal - might already be claimed or owned)
 	if err := claimWABAOwnership(logger, tenantBusinessID, wabaID, sysToken, tenantID); err != nil {
 		if logger != nil {
-			logger.Warn("whatsapp WABA claiming failed", zap.Uint("tenant_id", tenantID), zap.Error(err))
+			logger.Warn("whatsapp WABA claiming failed (continuing anyway)",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("tenant_business_id", tenantBusinessID),
+				zap.String("waba_id", wabaID),
+				zap.Error(err),
+				zap.String("note", "WABA might already be claimed, owned, or billing/payment method setup may be required"))
 		}
-		return
+		// Continue to subscriptions - embedded signup may have already established ownership
+	} else {
+		if logger != nil {
+			logger.Info("WhatsApp WABA claimed successfully", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
+		}
 	}
 
-	// Step 3: Now subscriptions will work
+	// Step 3: Proceed with subscriptions (they may work even if claiming failed)
 	if logger != nil {
-		logger.Info("WhatsApp business and WABA claimed successfully", zap.Uint("tenant_id", tenantID))
+		logger.Info("Proceeding with WhatsApp subscriptions", zap.Uint("tenant_id", tenantID))
 	}
 
 	// Subscribe to WABA
@@ -260,6 +276,104 @@ func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBu
 	// Subscribe to phone number
 	if tenantToken != "" {
 		go subscribePhoneNumber(logger, phoneID, tenantToken)
+	}
+}
+
+// setupWhatsAppBillingSync sets up billing synchronously (before claiming ownership).
+// This is called BEFORE claiming to ensure billing is configured first.
+func setupWhatsAppBillingSync(logger *zap.Logger, cfg *config.Config, wabaID string, tenantID uint) {
+	setupWhatsAppBilling(logger, cfg, wabaID, tenantID, true)
+}
+
+// setupWhatsAppBilling configures billing for the WABA to use Brancr's payment method.
+// This allows Brancr to handle payments for tenants instead of Meta billing them directly.
+// If sync is true, it runs synchronously. If false, it's non-blocking (for retries).
+func setupWhatsAppBilling(logger *zap.Logger, cfg *config.Config, wabaID string, tenantID uint, sync bool) {
+	if cfg == nil || strings.TrimSpace(wabaID) == "" {
+		return
+	}
+
+	// This is critical - Meta may require payment method to be set up BEFORE claiming ownership
+	// Without this, claiming ownership may fail with permission errors
+	paymentMethodID := strings.TrimSpace(cfg.MetaPaymentMethodID)
+
+	if paymentMethodID == "" {
+		if logger != nil {
+			logger.Info("whatsapp billing setup skipped: payment method not configured",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.String("note", "Tenant will need to add payment method manually, or Brancr can handle billing via Meta Payment Processing API"))
+		}
+		return
+	}
+
+	sysToken := strings.TrimSpace(cfg.MetaSystemUserToken)
+	if sysToken == "" {
+		if logger != nil {
+			logger.Warn("whatsapp billing setup skipped: missing system user token",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID))
+		}
+		return
+	}
+
+	// Set payment method for WABA
+	// POST /{waba_id}/payment_method
+	body := map[string]string{
+		"payment_method_id": paymentMethodID,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp billing setup failed: marshal error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/payment_method?access_token=%s", wabaID, sysToken)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp billing setup failed: request build error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp billing setup failed: request error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("whatsapp billing setup failed: API error",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", respBody),
+				zap.String("note", "This may require Meta Payment Processing API access. Tenant may need to add payment method manually."))
+		}
+		return
+	}
+
+	if logger != nil {
+		logger.Info("WhatsApp billing configured successfully",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("waba_id", wabaID),
+			zap.String("note", "Brancr payment method is now used for this WABA"))
 	}
 }
 

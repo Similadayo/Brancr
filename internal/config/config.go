@@ -30,6 +30,7 @@ type Config struct {
 	MetaEmbeddedExtras   string
 	MetaSystemUserToken  string
 	MetaBusinessID       string
+	MetaPaymentMethodID  string // Payment method ID for Brancr's billing (when Payment Processing API access is granted)
 	TenantJWTSecret      string
 	TikTokClientKey      string
 	TikTokClientSecret   string
@@ -70,6 +71,7 @@ func Load() *Config {
 		MetaEmbeddedExtras:   os.Getenv("META_WHATSAPP_EXTRAS"),
 		MetaSystemUserToken:  getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
 		MetaBusinessID:       os.Getenv("META_BUSINESS_ID"),
+		MetaPaymentMethodID:  os.Getenv("META_PAYMENT_METHOD_ID"), // Required for billing setup
 		TenantJWTSecret:      os.Getenv("TENANT_JWT_SECRET"),
 		TikTokClientKey:      os.Getenv("TIKTOK_CLIENT_KEY"),
 		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),
@@ -115,6 +117,9 @@ func validateConfig(cfg *Config) {
 	}
 	if cfg.MetaSystemUserToken == "" {
 		log.Println("ℹ️  META_SYSTEM_USER_TOKEN not set — WhatsApp webhook subscription may require manual setup.")
+	}
+	if cfg.MetaPaymentMethodID == "" {
+		log.Println("ℹ️  META_PAYMENT_METHOD_ID not set — WhatsApp billing setup will be skipped. This may prevent ownership claims from succeeding.")
 	}
 	if cfg.TenantJWTSecret == "" {
 		log.Println("⚠️  TENANT_JWT_SECRET missing — tenant authentication cookies will be insecure.")
