@@ -346,16 +346,47 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 	client := &http.Client{Timeout: 10 * time.Second}
 	
 	// Decrypt token if it's encrypted
-	token := strings.TrimSpace(acc.AccessToken)
-	if token != "" {
-		if decrypted, err := utils.DecryptToken(token); err == nil {
-			token = decrypted
+	rawToken := strings.TrimSpace(acc.AccessToken)
+	if rawToken == "" {
+		return "", fmt.Errorf("access token missing")
+	}
+	
+	// Try to decrypt the token
+	// Encrypted tokens are base64-encoded, so if base64 decode fails, it's probably plain text
+	token := rawToken
+	decrypted, err := utils.DecryptToken(rawToken)
+	if err != nil {
+		// Decryption failed - check error type
+		errStr := err.Error()
+		
+		// If it's a base64 decode error, token is probably plain text already
+		if strings.Contains(errStr, "illegal base64") || 
+		   strings.Contains(errStr, "cannot decode") ||
+		   strings.Contains(errStr, "invalid base64") {
+			// Token is plain text, use as-is
+			token = rawToken
+		} else if strings.Contains(errStr, "TOKEN_SECRET_KEY") {
+			// Missing or invalid encryption key - tokens might be encrypted but we can't decrypt
+			// Return error indicating reconnection is needed
+			return "", fmt.Errorf("encryption key missing or invalid; please reconnect your account to refresh the token")
+		} else {
+			// Other decryption error - token might be encrypted but corrupted or wrong key
+			// Try using as-is (might be plain text despite looking encrypted)
+			token = rawToken
 		}
-		// If decryption fails, use token as-is (might already be plain)
+	} else {
+		// Decryption succeeded, use decrypted token
+		token = decrypted
 	}
 	
 	if token == "" {
-		return "", fmt.Errorf("access token missing")
+		return "", fmt.Errorf("access token is empty after decryption")
+	}
+	
+	// Validate token format - Facebook access tokens typically start with letters/numbers
+	// and don't contain special characters that would indicate it's still encrypted
+	if len(token) < 10 {
+		return "", fmt.Errorf("access token appears to be invalid (too short)")
 	}
 
 	switch acc.Platform {

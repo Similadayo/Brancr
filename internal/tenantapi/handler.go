@@ -617,11 +617,23 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 			zap.Bool("has_access_token", account.AccessToken != ""),
 			zap.String("page_id", account.PageID),
 			zap.String("external_id", account.ExternalID))
+		// Provide better error message based on error type
+		errorMessage := err.Error()
+		hint := "Please reconnect your account via OAuth to get a fresh access token."
+
+		if strings.Contains(errorMessage, "encryption key") ||
+			strings.Contains(errorMessage, "Cannot parse access token") ||
+			strings.Contains(errorMessage, "Invalid OAuth access token") {
+			hint = "Your access token appears to be invalid or encrypted incorrectly. Please reconnect your account via OAuth to refresh the token."
+		} else if strings.Contains(errorMessage, "missing") {
+			hint = "Your integration is missing required information. Please reconnect your account via OAuth."
+		}
+
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":    "verification_failed",
-			"message":  err.Error(),
+			"message":  errorMessage,
 			"platform": platform,
-			"hint":     "Please reconnect your account via OAuth to get a fresh access token.",
+			"hint":     hint,
 		})
 		return
 	}
