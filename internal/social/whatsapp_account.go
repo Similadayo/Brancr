@@ -230,12 +230,15 @@ func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBu
 		return
 	}
 
-	// Step 1: Claim business ownership
+	// Step 1: Claim business ownership (non-fatal - might already be claimed)
 	if err := claimBusinessOwnership(logger, sysBusinessID, tenantBusinessID, sysToken, tenantID); err != nil {
 		if logger != nil {
-			logger.Warn("whatsapp business claiming failed", zap.Uint("tenant_id", tenantID), zap.Error(err))
+			logger.Warn("whatsapp business claiming failed (continuing anyway)",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err),
+				zap.String("note", "business might already be claimed or relationship exists"))
 		}
-		return
+		// Continue to WABA claiming - embedded signup might have already established business relationship
 	}
 
 	// Step 2: Claim WABA ownership
