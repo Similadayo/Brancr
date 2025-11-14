@@ -249,11 +249,12 @@ func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBu
 	}
 
 	// Step 2: Claim WABA ownership (non-fatal - might already be claimed or owned)
-	if err := claimWABAOwnership(logger, tenantBusinessID, wabaID, sysToken, tenantID); err != nil {
+	// Note: We use OUR business ID (sysBusinessID) to claim WABA as owned by Brancr, not tenant's business ID
+	if err := claimWABAOwnership(logger, sysBusinessID, wabaID, sysToken, tenantID); err != nil {
 		if logger != nil {
 			logger.Warn("whatsapp WABA claiming failed (continuing anyway)",
 				zap.Uint("tenant_id", tenantID),
-				zap.String("tenant_business_id", tenantBusinessID),
+				zap.String("our_business_id", sysBusinessID),
 				zap.String("waba_id", wabaID),
 				zap.Error(err),
 				zap.String("note", "WABA might already be claimed, owned, or billing/payment method setup may be required"))
@@ -416,8 +417,10 @@ func claimBusinessOwnership(logger *zap.Logger, ourBusinessID, tenantBusinessID,
 }
 
 // claimWABAOwnership claims the WABA as owned by our business.
-// POST {tenant_business_id}/owned_whatsapp_business_accounts
-func claimWABAOwnership(logger *zap.Logger, tenantBusinessID, wabaID, sysToken string, tenantID uint) error {
+// POST {our_business_id}/owned_whatsapp_business_accounts
+// IMPORTANT: Use OUR business ID (sysBusinessID), not tenant's business ID
+// This endpoint adds the WABA to the list of WABAs owned by our business
+func claimWABAOwnership(logger *zap.Logger, ourBusinessID, wabaID, sysToken string, tenantID uint) error {
 	body := map[string]string{
 		"wa_business_account_id": wabaID,
 	}
@@ -427,7 +430,7 @@ func claimWABAOwnership(logger *zap.Logger, tenantBusinessID, wabaID, sysToken s
 		return fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/owned_whatsapp_business_accounts?access_token=%s", tenantBusinessID, sysToken)
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/owned_whatsapp_business_accounts?access_token=%s", ourBusinessID, sysToken)
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
