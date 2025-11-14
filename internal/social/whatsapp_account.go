@@ -264,8 +264,7 @@ func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBu
 // POST {our_business_id}/managed_businesses
 func claimBusinessOwnership(logger *zap.Logger, ourBusinessID, tenantBusinessID, sysToken string, tenantID uint) error {
 	body := map[string]string{
-		"grant_type":         "business_ownership",
-		"client_business_id": tenantBusinessID,
+		"existing_client_business_id": tenantBusinessID,
 	}
 
 	jsonBody, err := json.Marshal(body)
