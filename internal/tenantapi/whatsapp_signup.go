@@ -313,7 +313,7 @@ func (h *Handler) finalizeWhatsAppSignup(ctx context.Context, tenantID uint, ses
 		return errors.New("unable to determine phone_number_id from Meta response")
 	}
 
-	if err := social.SaveWhatsAppAccount(h.DB, h.Logger, h.Config, tenantID, session.WABAID, phoneID, firstNonEmpty(displayNumber, verifiedName), token.AccessToken, "APPROVED"); err != nil {
+	if err := social.SaveWhatsAppAccount(h.DB, h.Logger, h.Config, tenantID, session.BusinessID, session.WABAID, phoneID, firstNonEmpty(displayNumber, verifiedName), token.AccessToken, "APPROVED"); err != nil {
 		return err
 	}
 

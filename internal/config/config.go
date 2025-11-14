@@ -29,6 +29,7 @@ type Config struct {
 	MetaEmbeddedConfigID string
 	MetaEmbeddedExtras   string
 	MetaSystemUserToken  string
+	MetaBusinessID       string
 	TenantJWTSecret      string
 	TikTokClientKey      string
 	TikTokClientSecret   string
@@ -68,6 +69,7 @@ func Load() *Config {
 		MetaEmbeddedConfigID: os.Getenv("META_WHATSAPP_CONFIG_ID"),
 		MetaEmbeddedExtras:   os.Getenv("META_WHATSAPP_EXTRAS"),
 		MetaSystemUserToken:  getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
+		MetaBusinessID:       os.Getenv("META_BUSINESS_ID"),
 		TenantJWTSecret:      os.Getenv("TENANT_JWT_SECRET"),
 		TikTokClientKey:      os.Getenv("TIKTOK_CLIENT_KEY"),
 		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),

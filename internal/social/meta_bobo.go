@@ -308,6 +308,8 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 		token = getString(payload, "permanent_token")
 	}
 
+	businessID := getString(payload, "business_id")
+
 	status := strings.ToUpper(getString(payload, "phone_number_status"))
 	if status == "" {
 		status = strings.ToUpper(getString(payload, "waba_info", "onboarding_status"))
@@ -327,7 +329,7 @@ func (h *EmbeddedSignupHandler) Callback(w http.ResponseWriter, r *http.Request)
 		h.Logger.Warn("embedded signup payload missing token", zap.String("phone_number_id", phoneID))
 	}
 
-	if err := SaveWhatsAppAccount(h.DB, h.Logger, h.Config, tenantID, wabaID, phoneID, phoneNumber, token, status); err != nil {
+	if err := SaveWhatsAppAccount(h.DB, h.Logger, h.Config, tenantID, businessID, wabaID, phoneID, phoneNumber, token, status); err != nil {
 		h.Logger.Error("failed to save whatsapp account", zap.Error(err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
@@ -369,6 +371,7 @@ func (h *EmbeddedSignupHandler) handleLegacyCallback(w http.ResponseWriter, payl
 		h.Logger,
 		h.Config,
 		parseTenantID(payload.TenantID),
+		"", // businessID not available in legacy callback
 		payload.WABAID,
 		payload.PhoneNumberID,
 		payload.PhoneNumber,

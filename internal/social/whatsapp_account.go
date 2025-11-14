@@ -1,6 +1,8 @@
 package social
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,9 +17,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// SaveWhatsAppAccount persists or updates a tenant's WhatsApp social account and
-// triggers the required Meta subscriptions.
-func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID, phoneID, phoneNumber, token, status string) error {
+// SaveWhatsAppAccount persists or updates a tenant's WhatsApp social account,
+// claims the business and WABA, then triggers the required Meta subscriptions.
+func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, tenantID uint, businessID, wabaID, phoneID, phoneNumber, token, status string) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -56,11 +58,9 @@ func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, te
 		return err
 	}
 
-	if token != "" {
-		go subscribePhoneNumber(logger, phoneID, token)
-	}
-	if cfg != nil {
-		go subscribeAppToWABA(logger, cfg, tenantID, wabaID)
+	// Stage 2: Claim the tenant's business and WABA (2025 automated access flow)
+	if cfg != nil && businessID != "" && wabaID != "" {
+		go claimTenantBusinessAndWABA(logger, cfg, businessID, wabaID, tenantID, phoneID, token)
 	}
 
 	return nil
@@ -210,4 +210,129 @@ func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, w
 	if logger != nil {
 		logger.Info("WhatsApp WABA subscribed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
 	}
+}
+
+// claimTenantBusinessAndWABA performs the 2025 automated access flow:
+// 1. Claims the tenant's business as managed by our business
+// 2. Claims the WABA as owned by our business
+// 3. Subscribes to webhooks once ownership is established
+func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBusinessID, wabaID string, tenantID uint, phoneID, tenantToken string) {
+	sysToken := strings.TrimSpace(cfg.MetaSystemUserToken)
+	sysBusinessID := strings.TrimSpace(cfg.MetaBusinessID)
+
+	if sysToken == "" || sysBusinessID == "" {
+		if logger != nil {
+			logger.Warn("whatsapp claiming skipped: missing system token or business id",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("sys_token_present", fmt.Sprintf("%v", sysToken != "")),
+				zap.String("sys_business_id_present", fmt.Sprintf("%v", sysBusinessID != "")))
+		}
+		return
+	}
+
+	// Step 1: Claim business ownership
+	if err := claimBusinessOwnership(logger, sysBusinessID, tenantBusinessID, sysToken, tenantID); err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp business claiming failed", zap.Uint("tenant_id", tenantID), zap.Error(err))
+		}
+		return
+	}
+
+	// Step 2: Claim WABA ownership
+	if err := claimWABAOwnership(logger, tenantBusinessID, wabaID, sysToken, tenantID); err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp WABA claiming failed", zap.Uint("tenant_id", tenantID), zap.Error(err))
+		}
+		return
+	}
+
+	// Step 3: Now subscriptions will work
+	if logger != nil {
+		logger.Info("WhatsApp business and WABA claimed successfully", zap.Uint("tenant_id", tenantID))
+	}
+
+	// Subscribe to WABA
+	go subscribeAppToWABA(logger, cfg, tenantID, wabaID)
+
+	// Subscribe to phone number
+	if tenantToken != "" {
+		go subscribePhoneNumber(logger, phoneID, tenantToken)
+	}
+}
+
+// claimBusinessOwnership claims the tenant's business as managed by our business.
+// POST {our_business_id}/managed_businesses
+func claimBusinessOwnership(logger *zap.Logger, ourBusinessID, tenantBusinessID, sysToken string, tenantID uint) error {
+	body := map[string]string{
+		"grant_type":         "business_ownership",
+		"client_business_id": tenantBusinessID,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/managed_businesses?access_token=%s", ourBusinessID, sysToken)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	if logger != nil {
+		logger.Info("WhatsApp business claimed",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("tenant_business_id", tenantBusinessID))
+	}
+	return nil
+}
+
+// claimWABAOwnership claims the WABA as owned by our business.
+// POST {tenant_business_id}/owned_whatsapp_business_accounts
+func claimWABAOwnership(logger *zap.Logger, tenantBusinessID, wabaID, sysToken string, tenantID uint) error {
+	body := map[string]string{
+		"wa_business_account_id": wabaID,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/owned_whatsapp_business_accounts?access_token=%s", tenantBusinessID, sysToken)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	if logger != nil {
+		logger.Info("WhatsApp WABA claimed",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("waba_id", wabaID))
+	}
+	return nil
 }
