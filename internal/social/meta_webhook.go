@@ -336,15 +336,53 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 	}
 }
 
+// FlexibleTimestamp handles both string and int64 timestamps from Meta webhooks
+type FlexibleTimestamp int64
+
+// UnmarshalJSON handles both string and int64 timestamps
+func (ft *FlexibleTimestamp) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		// Try parsing as string (Unix timestamp in milliseconds)
+		val, err := strconv.ParseInt(str, 10, 64)
+		if err != nil {
+			return err
+		}
+		*ft = FlexibleTimestamp(val)
+		return nil
+	}
+
+	// Try parsing as int64 directly
+	var val int64
+	if err := json.Unmarshal(data, &val); err != nil {
+		return err
+	}
+	*ft = FlexibleTimestamp(val)
+	return nil
+}
+
+// Int64 returns the timestamp as int64
+func (ft FlexibleTimestamp) Int64() int64 {
+	return int64(ft)
+}
+
 // processFacebookWebhook processes Facebook webhook events
 func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []byte) {
 	h.Logger.Info("📱 Parsing Facebook webhook payload")
 
+	// First, log raw payload for debugging
+	var rawPayload map[string]interface{}
+	if err := json.Unmarshal(body, &rawPayload); err == nil {
+		payloadJSON, _ := json.MarshalIndent(rawPayload, "", "  ")
+		h.Logger.Info("📋 Full Facebook webhook payload",
+			zap.String("payload", string(payloadJSON)))
+	}
+
 	var payload struct {
 		Object string `json:"object"`
 		Entry  []struct {
-			ID        string `json:"id"` // This is the page_id
-			Time      int64  `json:"time"`
+			ID        string            `json:"id"` // This is the page_id
+			Time      FlexibleTimestamp `json:"time"`
 			Messaging []struct {
 				Sender struct {
 					ID string `json:"id"`
@@ -352,7 +390,7 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 				Recipient struct {
 					ID string `json:"id"` // This is the page_id
 				} `json:"recipient"`
-				Timestamp int64 `json:"timestamp"`
+				Timestamp FlexibleTimestamp `json:"timestamp"`
 				Message   struct {
 					MID  string `json:"mid"`
 					Text string `json:"text"`
@@ -362,7 +400,9 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 	}
 
 	if err := json.Unmarshal(body, &payload); err != nil {
-		h.Logger.Error("❌ Failed to decode Facebook webhook payload", zap.Error(err))
+		h.Logger.Error("❌ Failed to decode Facebook webhook payload",
+			zap.Error(err),
+			zap.String("raw_body", string(body)))
 		return
 	}
 
@@ -410,7 +450,7 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 				Content:          msg.Message.Text,
 				MessageType:      "text",
 				ThreadID:         msg.Sender.ID,
-				Timestamp:        time.Unix(msg.Timestamp/1000, 0),
+				Timestamp:        time.Unix(msg.Timestamp.Int64()/1000, 0),
 				Metadata:         map[string]interface{}{"entry_id": entry.ID},
 			}
 

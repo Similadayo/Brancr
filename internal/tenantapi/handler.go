@@ -587,18 +587,41 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 
 	var account storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error; err != nil {
-		http.Error(w, "integration not found", http.StatusNotFound)
+		h.Logger.Warn("integration not found for verification",
+			zap.Error(err),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("platform", platform))
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":    "integration_not_found",
+			"message":  fmt.Sprintf("No %s integration found. Please connect your %s account first.", platform, platform),
+			"platform": platform,
+		})
 		return
 	}
+
+	// Log verification attempt for debugging
+	h.Logger.Info("verifying integration",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("platform", platform),
+		zap.String("mode", account.Mode),
+		zap.Bool("connected", account.Connected))
 
 	// Verify the connection using the social package
 	message, err := social.VerifySocialConnection(r.Context(), &account, h.DB)
 	if err != nil {
-		h.Logger.Error("integration verification failed", zap.Error(err), zap.String("platform", platform))
+		h.Logger.Error("integration verification failed",
+			zap.Error(err),
+			zap.String("platform", platform),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("mode", account.Mode),
+			zap.Bool("has_access_token", account.AccessToken != ""),
+			zap.String("page_id", account.PageID),
+			zap.String("external_id", account.ExternalID))
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":    "verification failed",
+			"error":    "verification_failed",
 			"message":  err.Error(),
 			"platform": platform,
+			"hint":     "Please reconnect your account via OAuth to get a fresh access token.",
 		})
 		return
 	}

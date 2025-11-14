@@ -344,7 +344,16 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 
 func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, db *gorm.DB) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	
+	// Decrypt token if it's encrypted
 	token := strings.TrimSpace(acc.AccessToken)
+	if token != "" {
+		if decrypted, err := utils.DecryptToken(token); err == nil {
+			token = decrypted
+		}
+		// If decryption fails, use token as-is (might already be plain)
+	}
+	
 	if token == "" {
 		return "", fmt.Errorf("access token missing")
 	}
