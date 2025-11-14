@@ -161,9 +161,23 @@ type SocialAccount struct {
 	PageID             string // For Facebook: page_id, for Instagram: instagram_business_account.id, for WhatsApp: phone_number_id
 	ExternalID         string `gorm:"index"` // Platform-specific external ID used for webhook routing (page_id, instagram_business_account.id, phone_number_id)
 	Connected          bool
-	Mode               string // manual, sandbox, oauth2
+	Mode               string // manual, sandbox, oauth2, provider_owned
 	WebhookVerifyToken string `gorm:"size:100"` // Verification token for webhook setup (Meta requires this)
 	CreatedAt          time.Time
+}
+
+// WhatsAppPhoneNumber represents a phone number in Brancr's provider-owned WABA
+type WhatsAppPhoneNumber struct {
+	gorm.Model
+	PhoneNumberID   string `gorm:"uniqueIndex"` // Meta's phone_number_id (used for webhook routing)
+	PhoneNumber     string // Display format: +1234567890
+	WABAID          string `gorm:"index"` // Which WABA this number belongs to
+	TenantID        *uint  `gorm:"index"` // NULL = available, assigned to tenant if set
+	DisplayName     string // Tenant's business name (when assigned)
+	VerifiedName    string // From Meta API
+	QualityRating   string // Meta quality rating
+	Status          string // available, assigned, suspended
+	AssignedAt      *time.Time
 }
 
 // Persona — each tenant’s bot personality profile

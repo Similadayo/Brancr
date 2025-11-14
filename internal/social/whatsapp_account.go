@@ -17,6 +17,107 @@ import (
 	"gorm.io/gorm"
 )
 
+// SyncPhoneNumbersFromMeta fetches all phone numbers from Brancr's WABA and updates the database pool
+func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Config) error {
+	if cfg.BrancrWABAID == "" || cfg.BrancrWABAToken == "" {
+		if logger != nil {
+			logger.Info("phone number sync skipped: WABA ID or token not configured")
+		}
+		return nil
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/phone_numbers?access_token=%s", cfg.BrancrWABAID, cfg.BrancrWABAToken)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to fetch phone numbers", zap.Int("status", resp.StatusCode), zap.ByteString("body", body))
+		}
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Data []struct {
+			ID                 string `json:"id"`
+			DisplayPhoneNumber string `json:"display_phone_number"`
+			VerifiedName       string `json:"verified_name"`
+			QualityRating      string `json:"quality_rating"`
+			Status             string `json:"code_verification_status"`
+		} `json:"data"`
+		Paging struct {
+			Next string `json:"next"`
+		} `json:"paging"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if logger != nil {
+		logger.Info("syncing phone numbers from Meta", zap.Int("count", len(response.Data)))
+	}
+
+	for _, phoneData := range response.Data {
+		var phoneNum storage.WhatsAppPhoneNumber
+		err := db.Where("phone_number_id = ?", phoneData.ID).First(&phoneNum).Error
+
+		if err == gorm.ErrRecordNotFound {
+			// Create new phone number
+			phoneNum = storage.WhatsAppPhoneNumber{
+				PhoneNumberID: phoneData.ID,
+				PhoneNumber:   phoneData.DisplayPhoneNumber,
+				WABAID:        cfg.BrancrWABAID,
+				VerifiedName:  phoneData.VerifiedName,
+				QualityRating: phoneData.QualityRating,
+				Status:        "available",
+			}
+			if err := db.Create(&phoneNum).Error; err != nil {
+				if logger != nil {
+					logger.Error("failed to create phone number", zap.Error(err), zap.String("phone_id", phoneData.ID))
+				}
+				continue
+			}
+			if logger != nil {
+				logger.Info("created phone number", zap.String("phone_id", phoneData.ID), zap.String("number", phoneData.DisplayPhoneNumber))
+			}
+		} else if err == nil {
+			// Update existing phone number (only if not assigned)
+			if phoneNum.TenantID == nil || *phoneNum.TenantID == 0 {
+				phoneNum.VerifiedName = phoneData.VerifiedName
+				phoneNum.QualityRating = phoneData.QualityRating
+				phoneNum.Status = "available"
+				if err := db.Save(&phoneNum).Error; err != nil {
+					if logger != nil {
+						logger.Error("failed to update phone number", zap.Error(err), zap.String("phone_id", phoneData.ID))
+					}
+					continue
+				}
+			}
+		} else {
+			if logger != nil {
+				logger.Error("failed to query phone number", zap.Error(err), zap.String("phone_id", phoneData.ID))
+			}
+			continue
+		}
+	}
+
+	if logger != nil {
+		logger.Info("phone number sync completed", zap.Int("synced", len(response.Data)))
+	}
+
+	return nil
+}
+
 // SaveWhatsAppAccount persists or updates a tenant's WhatsApp social account,
 // claims the business and WABA, then triggers the required Meta subscriptions.
 func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, tenantID uint, businessID, wabaID, phoneID, phoneNumber, token, status string) error {

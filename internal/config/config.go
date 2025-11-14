@@ -31,6 +31,8 @@ type Config struct {
 	MetaSystemUserToken  string
 	MetaBusinessID       string
 	MetaPaymentMethodID  string // Payment method ID for Brancr's billing (when Payment Processing API access is granted)
+	BrancrWABAID         string // Brancr's provider-owned WABA ID
+	BrancrWABAToken      string // Access token for Brancr's WABA (system user token)
 	TenantJWTSecret      string
 	TikTokClientKey      string
 	TikTokClientSecret   string
@@ -72,6 +74,8 @@ func Load() *Config {
 		MetaSystemUserToken:  getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
 		MetaBusinessID:       os.Getenv("META_BUSINESS_ID"),
 		MetaPaymentMethodID:  os.Getenv("META_PAYMENT_METHOD_ID"), // Required for billing setup
+		BrancrWABAID:         os.Getenv("BRANCR_WABA_ID"),         // Provider-owned WABA ID
+		BrancrWABAToken:      os.Getenv("BRANCR_WABA_TOKEN"),      // WABA access token
 		TenantJWTSecret:      os.Getenv("TENANT_JWT_SECRET"),
 		TikTokClientKey:      os.Getenv("TIKTOK_CLIENT_KEY"),
 		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),

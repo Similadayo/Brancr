@@ -30,7 +30,8 @@ type Services struct {
 	CaptionOptimizer  *CaptionOptimizerImpl
 
 	// Bot Services
-	BotManager *bot.TenantBotManager
+	BotManager         *bot.TenantBotManager
+	EscalationHandler  *bot.EscalationHandler
 
 	// Social Services
 	MessageHandler        *social.MessageHandler
@@ -63,7 +64,12 @@ func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *z
 		return nil, err
 	}
 
-	// Initialize Social Platform components (depends on AI)
+	// Initialize Escalation Handler (depends on BotManager)
+	if err := services.initEscalationHandler(); err != nil {
+		return nil, err
+	}
+
+	// Initialize Social Platform components (depends on AI and BotManager)
 	if err := services.initSocial(); err != nil {
 		return nil, err
 	}
@@ -113,13 +119,26 @@ func (s *Services) initBotManager() error {
 	return nil
 }
 
+func (s *Services) initEscalationHandler() error {
+	escalationHandler := &bot.EscalationHandler{
+		DB:      s.DB,
+		Logger:  s.Logger,
+		Manager: s.BotManager,
+	}
+	s.EscalationHandler = escalationHandler
+	return nil
+}
+
 func (s *Services) initSocial() error {
-	// Create escalation function
+	// Create escalation function that sends Telegram alerts
 	escalationFunc := func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error {
-		s.Logger.Info("📤 Escalation requested",
+		// Call EscalationHandler to send Telegram alert
+		if s.EscalationHandler != nil {
+			return s.EscalationHandler.SendEscalation(ctx, tenantID, interactionID, customerName, platform, message, suggestedReply, intent, tone, confidence)
+		}
+		s.Logger.Warn("escalation handler not initialized, skipping Telegram alert",
 			zap.Uint("tenant_id", tenantID),
-			zap.Uint("interaction_id", interactionID),
-			zap.String("platform", platform))
+			zap.Uint("interaction_id", interactionID))
 		return nil
 	}
 
@@ -129,6 +148,7 @@ func (s *Services) initSocial() error {
 		Logger:         s.Logger,
 		IntentDetector: s.IntentDetector,
 		Responder:      s.CustomerResponder,
+		SystemToken:    s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp
 		EscalationFunc: escalationFunc,
 	}
 	s.MessageHandler = messageHandler

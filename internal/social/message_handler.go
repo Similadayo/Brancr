@@ -19,11 +19,12 @@ import (
 
 // MessageHandler processes incoming messages from social platforms
 type MessageHandler struct {
-	DB             *gorm.DB
-	Logger         *zap.Logger
-	IntentDetector *ai.IntentDetector
-	Responder      *ai.CustomerResponder
-	EscalationFunc func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
+	DB               *gorm.DB
+	Logger           *zap.Logger
+	IntentDetector   *ai.IntentDetector
+	Responder        *ai.CustomerResponder
+	SystemToken      string // Brancr's system user token for provider-owned WhatsApp model
+	EscalationFunc   func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
 }
 
 // IncomingMessage represents a message from a social platform
@@ -404,9 +405,83 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 }
 
 // sendWhatsAppReply sends a reply via WhatsApp Business API
+// For provider-owned model, uses Brancr's system user token with tenant's assigned phone_number_id
 func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAccount, customerID, reply string) error {
-	// TODO: Implement WhatsApp reply
-	return fmt.Errorf("WhatsApp reply not yet implemented")
+	// Get phone_number_id (this is the tenant's assigned number)
+	phoneNumberID := acc.PageID
+	if phoneNumberID == "" {
+		phoneNumberID = acc.ExternalID
+	}
+	if phoneNumberID == "" {
+		return fmt.Errorf("phone_number_id not found for WhatsApp account")
+	}
+
+	// For provider-owned model, use Brancr's system token (not tenant token)
+	var accessToken string
+	if acc.Mode == "provider_owned" {
+		// Use system user token for provider-owned model
+		if h.SystemToken == "" {
+			return fmt.Errorf("system token not configured for provider-owned WhatsApp model")
+		}
+		accessToken = h.SystemToken
+	} else {
+		// Legacy mode: use tenant's token
+		if acc.AccessToken != "" {
+			decrypted, err := utils.DecryptToken(acc.AccessToken)
+			if err != nil {
+				decrypted = acc.AccessToken
+			}
+			accessToken = decrypted
+		} else {
+			return fmt.Errorf("WhatsApp access token not found for tenant")
+		}
+	}
+
+	if accessToken == "" {
+		return fmt.Errorf("WhatsApp access token not found")
+	}
+
+	// WhatsApp Business API endpoint
+	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages?access_token=%s", phoneNumberID, accessToken)
+
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                customerID, // WhatsApp phone number (e.g., "1234567890")
+		"type":              "text",
+		"text": map[string]string{
+			"body": reply,
+		},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		h.Logger.Error("WhatsApp API error",
+			zap.Int("status", resp.StatusCode),
+			zap.String("response", string(body)),
+			zap.String("phone_number_id", phoneNumberID))
+		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	h.Logger.Info("✅ WhatsApp message sent",
+		zap.String("phone_number_id", phoneNumberID),
+		zap.String("to", customerID),
+		zap.String("message_preview", truncateString(reply, 50)))
+
+	return nil
 }
 
 // saveToMemory saves conversation to memory for learning

@@ -543,6 +543,19 @@ func (h *MetaWebhookHandler) resolveTenantFromExternalID(externalID, platform st
 		return account.TenantID, nil
 	}
 
+	// For WhatsApp provider-owned model, also check WhatsAppPhoneNumber table
+	if platform == "whatsapp" {
+		var phoneNum storage.WhatsAppPhoneNumber
+		if err := h.DB.Where("phone_number_id = ? AND tenant_id IS NOT NULL AND status = ?", externalID, "assigned").First(&phoneNum).Error; err == nil {
+			if phoneNum.TenantID != nil {
+				h.Logger.Info("✅ Tenant found via WhatsAppPhoneNumber",
+					zap.Uint("tenant_id", *phoneNum.TenantID),
+					zap.String("phone_number_id", externalID))
+				return *phoneNum.TenantID, nil
+			}
+		}
+	}
+
 	h.Logger.Warn("⚠️ No tenant found",
 		zap.String("external_id", externalID),
 		zap.String("platform", platform))

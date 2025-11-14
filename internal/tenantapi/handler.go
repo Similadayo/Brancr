@@ -73,6 +73,13 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// Overview and stats
 		r.Get("/tenant/overview", h.overview)
 
+		// WhatsApp provider-owned model (new)
+		r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
+		r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
+		r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
+		r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
+
+		// Legacy embedded signup (keep for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
 			r.Post("/code", h.handleWhatsAppExchangeCode)
 			r.Post("/session", h.handleWhatsAppSession)
@@ -689,6 +696,218 @@ func (h *Handler) deleteScheduledPost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": "scheduled post cancelled successfully",
 		"post_id": postID,
+	})
+}
+
+func (h *Handler) listAvailablePhoneNumbers(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get tenant's current assignment first
+	var currentAssignment storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&currentAssignment).Error; err != nil {
+		currentAssignment.ID = 0 // Not found
+	}
+
+	// Get all available numbers (not assigned to anyone)
+	var available []storage.WhatsAppPhoneNumber
+	h.DB.Where("status = ? AND (tenant_id IS NULL OR tenant_id = 0)", "available").Find(&available)
+
+	type phoneNumber struct {
+		ID            uint   `json:"id"`
+		PhoneNumberID string `json:"phone_number_id"`
+		PhoneNumber   string `json:"phone_number"`
+		DisplayName   string `json:"display_name"`
+		VerifiedName  string `json:"verified_name"`
+		Status        string `json:"status"`
+	}
+
+	availableResp := make([]phoneNumber, 0, len(available))
+	for _, num := range available {
+		availableResp = append(availableResp, phoneNumber{
+			ID:            num.ID,
+			PhoneNumberID: num.PhoneNumberID,
+			PhoneNumber:   num.PhoneNumber,
+			DisplayName:   num.DisplayName,
+			VerifiedName:  num.VerifiedName,
+			Status:        num.Status,
+		})
+	}
+
+	var current *phoneNumber
+	if currentAssignment.ID != 0 {
+		current = &phoneNumber{
+			ID:            currentAssignment.ID,
+			PhoneNumberID: currentAssignment.PhoneNumberID,
+			PhoneNumber:   currentAssignment.PhoneNumber,
+			DisplayName:   currentAssignment.DisplayName,
+			VerifiedName:  currentAssignment.VerifiedName,
+			Status:        currentAssignment.Status,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current":          current,
+		"available_numbers": availableResp,
+	})
+}
+
+func (h *Handler) assignPhoneNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	phoneNumberID := chi.URLParam(r, "id")
+	if phoneNumberID == "" {
+		http.Error(w, "phone number id required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if tenant already has a number assigned
+	var existingAssignment storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&existingAssignment).Error; err == nil {
+		http.Error(w, "you already have a WhatsApp number assigned", http.StatusBadRequest)
+		return
+	}
+
+	// Get the phone number from pool
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("id = ? OR phone_number_id = ?", phoneNumberID, phoneNumberID).First(&phoneNum).Error; err != nil {
+		http.Error(w, "phone number not found", http.StatusNotFound)
+		return
+	}
+
+	if phoneNum.Status != "available" || (phoneNum.TenantID != nil && *phoneNum.TenantID != 0) {
+		http.Error(w, "phone number is not available", http.StatusBadRequest)
+		return
+	}
+
+	// Get tenant info for display name
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	// Assign to tenant
+	now := time.Now()
+	phoneNum.TenantID = &claims.TenantID
+	phoneNum.DisplayName = tenant.Name
+	phoneNum.Status = "assigned"
+	phoneNum.AssignedAt = &now
+
+	if err := h.DB.Save(&phoneNum).Error; err != nil {
+		h.Logger.Error("failed to assign phone number", zap.Error(err))
+		http.Error(w, "failed to assign phone number", http.StatusInternalServerError)
+		return
+	}
+
+	// Create/update social account for WhatsApp (provider-owned model)
+	// Note: No AccessToken stored - we use Brancr's system token
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error; err != nil {
+		// Create new account (no token needed for provider-owned model)
+		account = storage.SocialAccount{
+			TenantID:   claims.TenantID,
+			Platform:   "whatsapp",
+			PageID:     phoneNum.PhoneNumberID, // This is phone_number_id
+			ExternalID: phoneNum.PhoneNumberID, // Used for webhook routing
+			Username:   phoneNum.PhoneNumber,
+			Connected:  true,
+			Mode:       "provider_owned", // Marks it as using Brancr's system token
+		}
+		if err := h.DB.Create(&account).Error; err != nil {
+			h.Logger.Error("failed to create social account", zap.Error(err))
+		}
+	} else {
+		// Update existing account
+		account.PageID = phoneNum.PhoneNumberID
+		account.ExternalID = phoneNum.PhoneNumberID
+		account.Username = phoneNum.PhoneNumber
+		account.Connected = true
+		account.Mode = "provider_owned" // Switch to provider-owned mode
+		// Don't clear AccessToken for backward compatibility, but Mode=provider_owned will use system token
+		if err := h.DB.Save(&account).Error; err != nil {
+			h.Logger.Error("failed to update social account", zap.Error(err))
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":      "WhatsApp number assigned successfully",
+		"phone_number": phoneNum.PhoneNumber,
+		"phone_number_id": phoneNum.PhoneNumberID,
+	})
+}
+
+func (h *Handler) getAssignedPhoneNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"assigned":      true,
+		"id":            phoneNum.ID,
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"phone_number":  phoneNum.PhoneNumber,
+		"display_name":  phoneNum.DisplayName,
+		"verified_name": phoneNum.VerifiedName,
+		"quality_rating": phoneNum.QualityRating,
+		"assigned_at":   phoneNum.AssignedAt,
+	})
+}
+
+func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get tenant's assigned number
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		http.Error(w, "no WhatsApp number assigned", http.StatusNotFound)
+		return
+	}
+
+	// Unassign from tenant
+	phoneNum.TenantID = nil
+	phoneNum.Status = "available"
+	phoneNum.AssignedAt = nil
+
+	if err := h.DB.Save(&phoneNum).Error; err != nil {
+		h.Logger.Error("failed to disconnect phone number", zap.Error(err))
+		http.Error(w, "failed to disconnect", http.StatusInternalServerError)
+		return
+	}
+
+	// Update social account
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error; err == nil {
+		account.Connected = false
+		account.PageID = ""
+		account.ExternalID = ""
+		account.Username = ""
+		h.DB.Save(&account)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "WhatsApp number disconnected successfully",
 	})
 }
 
