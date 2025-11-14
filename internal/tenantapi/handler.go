@@ -57,6 +57,14 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.TenantAuth([]byte(h.Config.TenantJWTSecret), SessionCookie))
+
+		// Onboarding endpoints
+		r.Get("/tenant/onboarding/status", h.getOnboardingStatus)
+		r.Post("/tenant/onboarding/business-profile", h.updateBusinessProfile)
+		r.Post("/tenant/onboarding/persona", h.updatePersona)
+		r.Post("/tenant/onboarding/business-details", h.updateBusinessDetails)
+		r.Post("/tenant/onboarding/complete", h.completeOnboarding)
+
 		r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 
 		// Integration CRUD
@@ -132,13 +140,15 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tenant := storage.Tenant{
-		Name:         req.CompanyName,
-		Email:        req.Email,
-		OwnerName:    req.Name,
-		OwnerPhone:   strings.TrimSpace(req.Phone),
-		PlanType:     "trial",
-		Status:       "active",
-		PasswordHash: string(hash),
+		Name:               req.CompanyName,
+		Email:              req.Email,
+		OwnerName:          req.Name,
+		OwnerPhone:         strings.TrimSpace(req.Phone),
+		PlanType:           "trial",
+		Status:             "active",
+		PasswordHash:       string(hash),
+		OnboardingStep:     "business_profile",
+		OnboardingComplete: false,
 	}
 
 	if err := h.DB.Create(&tenant).Error; err != nil {
@@ -146,6 +156,25 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not create tenant", http.StatusInternalServerError)
 		return
 	}
+
+	// Create initial business profile
+	profile := storage.BusinessProfile{
+		TenantID: tenant.ID,
+		Name:     req.CompanyName,
+		Tone:     "friendly",
+	}
+	h.DB.Create(&profile)
+
+	// Create initial persona
+	persona := storage.Persona{
+		TenantID:   tenant.ID,
+		BotName:    "Assistant",
+		Tone:       "friendly, helpful",
+		Language:   "en",
+		Humor:      true,
+		StyleNotes: "",
+	}
+	h.DB.Create(&persona)
 
 	if err := h.setSessionCookie(w, tenant.ID, tenant.Email); err != nil {
 		h.Logger.Error("issue session cookie", zap.Error(err))
@@ -226,6 +255,14 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get onboarding status
+	var onboardingStatus struct {
+		Step     string `json:"step"`
+		Complete bool   `json:"complete"`
+	}
+	onboardingStatus.Step = tenant.OnboardingStep
+	onboardingStatus.Complete = tenant.OnboardingComplete
+
 	// Get social accounts summary
 	var accounts []storage.SocialAccount
 	h.DB.Where("tenant_id = ?", claims.TenantID).Find(&accounts)
@@ -261,6 +298,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		"status":      tenant.Status,
 		"owner_name":  tenant.OwnerName,
 		"owner_phone": tenant.OwnerPhone,
+		"onboarding":  onboardingStatus,
 		"integrations": map[string]any{
 			"total":     len(accounts),
 			"connected": connectedCount,
@@ -1118,6 +1156,258 @@ func (h *Handler) checkTenantPhoneNumber(w http.ResponseWriter, r *http.Request)
 		"message":         "Phone number not found in our system. Please contact support to add it first. Admin will add it in Meta Business Manager, then sync it to our system.",
 		"ready":           false,
 		"action_required": "contact_support",
+	})
+}
+
+// =======================
+// ONBOARDING HANDLERS
+// =======================
+
+func (h *Handler) getOnboardingStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	// Get business profile and persona
+	var profile storage.BusinessProfile
+	h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
+
+	var persona storage.Persona
+	h.DB.Where("tenant_id = ?", tenant.ID).First(&persona)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"step":             tenant.OnboardingStep,
+		"complete":         tenant.OnboardingComplete,
+		"business_profile": profile,
+		"persona":          persona,
+		"has_telegram_bot": tenant.TelegramBotToken != "",
+	})
+}
+
+func (h *Handler) updateBusinessProfile(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Name           string `json:"name"`
+		Industry       string `json:"industry"`
+		Description    string `json:"description"`
+		Location       string `json:"location"`
+		Website        string `json:"website"`
+		OperatingHours string `json:"operating_hours"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var profile storage.BusinessProfile
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&profile).Error; err != nil {
+		// Create if doesn't exist
+		profile = storage.BusinessProfile{
+			TenantID: claims.TenantID,
+		}
+	}
+
+	profile.Name = req.Name
+	profile.Industry = req.Industry
+	profile.Description = req.Description
+	profile.Location = req.Location
+	profile.Website = req.Website
+	profile.OperatingHours = req.OperatingHours
+
+	if err := h.DB.Save(&profile).Error; err != nil {
+		h.Logger.Error("failed to update business profile", zap.Error(err))
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+
+	// Update tenant step
+	var tenant storage.Tenant
+	h.DB.First(&tenant, claims.TenantID)
+	if tenant.OnboardingStep == "business_profile" {
+		tenant.OnboardingStep = "persona"
+		h.DB.Save(&tenant)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"message":   "Business profile updated",
+		"next_step": "persona",
+	})
+}
+
+func (h *Handler) updatePersona(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		BotName    string `json:"bot_name"`
+		Tone       string `json:"tone"`
+		Language   string `json:"language"`
+		Humor      bool   `json:"humor"`
+		StyleNotes string `json:"style_notes"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var persona storage.Persona
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&persona).Error; err != nil {
+		// Create if doesn't exist
+		persona = storage.Persona{
+			TenantID: claims.TenantID,
+		}
+	}
+
+	persona.BotName = req.BotName
+	persona.Tone = req.Tone
+	persona.Language = req.Language
+	persona.Humor = req.Humor
+	persona.StyleNotes = req.StyleNotes
+
+	if err := h.DB.Save(&persona).Error; err != nil {
+		h.Logger.Error("failed to update persona", zap.Error(err))
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+
+	// Update tenant step
+	var tenant storage.Tenant
+	h.DB.First(&tenant, claims.TenantID)
+	if tenant.OnboardingStep == "persona" {
+		tenant.OnboardingStep = "business_details"
+		h.DB.Save(&tenant)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"message":   "Persona updated",
+		"next_step": "business_details",
+	})
+}
+
+func (h *Handler) updateBusinessDetails(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		MenuItems []struct {
+			Name        string `json:"name"`
+			Category    string `json:"category"`
+			Price       string `json:"price"`
+			Description string `json:"description"`
+		} `json:"menu_items"`
+		FAQs []struct {
+			Question string `json:"question"`
+			Answer   string `json:"answer"`
+		} `json:"faqs"`
+		Keywords      string `json:"keywords"`
+		KnowledgeBase string `json:"knowledge_base"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Update business profile keywords and knowledge base
+	var profile storage.BusinessProfile
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&profile).Error; err == nil {
+		profile.Keywords = req.Keywords
+		profile.KnowledgeBase = req.KnowledgeBase
+		h.DB.Save(&profile)
+	}
+
+	// Delete existing menu items and FAQs (optional - can keep or replace)
+	// h.DB.Where("tenant_id = ?", claims.TenantID).Delete(&storage.BusinessMenuItem{})
+	// h.DB.Where("tenant_id = ?", claims.TenantID).Delete(&storage.BusinessFAQ{})
+
+	// Create menu items
+	for _, item := range req.MenuItems {
+		menuItem := storage.BusinessMenuItem{
+			TenantID:    claims.TenantID,
+			Name:        item.Name,
+			Category:    item.Category,
+			Price:       item.Price,
+			Description: item.Description,
+		}
+		h.DB.Create(&menuItem)
+	}
+
+	// Create FAQs
+	for _, faq := range req.FAQs {
+		businessFAQ := storage.BusinessFAQ{
+			TenantID: claims.TenantID,
+			Question: faq.Question,
+			Answer:   faq.Answer,
+		}
+		h.DB.Create(&businessFAQ)
+	}
+
+	// Update tenant step
+	var tenant storage.Tenant
+	h.DB.First(&tenant, claims.TenantID)
+	if tenant.OnboardingStep == "business_details" {
+		tenant.OnboardingStep = "social_connect"
+		h.DB.Save(&tenant)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"message":   "Business details updated",
+		"next_step": "social_connect",
+	})
+}
+
+func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	tenant.OnboardingStep = "complete"
+	tenant.OnboardingComplete = true
+
+	if err := h.DB.Save(&tenant).Error; err != nil {
+		h.Logger.Error("failed to complete onboarding", zap.Error(err))
+		http.Error(w, "failed to complete", http.StatusInternalServerError)
+		return
+	}
+
+	h.Logger.Info("onboarding completed", zap.Uint("tenant_id", claims.TenantID))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":     true,
+		"message":     "Onboarding completed! You can now connect your social media accounts.",
+		"redirect_to": "/dashboard",
 	})
 }
 

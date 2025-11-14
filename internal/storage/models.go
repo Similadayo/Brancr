@@ -23,6 +23,8 @@ type Tenant struct {
 	BusinessProfile  BusinessProfile
 	PasswordHash     string
 	OwnerPhone       string
+	OnboardingStep   string `gorm:"default:business_profile"` // business_profile, persona, business_details, social_connect, complete
+	OnboardingComplete bool `gorm:"default:false"`
 }
 
 // BusinessProfile represents the personality and niche of the tenant’s bot
