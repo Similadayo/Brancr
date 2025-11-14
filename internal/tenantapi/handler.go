@@ -73,6 +73,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Delete("/tenant/integrations/{platform}", h.deleteIntegration)
 		r.Post("/tenant/integrations/{platform}/verify", h.verifyIntegration)
 		r.Post("/tenant/integrations/{platform}/repair", h.repairIntegration)
+		r.Get("/tenant/integrations/{platform}/debug", h.debugIntegration) // Debug endpoint to check account details
 
 		// Scheduled posts CRUD
 		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
@@ -647,6 +648,46 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 		"connected":   account.Connected,
 		"username":    account.Username,
 		"external_id": account.ExternalID,
+		"page_id":     account.PageID,
+	})
+}
+
+// debugIntegration returns debug information about an integration (useful for troubleshooting)
+func (h *Handler) debugIntegration(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	platform := chi.URLParam(r, "platform")
+	if platform == "" {
+		http.Error(w, "platform required", http.StatusBadRequest)
+		return
+	}
+
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":    "integration_not_found",
+			"message":  fmt.Sprintf("No %s integration found.", platform),
+			"platform": platform,
+		})
+		return
+	}
+
+	// Return debug info (don't include sensitive data like tokens)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"platform":         platform,
+		"connected":        account.Connected,
+		"mode":             account.Mode,
+		"username":         account.Username,
+		"external_id":      account.ExternalID, // This is used for webhook tenant resolution
+		"page_id":          account.PageID,     // Fallback for tenant resolution
+		"has_access_token": account.AccessToken != "",
+		"created_at":       account.CreatedAt,
+		"updated_at":       account.UpdatedAt,
+		"hint":             "external_id must match instagram_business_account.id from Meta webhooks",
 	})
 }
 
