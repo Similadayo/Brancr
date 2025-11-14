@@ -60,10 +60,10 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 	var existing storage.Tenant
 	if err := h.DB.Where("owner_telegram_id = ?", chatID).First(&existing).Error; err == nil {
 		if existing.TelegramBotToken != "" {
-			msg := tgbotapi.NewMessage(chatID,
+		msg := tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Hey %s! Your bot is already set up. Type 'menu' to your assistant to get started.", existing.Name))
-			bot.Send(msg)
-			return
+		bot.Send(msg)
+		return
 		}
 	}
 
@@ -150,7 +150,7 @@ Already have a token? Just paste it now.`
 		if token == "" {
 			msg := tgbotapi.NewMessage(chatID, "Please paste your bot token from @BotFather.")
 			bot.Send(msg)
-			return
+		return
 		}
 
 		email := state["email"]

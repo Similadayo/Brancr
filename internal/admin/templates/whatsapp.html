@@ -143,7 +143,11 @@
         </td>
         <td>
           {{if eq .Status "available"}}
-            <button onclick="requestVerificationCode('{{.PhoneNumberID}}', '{{.PhoneNumber}}')" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; margin-right: 8px;">
+            <button 
+              class="btn-secondary request-code-btn" 
+              style="padding: 6px 12px; font-size: 12px; margin-right: 8px;"
+              data-phone-number-id="{{.PhoneNumberID}}"
+              data-phone-number="{{.PhoneNumber}}">
               🔑 Request Code
             </button>
           {{end}}
@@ -182,6 +186,31 @@
 <script>
 let currentPhoneNumberID = null;
 
+// Set up event listeners for request code buttons
+function setupRequestCodeButtons() {
+  const buttons = document.querySelectorAll('.request-code-btn');
+  buttons.forEach(btn => {
+    // Remove existing listener if any to avoid duplicates
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    
+    newBtn.addEventListener('click', function() {
+      const phoneNumberID = this.getAttribute('data-phone-number-id');
+      const phoneNumber = this.getAttribute('data-phone-number');
+      console.log('Button clicked - phoneNumberID:', phoneNumberID, 'phoneNumber:', phoneNumber);
+      requestVerificationCode(phoneNumberID, phoneNumber);
+    });
+  });
+}
+
+// Set up listeners when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupRequestCodeButtons);
+} else {
+  // DOM already loaded
+  setupRequestCodeButtons();
+}
+
 function syncNumbers() {
   if (!confirm('Sync phone numbers from Meta? This will update the database with current numbers from your WABA.')) {
     return;
@@ -206,9 +235,19 @@ function syncNumbers() {
 }
 
 function requestVerificationCode(phoneNumberID, phoneNumber) {
-  if (!confirm('Request verification code for ' + phoneNumber + '?\n\nMeta will send a code to this phone number via SMS.')) {
+  if (!phoneNumber || typeof phoneNumber !== 'string' || phoneNumber.trim() === '') {
+    alert('Error: Phone number is missing or invalid');
+    console.error('Invalid phone number:', phoneNumber, 'phoneNumberID:', phoneNumberID);
     return;
   }
+  
+  const trimmedPhone = phoneNumber.trim();
+  
+  if (!confirm('Request verification code for ' + trimmedPhone + '?\n\nMeta will send a code to this phone number via SMS.')) {
+    return;
+  }
+  
+  console.log('Requesting verification code for:', trimmedPhone, 'phoneNumberID:', phoneNumberID);
   
   fetch('/admin/whatsapp/request-code', {
     method: 'POST',
@@ -217,23 +256,32 @@ function requestVerificationCode(phoneNumberID, phoneNumber) {
     },
     credentials: 'include',
     body: JSON.stringify({
-      phone_number: phoneNumber
+      phone_number: trimmedPhone
     })
   })
-  .then(res => res.json())
+  .then(async res => {
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server error (${res.status}): ${text || res.statusText}`);
+    }
+    return res.json();
+  })
   .then(data => {
     if (data.error) {
-      alert('Error: ' + data.message);
+      alert('Error: ' + (data.message || data.error));
+      console.error('API Error:', data);
     } else {
-      currentPhoneNumberID = phoneNumberID;
-      document.getElementById('verifyPhoneNumberID').value = phoneNumberID;
-      document.getElementById('verifyModalPhone').textContent = 'Phone: ' + phoneNumber;
+      currentPhoneNumberID = data.phone_number_id || phoneNumberID;
+      document.getElementById('verifyPhoneNumberID').value = currentPhoneNumberID;
+      document.getElementById('verifyModalPhone').textContent = 'Phone: ' + (data.phone_number || phoneNumber);
       document.getElementById('verifyModal').style.display = 'flex';
       document.getElementById('verifyCode').focus();
       alert('✅ Verification code sent! Check the phone number for the SMS code.');
     }
   })
   .catch(err => {
+    console.error('Request error:', err);
     alert('Error requesting code: ' + err.message);
   });
 }
@@ -278,5 +326,6 @@ function submitVerification(event) {
 </script>
 {{end}}
 {{template "layout.html" .}}
+
 
 

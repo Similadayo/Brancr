@@ -144,18 +144,32 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 			DisplayName string `json:"display_name"` // Business name for the number
 		}
 
+		w.Header().Set("Content-Type", "application/json")
+
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "invalid request body",
+				"message": err.Error(),
+			})
 			return
 		}
 
 		if req.PhoneNumber == "" {
-			http.Error(w, "phone_number is required", http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "missing required field",
+				"message": "phone_number is required",
+			})
 			return
 		}
 
 		if ctx.Config.BrancrWABAID == "" || ctx.Config.BrancrWABAToken == "" {
-			http.Error(w, "WhatsApp WABA not configured", http.StatusBadRequest)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "configuration error",
+				"message": "WhatsApp WABA not configured",
+			})
 			return
 		}
 
@@ -174,9 +188,15 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 		
 		// Try to find the phone number in database (must be synced first)
+		// Try both with and without + prefix
 		var phoneNum storage.WhatsAppPhoneNumber
-		if err := ctx.DB.Where("phone_number = ?", phoneNumber).First(&phoneNum).Error; err != nil {
-			w.Header().Set("Content-Type", "application/json")
+		phoneNumberQuery := phoneNumber
+		if !strings.HasPrefix(phoneNumberQuery, "+") {
+			phoneNumberQuery = "+" + phoneNumberQuery
+		}
+		
+		err := ctx.DB.Where("phone_number = ? OR phone_number = ?", phoneNumber, phoneNumberQuery).First(&phoneNum).Error
+		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"error": "phone number not found",
@@ -184,6 +204,8 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 					"When adding in Meta BM, Meta will send a verification code to the phone number. " +
 					"After adding and verifying in Meta, sync phone numbers using POST /admin/whatsapp/sync, " +
 					"then use POST /admin/whatsapp/request-code to request a verification code for tenant access.",
+				"received_phone_number": req.PhoneNumber,
+				"searched_for": phoneNumberQuery,
 			})
 			return
 		}
@@ -191,7 +213,6 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 		// Request verification code for the existing phone number
 		if err := social.RequestPhoneNumberVerificationCode(ctx.Logger, ctx.Config, phoneNum.PhoneNumberID, "SMS", "en_US"); err != nil {
 			ctx.Logger.Error("failed to request verification code", zap.Error(err))
-			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"error":   "failed to request verification code",
@@ -202,12 +223,13 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 
 		ctx.Logger.Info("verification code requested",
 			zap.String("phone_number", req.PhoneNumber),
-			zap.String("phone_number_id", phoneNum.PhoneNumberID))
+			zap.String("phone_number_id", phoneNum.PhoneNumberID),
+			zap.String("phone_number_formatted", phoneNumber))
 
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":         true,
 			"phone_number_id": phoneNum.PhoneNumberID,
+			"phone_number":    phoneNum.PhoneNumber,
 			"message":         "Verification code requested. Meta will send the code to the phone number. Use POST /admin/whatsapp/verify with the code to complete verification.",
 		})
 	}
