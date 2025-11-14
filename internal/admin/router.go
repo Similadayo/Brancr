@@ -29,6 +29,12 @@ func AdminRouter(ctx *AdminContext) http.Handler {
 		r.Get("/scheduled/force_cancel_form", ForceCancelFormHandler(ctx))
 		r.Post("/scheduled/force_cancel", ForceCancelHandler(ctx))
 		r.Get("/social", (SocialAccountsHandler(ctx)))
+		
+		// WhatsApp phone number management
+		r.Get("/whatsapp/numbers", WhatsAppNumbersHandler(ctx))
+		r.Post("/whatsapp/sync", WhatsAppSyncHandler(ctx))
+		r.Post("/whatsapp/request-code", WhatsAppAddNumberHandler(ctx)) // Request verification code for existing number
+		r.Post("/whatsapp/verify", WhatsAppVerifyNumberHandler(ctx))
 		r.Post("/logout", LogoutHandler(ctx))
 
 	})

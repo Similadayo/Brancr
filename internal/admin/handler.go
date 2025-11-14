@@ -1,15 +1,206 @@
 package admin
 
 import (
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"path/filepath"
 	"time"
 
+	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// WhatsAppNumbersHandler lists all WhatsApp phone numbers in the pool
+func WhatsAppNumbersHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var numbers []storage.WhatsAppPhoneNumber
+		if err := ctx.DB.Order("created_at DESC").Find(&numbers).Error; err != nil {
+			ctx.Logger.Error("failed to fetch phone numbers", zap.Error(err))
+			http.Error(w, "failed to fetch phone numbers", http.StatusInternalServerError)
+			return
+		}
+
+		// Get tenant info for assigned numbers
+		type numberWithTenant struct {
+			storage.WhatsAppPhoneNumber
+			TenantName string `json:"tenant_name"`
+		}
+		
+		response := make([]numberWithTenant, 0, len(numbers))
+		for _, num := range numbers {
+			item := numberWithTenant{WhatsAppPhoneNumber: num}
+			if num.TenantID != nil && *num.TenantID != 0 {
+				var tenant storage.Tenant
+				if err := ctx.DB.First(&tenant, *num.TenantID).Error; err == nil {
+					item.TenantName = tenant.Name
+				}
+			}
+			response = append(response, item)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"numbers": response,
+			"total":   len(response),
+		})
+	}
+}
+
+// WhatsAppSyncHandler syncs phone numbers from Meta's WABA
+func WhatsAppSyncHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if ctx.Config.BrancrWABAID == "" || ctx.Config.BrancrWABAToken == "" {
+			http.Error(w, "WhatsApp WABA not configured", http.StatusBadRequest)
+			return
+		}
+
+		if err := social.SyncPhoneNumbersFromMeta(ctx.DB, ctx.Logger, ctx.Config); err != nil {
+			ctx.Logger.Error("failed to sync phone numbers", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "failed to sync phone numbers",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		ctx.Logger.Info("phone numbers synced from Meta", zap.String("waba_id", ctx.Config.BrancrWABAID))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Phone numbers synced successfully",
+		})
+	}
+}
+
+// WhatsAppAddNumberHandler adds a new phone number to Meta's WABA programmatically
+func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			PhoneNumber string `json:"phone_number"` // e.g., "+1234567890"
+			DisplayName string `json:"display_name"` // Business name for the number
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.PhoneNumber == "" {
+			http.Error(w, "phone_number is required", http.StatusBadRequest)
+			return
+		}
+
+		if ctx.Config.BrancrWABAID == "" || ctx.Config.BrancrWABAToken == "" {
+			http.Error(w, "WhatsApp WABA not configured", http.StatusBadRequest)
+			return
+		}
+
+		// IMPORTANT: Phone numbers must be added MANUALLY in Meta Business Manager first
+		// This endpoint assumes the phone number already exists in the WABA
+		// Admin should add it via Meta Business Manager, then sync to get phone_number_id
+		
+		// Try to find the phone number in database (must be synced first)
+		var phoneNum storage.WhatsAppPhoneNumber
+		if err := ctx.DB.Where("phone_number = ?", req.PhoneNumber).First(&phoneNum).Error; err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": "phone number not found",
+				"message": "Phone number must be added manually in Meta Business Manager first. After adding, sync phone numbers using POST /admin/whatsapp/sync, then use POST /admin/whatsapp/request-code with the phone_number_id.",
+			})
+			return
+		}
+
+		// Request verification code for the existing phone number
+		if err := social.RequestPhoneNumberVerificationCode(ctx.Logger, ctx.Config, phoneNum.PhoneNumberID, "SMS", "en_US"); err != nil {
+			ctx.Logger.Error("failed to request verification code", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "failed to request verification code",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		ctx.Logger.Info("verification code requested",
+			zap.String("phone_number", req.PhoneNumber),
+			zap.String("phone_number_id", phoneNum.PhoneNumberID))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":         true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"message":         "Verification code requested. Meta will send the code to the phone number. Use POST /admin/whatsapp/verify with the code to complete verification.",
+		})
+	}
+}
+
+// WhatsAppVerifyNumberHandler verifies a phone number with the code sent by Meta
+func WhatsAppVerifyNumberHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			PhoneNumberID    string `json:"phone_number_id"`
+			VerificationCode string `json:"verification_code"` // Code sent via SMS/voice
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.PhoneNumberID == "" || req.VerificationCode == "" {
+			http.Error(w, "phone_number_id and verification_code are required", http.StatusBadRequest)
+			return
+		}
+
+		if ctx.Config.BrancrWABAID == "" || ctx.Config.BrancrWABAToken == "" {
+			http.Error(w, "WhatsApp WABA not configured", http.StatusBadRequest)
+			return
+		}
+
+		// Verify phone number with code
+		if err := social.VerifyPhoneNumberWithCode(ctx.Logger, ctx.Config, req.PhoneNumberID, req.VerificationCode); err != nil {
+			ctx.Logger.Error("failed to verify phone number", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "failed to verify phone number",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		// After verification, sync to update database
+		if err := social.SyncPhoneNumbersFromMeta(ctx.DB, ctx.Logger, ctx.Config); err != nil {
+			ctx.Logger.Warn("phone number verified but sync failed", zap.Error(err))
+		}
+
+		ctx.Logger.Info("phone number verified successfully", zap.String("phone_number_id", req.PhoneNumberID))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Phone number verified successfully. It will appear in the pool after sync.",
+		})
+	}
+}
 
 // renderTemplate loads both layout and page template together
 func renderTemplate(w http.ResponseWriter, page string, data any, logger *zap.Logger) {

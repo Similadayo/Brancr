@@ -36,6 +36,7 @@ func SetupRouter(app *App) http.Handler {
 
 	// Build a limited context for admin routes (breaks circular dependency)
 	adminCtx := &admin.AdminContext{
+		Config:        app.Config,
 		DB:            app.Services.DB,
 		Redis:         app.Services.Redis,
 		Logger:        app.Services.Logger,

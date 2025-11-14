@@ -118,6 +118,190 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 	return nil
 }
 
+// RequestPhoneNumberFromMeta requests a new phone number to be added to Brancr's WABA
+// This initiates the registration process - Meta will send a verification code
+func RequestPhoneNumberFromMeta(logger *zap.Logger, cfg *config.Config, phoneNumber, displayName string) (string, error) {
+	if cfg.BrancrWABAID == "" || cfg.BrancrWABAToken == "" {
+		return "", fmt.Errorf("WABA ID or token not configured")
+	}
+
+	// Format phone number (remove spaces, ensure + prefix)
+	phoneNumber = strings.TrimSpace(phoneNumber)
+	if !strings.HasPrefix(phoneNumber, "+") {
+		phoneNumber = "+" + phoneNumber
+	}
+
+	// Meta API endpoint to request phone number registration
+	// Note: This endpoint may require special permissions
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/phone_numbers", cfg.BrancrWABAID)
+
+	payload := map[string]string{
+		"phone_number": phoneNumber,
+		"display_name": displayName,
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.URL.RawQuery = "access_token=" + cfg.BrancrWABAToken
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to request phone number", zap.Int("status", resp.StatusCode), zap.ByteString("body", body))
+		}
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		ID                 string `json:"id"` // phone_number_id
+		DisplayPhoneNumber string `json:"display_phone_number"`
+		VerificationStatus string `json:"code_verification_status"` // PENDING, VERIFIED, etc.
+		Success            bool   `json:"success"`
+		Message            string `json:"message"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if logger != nil {
+		logger.Info("phone number registration requested",
+			zap.String("phone_number", phoneNumber),
+			zap.String("phone_number_id", response.ID),
+			zap.String("verification_status", response.VerificationStatus))
+	}
+
+	// Meta will send verification code to the phone number
+	// Return the phone_number_id so admin can verify it later
+	return response.ID, nil
+}
+
+// VerifyPhoneNumberWithCode completes phone number verification by submitting the code
+func VerifyPhoneNumberWithCode(logger *zap.Logger, cfg *config.Config, phoneNumberID, verificationCode string) error {
+	if cfg.BrancrWABAID == "" || cfg.BrancrWABAToken == "" {
+		return fmt.Errorf("WABA ID or token not configured")
+	}
+
+	// Meta API endpoint to verify phone number with code
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/verify_code", phoneNumberID)
+
+	payload := map[string]string{
+		"code": verificationCode,
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.URL.RawQuery = "access_token=" + cfg.BrancrWABAToken
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to verify phone number", zap.Int("status", resp.StatusCode), zap.ByteString("body", body))
+		}
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if logger != nil {
+		logger.Info("phone number verified successfully", zap.String("phone_number_id", phoneNumberID))
+	}
+
+	return nil
+}
+
+// RequestPhoneNumberVerificationCode requests a verification code for an existing phone number
+// NOTE: Phone numbers must be added MANUALLY in Meta Business Manager first
+// This function requests a verification code for an already-added phone number
+// Endpoint: POST /{Phone-Number-ID}/request_code
+func RequestPhoneNumberVerificationCode(logger *zap.Logger, cfg *config.Config, phoneNumberID, codeMethod, locale string) error {
+	if cfg.BrancrWABAID == "" || cfg.BrancrWABAToken == "" {
+		return fmt.Errorf("WABA ID or token not configured")
+	}
+
+	if codeMethod == "" {
+		codeMethod = "SMS" // Default to SMS
+	}
+	if locale == "" {
+		locale = "en_US" // Default locale
+	}
+
+	// Meta API endpoint to request verification code for existing phone number
+	// POST /{Phone-Number-ID}/request_code
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/request_code", phoneNumberID)
+
+	payload := map[string]string{
+		"code_method": codeMethod, // SMS or VOICE
+		"locale":      locale,     // e.g., "en_US"
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.URL.RawQuery = "access_token=" + cfg.BrancrWABAToken
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to request verification code", zap.Int("status", resp.StatusCode), zap.ByteString("body", body))
+		}
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	if logger != nil {
+		logger.Info("verification code requested",
+			zap.String("phone_number_id", phoneNumberID),
+			zap.String("method", codeMethod))
+	}
+
+	return nil
+}
+
 // SaveWhatsAppAccount persists or updates a tenant's WhatsApp social account,
 // claims the business and WABA, then triggers the required Meta subscriptions.
 func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, tenantID uint, businessID, wabaID, phoneID, phoneNumber, token, status string) error {

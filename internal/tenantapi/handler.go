@@ -2,6 +2,7 @@ package tenantapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -78,6 +79,10 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
 		r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
 		r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
+		
+		// Tenant-provided phone numbers
+		r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
+		r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
 
 		// Legacy embedded signup (keep for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -908,6 +913,177 @@ func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": "WhatsApp number disconnected successfully",
+	})
+}
+
+func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		PhoneNumber string `json:"phone_number"` // e.g., "+1234567890"
+		DisplayName string `json:"display_name"` // Optional: defaults to tenant name
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PhoneNumber == "" {
+		http.Error(w, "phone_number is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get tenant name for display name if not provided
+	if req.DisplayName == "" {
+		var tenant storage.Tenant
+		if err := h.DB.First(&tenant, claims.TenantID).Error; err == nil {
+			req.DisplayName = tenant.Name
+		} else {
+			req.DisplayName = "Business"
+		}
+	}
+
+	// IMPORTANT: Phone numbers must be added MANUALLY in Meta Business Manager first
+	// Tenant provides phone number → Admin adds it in Meta Business Manager → Admin syncs → Then tenant can verify
+	
+	// Check if phone number exists in database (must be synced first)
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("phone_number = ?", req.PhoneNumber).First(&phoneNum).Error; err != nil {
+		h.Logger.Warn("phone number not found in database",
+			zap.String("phone_number", req.PhoneNumber),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("note", "Phone number must be added manually in Meta Business Manager first, then synced"))
+		
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "phone_number_not_found",
+			"message": "Phone number must be added manually in Meta Business Manager first. Please contact support to add your phone number, or select an available number from the pool.",
+			"action_required": "contact_support_or_select_from_pool",
+		})
+		return
+	}
+
+	// Request verification code for the existing phone number
+	if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNum.PhoneNumberID, "SMS", "en_US"); err != nil {
+		h.Logger.Error("failed to request verification code", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		http.Error(w, fmt.Sprintf("failed to request verification code: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	h.Logger.Info("tenant requested phone number verification code",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("phone_number", req.PhoneNumber),
+		zap.String("phone_number_id", phoneNum.PhoneNumberID))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"message":         "Verification code requested. Meta will send the code to your phone number via SMS. Please check your messages and submit the code using POST /api/tenant/whatsapp/verify-number",
+	})
+}
+
+func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		PhoneNumberID    string `json:"phone_number_id"`
+		VerificationCode string `json:"verification_code"` // Code sent via SMS/voice
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PhoneNumberID == "" || req.VerificationCode == "" {
+		http.Error(w, "phone_number_id and verification_code are required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify phone number with code
+	if err := social.VerifyPhoneNumberWithCode(h.Logger, h.Config, req.PhoneNumberID, req.VerificationCode); err != nil {
+		h.Logger.Error("failed to verify phone number", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		http.Error(w, fmt.Sprintf("verification failed: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	// After verification, sync to get the phone number details
+	if err := social.SyncPhoneNumbersFromMeta(h.DB, h.Logger, h.Config); err != nil {
+		h.Logger.Warn("phone number verified but sync failed", zap.Error(err))
+	}
+
+	// Find the verified phone number in database
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("phone_number_id = ?", req.PhoneNumberID).First(&phoneNum).Error; err != nil {
+		h.Logger.Error("verified phone number not found in database after sync", zap.Error(err))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "Phone number verified successfully. Please wait a moment and then sync or refresh to see it in available numbers.",
+		})
+		return
+	}
+
+	// Automatically assign to tenant since they provided it
+	now := time.Now()
+	phoneNum.TenantID = &claims.TenantID
+	phoneNum.Status = "assigned"
+	phoneNum.AssignedAt = &now
+
+	// Get tenant name for display name
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err == nil {
+		phoneNum.DisplayName = tenant.Name
+	}
+
+	if err := h.DB.Save(&phoneNum).Error; err != nil {
+		h.Logger.Error("failed to assign verified phone number", zap.Error(err))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "Phone number verified successfully, but automatic assignment failed. Please manually assign it.",
+		})
+		return
+	}
+
+	// Create/update social account
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error; err != nil {
+		account = storage.SocialAccount{
+			TenantID:   claims.TenantID,
+			Platform:   "whatsapp",
+			PageID:     phoneNum.PhoneNumberID,
+			ExternalID: phoneNum.PhoneNumberID,
+			Username:   phoneNum.PhoneNumber,
+			Connected:  true,
+			Mode:       "provider_owned",
+		}
+		h.DB.Create(&account)
+	} else {
+		account.PageID = phoneNum.PhoneNumberID
+		account.ExternalID = phoneNum.PhoneNumberID
+		account.Username = phoneNum.PhoneNumber
+		account.Connected = true
+		account.Mode = "provider_owned"
+		h.DB.Save(&account)
+	}
+
+	h.Logger.Info("tenant phone number verified and assigned",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("phone_number_id", req.PhoneNumberID),
+		zap.String("phone_number", phoneNum.PhoneNumber))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":        true,
+		"phone_number":   phoneNum.PhoneNumber,
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"message":        "Phone number verified and assigned successfully! Your WhatsApp number is now ready to use.",
 	})
 }
 
