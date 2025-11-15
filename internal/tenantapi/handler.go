@@ -2220,13 +2220,60 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	// Get interactions count
 	var interactionsCount int64
-	h.DB.Model(&storage.Interaction{}).Where("tenant_id = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, start, end).Count(&interactionsCount)
+	interactionQuery := h.DB.Model(&storage.Interaction{}).Where("tenant_id = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, start, end)
+	if platform != "" {
+		interactionQuery = interactionQuery.Where("platform = ?", platform)
+	}
+	interactionQuery.Count(&interactionsCount)
 
-	// Get platform breakdown
+	// Get response distribution (auto_reply, manual, escalated)
+	var autoReplyCount, manualCount, escalatedCount int64
+	responseQuery := h.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND direction = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, "outgoing", start, end)
+	if platform != "" {
+		responseQuery = responseQuery.Where("platform = ?", platform)
+	}
+	responseQuery.Where("response_type = ?", "auto_reply").Count(&autoReplyCount)
+	responseQuery.Where("response_type = ?", "manual").Count(&manualCount)
+	responseQuery.Where("response_type = ?", "escalated").Count(&escalatedCount)
+
+	// Get engagement metrics from PostAnalytics (if available)
+	var totalImpressions, totalReach, totalLikes, totalComments, totalShares int64
+	var avgEngagementRate float64
+	var analyticsCount int64
+	analyticsQuery := h.DB.Model(&storage.PostAnalytics{}).
+		Where("tenant_id = ? AND posted_at >= ? AND posted_at <= ?", claims.TenantID, start, end)
+	if platform != "" {
+		analyticsQuery = analyticsQuery.Where("platform = ?", platform)
+	}
+	
+	var postAnalytics []storage.PostAnalytics
+	if err := analyticsQuery.Find(&postAnalytics).Error; err == nil {
+		analyticsCount = int64(len(postAnalytics))
+		for _, a := range postAnalytics {
+			totalImpressions += a.Impressions
+			totalReach += a.Reach
+			totalLikes += a.Likes
+			totalComments += a.Comments
+			totalShares += a.Shares
+			avgEngagementRate += a.EngagementRate
+		}
+		if len(postAnalytics) > 0 {
+			avgEngagementRate = avgEngagementRate / float64(len(postAnalytics))
+		}
+	}
+
+	// Get platform breakdown with engagement metrics
 	type platformStats struct {
-		Platform string `json:"platform"`
-		Posts    int64  `json:"posts"`
-		Conversations int64 `json:"conversations"`
+		Platform        string  `json:"platform"`
+		Posts           int64   `json:"posts"`
+		Conversations   int64   `json:"conversations"`
+		Impressions     int64   `json:"impressions"`
+		Reach           int64   `json:"reach"`
+		Likes           int64   `json:"likes"`
+		Comments        int64   `json:"comments"`
+		Shares          int64   `json:"shares"`
+		EngagementRate  float64 `json:"engagement_rate"`
 	}
 
 	var platformBreakdown []platformStats
@@ -2235,6 +2282,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		if platform != "" && platform != p {
 			continue
 		}
+		
 		var posts int64
 		h.DB.Model(&storage.ScheduledPost{}).
 			Where("tenant_id = ? AND platforms LIKE ? AND created_at >= ? AND created_at <= ?", claims.TenantID, "%"+p+"%", start, end).
@@ -2245,19 +2293,83 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			Where("tenant_id = ? AND platform = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, p, start, end).
 			Count(&convos)
 
+		// Get engagement metrics for this platform
+		var platImpressions, platReach, platLikes, platComments, platShares int64
+		var platEngagementRate float64
+		var platAnalytics []storage.PostAnalytics
+		if err := h.DB.Model(&storage.PostAnalytics{}).
+			Where("tenant_id = ? AND platform = ? AND posted_at >= ? AND posted_at <= ?", claims.TenantID, p, start, end).
+			Find(&platAnalytics).Error; err == nil {
+			for _, a := range platAnalytics {
+				platImpressions += a.Impressions
+				platReach += a.Reach
+				platLikes += a.Likes
+				platComments += a.Comments
+				platShares += a.Shares
+				platEngagementRate += a.EngagementRate
+			}
+			if len(platAnalytics) > 0 {
+				platEngagementRate = platEngagementRate / float64(len(platAnalytics))
+			}
+		}
+
 		platformBreakdown = append(platformBreakdown, platformStats{
 			Platform:       p,
 			Posts:          posts,
 			Conversations:  convos,
+			Impressions:    platImpressions,
+			Reach:          platReach,
+			Likes:          platLikes,
+			Comments:       platComments,
+			Shares:         platShares,
+			EngagementRate: platEngagementRate,
 		})
 	}
 
+	// Calculate response distribution percentage
+	var totalResponses = autoReplyCount + manualCount + escalatedCount
+	var responseDistribution map[string]any
+	if totalResponses > 0 {
+		responseDistribution = map[string]any{
+			"auto_reply": map[string]any{
+				"count": autoReplyCount,
+				"percentage": float64(autoReplyCount) / float64(totalResponses) * 100,
+			},
+			"manual": map[string]any{
+				"count": manualCount,
+				"percentage": float64(manualCount) / float64(totalResponses) * 100,
+			},
+			"escalated": map[string]any{
+				"count": escalatedCount,
+				"percentage": float64(escalatedCount) / float64(totalResponses) * 100,
+			},
+		}
+	} else {
+		responseDistribution = map[string]any{
+			"auto_reply": map[string]any{"count": 0, "percentage": 0},
+			"manual": map[string]any{"count": 0, "percentage": 0},
+			"escalated": map[string]any{"count": 0, "percentage": 0},
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"scheduled_posts":  scheduledCount,
-		"posted":           postedCount,
-		"conversations":    conversationsCount,
-		"interactions":     interactionsCount,
-		"platforms":        platformBreakdown,
+		"summary": map[string]any{
+			"scheduled_posts": scheduledCount,
+			"posted":          postedCount,
+			"conversations":   conversationsCount,
+			"interactions":    interactionsCount,
+		},
+		"engagement": map[string]any{
+			"total_impressions":  totalImpressions,
+			"total_reach":        totalReach,
+			"total_likes":        totalLikes,
+			"total_comments":     totalComments,
+			"total_shares":       totalShares,
+			"avg_engagement_rate": avgEngagementRate,
+			"posts_with_analytics": analyticsCount,
+		},
+		"response_distribution": responseDistribution,
+		"platforms":             platformBreakdown,
 		"date_range": map[string]string{
 			"start": start.Format("2006-01-02"),
 			"end":   end.Format("2006-01-02"),
