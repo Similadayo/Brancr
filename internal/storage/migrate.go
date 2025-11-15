@@ -43,12 +43,10 @@ func AutoMigrate(db *gorm.DB) error {
 		&Interaction{},
 		// Recurring templates
 		&RecurringTemplate{},
-		// Analytics models
-		&PostAnalytics{},
-		&CampaignAnalytics{},
-		&TrendInsight{},
-		&PlatformMetricsSnapshot{},
-		&AudienceSegment{},
+		// Bulk upload sessions
+		&BulkUploadSession{},
+		// Content calendar
+		&ContentCalendar{},
 	)
 }
 
