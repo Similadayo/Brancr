@@ -121,12 +121,19 @@ func (c *AIClient) Generate(ctx context.Context, messages []Message) (string, er
 				return "", fmt.Errorf("AI API error: Model '%s' not found (404). The model may be invalid, deprecated, or unavailable. Please check your AI_MODEL environment variable. Error: %s", c.Model, apiError.Error.Message)
 			} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
 				return "", fmt.Errorf("AI API error: Authentication failed (%d). Please check your OPENROUTER_API_KEY or OPENAI_API_KEY. Error: %s", resp.StatusCode, apiError.Error.Message)
+			} else if resp.StatusCode == 429 {
+				return "", fmt.Errorf("AI API rate limit (429): Too many requests. The free tier has rate limits. Please wait a few minutes and try again, or use a paid API key. Model: %s, Error: %s", c.Model, apiError.Error.Message)
 			}
 		
 			return "", fmt.Errorf("AI API error: %s (Status: %d, Type: %s). Model: %s, URL: %s", apiError.Error.Message, resp.StatusCode, apiError.Error.Type, c.Model, url)
 		}
 		
-		// If we can't parse the error, return raw response
+		// If we can't parse the error, check status code for common errors
+		if resp.StatusCode == 429 {
+			return "", fmt.Errorf("AI API rate limit (429): Too many requests. The free tier has rate limits. Please wait a few minutes and try again, or use a paid API key. Model: %s, Response: %s", c.Model, string(body))
+		}
+		
+		// Return raw response for other errors
 		return "", fmt.Errorf("AI API error: %s. Model: %s, URL: %s, Response: %s", resp.Status, c.Model, url, string(body))
 	}
 

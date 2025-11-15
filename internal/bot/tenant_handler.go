@@ -409,6 +409,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 
 		// Check for specific error types and provide appropriate responses
 		var errorMsg string
+		errStr := replyErr.Error()
 
 		// Check for moderation error
 		if ai.IsModerationError(replyErr) {
@@ -416,15 +417,33 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			h.Manager.Logger.Warn("AI moderation triggered",
 				zap.Uint("tenant_id", uint(tenantID)),
 				zap.Error(replyErr))
-		} else if strings.Contains(replyErr.Error(), "timeout") || strings.Contains(replyErr.Error(), "deadline exceeded") {
-			errorMsg = "Taking a bit longer than usual, try again."
-		} else if strings.Contains(replyErr.Error(), "403") || strings.Contains(replyErr.Error(), "Forbidden") {
-			errorMsg = "Unable to process your request at this time. Please try again in a moment."
+		} else if strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "Too Many Requests") || strings.Contains(errStr, "Too many requests") {
+			errorMsg = "⏳ I'm processing a lot of requests right now. Please wait a moment and try again."
+		} else if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
+			errorMsg = "⏳ *Taking Longer Than Usual*\n\n" +
+				"Please wait a moment and try again.\n\n" +
+				"💡 *Tips:*\n" +
+				"• Try rephrasing your question\n" +
+				"• Type `help` for assistance"
+		} else if strings.Contains(errStr, "403") || strings.Contains(errStr, "Forbidden") {
+			errorMsg = "❌ *Access Issue*\n\n" +
+				"Unable to process your request at this time. Please try again in a moment.\n\n" +
+				"💡 *Tips:*\n" +
+				"• Wait a few seconds and retry\n" +
+				"• Type `help` for other options"
 		} else {
-			errorMsg = "I'm having trouble processing that right now. Please try again in a moment."
+			errorMsg = "❌ *Oops, Something Went Wrong*\n\n" +
+				"I'm having trouble processing that right now.\n\n" +
+				"💡 *What you can do:*\n" +
+				"• Try again in a moment\n" +
+				"• Type `help` to see available options\n" +
+				"• Type `menu` to see all features\n" +
+				"• Try rephrasing your question"
 		}
 
-		bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
+		msg := tgbotapi.NewMessage(chatID, errorMsg)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
 		return
 	}
 
