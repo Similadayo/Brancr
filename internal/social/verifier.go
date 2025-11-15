@@ -441,8 +441,25 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 			acc.Username = page.Name
 		}
 
+		// CRITICAL: Subscribe Page to app for Facebook Messenger webhooks
+		// Without this subscription, Facebook Messenger DMs won't trigger webhooks
+		fmt.Printf("📨 Attempting to subscribe Page %s to receive Facebook Messenger webhooks...\n", page.ID)
+		subscribeErr := SubscribePageToInstagramMessages(ctx, client, page.ID, token) // Same function works for Facebook Messenger too
+		if subscribeErr != nil {
+			// Log warning but don't fail verification - subscription might already exist
+			fmt.Printf("⚠️ Failed to subscribe Page to Facebook Messenger messages (may already be subscribed): %v\n", subscribeErr)
+			fmt.Printf("⚠️ Facebook Messenger DMs may not work without Page subscription. Please check Meta Dashboard webhook configuration.\n")
+		} else {
+			fmt.Printf("✅ Page %s successfully subscribed to receive Facebook Messenger webhooks\n", page.ID)
+		}
+
 		persistSocialAccount(acc, token, db)
-		return fmt.Sprintf("✅ Facebook Page verified: %s (ID: %s)", page.Name, page.ID), nil
+		
+		msg := fmt.Sprintf("✅ Facebook Page verified: %s (ID: %s)", page.Name, page.ID)
+		if subscribeErr == nil {
+			msg += "\n📨 Page subscribed to receive Facebook Messenger webhooks"
+		}
+		return msg, nil
 
 	case "instagram":
 		igID := acc.ExternalID
