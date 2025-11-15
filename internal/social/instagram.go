@@ -90,6 +90,30 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 
 	if publishResp.StatusCode >= 400 {
 		body, _ := io.ReadAll(publishResp.Body)
+		
+		// Parse error response to provide better error messages
+		var apiError struct {
+			Error struct {
+				Message      string `json:"message"`
+				Type         string `json:"type"`
+				Code         int    `json:"code"`
+				ErrorSubcode int    `json:"error_subcode"`
+				ErrorUserMsg string `json:"error_user_msg"`
+			} `json:"error"`
+		}
+		
+		if err := json.Unmarshal(body, &apiError); err == nil {
+			// Handle specific error codes
+			if apiError.Error.Code == 4 && apiError.Error.ErrorSubcode == 2207051 {
+				return fmt.Errorf("Instagram request limit reached (403): Application request limit reached. This usually happens when posting too frequently. Please wait and try again later. Error: %s", apiError.Error.ErrorUserMsg)
+			}
+			if apiError.Error.Code == 190 {
+				return fmt.Errorf("Instagram authentication error (403): Invalid access token. Please reconnect your Instagram account. Error: %s", apiError.Error.Message)
+			}
+			return fmt.Errorf("Instagram publish error %d: %s (Code: %d, Subcode: %d)", 
+				publishResp.StatusCode, apiError.Error.Message, apiError.Error.Code, apiError.Error.ErrorSubcode)
+		}
+		
 		return fmt.Errorf("Instagram publish error %d: %s", publishResp.StatusCode, string(body))
 	}
 

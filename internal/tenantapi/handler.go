@@ -1,11 +1,13 @@
 package tenantapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -103,6 +105,28 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Post("/code", h.handleWhatsAppExchangeCode)
 			r.Post("/session", h.handleWhatsAppSession)
 		})
+
+		// Templates CRUD
+		r.Get("/tenant/templates", h.listTemplates)
+		r.Post("/tenant/templates", h.createTemplate)
+		r.Get("/tenant/templates/{id}", h.getTemplate)
+		r.Put("/tenant/templates/{id}", h.updateTemplate)
+		r.Delete("/tenant/templates/{id}", h.deleteTemplate)
+
+		// Conversations API
+		r.Get("/tenant/conversations", h.listConversations)
+		r.Get("/tenant/conversations/{id}", h.getConversation)
+		r.Post("/tenant/conversations/{id}/replies", h.sendReply)
+
+		// Analytics API
+		r.Get("/tenant/analytics", h.getAnalytics)
+
+		// Team Management API (coming soon - placeholder)
+		r.Get("/tenant/team/members", h.listTeamMembers)
+		r.Post("/tenant/team/invite", h.inviteTeamMember)
+		r.Get("/tenant/team/members/{id}", h.getTeamMember)
+		r.Put("/tenant/team/members/{id}", h.updateTeamMember)
+		r.Delete("/tenant/team/members/{id}", h.deleteTeamMember)
 	})
 }
 
@@ -1611,4 +1635,836 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// =======================
+// TEMPLATES API
+// =======================
+
+func (h *Handler) listTemplates(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var templates []storage.RecurringTemplate
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).
+		Order("created_at DESC").
+		Find(&templates).Error; err != nil {
+		h.Logger.Error("fetch templates", zap.Error(err))
+		http.Error(w, "could not fetch templates", http.StatusInternalServerError)
+		return
+	}
+
+	type templateResp struct {
+		ID             uint       `json:"id"`
+		Name           string     `json:"name"`
+		Frequency      string     `json:"frequency"`
+		Schedule       string     `json:"schedule"`
+		MediaTemplate  string     `json:"media_template"`
+		CaptionTemplate string    `json:"caption_template"`
+		Platforms      []string   `json:"platforms"`
+		Active         bool       `json:"active"`
+		NextRun        *time.Time `json:"next_run"`
+		LastRun        *time.Time `json:"last_run"`
+		CreatedAt      time.Time  `json:"created_at"`
+		UpdatedAt      time.Time  `json:"updated_at"`
+	}
+
+	resp := make([]templateResp, 0, len(templates))
+	for _, t := range templates {
+		var platforms []string
+		if strings.TrimSpace(t.Platforms) != "" {
+			_ = json.Unmarshal([]byte(t.Platforms), &platforms)
+		}
+
+		resp = append(resp, templateResp{
+			ID:              t.ID,
+			Name:            t.Name,
+			Frequency:       t.Frequency,
+			Schedule:        t.Schedule,
+			MediaTemplate:   t.MediaTemplate,
+			CaptionTemplate: t.CaptionTemplate,
+			Platforms:       platforms,
+			Active:          t.Active,
+			NextRun:         t.NextRun,
+			LastRun:         t.LastRun,
+			CreatedAt:       t.CreatedAt,
+			UpdatedAt:       t.UpdatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"templates": resp,
+	})
+}
+
+func (h *Handler) createTemplate(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Name            string   `json:"name"`
+		Frequency       string   `json:"frequency"`
+		Schedule        string   `json:"schedule"`
+		MediaTemplate   string   `json:"media_template"`
+		CaptionTemplate string   `json:"caption_template"`
+		Platforms       []string `json:"platforms"`
+		Active          bool     `json:"active"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	platformsJSON, _ := json.Marshal(req.Platforms)
+	template := storage.RecurringTemplate{
+		TenantID:        claims.TenantID,
+		Name:            req.Name,
+		Frequency:       req.Frequency,
+		Schedule:        req.Schedule,
+		MediaTemplate:   req.MediaTemplate,
+		CaptionTemplate: req.CaptionTemplate,
+		Platforms:       string(platformsJSON),
+		Active:          req.Active,
+	}
+
+	if err := h.DB.Create(&template).Error; err != nil {
+		h.Logger.Error("failed to create template", zap.Error(err))
+		http.Error(w, "failed to create template", http.StatusInternalServerError)
+		return
+	}
+
+	var platforms []string
+	_ = json.Unmarshal([]byte(template.Platforms), &platforms)
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":               template.ID,
+		"name":             template.Name,
+		"frequency":        template.Frequency,
+		"schedule":         template.Schedule,
+		"media_template":   template.MediaTemplate,
+		"caption_template": template.CaptionTemplate,
+		"platforms":        platforms,
+		"active":           template.Active,
+		"created_at":       template.CreatedAt,
+		"updated_at":       template.UpdatedAt,
+	})
+}
+
+func (h *Handler) getTemplate(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	templateID := chi.URLParam(r, "id")
+	if templateID == "" {
+		http.Error(w, "template id required", http.StatusBadRequest)
+		return
+	}
+
+	var template storage.RecurringTemplate
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, templateID).
+		First(&template).Error; err != nil {
+		http.Error(w, "template not found", http.StatusNotFound)
+		return
+	}
+
+	var platforms []string
+	if strings.TrimSpace(template.Platforms) != "" {
+		_ = json.Unmarshal([]byte(template.Platforms), &platforms)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":               template.ID,
+		"name":             template.Name,
+		"frequency":        template.Frequency,
+		"schedule":         template.Schedule,
+		"media_template":   template.MediaTemplate,
+		"caption_template": template.CaptionTemplate,
+		"platforms":        platforms,
+		"active":           template.Active,
+		"next_run":         template.NextRun,
+		"last_run":         template.LastRun,
+		"created_at":       template.CreatedAt,
+		"updated_at":       template.UpdatedAt,
+	})
+}
+
+func (h *Handler) updateTemplate(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	templateID := chi.URLParam(r, "id")
+	if templateID == "" {
+		http.Error(w, "template id required", http.StatusBadRequest)
+		return
+	}
+
+	var template storage.RecurringTemplate
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, templateID).
+		First(&template).Error; err != nil {
+		http.Error(w, "template not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Name            *string   `json:"name"`
+		Frequency       *string   `json:"frequency"`
+		Schedule        *string   `json:"schedule"`
+		MediaTemplate   *string   `json:"media_template"`
+		CaptionTemplate *string   `json:"caption_template"`
+		Platforms       *[]string `json:"platforms"`
+		Active          *bool     `json:"active"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name != nil {
+		template.Name = *req.Name
+	}
+	if req.Frequency != nil {
+		template.Frequency = *req.Frequency
+	}
+	if req.Schedule != nil {
+		template.Schedule = *req.Schedule
+	}
+	if req.MediaTemplate != nil {
+		template.MediaTemplate = *req.MediaTemplate
+	}
+	if req.CaptionTemplate != nil {
+		template.CaptionTemplate = *req.CaptionTemplate
+	}
+	if req.Platforms != nil {
+		platformsJSON, _ := json.Marshal(*req.Platforms)
+		template.Platforms = string(platformsJSON)
+	}
+	if req.Active != nil {
+		template.Active = *req.Active
+	}
+
+	if err := h.DB.Save(&template).Error; err != nil {
+		h.Logger.Error("failed to update template", zap.Error(err))
+		http.Error(w, "failed to update template", http.StatusInternalServerError)
+		return
+	}
+
+	var platforms []string
+	_ = json.Unmarshal([]byte(template.Platforms), &platforms)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":               template.ID,
+		"name":             template.Name,
+		"frequency":        template.Frequency,
+		"schedule":         template.Schedule,
+		"media_template":   template.MediaTemplate,
+		"caption_template": template.CaptionTemplate,
+		"platforms":        platforms,
+		"active":           template.Active,
+		"created_at":       template.CreatedAt,
+		"updated_at":       template.UpdatedAt,
+	})
+}
+
+func (h *Handler) deleteTemplate(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	templateID := chi.URLParam(r, "id")
+	if templateID == "" {
+		http.Error(w, "template id required", http.StatusBadRequest)
+		return
+	}
+
+	var template storage.RecurringTemplate
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, templateID).
+		First(&template).Error; err != nil {
+		http.Error(w, "template not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.DB.Delete(&template).Error; err != nil {
+		h.Logger.Error("failed to delete template", zap.Error(err))
+		http.Error(w, "failed to delete template", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "template deleted successfully",
+	})
+}
+
+// =======================
+// CONVERSATIONS API
+// =======================
+
+func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Query parameters for filtering
+	platform := r.URL.Query().Get("platform")
+	status := r.URL.Query().Get("status")
+	search := r.URL.Query().Get("search")
+
+	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+
+	if platform != "" {
+		query = query.Where("platform = ?", platform)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if search != "" {
+		// Search in interactions content
+		query = query.Joins("JOIN interactions ON interactions.conversation_id = conversations.id").
+			Where("interactions.content ILIKE ?", "%"+search+"%")
+	}
+
+	var conversations []storage.Conversation
+	if err := query.Order("last_message_at DESC").Limit(100).Find(&conversations).Error; err != nil {
+		h.Logger.Error("fetch conversations", zap.Error(err))
+		http.Error(w, "could not fetch conversations", http.StatusInternalServerError)
+		return
+	}
+
+	// Get customer info and last message for each conversation
+	type conversationResp struct {
+		ID              uint       `json:"id"`
+		CustomerID      uint       `json:"customer_id"`
+		CustomerName    string     `json:"customer_name"`
+		CustomerAvatar  string     `json:"customer_avatar"`
+		Platform        string     `json:"platform"`
+		Status          string     `json:"status"`
+		LastMessage     string     `json:"last_message"`
+		LastMessageAt   time.Time  `json:"last_message_at"`
+		UnreadCount     int        `json:"unread_count"`
+		CreatedAt       time.Time  `json:"created_at"`
+		UpdatedAt       time.Time  `json:"updated_at"`
+	}
+
+	resp := make([]conversationResp, 0, len(conversations))
+	for _, conv := range conversations {
+		var customer storage.Customer
+		h.DB.Where("id = ?", conv.CustomerID).First(&customer)
+
+		// Get last interaction
+		var lastInteraction storage.Interaction
+		h.DB.Where("conversation_id = ?", conv.ID).
+			Order("created_at DESC").
+			First(&lastInteraction)
+
+		// Count unread messages (incoming messages not responded to)
+		var unreadCount int64
+		h.DB.Model(&storage.Interaction{}).
+			Where("conversation_id = ? AND direction = ? AND response_status != ?", conv.ID, "incoming", "sent").
+			Count(&unreadCount)
+
+		resp = append(resp, conversationResp{
+			ID:             conv.ID,
+			CustomerID:     conv.CustomerID,
+			CustomerName:   customer.DisplayName,
+			CustomerAvatar: customer.ProfilePicURL,
+			Platform:       conv.Platform,
+			Status:         conv.Status,
+			LastMessage:    lastInteraction.Content,
+			LastMessageAt:  conv.LastMessageAt,
+			UnreadCount:    int(unreadCount),
+			CreatedAt:      conv.CreatedAt,
+			UpdatedAt:      conv.UpdatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conversations": resp,
+	})
+}
+
+func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conversationID := chi.URLParam(r, "id")
+	if conversationID == "" {
+		http.Error(w, "conversation id required", http.StatusBadRequest)
+		return
+	}
+
+	var conversation storage.Conversation
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).
+		First(&conversation).Error; err != nil {
+		http.Error(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+
+	// Get customer info
+	var customer storage.Customer
+	h.DB.Where("id = ?", conversation.CustomerID).First(&customer)
+
+	// Get all interactions
+	var interactions []storage.Interaction
+	h.DB.Where("conversation_id = ?", conversation.ID).
+		Order("created_at ASC").
+		Find(&interactions)
+
+	type interactionResp struct {
+		ID              uint      `json:"id"`
+		Direction       string    `json:"direction"`
+		MessageType     string    `json:"message_type"`
+		Content         string    `json:"content"`
+		DetectedIntent  string    `json:"detected_intent"`
+		DetectedTone    string    `json:"detected_tone"`
+		ResponseType    string    `json:"response_type"`
+		ResponseStatus  string    `json:"response_status"`
+		SuggestedReply  string    `json:"suggested_reply"`
+		FinalReply      string    `json:"final_reply"`
+		CreatedAt       time.Time `json:"created_at"`
+	}
+
+	messages := make([]interactionResp, 0, len(interactions))
+	for _, i := range interactions {
+		messages = append(messages, interactionResp{
+			ID:             i.ID,
+			Direction:      i.Direction,
+			MessageType:    i.MessageType,
+			Content:        i.Content,
+			DetectedIntent: i.DetectedIntent,
+			DetectedTone:   i.DetectedTone,
+			ResponseType:   i.ResponseType,
+			ResponseStatus: i.ResponseStatus,
+			SuggestedReply: i.SuggestedReply,
+			FinalReply:     i.FinalReply,
+			CreatedAt:      i.CreatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":             conversation.ID,
+		"customer_id":    conversation.CustomerID,
+		"customer_name":  customer.DisplayName,
+		"customer_avatar": customer.ProfilePicURL,
+		"platform":       conversation.Platform,
+		"status":         conversation.Status,
+		"messages":       messages,
+		"created_at":     conversation.CreatedAt,
+		"updated_at":     conversation.UpdatedAt,
+	})
+}
+
+func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conversationID := chi.URLParam(r, "id")
+	if conversationID == "" {
+		http.Error(w, "conversation id required", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Message string `json:"message"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Message == "" {
+		http.Error(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	var conversation storage.Conversation
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).
+		First(&conversation).Error; err != nil {
+		http.Error(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+
+	// Get customer
+	var customer storage.Customer
+	if err := h.DB.Where("id = ?", conversation.CustomerID).First(&customer).Error; err != nil {
+		http.Error(w, "customer not found", http.StatusNotFound)
+		return
+	}
+
+	// Get social account for the platform
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, conversation.Platform).
+		First(&account).Error; err != nil {
+		http.Error(w, fmt.Sprintf("%s account not connected", conversation.Platform), http.StatusBadRequest)
+		return
+	}
+
+	// Create message handler to send reply
+	ctx := r.Context()
+	// MessageHandler requires specific fields, so we'll call platform-specific functions directly
+	err := h.sendPlatformReply(ctx, conversation.Platform, &account, &customer, req.Message)
+	if err != nil {
+		h.Logger.Error("failed to send reply", zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to send reply: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create interaction record
+	interaction := storage.Interaction{
+		TenantID:       claims.TenantID,
+		CustomerID:     conversation.CustomerID,
+		ConversationID: conversation.ID,
+		Platform:       conversation.Platform,
+		Direction:      "outgoing",
+		MessageType:    "text",
+		Content:        req.Message,
+		ResponseType:   "manual",
+		ResponseStatus: "sent",
+		FinalReply:     req.Message,
+	}
+
+	h.DB.Create(&interaction)
+
+	// Update conversation last message time
+	conversation.LastMessageAt = time.Now()
+	h.DB.Save(&conversation)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Reply sent successfully",
+		"interaction_id": interaction.ID,
+	})
+}
+
+// =======================
+// ANALYTICS API
+// =======================
+
+func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Query parameters for filtering
+	platform := r.URL.Query().Get("platform")
+	startDate := r.URL.Query().Get("start_date")
+	endDate := r.URL.Query().Get("end_date")
+
+	// Parse date range
+	var start, end time.Time
+	if startDate != "" {
+		if parsed, err := time.Parse("2006-01-02", startDate); err == nil {
+			start = parsed
+		}
+	} else {
+		start = time.Now().AddDate(0, 0, -30) // Default: last 30 days
+	}
+
+	if endDate != "" {
+		if parsed, err := time.Parse("2006-01-02", endDate); err == nil {
+			end = parsed
+		}
+	} else {
+		end = time.Now()
+	}
+
+	// Get scheduled posts count
+	var scheduledCount int64
+	query := h.DB.Model(&storage.ScheduledPost{}).Where("tenant_id = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, start, end)
+	if platform != "" {
+		query = query.Where("platforms LIKE ?", "%"+platform+"%")
+	}
+	query.Count(&scheduledCount)
+
+	// Get posted count
+	var postedCount int64
+	postQuery := h.DB.Model(&storage.ScheduledPost{}).Where("tenant_id = ? AND status = ? AND posted_at >= ? AND posted_at <= ?", claims.TenantID, "posted", start, end)
+	if platform != "" {
+		postQuery = postQuery.Where("platforms LIKE ?", "%"+platform+"%")
+	}
+	postQuery.Count(&postedCount)
+
+	// Get conversations count
+	var conversationsCount int64
+	h.DB.Model(&storage.Conversation{}).Where("tenant_id = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, start, end).Count(&conversationsCount)
+
+	// Get interactions count
+	var interactionsCount int64
+	h.DB.Model(&storage.Interaction{}).Where("tenant_id = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, start, end).Count(&interactionsCount)
+
+	// Get platform breakdown
+	type platformStats struct {
+		Platform string `json:"platform"`
+		Posts    int64  `json:"posts"`
+		Conversations int64 `json:"conversations"`
+	}
+
+	var platformBreakdown []platformStats
+	platforms := []string{"instagram", "facebook", "whatsapp", "tiktok", "youtube"}
+	for _, p := range platforms {
+		if platform != "" && platform != p {
+			continue
+		}
+		var posts int64
+		h.DB.Model(&storage.ScheduledPost{}).
+			Where("tenant_id = ? AND platforms LIKE ? AND created_at >= ? AND created_at <= ?", claims.TenantID, "%"+p+"%", start, end).
+			Count(&posts)
+		
+		var convos int64
+		h.DB.Model(&storage.Conversation{}).
+			Where("tenant_id = ? AND platform = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, p, start, end).
+			Count(&convos)
+
+		platformBreakdown = append(platformBreakdown, platformStats{
+			Platform:       p,
+			Posts:          posts,
+			Conversations:  convos,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scheduled_posts":  scheduledCount,
+		"posted":           postedCount,
+		"conversations":    conversationsCount,
+		"interactions":     interactionsCount,
+		"platforms":        platformBreakdown,
+		"date_range": map[string]string{
+			"start": start.Format("2006-01-02"),
+			"end":   end.Format("2006-01-02"),
+		},
+	})
+}
+
+// =======================
+// TEAM MANAGEMENT API (Placeholder - Coming Soon)
+// =======================
+
+func (h *Handler) listTeamMembers(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// For now, return just the tenant owner
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"members": []map[string]any{
+			{
+				"id":         tenant.ID,
+				"name":       tenant.OwnerName,
+				"email":      tenant.Email,
+				"role":       "owner",
+				"created_at": tenant.CreatedAt,
+			},
+		},
+		"message": "Team management coming soon",
+	})
+}
+
+func (h *Handler) inviteTeamMember(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"message": "Team invitations coming soon",
+	})
+}
+
+func (h *Handler) getTeamMember(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"message": "Team management coming soon",
+	})
+}
+
+func (h *Handler) updateTeamMember(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"message": "Team management coming soon",
+	})
+}
+
+func (h *Handler) deleteTeamMember(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"message": "Team management coming soon",
+	})
+}
+
+// sendPlatformReply sends a reply via the appropriate platform connector
+func (h *Handler) sendPlatformReply(ctx context.Context, platform string, account *storage.SocialAccount, customer *storage.Customer, message string) error {
+	switch platform {
+	case "instagram":
+		return h.sendInstagramReply(ctx, account, customer.PlatformID, message)
+	case "facebook":
+		return h.sendFacebookReply(ctx, account, customer.PlatformID, message)
+	case "whatsapp":
+		return h.sendWhatsAppReply(ctx, account, customer.PlatformID, message)
+	default:
+		return fmt.Errorf("reply sending not implemented for %s", platform)
+	}
+}
+
+func (h *Handler) sendInstagramReply(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+
+	if decryptedToken == "" {
+		return fmt.Errorf("Instagram access token is empty")
+	}
+
+	igAccountID := acc.ExternalID
+	if igAccountID == "" {
+		igAccountID = acc.PageID
+	}
+	if igAccountID == "" {
+		return fmt.Errorf("Instagram Business Account ID not found")
+	}
+
+	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+	payload := map[string]interface{}{
+		"recipient": map[string]string{"id": recipientID},
+		"message":   map[string]interface{}{"text": message},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("Instagram API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (h *Handler) sendFacebookReply(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
+	// Similar to Instagram
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+
+	pageID := acc.PageID
+	if pageID == "" {
+		return fmt.Errorf("Facebook Page ID not found")
+	}
+
+	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", pageID)
+	payload := map[string]interface{}{
+		"recipient": map[string]string{"id": recipientID},
+		"message":   map[string]interface{}{"text": message},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("Facebook API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Facebook API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
+	// WhatsApp uses phone number as recipient
+	phoneNumberID := acc.PageID // This is phone_number_id for WhatsApp
+	if phoneNumberID == "" {
+		return fmt.Errorf("WhatsApp Phone Number ID not found")
+	}
+
+	// Use system token for provider-owned model, or decrypt tenant token
+	token := os.Getenv("META_SYSTEM_TOKEN")
+	if acc.Mode != "provider_owned" {
+		decrypted, err := utils.DecryptToken(acc.AccessToken)
+		if err == nil {
+			token = decrypted
+		}
+	}
+
+	if token == "" {
+		return fmt.Errorf("WhatsApp access token not found")
+	}
+
+	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", phoneNumberID)
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"to":                recipientID,
+		"type":              "text",
+		"text": map[string]string{"body": message},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(token))
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("WhatsApp API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }

@@ -18,6 +18,13 @@ import (
 	"go.uber.org/zap"
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // HandleMediaUpdate handles photos/videos uploaded by tenant bots
 func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint, upd tgbotapi.Update) {
 	ctx := context.Background()
@@ -87,6 +94,7 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 
 	logger.Info("✅ Uploaded & staged media item",
 		zap.String("session", sessionID),
+		zap.String("file_id", fileID),
 		zap.String("url", url),
 		zap.String("type", resourceType))
 
@@ -170,8 +178,9 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 		lastCount = currentCount
 	}
 	
-	// Final fetch of all items (including processed)
-	if err := m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).Find(&items).Error; err != nil {
+	// Final fetch of all items (including processed) - ORDER BY ID for consistent ordering
+	if err := m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).
+		Order("id ASC").Find(&items).Error; err != nil {
 		m.Logger.Error("failed to fetch session items", zap.Error(err))
 		return
 	}
@@ -188,6 +197,15 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 		zap.String("session_id", sessionID),
 		zap.Int("item_count", len(items)))
 
+	// Log each item for debugging
+	for i, it := range items {
+		m.Logger.Info("MediaItem in carousel",
+			zap.Int("index", i),
+			zap.Uint("id", it.ID),
+			zap.String("file_id", it.FileID),
+			zap.String("url", it.URL[:min(50, len(it.URL))])) // Log first 50 chars of URL
+	}
+
 	// ✅ Determine type
 	assetType := "image"
 	if len(items) > 1 {
@@ -197,9 +215,25 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 	}
 
 	var urls []string
+	urlSet := make(map[string]bool)
 	for _, it := range items {
-		urls = append(urls, it.URL)
+		if it.URL != "" {
+			// Check for duplicates
+			if urlSet[it.URL] {
+				m.Logger.Warn("duplicate URL detected, skipping",
+					zap.Uint("item_id", it.ID),
+					zap.String("file_id", it.FileID),
+					zap.String("url", it.URL[:min(50, len(it.URL))]))
+			} else {
+				urls = append(urls, it.URL)
+				urlSet[it.URL] = true
+			}
+		}
 	}
+	
+	m.Logger.Info("Final carousel URLs",
+		zap.Int("total_items", len(items)),
+		zap.Int("unique_urls", len(urls)))
 
 	urlJSON, _ := json.Marshal(urls)
 	carouselName := fmt.Sprintf("auto_%s", sessionID)
