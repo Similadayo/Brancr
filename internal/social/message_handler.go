@@ -334,21 +334,23 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 
 		// Provide specific guidance for common errors based on Meta's error codes
 		if apiError.Error.Code == 3 {
-			errorMsg += "\n\n⚠️ Meta App Capability Issue:\n"
+			// Error code 3: Application does not have the capability
+			errorMsg += "\n\n🚨 CRITICAL: Missing Instagram Messaging Capability\n"
 			errorMsg += "Your Meta app doesn't have the 'Instagram Messaging' capability enabled.\n"
 			errorMsg += "This is different from permissions - capabilities are app-level features.\n\n"
-			errorMsg += "🔧 Fix this in Meta Developer Console:\n"
-			errorMsg += "1. Go to your Meta App → Products\n"
+			errorMsg += "📋 Fix this in Meta Developer Console:\n"
+			errorMsg += "1. Go to your Meta App (the one matching META_APP_ID) → Products tab\n"
 			errorMsg += "2. Click 'Add Product' → Find 'Instagram Messaging' → Click 'Set Up'\n"
 			errorMsg += "3. Complete the setup flow (webhook URL, verify token, etc.)\n"
 			errorMsg += "4. Go to App Review → Permissions and Features\n"
 			errorMsg += "5. Submit 'instagram_manage_messages' for App Review (REQUIRED)\n"
 			errorMsg += "6. Wait for approval (can take 1-7 days)\n"
-			errorMsg += "7. Ensure your app is in 'Live' mode (not Development) after approval\n\n"
+			errorMsg += "7. Ensure your app is in 'Live' mode (not Development) after approval.\n\n"
 			errorMsg += "📝 Note: Instagram Messaging is a restricted feature that requires:\n"
-			errorMsg += "   - App Review approval\n"
-			errorMsg += "   - Live mode (not Development mode)\n"
-			errorMsg += "   - Valid business verification (for some use cases)"
+			errorMsg += "- App Review approval\n"
+			errorMsg += "- Live mode (not Development mode)\n"
+			errorMsg += "- Valid business verification (for some use cases)\n"
+			errorMsg += "- The unified app (META_APP_ID) must have this capability, not just OAuth app\n"
 		} else if apiError.Error.Code == 190 {
 			errorMsg += "\n\n⚠️ Invalid Access Token:\n"
 			errorMsg += "Your Page Access Token may be expired or invalid.\n"
