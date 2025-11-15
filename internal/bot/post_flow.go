@@ -263,8 +263,18 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		}
 	}
 
-	// Parse schedule with enhanced natural language support
-	scheduledAt, err := m.parseNaturalSchedule(sess.ScheduleInput)
+	// Get tenant timezone first
+	var tenant storage.Tenant
+	if err := m.DB.First(&tenant, tenantID).Error; err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find your account. Please try again."))
+		return
+	}
+	if tenant.Timezone == "" {
+		tenant.Timezone = "UTC"
+	}
+
+	// Parse schedule with enhanced natural language support (using tenant timezone)
+	scheduledAt, err := m.parseNaturalScheduleWithTenant(sess.ScheduleInput, tenantID)
 	if err != nil {
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Couldn't understand that time: %v. Try 'now', 'tomorrow morning', or 'next week at 10am'.", err)))
 		return
@@ -286,14 +296,18 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	idsJSON, _ := json.Marshal([]uint{ma.ID})
 	platformsJSON, _ := json.Marshal(platforms)
 
+	// Convert scheduled time to UTC for storage (scheduled_at is always stored in UTC)
+	scheduledAtUTC := scheduledAt.UTC()
+
 	sp := storage.ScheduledPost{
 		TenantID:      tenantID,
 		Name:          ma.Name,
 		Caption:       caption,
 		MediaAssetIDs: string(idsJSON),
 		Platforms:     string(platformsJSON),
-		ScheduledAt:   &scheduledAt,
+		ScheduledAt:   &scheduledAtUTC,
 		Status:        "scheduled",
+		Timezone:      tenant.Timezone,
 	}
 
 	if err := m.DB.Create(&sp).Error; err != nil {
@@ -308,17 +322,27 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 }
 
 // parseNaturalSchedule parses natural language scheduling input with enhanced parsing
-func (m *TenantBotManager) parseNaturalSchedule(input string) (time.Time, error) {
+// Now accepts tenantID to use tenant's timezone
+func (m *TenantBotManager) parseNaturalScheduleWithTenant(input string, tenantID uint) (time.Time, error) {
 	input = strings.ToLower(strings.TrimSpace(input))
-	now := time.Now()
 
+	// Get tenant timezone
+	var tenant storage.Tenant
 	loc := time.UTC
-	if tz := os.Getenv("DEFAULT_TIMEZONE"); tz != "" {
-		if l, e := time.LoadLocation(tz); e == nil {
+	if err := m.DB.First(&tenant, tenantID).Error; err == nil && tenant.Timezone != "" {
+		if l, e := time.LoadLocation(tenant.Timezone); e == nil {
 			loc = l
-			now = now.In(l)
+		}
+	} else {
+		// Fallback to DEFAULT_TIMEZONE env var
+		if tz := os.Getenv("DEFAULT_TIMEZONE"); tz != "" {
+			if l, e := time.LoadLocation(tz); e == nil {
+				loc = l
+			}
 		}
 	}
+
+	now := time.Now().In(loc)
 
 	// Handle immediate posts
 	if strings.Contains(input, "now") || input == "" {
@@ -357,6 +381,48 @@ func (m *TenantBotManager) parseNaturalSchedule(input string) (time.Time, error)
 		}
 		// Default to 10am next week
 		return time.Date(nextWeek.Year(), nextWeek.Month(), nextWeek.Day(), 10, 0, 0, 0, loc), nil
+	}
+
+	// Try the existing parser
+	parsed, err := utils.ParseSchedule(input, loc)
+	if err == nil {
+		return parsed, nil
+	}
+
+	return time.Time{}, fmt.Errorf("could not parse schedule")
+}
+
+// parseNaturalSchedule is kept for backward compatibility
+func (m *TenantBotManager) parseNaturalSchedule(input string) (time.Time, error) {
+	// Default to UTC if no tenant context
+	loc := time.UTC
+	if tz := os.Getenv("DEFAULT_TIMEZONE"); tz != "" {
+		if l, e := time.LoadLocation(tz); e == nil {
+			loc = l
+		}
+	}
+	now := time.Now().In(loc)
+
+	input = strings.ToLower(strings.TrimSpace(input))
+
+	// Handle immediate posts
+	if strings.Contains(input, "now") || input == "" {
+		return now, nil
+	}
+
+	// Handle "tomorrow"
+	if strings.Contains(input, "tomorrow") {
+		tomorrow := now.AddDate(0, 0, 1)
+		if strings.Contains(input, "morning") {
+			return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 9, 0, 0, 0, loc), nil
+		}
+		if strings.Contains(input, "afternoon") {
+			return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 14, 0, 0, 0, loc), nil
+		}
+		if strings.Contains(input, "evening") {
+			return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 18, 0, 0, 0, loc), nil
+		}
+		return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 10, 0, 0, 0, loc), nil
 	}
 
 	// Try the existing parser
@@ -407,14 +473,25 @@ func (m *TenantBotManager) createBatchPosts(bot *tgbotapi.BotAPI, tenantID uint,
 			caption = fmt.Sprintf("AI-generated caption for %s", ma.Name)
 		}
 
+		// Get tenant timezone
+		var tenant storage.Tenant
+		timezone := "UTC"
+		if err := m.DB.First(&tenant, tenantID).Error; err == nil && tenant.Timezone != "" {
+			timezone = tenant.Timezone
+		}
+
+		// Convert to UTC for storage
+		scheduledAtUTC := scheduledAt.UTC()
+
 		sp := storage.ScheduledPost{
 			TenantID:      tenantID,
 			Name:          ma.Name,
 			Caption:       caption,
 			MediaAssetIDs: string(idsJSON),
 			Platforms:     string(platformsJSON),
-			ScheduledAt:   &scheduledAt,
+			ScheduledAt:   &scheduledAtUTC,
 			Status:        "scheduled",
+			Timezone:      timezone,
 		}
 
 		if err := m.DB.Create(&sp).Error; err != nil {

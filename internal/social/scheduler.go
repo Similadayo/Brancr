@@ -75,8 +75,9 @@ func (s *Scheduler) Run(ctx context.Context, pollInterval time.Duration, maxAtte
 }
 
 func (s *Scheduler) processDuePosts(maxAttempts int) {
-	now := time.Now()
+	now := time.Now().UTC()
 	// Claim posts in a txn: find scheduled posts due now
+	// Note: scheduled_at is stored in UTC, but we compare with UTC now
 	var posts []storage.ScheduledPost
 	if err := s.DB.Where("status = ? AND scheduled_at <= ?", "scheduled", now).Limit(10).Find(&posts).Error; err != nil {
 		s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))

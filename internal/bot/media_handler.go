@@ -155,7 +155,20 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, bot *tgb
 		zap.String("session_id", sessionID),
 		zap.Int("count", len(items)))
 
-	// ✅ Trigger interactive post creation flow with conversational message
+	// ✅ Check if this is a bulk upload (10+ items)
+	bulkManager := NewBulkUploadManager(m.DB, m.Logger)
+	isBulk, _, err := bulkManager.DetectBulkUpload(tenantID, sessionID)
+	if err == nil && isBulk {
+		// Handle as bulk upload
+		if err := bulkManager.ProcessBulkUpload(ctx, bot, tenantID, chatID, sessionID); err != nil {
+			m.Logger.Error("failed to process bulk upload", zap.Error(err))
+			// Fallback to normal flow
+			m.StartPostFlow(bot, chatID, asset.ID)
+		}
+		return
+	}
+
+	// ✅ Normal flow: Trigger interactive post creation flow
 	m.StartPostFlow(bot, chatID, asset.ID)
 
 }

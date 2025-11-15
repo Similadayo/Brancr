@@ -25,6 +25,7 @@ type Tenant struct {
 	OwnerPhone       string
 	OnboardingStep   string `gorm:"default:business_profile"` // business_profile, persona, business_details, social_connect, complete
 	OnboardingComplete bool `gorm:"default:false"`
+	Timezone         string `gorm:"size:50;default:'UTC'"` // e.g., "America/New_York", "Europe/London"
 }
 
 // BusinessProfile represents the personality and niche of the tenant’s bot
@@ -132,6 +133,9 @@ type MediaAsset struct {
 	Status       string // uploaded, scheduled, posted
 	ScheduledAt  *time.Time
 	Platforms    string // JSON array
+	Tags         string `gorm:"type:text"` // JSON array of tags
+	Campaign     string // Optional campaign name
+	BulkUploadID string `gorm:"index"` // Links assets from same bulk upload
 }
 
 // POST SCHEDULING
@@ -148,6 +152,10 @@ type ScheduledPost struct {
 	Attempts      int
 	LastError     string `gorm:"type:text"`
 	PostedAt      *time.Time
+	Timezone      string     `gorm:"size:50"` // Tenant's timezone when scheduled
+	OptimalTime   *time.Time // AI-suggested optimal posting time
+	Priority      int        `gorm:"default:0"` // 0=normal, 1=high, 2=urgent
+	PostingWindow string     `gorm:"type:text"` // JSON: {"start": "09:00", "end": "17:00"}
 }
 
 // SOCIAL ACCOUNTS
@@ -262,4 +270,45 @@ type PostLog struct {
 	Improvements     string `gorm:"type:text"`  // AI improvements made
 	Metadata         string `gorm:"type:jsonb"` // Additional data (hashtags, timing, etc.)
 	CreatedAt        time.Time
+}
+
+// BulkUploadSession tracks bulk media uploads
+type BulkUploadSession struct {
+	gorm.Model
+	TenantID        uint   `gorm:"index"`
+	SessionID       string `gorm:"uniqueIndex"` // Unique session identifier
+	TotalItems      int
+	ProcessedItems  int
+	Status          string // pending, processing, completed, failed
+	SplitStrategy   string // equal, by_count, by_date, ai_organized
+	CarouselCount   int    // Number of carousels to create
+	ItemsPerCarousel int
+	ScheduleStrategy string // spread, custom, optimal
+	Metadata        string `gorm:"type:text"` // JSON metadata
+}
+
+// RecurringTemplate for recurring posts
+type RecurringTemplate struct {
+	gorm.Model
+	TenantID        uint   `gorm:"index"`
+	Name            string
+	Frequency       string // daily, weekly, monthly, custom
+	Schedule        string `gorm:"type:text"` // JSON: {"days": [1,3,5], "time": "10:00", "timezone": "America/New_York"}
+	MediaTemplate   string `gorm:"type:text"` // Template for media selection
+	CaptionTemplate string `gorm:"type:text"`
+	Platforms       string `gorm:"type:text"` // JSON array
+	Active          bool   `gorm:"default:true"`
+	NextRun         *time.Time
+	LastRun         *time.Time
+}
+
+// ContentCalendar entry
+type ContentCalendar struct {
+	gorm.Model
+	TenantID    uint      `gorm:"index"`
+	Date        time.Time `gorm:"index"`
+	Posts       string    `gorm:"type:text"` // JSON array of ScheduledPost IDs
+	Theme       string    // Optional theme for the day
+	Notes       string    `gorm:"type:text"`
+	Status      string    // planned, scheduled, posted, cancelled
 }

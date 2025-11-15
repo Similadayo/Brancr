@@ -464,6 +464,12 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		return
 	}
 
+	// Handle bulk upload callbacks
+	if strings.HasPrefix(cq.Data, "bulk:") {
+		h.handleBulkUploadCallback(bot, tenantID, cq)
+		return
+	}
+
 	// Acknowledge callback to avoid "button spinning"
 	_, _ = bot.Request(tgbotapi.NewCallback(cq.ID, ""))
 
