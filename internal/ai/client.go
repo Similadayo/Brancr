@@ -122,7 +122,7 @@ func (c *AIClient) Generate(ctx context.Context, messages []Message) (string, er
 			} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
 				return "", fmt.Errorf("AI API error: Authentication failed (%d). Please check your OPENROUTER_API_KEY or OPENAI_API_KEY. Error: %s", resp.StatusCode, apiError.Error.Message)
 			}
-			
+		
 			return "", fmt.Errorf("AI API error: %s (Status: %d, Type: %s). Model: %s, URL: %s", apiError.Error.Message, resp.StatusCode, apiError.Error.Type, c.Model, url)
 		}
 		
