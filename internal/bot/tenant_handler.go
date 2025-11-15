@@ -366,6 +366,15 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// Check for help requests in natural language
+	textLowerCheck := strings.ToLower(strings.TrimSpace(text))
+	if isOwner && (textLowerCheck == "help" || textLowerCheck == "/help" || textLowerCheck == "menu" || textLowerCheck == "/menu" || 
+		strings.Contains(textLowerCheck, "how do i") || strings.Contains(textLowerCheck, "what can you do") || 
+		strings.Contains(textLowerCheck, "how to") || strings.Contains(textLowerCheck, "how can i")) {
+		h.sendOwnerMenu(bot, chatID, uint(tenantID))
+		return
+	}
+
 	// 🧠 Step 6️: Context-Aware AI Assistant flow (tenant + customer aware)
 	// Send typing indicator
 	bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
@@ -409,22 +418,51 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 
 		// Check for specific error types and provide appropriate responses
 		var errorMsg string
+		errStr := replyErr.Error()
 
 		// Check for moderation error
 		if ai.IsModerationError(replyErr) {
-			errorMsg = "I'm having trouble processing that request right now. Could you try rephrasing your message?"
+			errorMsg = "⚠️ *Content Issue*\n\n" +
+				"I'm having trouble processing that request. Could you try rephrasing your message?\n\n" +
+				"💡 *Tips:*\n" +
+				"• Try a different way to ask\n" +
+				"• Type `help` for assistance\n" +
+				"• Type `menu` to see all options"
 			h.Manager.Logger.Warn("AI moderation triggered",
 				zap.Uint("tenant_id", uint(tenantID)),
 				zap.Error(replyErr))
-		} else if strings.Contains(replyErr.Error(), "timeout") || strings.Contains(replyErr.Error(), "deadline exceeded") {
-			errorMsg = "Taking a bit longer than usual, try again."
-		} else if strings.Contains(replyErr.Error(), "403") || strings.Contains(replyErr.Error(), "Forbidden") {
-			errorMsg = "Unable to process your request at this time. Please try again in a moment."
+		} else if strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "Too Many Requests") {
+			errorMsg = "⚠️ *Rate Limit Reached*\n\n" +
+				"The AI service is temporarily busy. Please wait a moment and try again.\n\n" +
+				"💡 *Tips:*\n" +
+				"• Wait a few seconds and try again\n" +
+				"• Type `help` for other options\n" +
+				"• Type `menu` to see all features"
+		} else if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
+			errorMsg = "⏳ *Taking Longer Than Usual*\n\n" +
+				"Please wait a moment and try again.\n\n" +
+				"💡 *Tips:*\n" +
+				"• Try rephrasing your question\n" +
+				"• Type `help` for assistance"
+		} else if strings.Contains(errStr, "403") || strings.Contains(errStr, "Forbidden") {
+			errorMsg = "❌ *Access Issue*\n\n" +
+				"Unable to process your request at this time. Please try again in a moment.\n\n" +
+				"💡 *Tips:*\n" +
+				"• Wait a few seconds and retry\n" +
+				"• Type `help` for other options"
 		} else {
-			errorMsg = "I'm having trouble processing that right now. Please try again in a moment."
+			errorMsg = "❌ *Oops, Something Went Wrong*\n\n" +
+				"I'm having trouble processing that right now.\n\n" +
+				"💡 *What you can do:*\n" +
+				"• Try again in a moment\n" +
+				"• Type `help` to see available options\n" +
+				"• Type `menu` to see all features\n" +
+				"• Try rephrasing your question"
 		}
 
-		bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
+		msg := tgbotapi.NewMessage(chatID, errorMsg)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
 		return
 	}
 
@@ -551,7 +589,16 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	case "status":
 		h.sendConnectionStatus(bot, chatID, tenantID)
 	case "help":
-		h.sendHelpOverview(bot, chatID)
+		switch arg {
+		case "postflow":
+			h.sendPostFlowHelp(bot, chatID)
+		case "bulk_grouping":
+			h.sendBulkGroupingHelp(bot, chatID)
+		case "quick", "menu":
+			h.sendHelpOverview(bot, chatID)
+		default:
+			h.sendHelpOverview(bot, chatID)
+		}
 	case "business":
 		h.handleBusinessCallback(bot, tenantID, chatID, arg)
 	case "analytics":
@@ -700,18 +747,29 @@ func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID
 }
 
 func (h *TenantWebhookHandler) sendHelpOverview(bot *tgbotapi.BotAPI, chatID int64) {
-	helpMsg := `💡 *Quick Help & Tips*
-
-• Connect platforms with the menu buttons above.
-• Use "Verify" after connecting to double-check access.
-• Send media files here to store them for scheduling.
-• Type naturally to ask Brancr anything for your business.`
+	helpMsg := "💡 *Quick Help & Tips*\n\n" +
+		"*Getting Started:*\n" +
+		"📱 **Connect Social Accounts** - Link Instagram, Facebook, WhatsApp, etc.\n" +
+		"📸 **Upload Media** - Send photos/videos to schedule posts\n" +
+		"📝 **Create Posts** - Schedule posts with captions and timing\n" +
+		"📊 **View Analytics** - See your posting performance\n\n" +
+		"*Common Tasks:*\n" +
+		"• Upload photos → I'll help you schedule them\n" +
+		"• Type \"schedule a post\" → I'll guide you through it\n" +
+		"• Type \"connect Instagram\" → I'll start the connection\n" +
+		"• Type \"my posts\" → See all scheduled posts\n\n" +
+		"*Tips:*\n" +
+		"• Use `menu` to see all options\n" +
+		"• Type `cancel` in any flow to stop\n" +
+		"• Type naturally - I understand what you want!\n\n" +
+		"*Need more help?* Visit https://www.brancr.com/help"
 
 	msg := tgbotapi.NewMessage(chatID, helpMsg)
 	msg.ParseMode = "Markdown"
+	msg.DisableWebPagePreview = true
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Back to menu ⬅️", "menu:main"),
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to Menu", "menu:main"),
 		),
 	)
 	bot.Send(msg)
@@ -754,6 +812,39 @@ func (h *TenantWebhookHandler) handlePostFlowCallback(bot *tgbotapi.BotAPI, tena
 
 	choice := strings.ToLower(strings.TrimSpace(arg))
 
+	// Handle cancel from any step
+	if choice == "cancel" || choice == "stop" {
+		delete(tenantSessions, chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Post creation cancelled. You can start again anytime!"))
+		return
+	}
+
+	// Handle platform selection
+	if strings.HasPrefix(choice, "platform:") {
+		platform := strings.TrimPrefix(choice, "platform:")
+		if platform == "all" {
+			sess.Platforms = []string{"instagram", "facebook", "tiktok", "youtube", "whatsapp"}
+		} else {
+			sess.Platforms = []string{platform}
+		}
+		sess.Step = 5
+		platformStr := strings.Join(sess.Platforms, ", ")
+		msgText := fmt.Sprintf("✅ *Step 5/5: Schedule*\n\n"+
+			"Platforms: *%s*\n\n"+
+			"When should I publish this?\n\n"+
+			"*Examples:*\n"+
+			"• `now` - Post immediately\n"+
+			"• `tomorrow 9am` - Tomorrow at 9 AM\n"+
+			"• `tomorrow morning` - Tomorrow at 9 AM\n"+
+			"• `next week monday 10am` - Next Monday at 10 AM\n\n"+
+			"Type your preferred time:", platformStr)
+		msg := tgbotapi.NewMessage(chatID, msgText)
+		msg.ParseMode = "Markdown"
+		msg.ReplyMarkup = cancelKeyboard()
+		bot.Send(msg)
+		return
+	}
+
 	switch sess.Step {
 	case 0:
 		if choice == "yes" {
@@ -762,26 +853,103 @@ func (h *TenantWebhookHandler) handlePostFlowCallback(bot *tgbotapi.BotAPI, tena
 		}
 		if choice == "skip" || choice == "no" || choice == "not now" {
 			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "No problem—just let me know when you want to schedule it."))
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ No problem! Just upload media again when you want to schedule a post."))
 			return
 		}
 	case 1:
 		if choice == "yes" {
 			sess.IsCarousel = true
 			sess.Step = 2
-			bot.Send(tgbotapi.NewMessage(chatID, "Perfect. Want to tag it with an internal name? (Type it or say 'skip'.)"))
+			msgText := "✅ *Step 2/5: Post Name* (optional)\n\n" +
+				"Give this post a name to find it later.\n\n" +
+				"*Examples:*\n" +
+				"• `Summer Sale 2024`\n" +
+				"• `Product Launch`\n\n" +
+				"Type a name or say `skip` to continue."
+			msg := tgbotapi.NewMessage(chatID, msgText)
+			msg.ParseMode = "Markdown"
+			msg.ReplyMarkup = cancelKeyboard()
+			bot.Send(msg)
 			return
 		}
 		if choice == "no" || choice == "skip" {
 			sess.IsCarousel = false
 			sess.Step = 2
-			bot.Send(tgbotapi.NewMessage(chatID, "Got it. Want to tag it with an internal name? (Type it or say 'skip'.)"))
+			msgText := "✅ *Step 2/5: Post Name* (optional)\n\n" +
+				"Give this post a name to find it later.\n\n" +
+				"*Examples:*\n" +
+				"• `Summer Sale 2024`\n" +
+				"• `Product Launch`\n\n" +
+				"Type a name or say `skip` to continue."
+			msg := tgbotapi.NewMessage(chatID, msgText)
+			msg.ParseMode = "Markdown"
+			msg.ReplyMarkup = cancelKeyboard()
+			bot.Send(msg)
 			return
 		}
 	}
 
 	// Fallback: prompt user to respond with text
-	bot.Send(tgbotapi.NewMessage(chatID, "Go ahead and reply with your choice so we can keep going."))
+	errorMsg := "❓ Please respond with your choice or use the buttons above.\n\n" +
+		"You can also:\n" +
+		"• Type `cancel` to stop\n" +
+		"• Type `help` for assistance"
+	msg := tgbotapi.NewMessage(chatID, errorMsg)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
+}
+
+// sendPostFlowHelp provides contextual help for post creation flow
+func (h *TenantWebhookHandler) sendPostFlowHelp(bot *tgbotapi.BotAPI, chatID int64) {
+	helpMsg := "📝 *Post Creation Help*\n\n" +
+		"*Steps:*\n" +
+		"1️⃣ **Carousel** - Keep images together or separate\n" +
+		"2️⃣ **Post Name** - Name your post (optional)\n" +
+		"3️⃣ **Caption** - Add text or let AI generate\n" +
+		"4️⃣ **Platforms** - Choose where to post\n" +
+		"5️⃣ **Schedule** - Set publish time\n\n" +
+		"*Tips:*\n" +
+		"• Type `skip` to skip optional steps\n" +
+		"• Type `cancel` anytime to stop\n" +
+		"• Use examples shown in each step\n\n" +
+		"*Need more help?* Type `menu` to see all commands."
+
+	msg := tgbotapi.NewMessage(chatID, helpMsg)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back", "postflow:back"),
+		),
+	)
+	bot.Send(msg)
+}
+
+// sendBulkGroupingHelp provides help for custom grouping
+func (h *TenantWebhookHandler) sendBulkGroupingHelp(bot *tgbotapi.BotAPI, chatID int64) {
+	helpMsg := "📦 *Custom Grouping Help*\n\n" +
+		"*How to group images:*\n\n" +
+		"*Example 1: Simple ranges*\n" +
+		"`1-5; 6-10`\n" +
+		"→ Group 1: images 1-5, Group 2: images 6-10\n\n" +
+		"*Example 2: Mixed items*\n" +
+		"`1-3, 7, 9; 4-6, 8, 10`\n" +
+		"→ Group 1: 1,2,3,7,9 | Group 2: 4,5,6,8,10\n\n" +
+		"*Example 3: With labels*\n" +
+		"`Group 1: 1-5; Group 2: 6-10`\n" +
+		"→ Labels are optional\n\n" +
+		"*Rules:*\n" +
+		"• Use `-` for ranges: `1-5` = images 1,2,3,4,5\n" +
+		"• Use `,` to separate items: `1, 3, 5`\n" +
+		"• Use `;` to separate groups\n" +
+		"• Numbers refer to the image list above\n\n" +
+		"*Tips:*\n" +
+		"• Type `cancel` to stop\n" +
+		"• Make sure all images are in a group\n\n" +
+		"Type your grouping instructions:"
+
+	msg := tgbotapi.NewMessage(chatID, helpMsg)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
 }
 
 func (h *TenantWebhookHandler) sendBusinessMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {

@@ -62,10 +62,13 @@ func (h *TenantWebhookHandler) handleBulkUploadCallback(bot *tgbotapi.BotAPI, te
 	case "apply_custom_groups":
 		// User submitted custom grouping instructions
 		if len(parts) >= 3 {
-			// The grouping instructions are in the callback data or we need to prompt for text input
-			// For now, we'll use a session-based approach and wait for text input
 			h.startCustomGroupingSession(bot, tenantID, chatID, bulkSessionID)
 		}
+		return
+	case "cancel":
+		// Cancel bulk upload operation
+		CustomGroupingSessions.Delete(chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Bulk upload cancelled. You can upload again anytime!"))
 		return
 
 	case "carousel_count":
@@ -323,15 +326,32 @@ func (h *TenantWebhookHandler) promptCustomGrouping(bot *tgbotapi.BotAPI, tenant
 	}
 
 	msg := strings.Join(imageList, "\n") + 
-		"\n\n*How would you like to group them?*\n\n" +
-		"Format examples:\n" +
-		"• `Group 1: 1-3, 5, 7`\n" +
-		"• `Group 1: 1-5; Group 2: 6-10`\n" +
-		"• `1-4; 5-8; 9-12`\n\n" +
-		"Just type your grouping instructions:"
+		"\n\n📦 *How would you like to group them?*\n\n" +
+		"*Format examples:*\n\n" +
+		"*Example 1: Simple groups*\n" +
+		"`1-5; 6-10`\n" +
+		"→ Creates 2 groups: images 1-5 and 6-10\n\n" +
+		"*Example 2: Mixed grouping*\n" +
+		"`Group 1: 1-3, 7; Group 2: 4-6, 8-10`\n" +
+		"→ Group 1 has images 1,2,3,7. Group 2 has 4,5,6,8,9,10\n\n" +
+		"*Example 3: Individual items*\n" +
+		"`1, 3, 5; 2, 4, 6; 7-10`\n" +
+		"→ 3 groups with specific images\n\n" +
+		"💡 *Tips:*\n" +
+		"• Use `-` for ranges (e.g., `1-5`)\n" +
+		"• Use `,` to separate items\n" +
+		"• Use `;` to separate groups\n" +
+		"• Type `cancel` to stop\n\n" +
+		"Type your grouping instructions:"
 
 	reply := tgbotapi.NewMessage(chatID, msg)
 	reply.ParseMode = "Markdown"
+	reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", "bulk:cancel"),
+			tgbotapi.NewInlineKeyboardButtonData("❓ Help", "help:bulk_grouping"),
+		),
+	)
 	bot.Send(reply)
 
 	// Store session to wait for user input
@@ -368,10 +388,38 @@ func (h *TenantWebhookHandler) handleCustomGroupingInput(bot *tgbotapi.BotAPI, t
 		return
 	}
 
+	// Check for cancel
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "cancel" || lower == "stop" {
+		CustomGroupingSessions.Delete(chatID)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Custom grouping cancelled. You can try again anytime!"))
+		return
+	}
+
 	// Parse grouping instructions
 	groups, err := parseGroupingInstructions(text, len(items))
 	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Invalid format: %v\n\nTry: `Group 1: 1-3, 5; Group 2: 4, 6-10`", err)))
+		errorMsg := fmt.Sprintf("❌ *I didn't understand that format.*\n\n"+
+			"*Error:* %v\n\n"+
+			"*Try one of these examples:*\n\n"+
+			"*Simple groups:*\n"+
+			"`1-5; 6-10`\n\n"+
+			"*Mixed grouping:*\n"+
+			"`Group 1: 1-3, 7; Group 2: 4-6, 8-10`\n\n"+
+			"*Tips:*\n"+
+			"• Use `-` for ranges (e.g., `1-5`)\n"+
+			"• Use `,` to separate items\n"+
+			"• Use `;` to separate groups\n\n"+
+			"Type your grouping again:", err)
+		msg := tgbotapi.NewMessage(chatID, errorMsg)
+		msg.ParseMode = "Markdown"
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", "bulk:cancel"),
+				tgbotapi.NewInlineKeyboardButtonData("❓ Help", "help:bulk_grouping"),
+			),
+		)
+		bot.Send(msg)
 		CustomGroupingSessions.Store(chatID, bulkSessionID) // Keep session active
 		return
 	}

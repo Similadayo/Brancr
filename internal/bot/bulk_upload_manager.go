@@ -112,25 +112,30 @@ func (m *BulkUploadManager) ProcessBulkUpload(
 		return err
 	}
 
-	// Prompt user for organization strategy
+	// Prompt user for organization strategy with clear explanations
 	msg := fmt.Sprintf(
 		"📦 *Bulk Upload Detected!*\n\n"+
-			"I found %d images. How would you like to organize them?\n\n"+
-			"1️⃣ Create carousels (split into groups)\n"+
-			"2️⃣ Create individual posts\n"+
-			"3️⃣ Custom grouping\n"+
-			"4️⃣ Let AI organize them",
+			"I found *%d images*. How would you like to organize them?\n\n"+
+			"*Options:*\n\n"+
+			"1️⃣ **Carousels** - Split into groups automatically\n"+
+			"   → I'll ask how many carousels you want\n\n"+
+			"2️⃣ **Individual Posts** - Create one post per image\n"+
+			"   → Coming soon! Use carousels for now\n\n"+
+			"3️⃣ **Custom Grouping** - You choose which images go together\n"+
+			"   → You specify the groups (e.g., `1-5; 6-10`)\n\n"+
+			"4️⃣ **AI Organize** - Let AI group by content/theme\n"+
+			"   → AI analyzes images and groups them intelligently",
 		count,
 	)
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("1️⃣ Carousels", fmt.Sprintf("bulk:carousels:%s", bulkSession.SessionID)),
-			tgbotapi.NewInlineKeyboardButtonData("2️⃣ Individual", fmt.Sprintf("bulk:individual:%s", bulkSession.SessionID)),
+			tgbotapi.NewInlineKeyboardButtonData("3️⃣ Custom", fmt.Sprintf("bulk:custom:%s", bulkSession.SessionID)),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("3️⃣ Custom", fmt.Sprintf("bulk:custom:%s", bulkSession.SessionID)),
 			tgbotapi.NewInlineKeyboardButtonData("4️⃣ AI Organize", fmt.Sprintf("bulk:ai:%s", bulkSession.SessionID)),
+			tgbotapi.NewInlineKeyboardButtonData("❓ Help", fmt.Sprintf("help:bulk_upload")),
 		),
 	)
 
