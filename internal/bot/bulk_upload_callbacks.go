@@ -569,26 +569,7 @@ func (h *TenantWebhookHandler) handleAIGrouping(bot *tgbotapi.BotAPI, tenantID u
 	groups, err := h.analyzeImagesWithAI(ctx, tenantID, items)
 	if err != nil {
 		h.Manager.Logger.Error("AI grouping failed", zap.Error(err))
-		
-		// Check if it's a rate limit error (429)
-		errStr := err.Error()
-		isRateLimit := strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "Too Many Requests")
-		
-		var errorMsg string
-		if isRateLimit {
-			errorMsg = "⚠️ *AI Rate Limit Reached*\n\n" +
-				"The AI service is temporarily rate-limited (too many requests).\n\n" +
-				"💡 *Options:*\n" +
-				"• Try again in a few minutes\n" +
-				"• Use **Custom Grouping** instead (click 3️⃣ Custom)\n" +
-				"• Use **Carousels** for automatic splitting (click 1️⃣ Carousels)"
-		} else {
-			errorMsg = fmt.Sprintf("❌ *AI Analysis Failed*\n\n%s\n\n💡 Try using **Custom Grouping** (3️⃣ Custom) or **Carousels** (1️⃣ Carousels) instead.", errStr)
-		}
-		
-		reply := tgbotapi.NewMessage(chatID, errorMsg)
-		reply.ParseMode = "Markdown"
-		bot.Send(reply)
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ AI analysis failed: %v\n\nTry custom grouping instead.", err)))
 		return
 	}
 
