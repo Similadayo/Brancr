@@ -176,21 +176,8 @@ func (m *BulkUploadManager) SplitIntoCarousels(
 
 		group := items[start:end]
 		var urls []string
-		seenURLs := make(map[string]bool)
 		for _, item := range group {
-			// Only add unique URLs to prevent duplicates
-			if item.URL != "" && !seenURLs[item.URL] {
-				urls = append(urls, item.URL)
-				seenURLs[item.URL] = true
-			}
-		}
-
-		if len(urls) == 0 {
-			m.Logger.Warn("skipping carousel with no unique URLs",
-				zap.Int("carousel_index", i),
-				zap.Int("start", start),
-				zap.Int("end", end))
-			continue
+			urls = append(urls, item.URL)
 		}
 
 		urlsJSON, _ := json.Marshal(urls)

@@ -386,29 +386,15 @@ func (h *TenantWebhookHandler) handleCustomGroupingInput(bot *tgbotapi.BotAPI, t
 		}
 
 		var urls []string
-		seenURLs := make(map[string]bool)
 		for _, itemIdx := range group {
 			if itemIdx >= 0 && itemIdx < len(items) {
-				url := items[itemIdx].URL
-				// Only add unique URLs to prevent duplicates
-				if url != "" && !seenURLs[url] {
-					urls = append(urls, url)
-					seenURLs[url] = true
-				}
+				urls = append(urls, items[itemIdx].URL)
 			}
 		}
 
 		if len(urls) == 0 {
-			h.Manager.Logger.Warn("skipping empty custom group",
-				zap.Int("group_idx", groupIdx))
 			continue
 		}
-
-		// Log for debugging
-		h.Manager.Logger.Info("creating carousel from custom group",
-			zap.Int("group_idx", groupIdx),
-			zap.Int("url_count", len(urls)),
-			zap.Int("indices_count", len(group)))
 
 		urlsJSON, _ := json.Marshal(urls)
 		asset := storage.MediaAsset{
@@ -600,31 +586,15 @@ func (h *TenantWebhookHandler) handleAIGrouping(bot *tgbotapi.BotAPI, tenantID u
 		}
 
 		var urls []string
-		seenURLs := make(map[string]bool)
 		for _, itemIdx := range group.Indices {
 			if itemIdx >= 0 && itemIdx < len(items) {
-				url := items[itemIdx].URL
-				// Only add unique URLs to prevent duplicates
-				if url != "" && !seenURLs[url] {
-					urls = append(urls, url)
-					seenURLs[url] = true
-				}
+				urls = append(urls, items[itemIdx].URL)
 			}
 		}
 
 		if len(urls) == 0 {
-			h.Manager.Logger.Warn("skipping empty group",
-				zap.Int("group_idx", groupIdx),
-				zap.String("theme", group.Theme))
 			continue
 		}
-
-		// Log for debugging
-		h.Manager.Logger.Info("creating carousel from AI group",
-			zap.Int("group_idx", groupIdx),
-			zap.String("theme", group.Theme),
-			zap.Int("url_count", len(urls)),
-			zap.Int("indices_count", len(group.Indices)))
 
 		urlsJSON, _ := json.Marshal(urls)
 		asset := storage.MediaAsset{
