@@ -197,8 +197,20 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 	}
 
 	var urls []string
+	seenURLs := make(map[string]bool)
 	for _, it := range items {
-		urls = append(urls, it.URL)
+		// Only add unique URLs to prevent duplicates
+		if it.URL != "" && !seenURLs[it.URL] {
+			urls = append(urls, it.URL)
+			seenURLs[it.URL] = true
+		}
+	}
+
+	if len(urls) == 0 {
+		m.Logger.Warn("no unique URLs found for carousel",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("session_id", sessionID))
+		return
 	}
 
 	urlJSON, _ := json.Marshal(urls)
