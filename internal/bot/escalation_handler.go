@@ -41,10 +41,34 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 		return fmt.Errorf("tenant not found: %w", err)
 	}
 
-	// Get tenant's bot
+	// Get tenant's bot - try to initialize if not found
 	bot, ok := h.Manager.GetBot(tenantID)
 	if !ok {
-		return fmt.Errorf("bot not found for tenant %d", tenantID)
+		// Try to initialize the bot if it doesn't exist
+		if tenant.TelegramBotToken != "" {
+			h.Logger.Info("🤖 Bot not found for tenant, attempting to initialize",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("tenant_name", tenant.Name))
+			
+			if err := h.Manager.startTenantBot(&tenant); err != nil {
+				h.Logger.Error("❌ Failed to initialize bot for tenant",
+					zap.Uint("tenant_id", tenantID),
+					zap.Error(err))
+				return fmt.Errorf("bot not found for tenant %d and failed to initialize: %w. Please ensure the tenant has a valid Telegram bot token set", tenantID, err)
+			}
+			
+			// Try to get the bot again
+			bot, ok = h.Manager.GetBot(tenantID)
+			if !ok {
+				return fmt.Errorf("bot not found for tenant %d after initialization attempt. Please ensure the tenant has a valid Telegram bot token and is active", tenantID)
+			}
+		} else {
+			h.Logger.Warn("⚠️ Bot not found for tenant - no Telegram bot token configured",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("tenant_name", tenant.Name),
+				zap.String("tenant_status", tenant.Status))
+			return fmt.Errorf("bot not found for tenant %d: tenant has no Telegram bot token configured. Please set up a Telegram bot for this tenant", tenantID)
+		}
 	}
 
 	// Load interaction to get customer ID

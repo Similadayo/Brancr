@@ -97,6 +97,7 @@ func (c *AIClient) Generate(ctx context.Context, messages []Message) (string, er
 			Error struct {
 				Message string `json:"message"`
 				Code    int    `json:"code"`
+				Type    string `json:"type"`
 				Metadata *struct {
 					Reasons []string `json:"reasons"`
 					FlaggedInput string `json:"flagged_input"`
@@ -114,9 +115,19 @@ func (c *AIClient) Generate(ctx context.Context, messages []Message) (string, er
 					StatusCode: resp.StatusCode,
 				}
 			}
+			
+			// Provide helpful error messages for common issues
+			if resp.StatusCode == 404 {
+				return "", fmt.Errorf("AI API error: Model '%s' not found (404). The model may be invalid, deprecated, or unavailable. Please check your AI_MODEL environment variable. Error: %s", c.Model, apiError.Error.Message)
+			} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
+				return "", fmt.Errorf("AI API error: Authentication failed (%d). Please check your OPENROUTER_API_KEY or OPENAI_API_KEY. Error: %s", resp.StatusCode, apiError.Error.Message)
+			}
+			
+			return "", fmt.Errorf("AI API error: %s (Status: %d, Type: %s). Model: %s, URL: %s", apiError.Error.Message, resp.StatusCode, apiError.Error.Type, c.Model, url)
 		}
 		
-		return "", fmt.Errorf("AI API error: %s (%s)", resp.Status, string(body))
+		// If we can't parse the error, return raw response
+		return "", fmt.Errorf("AI API error: %s. Model: %s, URL: %s, Response: %s", resp.Status, c.Model, url, string(body))
 	}
 
 	var result struct {
