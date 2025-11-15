@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -314,6 +315,13 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		logger.Error("failed to create scheduled post", zap.Error(err))
 		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't schedule the post."))
 		return
+	}
+
+	// Auto-update content calendar
+	calendarManager := NewContentCalendarManager(m.DB, m.Logger)
+	calendarCtx := context.Background()
+	if err := calendarManager.AutoUpdateCalendarFromPosts(calendarCtx, tenantID, sp.ID, sp.ScheduledAt); err != nil {
+		logger.Warn("failed to update calendar", zap.Error(err))
 	}
 
 	// Generate friendly confirmation message

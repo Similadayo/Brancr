@@ -470,6 +470,18 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		return
 	}
 
+	// Handle calendar callbacks
+	if strings.HasPrefix(cq.Data, "calendar:") {
+		h.handleCalendarCallback(bot, tenantID, cq)
+		return
+	}
+
+	// Handle recurring template callbacks
+	if strings.HasPrefix(cq.Data, "recurring:") {
+		h.handleRecurringTemplateCallback(bot, tenantID, cq)
+		return
+	}
+
 	// Acknowledge callback to avoid "button spinning"
 	_, _ = bot.Request(tgbotapi.NewCallback(cq.ID, ""))
 
@@ -604,6 +616,10 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📊 View Analytics", "menu:analytics"),
 			tgbotapi.NewInlineKeyboardButtonData("🤖 Customize AI Assistant", "menu:ai"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📅 Content Calendar", "calendar:view"),
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Recurring Posts", "recurring:list"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🧩 Help & Tutorials", "help:menu"),

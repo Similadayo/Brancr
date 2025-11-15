@@ -197,6 +197,25 @@ func (a *App) Run() error {
 	}()
 	a.Services.Logger.Info("🕓 Scheduler worker started (polling every 10s)")
 
+	// Recurring Template Processor
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute) // Check every minute
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctxSched.Done():
+				return
+			case <-ticker.C:
+				// Process due recurring templates
+				recurringManager := bot.NewRecurringTemplateManager(a.Services.DB, a.Services.Logger)
+				if err := recurringManager.ProcessDueTemplates(ctxSched); err != nil {
+					a.Services.Logger.Warn("recurring template processor error", zap.Error(err))
+				}
+			}
+		}
+	}()
+	a.Services.Logger.Info("🔄 Recurring template processor started (checking every minute)")
+
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
