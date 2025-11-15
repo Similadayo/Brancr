@@ -75,17 +75,17 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 			acc.PageID = igID // Also save to PageID for backward compatibility
 		}
 
-	// Step 2.5️⃣ — Subscribe Page to app for Instagram message webhooks
-	// CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
-	fmt.Printf("📨 Attempting to subscribe Page %s to receive Instagram message webhooks...\n", pageID)
-	subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, acc.AccessToken)
-	if subscribeErr != nil {
-		// Log warning but don't fail verification - subscription might already exist
-		fmt.Printf("⚠️ Failed to subscribe Page to Instagram messages (may already be subscribed): %v\n", subscribeErr)
-		fmt.Printf("⚠️ Instagram DMs may not work without Page subscription. Please check Meta Dashboard webhook configuration.\n")
-	} else {
-		fmt.Printf("✅ Page %s successfully subscribed to receive Instagram message webhooks\n", pageID)
-	}
+		// Step 2.5️⃣ — Subscribe Page to app for Instagram message webhooks
+		// CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
+		fmt.Printf("📨 Attempting to subscribe Page %s to receive Instagram message webhooks...\n", pageID)
+		subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, acc.AccessToken)
+		if subscribeErr != nil {
+			// Log warning but don't fail verification - subscription might already exist
+			fmt.Printf("⚠️ Failed to subscribe Page to Instagram messages (may already be subscribed): %v\n", subscribeErr)
+			fmt.Printf("⚠️ Instagram DMs may not work without Page subscription. Please check Meta Dashboard webhook configuration.\n")
+		} else {
+			fmt.Printf("✅ Page %s successfully subscribed to receive Instagram message webhooks\n", pageID)
+		}
 
 		// Step 3️⃣ — Fetch actual Instagram profile info
 		igInfoURL := fmt.Sprintf("https://graph.facebook.com/v17.0/%s?fields=id,name,username&access_token=%s", igID, acc.AccessToken)
@@ -105,7 +105,7 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 		username := fmt.Sprintf("%v", igInfo["username"])
 
 		persistSocialAccount(acc, acc.AccessToken, db)
-		
+
 		msg := fmt.Sprintf("✅ Instagram connected as @%s (verified)", username)
 		if subscribeErr == nil {
 			msg += "\n📨 Page subscribed to receive Instagram message webhooks"
@@ -362,13 +362,13 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 
 func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, db *gorm.DB) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	
+
 	// Decrypt token if it's encrypted
 	rawToken := strings.TrimSpace(acc.AccessToken)
 	if rawToken == "" {
 		return "", fmt.Errorf("access token missing")
 	}
-	
+
 	// Try to decrypt the token
 	// Encrypted tokens are base64-encoded, so if base64 decode fails, it's probably plain text
 	token := rawToken
@@ -376,11 +376,11 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 	if err != nil {
 		// Decryption failed - check error type
 		errStr := err.Error()
-		
+
 		// If it's a base64 decode error, token is probably plain text already
-		if strings.Contains(errStr, "illegal base64") || 
-		   strings.Contains(errStr, "cannot decode") ||
-		   strings.Contains(errStr, "invalid base64") {
+		if strings.Contains(errStr, "illegal base64") ||
+			strings.Contains(errStr, "cannot decode") ||
+			strings.Contains(errStr, "invalid base64") {
 			// Token is plain text, use as-is
 			token = rawToken
 		} else if strings.Contains(errStr, "TOKEN_SECRET_KEY") {
@@ -396,11 +396,11 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 		// Decryption succeeded, use decrypted token
 		token = decrypted
 	}
-	
+
 	if token == "" {
 		return "", fmt.Errorf("access token is empty after decryption")
 	}
-	
+
 	// Validate token format - Facebook access tokens typically start with letters/numbers
 	// and don't contain special characters that would indicate it's still encrypted
 	if len(token) < 10 {
@@ -454,7 +454,7 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 		}
 
 		persistSocialAccount(acc, token, db)
-		
+
 		msg := fmt.Sprintf("✅ Facebook Page verified: %s (ID: %s)", page.Name, page.ID)
 		if subscribeErr == nil {
 			msg += "\n📨 Page subscribed to receive Facebook Messenger webhooks"
@@ -508,7 +508,7 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 		if label == "" {
 			label = payload.Name
 		}
-		
+
 		msg := fmt.Sprintf("✅ Instagram Business Account verified: @%s", label)
 		if pageID != "" && pageSubscribeErr == nil {
 			msg += fmt.Sprintf("\n📨 Page (ID: %s) subscribed to receive Instagram message webhooks", pageID)
@@ -574,6 +574,13 @@ func persistSocialAccount(acc *storage.SocialAccount, plainToken string, db *gor
 // SubscribePageToInstagramMessages subscribes a Facebook Page to receive Instagram message webhooks
 // This is CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
 // According to Meta documentation: POST /{page-id}/subscribed_apps?subscribed_fields=messages&access_token={page-access-token}
+//
+// ⚠️ IMPORTANT: The Page will be subscribed to the App that issued the access token.
+// If your OAuth app (that issued the token) is different from your Webhook app,
+// Meta will NOT deliver webhook events. You MUST use ONE unified Meta App for:
+// - OAuth (META_APP_ID)
+// - Webhook endpoint configuration
+// - Page subscriptions
 func SubscribePageToInstagramMessages(ctx context.Context, client *http.Client, pageID, accessToken string) error {
 	// Decrypt token if needed
 	token := accessToken
@@ -581,37 +588,62 @@ func SubscribePageToInstagramMessages(ctx context.Context, client *http.Client, 
 		token = decrypted
 	}
 
+	// CRITICAL: Validate that the token belongs to the unified app
+	// Check which app issued this token by inspecting token metadata
+	expectedAppID := strings.TrimSpace(os.Getenv("META_APP_ID"))
+	if expectedAppID != "" {
+		tokenAppID, err := getAppIDFromToken(ctx, client, token)
+		if err == nil && tokenAppID != "" {
+			if tokenAppID != expectedAppID {
+				warning := fmt.Sprintf(
+					"⚠️ APP ID MISMATCH DETECTED!\n"+
+						"   Token belongs to App ID: %s\n"+
+						"   Expected App ID (META_APP_ID): %s\n"+
+						"   The Page will be subscribed to App %s, but webhooks are configured for App %s.\n"+
+						"   Meta will NOT deliver webhook events because subscribed app ≠ webhook app.\n"+
+						"   SOLUTION: Use ONE unified Meta App for OAuth AND webhooks.\n"+
+						"   Ensure META_APP_ID matches the app that has your webhook configured.",
+					tokenAppID, expectedAppID, tokenAppID, expectedAppID)
+				fmt.Printf("%s\n", warning)
+				// Continue anyway - user might have intentionally set it this way
+			} else {
+				fmt.Printf("✅ Token app ID (%s) matches META_APP_ID - unified app confirmed\n", tokenAppID)
+			}
+		}
+	}
+
 	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", pageID)
-	
+
 	// Use form-encoded POST as per Meta documentation
 	formData := url.Values{}
 	formData.Set("subscribed_fields", "messages") // Required field for Instagram message webhooks
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create subscription request: %w", err)
 	}
-	
+
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	
+
 	// Add access token as query parameter (Meta API standard)
 	q := req.URL.Query()
 	q.Set("access_token", token)
 	req.URL.RawQuery = q.Encode()
-	
+
 	fmt.Printf("📤 POST %s?access_token=***\n", endpoint)
 	fmt.Printf("📤 Body: subscribed_fields=messages\n")
-	
+	fmt.Printf("ℹ️  Note: Page will be subscribed to the App that issued this access token\n")
+
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("❌ Subscription request failed: %v\n", err)
 		return fmt.Errorf("subscription request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	body, _ := io.ReadAll(resp.Body)
 	fmt.Printf("📥 Response: Status %d, Body: %s\n", resp.StatusCode, string(body))
-	
+
 	// Check if subscription succeeded (200 OK) or already exists (may return different status)
 	if resp.StatusCode == http.StatusOK {
 		var result map[string]interface{}
@@ -623,17 +655,17 @@ func SubscribePageToInstagramMessages(ctx context.Context, client *http.Client, 
 		// If we got 200 OK, assume it worked even if response format is unexpected
 		return nil
 	}
-	
+
 	// Check for common non-fatal errors (subscription might already exist)
 	var errorResp struct {
 		Error struct {
-			Message   string `json:"message"`
-			Type      string `json:"type"`
-			Code      int    `json:"code"`
-			ErrorSubCode int `json:"error_subcode"`
+			Message      string `json:"message"`
+			Type         string `json:"type"`
+			Code         int    `json:"code"`
+			ErrorSubCode int    `json:"error_subcode"`
 		} `json:"error"`
 	}
-	
+
 	if err := json.Unmarshal(body, &errorResp); err == nil {
 		// Some errors are acceptable (e.g., already subscribed, permission denied but webhook still works)
 		errorMsg := errorResp.Error.Message
@@ -645,15 +677,51 @@ func SubscribePageToInstagramMessages(ctx context.Context, client *http.Client, 
 		}
 		return fmt.Errorf("Meta API error: %s (code: %d)", errorMsg, errorResp.Error.Code)
 	}
-	
+
 	// If we can't parse the error, return the raw response
 	if resp.StatusCode < 500 {
 		// Client error (4xx) - might be non-fatal
 		return fmt.Errorf("subscription failed with status %d: %s", resp.StatusCode, string(body))
 	}
-	
+
 	// Server error (5xx) - retry might help
 	return fmt.Errorf("Meta API server error %d: %s", resp.StatusCode, string(body))
+}
+
+// getAppIDFromToken extracts the App ID that issued the access token
+// This helps diagnose app ID mismatches that prevent webhook delivery
+func getAppIDFromToken(ctx context.Context, client *http.Client, token string) (string, error) {
+	// Use /debug_token endpoint to inspect token metadata
+	// Format: GET /debug_token?input_token={token}&access_token={app_access_token}
+	// But we can use the token itself if it's a Page Access Token or User Access Token
+	debugURL := fmt.Sprintf("https://graph.facebook.com/v18.0/debug_token?input_token=%s&access_token=%s", token, token)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, debugURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("debug_token failed with status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data struct {
+			AppID string `json:"app_id"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	return result.Data.AppID, nil
 }
 
 // findAndSubscribeInstagramPage finds the Facebook Page connected to an Instagram Business Account
@@ -667,7 +735,7 @@ func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 		return "", fmt.Errorf("failed to fetch connected page: %w", err)
 	}
 	defer pageResp.Body.Close()
-	
+
 	pageBody, _ := io.ReadAll(pageResp.Body)
 	if pageResp.StatusCode >= 400 {
 		// If we can't find the page, try alternative approach: query pages that have this Instagram account
@@ -699,24 +767,24 @@ func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 		}
 		return "", fmt.Errorf("failed to find connected Facebook Page: %s", string(pageBody))
 	}
-	
+
 	var pageData struct {
 		ConnectedPage struct {
 			ID string `json:"id"`
 		} `json:"connected_page"`
 	}
-	
+
 	if err := json.Unmarshal(pageBody, &pageData); err != nil {
 		return "", fmt.Errorf("failed to parse connected page response: %w", err)
 	}
-	
+
 	if pageData.ConnectedPage.ID == "" {
 		return "", fmt.Errorf("no connected Facebook Page found for Instagram Business Account")
 	}
-	
+
 	pageID := pageData.ConnectedPage.ID
-	
-		// Step 2: Subscribe the Page to receive Instagram message webhooks
-		subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, accessToken)
+
+	// Step 2: Subscribe the Page to receive Instagram message webhooks
+	subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, accessToken)
 	return pageID, subscribeErr
 }
