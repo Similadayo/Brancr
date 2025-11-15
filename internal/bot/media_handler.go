@@ -246,16 +246,12 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 			zap.Uint("tenant_id", tenantID),
 			zap.Int("item_count", itemCount))
 		
-		// Send acknowledgment message with progress indicator
-		ackMsg := fmt.Sprintf("📦 *Bulk Upload Detected!*\n\n"+
-			"I found *%d images*. Processing them now...\n\n"+
-			"⏳ Please wait while I organize everything.", itemCount)
+		// Send acknowledgment message
+		ackMsg := fmt.Sprintf("📦 *Bulk Upload Detected!*\n\nI found %d images. Processing them now...", itemCount)
 		ack := tgbotapi.NewMessage(chatID, ackMsg)
 		ack.ParseMode = "Markdown"
 		if bot != nil {
 			bot.Send(ack)
-			// Send typing indicator to show we're working
-			bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
 		}
 		
 		if err := bulkManager.ProcessBulkUpload(ctx, bot, tenantID, chatID, sessionID); err != nil {

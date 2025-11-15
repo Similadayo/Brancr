@@ -67,49 +67,6 @@ func yesNoKeyboard() tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
-func yesNoKeyboardWithCancel() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Yes", "postflow:yes"),
-			tgbotapi.NewInlineKeyboardButtonData("❌ No", "postflow:no"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", "postflow:cancel"),
-			tgbotapi.NewInlineKeyboardButtonData("❓ Help", "help:postflow"),
-		),
-	)
-}
-
-func cancelKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", "postflow:cancel"),
-			tgbotapi.NewInlineKeyboardButtonData("❓ Help", "help:postflow"),
-		),
-	)
-}
-
-func platformsKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📸 Instagram", "postflow:platform:instagram"),
-			tgbotapi.NewInlineKeyboardButtonData("👥 Facebook", "postflow:platform:facebook"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🎵 TikTok", "postflow:platform:tiktok"),
-			tgbotapi.NewInlineKeyboardButtonData("📺 YouTube", "postflow:platform:youtube"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("💬 WhatsApp", "postflow:platform:whatsapp"),
-			tgbotapi.NewInlineKeyboardButtonData("🌐 All", "postflow:platform:all"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", "postflow:cancel"),
-			tgbotapi.NewInlineKeyboardButtonData("❓ Help", "help:postflow"),
-		),
-	)
-}
-
 func (m *TenantBotManager) promptFirstStep(bot *tgbotapi.BotAPI, chatID int64, sess *PostSession) {
 	var ma storage.MediaAsset
 	if err := m.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
@@ -120,28 +77,14 @@ func (m *TenantBotManager) promptFirstStep(bot *tgbotapi.BotAPI, chatID int64, s
 
 	if sess.MediaType == "carousel" {
 		sess.Step = 1
-		msgText := "📸 *Step 1/5: Carousel Setup*\n\n" +
-			"A carousel is multiple images in one post. Keep these together as one carousel?\n\n" +
-			"• **Yes** - Post all images together\n" +
-			"• **No** - Create separate posts"
-		msg := tgbotapi.NewMessage(chatID, msgText)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = yesNoKeyboardWithCancel()
+		msg := tgbotapi.NewMessage(chatID, "Keep this together as one carousel?")
+		msg.ReplyMarkup = yesNoKeyboard()
 		bot.Send(msg)
 		return
 	}
 
 	sess.Step = 2
-	msgText := "📝 *Step 2/5: Post Name* (optional)\n\n" +
-		"Give this post a name to find it later.\n\n" +
-		"*Examples:*\n" +
-		"• `Summer Sale 2024`\n" +
-		"• `Product Launch`\n" +
-		"• `Weekly Update`\n\n" +
-		"Type a name or say `skip` to continue."
-	msg := tgbotapi.NewMessage(chatID, msgText)
-	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = cancelKeyboard()
+	msg := tgbotapi.NewMessage(chatID, "Want to give this a quick internal nickname? (Type it or say 'skip'.)")
 	bot.Send(msg)
 }
 
@@ -155,183 +98,67 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 
 	switch sess.Step {
 	case 0:
-		if lower == "cancel" || lower == "stop" {
-			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Post creation cancelled. You can start again anytime!"))
-			return
-		}
 		if lower == "yes" || lower == "y" {
 			m.promptFirstStep(bot, chatID, sess)
 			return
 		}
 		if lower == "no" || lower == "not now" || lower == "skip" {
 			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ No problem! Just upload media again when you want to schedule a post."))
+			bot.Send(tgbotapi.NewMessage(chatID, "No problem—just drop me a note when you want to schedule it."))
 			return
 		}
-		errorMsg := "❓ Please choose an option:\n\n" +
-			"• **Yes** - Start creating post now\n" +
-			"• **Not now** - Save for later"
-		msg := tgbotapi.NewMessage(chatID, errorMsg)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = yesNoKeyboard()
-		bot.Send(msg)
+		bot.Send(tgbotapi.NewMessage(chatID, "Just say yes if you want me to prep it now, or "+"‘not now’ to leave it for later."))
 
 	case 1:
 		if lower == "yes" || lower == "y" {
 			sess.IsCarousel = true
 			sess.Step = 2
-			msgText := "✅ *Step 2/5: Post Name* (optional)\n\n" +
-				"Give this post a name to find it later.\n\n" +
-				"*Examples:*\n" +
-				"• `Summer Sale 2024`\n" +
-				"• `Product Launch`\n\n" +
-				"Type a name or say `skip` to continue."
-			msg := tgbotapi.NewMessage(chatID, msgText)
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = cancelKeyboard()
-			bot.Send(msg)
+			bot.Send(tgbotapi.NewMessage(chatID, "Perfect. Want to tag it with an internal name? (Type it or say 'skip'.)"))
 			return
 		}
 		if lower == "no" || lower == "n" {
 			sess.IsCarousel = false
 			sess.Step = 2
-			msgText := "✅ *Step 2/5: Post Name* (optional)\n\n" +
-				"Give this post a name to find it later.\n\n" +
-				"*Examples:*\n" +
-				"• `Summer Sale 2024`\n" +
-				"• `Product Launch`\n\n" +
-				"Type a name or say `skip` to continue."
-			msg := tgbotapi.NewMessage(chatID, msgText)
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = cancelKeyboard()
-			bot.Send(msg)
+			bot.Send(tgbotapi.NewMessage(chatID, "Got it. Want to tag it with an internal name? (Type it or say 'skip'.)"))
 			return
 		}
-		errorMsg := "❓ Please answer with **Yes** or **No**.\n\n" +
-			"• **Yes** = Keep images together\n" +
-			"• **No** = Create separate posts"
-		msg := tgbotapi.NewMessage(chatID, errorMsg)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = yesNoKeyboardWithCancel()
-		bot.Send(msg)
+		bot.Send(tgbotapi.NewMessage(chatID, "Give me a quick yes or no so I know whether to keep these together."))
 
 	case 2:
-		if lower == "cancel" || lower == "stop" {
-			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Post creation cancelled. You can start again anytime!"))
-			return
-		}
 		if lower != "skip" && text != "" {
 			sess.Name = text
 		}
 		sess.Step = 3
-		msgText := "📝 *Step 3/5: Caption*\n\n" +
-			"*Caption options:*\n" +
-			"• Type `AI` to generate a caption automatically\n" +
-			"• Type your own caption\n" +
-			"• Type `skip` for no caption\n\n" +
-			"*Example:* `Check out our new collection! #Summer2024`"
-		msg := tgbotapi.NewMessage(chatID, msgText)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = cancelKeyboard()
-		bot.Send(msg)
+		bot.Send(tgbotapi.NewMessage(chatID, "Want me to spin a caption, or do you have something in mind? (Reply 'AI caption', type yours, or say 'skip')."))
 
 	case 3:
-		if lower == "cancel" || lower == "stop" {
-			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Post creation cancelled. You can start again anytime!"))
-			return
-		}
 		if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
 			sess.UseAICaption = true
 			sess.Step = 4
-			msgText := "✅ *Step 4/5: Platforms*\n\n" +
-				"Where should we post this?\n\n" +
-				"*Examples:*\n" +
-				"• `Instagram` - Post to Instagram only\n" +
-				"• `Instagram and Facebook` - Post to both\n" +
-				"• `all` - Post to all platforms\n\n" +
-				"*Available platforms:* Instagram, Facebook, TikTok, YouTube, WhatsApp"
-			msg := tgbotapi.NewMessage(chatID, msgText)
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = platformsKeyboard()
-			bot.Send(msg)
+			bot.Send(tgbotapi.NewMessage(chatID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all')."))
 			return
 		}
 		if lower == "skip" || text == "" {
 			sess.Caption = ""
 			sess.Step = 4
-			msgText := "✅ *Step 4/5: Platforms*\n\n" +
-				"Where should we post this?\n\n" +
-				"*Examples:*\n" +
-				"• `Instagram` - Post to Instagram only\n" +
-				"• `Instagram and Facebook` - Post to both\n" +
-				"• `all` - Post to all platforms\n\n" +
-				"*Available platforms:* Instagram, Facebook, TikTok, YouTube, WhatsApp"
-			msg := tgbotapi.NewMessage(chatID, msgText)
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = platformsKeyboard()
-			bot.Send(msg)
+			bot.Send(tgbotapi.NewMessage(chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 			return
 		}
 		sess.Caption = text
 		sess.Step = 4
-		msgText := "✅ *Step 4/5: Platforms*\n\n" +
-			"Where should we post this?\n\n" +
-			"*Examples:*\n" +
-			"• `Instagram` - Post to Instagram only\n" +
-			"• `Instagram and Facebook` - Post to both\n" +
-			"• `all` - Post to all platforms\n\n" +
-			"*Available platforms:* Instagram, Facebook, TikTok, YouTube, WhatsApp"
-		msg := tgbotapi.NewMessage(chatID, msgText)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = platformsKeyboard()
-		bot.Send(msg)
+		bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 
 	case 4:
-		if lower == "cancel" || lower == "stop" {
-			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Post creation cancelled. You can start again anytime!"))
-			return
-		}
 		platforms := m.parsePlatforms(text)
 		if len(platforms) == 0 {
-			errorMsg := "❌ I didn't recognize those platforms.\n\n" +
-				"*Try one of these:*\n" +
-				"• `Instagram` - Post to Instagram\n" +
-				"• `Instagram and Facebook` - Post to both\n" +
-				"• `all` - Post everywhere\n\n" +
-				"*Available:* Instagram, Facebook, TikTok, YouTube, WhatsApp"
-			msg := tgbotapi.NewMessage(chatID, errorMsg)
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = platformsKeyboard()
-			bot.Send(msg)
+			bot.Send(tgbotapi.NewMessage(chatID, "I didn’t catch the platforms. Try “Instagram and Facebook” or just “all”."))
 			return
 		}
 		sess.Platforms = platforms
 		sess.Step = 5
-		platformStr := strings.Join(platforms, ", ")
-		msgText := fmt.Sprintf("✅ *Step 5/5: Schedule*\n\n"+
-			"Platforms: *%s*\n\n"+
-			"When should I publish this?\n\n"+
-			"*Examples:*\n"+
-			"• `now` - Post immediately\n"+
-			"• `tomorrow 9am` - Tomorrow at 9 AM\n"+
-			"• `tomorrow morning` - Tomorrow at 9 AM\n"+
-			"• `next week monday 10am` - Next Monday at 10 AM\n\n"+
-			"Type your preferred time:", platformStr)
-		msg := tgbotapi.NewMessage(chatID, msgText)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = cancelKeyboard()
-		bot.Send(msg)
+		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try “now”, “tomorrow at 9am”, or “next week at 10am”."))
 
 	case 5:
-		if lower == "cancel" || lower == "stop" {
-			delete(tenantSessions, chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Post creation cancelled. You can start again anytime!"))
-			return
-		}
 		sess.ScheduleInput = text
 		m.finalizePostFlow(bot, tenantID, chatID, sess)
 		delete(tenantSessions, chatID)
@@ -450,19 +277,7 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	// Parse schedule with enhanced natural language support (using tenant timezone)
 	scheduledAt, err := m.parseNaturalScheduleWithTenant(sess.ScheduleInput, tenantID)
 	if err != nil {
-		errorMsg := fmt.Sprintf("❌ *I didn't understand that time format.*\n\n"+
-			"*Try one of these examples:*\n"+
-			"• `now` - Post immediately\n"+
-			"• `tomorrow 9am` - Tomorrow at 9 AM\n"+
-			"• `tomorrow morning` - Tomorrow at 9 AM\n"+
-			"• `tomorrow afternoon` - Tomorrow at 2 PM\n"+
-			"• `next week monday 10am` - Next Monday at 10 AM\n\n"+
-			"*Error:* %v\n\nType a time using one of the examples above:", err)
-		msg := tgbotapi.NewMessage(chatID, errorMsg)
-		msg.ParseMode = "Markdown"
-		msg.ReplyMarkup = cancelKeyboard()
-		bot.Send(msg)
-		// Keep session active so user can retry
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Couldn't understand that time: %v. Try 'now', 'tomorrow morning', or 'next week at 10am'.", err)))
 		return
 	}
 
