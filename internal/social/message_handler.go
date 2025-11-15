@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -219,13 +220,18 @@ func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, rep
 	}
 }
 
-// sendInstagramReply sends a reply via Instagram Graph API
+// sendInstagramReply sends a reply via Instagram Messaging API
+// According to Meta's official documentation: https://developers.facebook.com/docs/messenger-platform/instagram/feature-reference/send-message
 func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.SocialAccount, threadID, reply string) error {
 	// Decrypt token
 	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
 	if err != nil {
 		// Try using as-is if decryption fails
 		decryptedToken = acc.AccessToken
+	}
+
+	if decryptedToken == "" {
+		return fmt.Errorf("Instagram access token is empty")
 	}
 
 	// Get Instagram Business Account ID (from ExternalID or PageID)
@@ -252,7 +258,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.Uint("tenant_id", acc.TenantID))
 	}
 
-	// First, verify token type - Instagram messaging REQUIRES a Page Access Token
+	// Verify token type - Instagram messaging REQUIRES a Page Access Token
 	tokenType, pageID, err := h.verifyTokenType(ctx, decryptedToken)
 	if err != nil {
 		h.Logger.Warn("⚠️ Could not verify token type", zap.Error(err))
@@ -266,8 +272,9 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		}
 	}
 
-	// Instagram DM API endpoint - use Instagram Business Account ID
-	// Note: This requires a Page Access Token with instagram_manage_messages permission
+	// Instagram Messaging API endpoint according to Meta's official documentation
+	// Endpoint: https://graph.facebook.com/v18.0/{instagram-business-account-id}/messages
+	// This requires a Page Access Token with instagram_manage_messages permission
 	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
 
 	h.Logger.Info("📤 Attempting to send Instagram DM",
@@ -276,21 +283,26 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		zap.String("page_id", pageID),
 		zap.String("message_preview", truncateString(reply, 50)))
 
-	// Instagram messaging payload format
-	// Note: recipient.id should be the Instagram user's PSID (Page-Scoped ID)
+	// Instagram messaging payload format according to Meta's Send Message API
+	// https://developers.facebook.com/docs/messenger-platform/instagram/feature-reference/send-message
+	// recipient.id must be the Instagram user's PSID (Page-Scoped ID) received from webhook
 	payload := map[string]interface{}{
 		"recipient": map[string]string{
-			"id": threadID, // This should be the customer's Instagram PSID
+			"id": threadID, // PSID (Page-Scoped ID) of the Instagram user
 		},
 		"message": map[string]interface{}{
 			"text": reply,
 		},
 	}
 
-	// Add access token as query parameter (Instagram API prefers this)
-	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, decryptedToken)
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
 
-	jsonData, _ := json.Marshal(payload)
+	// Add access token as query parameter (Meta API standard)
+	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -309,16 +321,18 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		// Parse error response to provide helpful guidance
 		var apiError struct {
 			Error struct {
-				Message string `json:"message"`
-				Type    string `json:"type"`
-				Code    int    `json:"code"`
+				Message   string `json:"message"`
+				Type      string `json:"type"`
+				Code      int    `json:"code"`
+				SubCode   int    `json:"error_subcode"`
+				FbtraceID string `json:"fbtrace_id"`
 			} `json:"error"`
 		}
 		json.Unmarshal(body, &apiError)
 
 		errorMsg := fmt.Sprintf("Instagram API error %d: %s", resp.StatusCode, string(body))
 
-		// Provide specific guidance for common errors
+		// Provide specific guidance for common errors based on Meta's error codes
 		if apiError.Error.Code == 3 {
 			errorMsg += "\n\n⚠️ Meta App Capability Issue:\n"
 			errorMsg += "Your Meta app doesn't have the 'Instagram Messaging' capability enabled.\n"
@@ -335,26 +349,58 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			errorMsg += "   - App Review approval\n"
 			errorMsg += "   - Live mode (not Development mode)\n"
 			errorMsg += "   - Valid business verification (for some use cases)"
+		} else if apiError.Error.Code == 190 {
+			errorMsg += "\n\n⚠️ Invalid Access Token:\n"
+			errorMsg += "Your Page Access Token may be expired or invalid.\n"
+			errorMsg += "Please generate a new Page Access Token with 'instagram_manage_messages' permission.\n"
+		} else if apiError.Error.Code == 10 {
+			errorMsg += "\n\n⚠️ Permission Denied:\n"
+			errorMsg += "Your app doesn't have the 'instagram_manage_messages' permission.\n"
+			errorMsg += "Please request this permission in App Review and wait for approval.\n"
+		} else if apiError.Error.Code == 200 {
+			errorMsg += "\n\n⚠️ Invalid Recipient ID:\n"
+			errorMsg += "The recipient ID (PSID) is invalid or the user has blocked your Instagram account.\n"
+			errorMsg += "Ensure you're using the PSID from the webhook event (sender.id).\n"
+		} else if apiError.Error.Code == 368 {
+			errorMsg += "\n\n⚠️ Temporarily Blocked:\n"
+			errorMsg += "You've been temporarily blocked from sending messages.\n"
+			errorMsg += "This can happen if you send too many messages or violate Meta's messaging policies.\n"
+			errorMsg += "Wait before trying again.\n"
 		}
 
 		h.Logger.Error("Instagram DM API error",
 			zap.Int("status", resp.StatusCode),
-			zap.String("error_code", fmt.Sprintf("%d", apiError.Error.Code)),
+			zap.Int("error_code", apiError.Error.Code),
+			zap.Int("error_subcode", apiError.Error.SubCode),
 			zap.String("error_type", apiError.Error.Type),
 			zap.String("error_message", apiError.Error.Message),
+			zap.String("fbtrace_id", apiError.Error.FbtraceID),
 			zap.String("response", string(body)))
 
 		return errors.New(errorMsg)
 	}
 
-	h.Logger.Info("✅ Instagram DM sent",
-		zap.String("recipient_id", threadID),
-		zap.String("message_preview", truncateString(reply, 50)))
+	// Parse success response
+	var response struct {
+		RecipientID string `json:"recipient_id"`
+		MessageID   string `json:"message_id"`
+	}
+	if err := json.Unmarshal(body, &response); err == nil {
+		h.Logger.Info("✅ Instagram DM sent successfully",
+			zap.String("recipient_id", response.RecipientID),
+			zap.String("message_id", response.MessageID),
+			zap.String("message_preview", truncateString(reply, 50)))
+	} else {
+		h.Logger.Info("✅ Instagram DM sent",
+			zap.String("recipient_id", threadID),
+			zap.String("message_preview", truncateString(reply, 50)))
+	}
 
 	return nil
 }
 
 // sendFacebookReply sends a reply via Facebook Messenger API
+// According to Meta's official documentation: https://developers.facebook.com/docs/messenger-platform/reference/send-api
 func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.SocialAccount, threadID, reply string) error {
 	// Decrypt token
 	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
@@ -363,20 +409,56 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 		decryptedToken = acc.AccessToken
 	}
 
-	// Facebook Messenger API endpoint
-	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/messages?access_token=%s", decryptedToken)
-
-	payload := map[string]interface{}{
-		"recipient": map[string]string{
-			"id": threadID,
-		},
-		"message": map[string]string{
-			"text": reply,
-		},
+	if decryptedToken == "" {
+		return fmt.Errorf("Facebook access token is empty")
 	}
 
-	jsonData, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
+	// Get Page ID - prefer ExternalID (which should be the Page ID for Facebook)
+	pageID := acc.ExternalID
+	if pageID == "" {
+		pageID = acc.PageID
+	}
+
+	// Facebook Messenger API endpoint
+	// According to Meta docs: Use {page-id}/messages for better reliability
+	// Fallback to /me/messages if Page ID is not available
+	var apiURL string
+	if pageID != "" {
+		// Use explicit Page ID endpoint (recommended by Meta)
+		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", pageID)
+	} else {
+		// Fallback to /me/messages (requires Page Access Token)
+		apiURL = "https://graph.facebook.com/v18.0/me/messages"
+		h.Logger.Warn("⚠️ Using /me/messages endpoint - Page ID not found. Consider setting ExternalID or PageID for better reliability")
+	}
+
+	h.Logger.Info("📤 Attempting to send Facebook Messenger message",
+		zap.String("page_id", pageID),
+		zap.String("recipient_id", threadID),
+		zap.String("endpoint", apiURL),
+		zap.String("message_preview", truncateString(reply, 50)))
+
+	// Facebook Messenger payload format according to Meta's Send API documentation
+	// https://developers.facebook.com/docs/messenger-platform/reference/send-api#request
+	payload := map[string]interface{}{
+		"recipient": map[string]string{
+			"id": threadID, // PSID (Page-Scoped ID) of the recipient
+		},
+		"message": map[string]interface{}{
+			"text": reply,
+		},
+		"messaging_type": "RESPONSE", // Required: RESPONSE for replying within 24-hour window
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Add access token as query parameter (Meta API standard)
+	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -391,15 +473,61 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
+		// Parse error response to provide helpful guidance
+		var apiError struct {
+			Error struct {
+				Message   string `json:"message"`
+				Type      string `json:"type"`
+				Code      int    `json:"code"`
+				SubCode   int    `json:"error_subcode"`
+				FbtraceID string `json:"fbtrace_id"`
+			} `json:"error"`
+		}
+		json.Unmarshal(body, &apiError)
+
+		errorMsg := fmt.Sprintf("Facebook Messenger API error %d: %s", resp.StatusCode, string(body))
+
+		// Provide specific guidance for common errors
+		if apiError.Error.Code == 190 {
+			errorMsg += "\n\n⚠️ Invalid Access Token:\n"
+			errorMsg += "Your Page Access Token may be expired or invalid.\n"
+			errorMsg += "Please generate a new Page Access Token from Meta Developer Console.\n"
+		} else if apiError.Error.Code == 10 {
+			errorMsg += "\n\n⚠️ Permission Denied:\n"
+			errorMsg += "Your app doesn't have the 'pages_messaging' permission.\n"
+			errorMsg += "Please request this permission in App Review.\n"
+		} else if apiError.Error.Code == 200 {
+			errorMsg += "\n\n⚠️ Invalid Recipient ID:\n"
+			errorMsg += "The recipient ID (PSID) is invalid or the user has blocked your page.\n"
+		}
+
 		h.Logger.Error("Facebook Messenger API error",
 			zap.Int("status", resp.StatusCode),
+			zap.Int("error_code", apiError.Error.Code),
+			zap.Int("error_subcode", apiError.Error.SubCode),
+			zap.String("error_type", apiError.Error.Type),
+			zap.String("error_message", apiError.Error.Message),
+			zap.String("fbtrace_id", apiError.Error.FbtraceID),
 			zap.String("response", string(body)))
-		return fmt.Errorf("Facebook API error %d: %s", resp.StatusCode, string(body))
+
+		return errors.New(errorMsg)
 	}
 
-	h.Logger.Info("✅ Facebook Messenger reply sent",
-		zap.String("recipient_id", threadID),
-		zap.String("message_preview", truncateString(reply, 50)))
+	// Parse success response
+	var response struct {
+		RecipientID string `json:"recipient_id"`
+		MessageID   string `json:"message_id"`
+	}
+	if err := json.Unmarshal(body, &response); err == nil {
+		h.Logger.Info("✅ Facebook Messenger message sent successfully",
+			zap.String("recipient_id", response.RecipientID),
+			zap.String("message_id", response.MessageID),
+			zap.String("message_preview", truncateString(reply, 50)))
+	} else {
+		h.Logger.Info("✅ Facebook Messenger message sent",
+			zap.String("recipient_id", threadID),
+			zap.String("message_preview", truncateString(reply, 50)))
+	}
 
 	return nil
 }
