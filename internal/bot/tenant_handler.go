@@ -149,6 +149,14 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Check for custom grouping session first
+	if isOwner {
+		if _, ok := CustomGroupingSessions.Load(chatID); ok {
+			h.handleCustomGroupingInput(bot, uint(tenantID), chatID, text)
+			return
+		}
+	}
+
 	if sess, ok := tenantSessions[chatID]; ok {
 		if isOwner {
 			// Check if this is social connect flow (Step 99) or post flow (Steps 1-5)
