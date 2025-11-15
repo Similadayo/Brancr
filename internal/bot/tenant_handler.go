@@ -301,38 +301,61 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// 🧩 Step 5️: Persona and Business Profile setup checks
-	persona := ai.GetPersona(h.Manager.DB, uint(tenantID))
-	var profile storage.BusinessProfile
-	_ = h.Manager.DB.First(&profile, "tenant_id = ?", tenantID).Error
-
-	personaMissing := persona.BotName == "" || persona.Tone == ""
-	businessProfileMissing := profile.Niche == "" || profile.Description == "" || profile.Tone == ""
-
-	if personaMissing {
-		if isOwner {
-			if _, active := ai.PersonaSessions.Load(chatID); !active {
-				go ai.StartPersonaOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, h.Manager.Responder.Client, h.Manager.Logger)
-			} else {
-				go ai.ContinuePersonaOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, text, h.Manager.Responder.Client, h.Manager.Logger)
+	// 🧩 Step 5️: Check onboarding status - if complete, use DB data; otherwise trigger onboarding
+	var tenant storage.Tenant
+	if err := h.Manager.DB.First(&tenant, tenantID).Error; err == nil {
+		// Check if onboarding is complete (dashboard signup)
+		if tenant.OnboardingComplete {
+			// Onboarding already done via dashboard - load persona and business profile from DB
+			persona := ai.GetPersona(h.Manager.DB, uint(tenantID))
+			var profile storage.BusinessProfile
+			_ = h.Manager.DB.First(&profile, "tenant_id = ?", tenantID).Error
+			
+			// Use existing data - no onboarding questions needed
+			// If persona/business profile is missing despite OnboardingComplete flag, 
+			// we'll still continue but log a warning (data should exist from dashboard)
+			if persona.BotName == "" || profile.Niche == "" {
+				h.Manager.Logger.Warn("OnboardingComplete=true but missing persona/business profile data",
+					zap.Uint("tenant_id", uint(tenantID)),
+					zap.Bool("has_persona", persona.BotName != ""),
+					zap.Bool("has_profile", profile.Niche != ""))
+				// Continue anyway - user can configure via dashboard or menu
 			}
 		} else {
-			bot.Send(tgbotapi.NewMessage(chatID, "Hold on, still setting things up."))
-		}
-		return
-	}
+			// Legacy flow: onboarding not complete - check for missing persona/business profile
+			persona := ai.GetPersona(h.Manager.DB, uint(tenantID))
+			var profile storage.BusinessProfile
+			_ = h.Manager.DB.First(&profile, "tenant_id = ?", tenantID).Error
 
-	if businessProfileMissing {
-		if isOwner {
-			if _, active := ai.BusinessProfileSessions.Load(chatID); !active {
-				go ai.StartBusinessProfileOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, h.Manager.Responder.Client, h.Manager.Logger)
-			} else {
-				go ai.ContinueBusinessProfileOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, text, h.Manager.Responder.Client, h.Manager.Logger)
+			personaMissing := persona.BotName == "" || persona.Tone == ""
+			businessProfileMissing := profile.Niche == "" || profile.Description == "" || profile.Tone == ""
+
+			if personaMissing {
+				if isOwner {
+					if _, active := ai.PersonaSessions.Load(chatID); !active {
+						go ai.StartPersonaOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, h.Manager.Responder.Client, h.Manager.Logger)
+					} else {
+						go ai.ContinuePersonaOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, text, h.Manager.Responder.Client, h.Manager.Logger)
+					}
+				} else {
+					bot.Send(tgbotapi.NewMessage(chatID, "Hold on, still setting things up."))
+				}
+				return
 			}
-		} else {
-			bot.Send(tgbotapi.NewMessage(chatID, "Still configuring, give me a sec."))
+
+			if businessProfileMissing {
+				if isOwner {
+					if _, active := ai.BusinessProfileSessions.Load(chatID); !active {
+						go ai.StartBusinessProfileOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, h.Manager.Responder.Client, h.Manager.Logger)
+					} else {
+						go ai.ContinueBusinessProfileOnboarding(ctx, h.Manager.DB, bot, uint(tenantID), chatID, text, h.Manager.Responder.Client, h.Manager.Logger)
+					}
+				} else {
+					bot.Send(tgbotapi.NewMessage(chatID, "Still configuring, give me a sec."))
+				}
+				return
+			}
 		}
-		return
 	}
 
 	// 🧠 Step 6️: Context-Aware AI Assistant flow (tenant + customer aware)
@@ -470,11 +493,32 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		case "analytics":
 			h.sendAnalyticsPeek(bot, chatID, tenantID)
 		case "ai":
+			var tenant storage.Tenant
+			h.Manager.DB.First(&tenant, tenantID)
 			persona := ai.GetPersona(h.Manager.DB, tenantID)
-			if persona.BotName == "" {
+			
+			// If onboarding is complete, show current persona info; otherwise start onboarding
+			if tenant.OnboardingComplete && persona.BotName != "" {
+				tone := fallbackValue(persona.StyleNotes, persona.Tone)
+				if tone == "" {
+					tone = "friendly"
+				}
+				msg := fmt.Sprintf(
+					"🤖 *AI Persona Configuration*\n\n"+
+					"Current settings:\n"+
+					"• Name: *%s*\n"+
+					"• Tone: *%s*\n\n"+
+					"To update your AI persona, visit the dashboard:\n"+
+					"📱 https://www.brancr.com/dashboard",
+					persona.BotName, tone)
+				out := tgbotapi.NewMessage(chatID, msg)
+				out.ParseMode = "Markdown"
+				bot.Send(out)
+			} else if persona.BotName == "" {
+				// Legacy: start onboarding if not complete
 				go ai.StartPersonaOnboarding(context.Background(), h.Manager.DB, bot, tenantID, chatID, h.Manager.Responder.Client, h.Manager.Logger)
 			} else {
-				msg := fmt.Sprintf("I’m already answering as %s with a %s vibe. Want to tweak anything? Just tell me how you’d like me to sound.", persona.BotName, fallbackValue(persona.StyleNotes, persona.Tone))
+				msg := fmt.Sprintf("I'm already answering as %s with a %s vibe. Want to tweak anything? Just tell me how you'd like me to sound.", persona.BotName, fallbackValue(persona.StyleNotes, persona.Tone))
 				bot.Send(tgbotapi.NewMessage(chatID, msg))
 			}
 		default:
@@ -509,7 +553,43 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 }
 
 func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
-	text := "🎛️ *Brancr Control Center*\nWhat would you like to do today?"
+	var tenant storage.Tenant
+	var persona storage.Persona
+	var businessProfile storage.BusinessProfile
+	var accounts []storage.SocialAccount
+	
+	h.Manager.DB.First(&tenant, tenantID)
+	persona = ai.GetPersona(h.Manager.DB, tenantID)
+	_ = h.Manager.DB.Where("tenant_id = ?", tenantID).First(&businessProfile).Error
+	h.Manager.DB.Where("tenant_id = ? AND connected = ?", tenantID, true).Find(&accounts)
+	
+	// Build context-aware menu text
+	businessName := tenant.Name
+	if businessProfile.Name != "" {
+		businessName = businessProfile.Name
+	}
+	
+	text := fmt.Sprintf("🎛️ *Brancr Control Center*\n\n*%s*", businessName)
+	
+	if tenant.OnboardingComplete && persona.BotName != "" {
+		tone := persona.Tone
+		if tone == "" {
+			tone = "friendly"
+		}
+		text += fmt.Sprintf("\n\n🤖 AI: *%s* (%s tone)", persona.BotName, tone)
+	}
+	
+	if len(accounts) > 0 {
+		text += "\n\n📱 *Connected:* "
+		platforms := make([]string, 0, len(accounts))
+		for _, acc := range accounts {
+			platforms = append(platforms, strings.Title(acc.Platform))
+		}
+		text += strings.Join(platforms, ", ")
+	}
+	
+	text += "\n\nWhat would you like to do?"
+	
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📱 Connect Social Accounts", "menu:connect"),

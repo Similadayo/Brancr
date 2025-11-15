@@ -211,21 +211,86 @@ Already have a token? Just paste it now.`
 		}
 
 		ownerID := tenant.OwnerTelegramID
+		
+		// Check if onboarding is complete (tenant signed up via dashboard)
+		var persona storage.Persona
+		var businessProfile storage.BusinessProfile
+		_ = h.DB.Where("tenant_id = ?", tenant.ID).First(&persona).Error
+		_ = h.DB.Where("tenant_id = ?", tenant.ID).First(&businessProfile).Error
+		
+		onboardingComplete := tenant.OnboardingComplete && persona.BotName != "" && businessProfile.Niche != ""
+		
 		if botUsername != "" {
 			startLink := fmt.Sprintf("https://t.me/%s?start=hello", botUsername)
 			bot.Send(tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("✨ Your assistant is ready! [Click here to chat with %s](%s)", botUsername, startLink)))
 		}
 
-		intro := tgbotapi.NewMessage(ownerID,
-			fmt.Sprintf("Hey! I'm your new assistant for %s. What should I call myself?", tenant.Name))
-		tenantBot.Send(intro)
+		if onboardingComplete {
+			// Onboarding already done via dashboard - send professional welcome message
+			personaName := persona.BotName
+			if personaName == "" {
+				personaName = "Assistant"
+			}
+			
+			tone := persona.Tone
+			if tone == "" {
+				tone = "friendly"
+			}
+			
+			businessName := businessProfile.Name
+			if businessName == "" {
+				businessName = tenant.Name
+			}
 
-		followUp := tgbotapi.NewMessage(ownerID, "You can reply with the style, tone, or any must-know info so I sound on-brand. Type *menu* anytime to see what I can do.")
-		followUp.ParseMode = "Markdown"
-		tenantBot.Send(followUp)
+			welcomeMsg := fmt.Sprintf(
+				"Welcome back, *%s*! 🎉\n\n"+
+				"Your AI assistant is configured as *%s* with a *%s* tone.\n\n"+
+				"🎛️ *Brancr Control Center*\n"+
+				"Your assistant is ready to help customers. You can:\n\n"+
+				"• Manage social connections\n"+
+				"• View analytics\n"+
+				"• Configure alerts\n"+
+				"• Update settings\n\n"+
+				"Type *menu* to see all available commands.",
+				businessName, personaName, tone)
+			
+			msg := tgbotapi.NewMessage(ownerID, welcomeMsg)
+			msg.ParseMode = "Markdown"
+			tenantBot.Send(msg)
+			
+			// Show connection status if available
+			var accounts []storage.SocialAccount
+			h.DB.Where("tenant_id = ? AND connected = ?", tenant.ID, true).Find(&accounts)
+			if len(accounts) > 0 {
+				connections := "📱 *Connected Accounts:*\n"
+				for _, acc := range accounts {
+					status := "✅"
+					if !acc.Connected {
+						status = "❌"
+					}
+					connections += fmt.Sprintf("%s %s", status, strings.Title(acc.Platform))
+					if acc.Username != "" {
+						connections += fmt.Sprintf(" (@%s)", acc.Username)
+					}
+					connections += "\n"
+				}
+				connMsg := tgbotapi.NewMessage(ownerID, connections)
+				connMsg.ParseMode = "Markdown"
+				tenantBot.Send(connMsg)
+			}
+		} else {
+			// Legacy flow: onboarding not complete, ask persona questions
+			intro := tgbotapi.NewMessage(ownerID,
+				fmt.Sprintf("Hey! I'm your new assistant for %s. What should I call myself?", tenant.Name))
+			tenantBot.Send(intro)
 
-		go ai.StartPersonaOnboarding(ctx, h.DB, tenantBot, tenant.ID, ownerID, h.Manager.Responder.Client, h.Manager.Logger)
+			followUp := tgbotapi.NewMessage(ownerID, "You can reply with the style, tone, or any must-know info so I sound on-brand. Type *menu* anytime to see what I can do.")
+			followUp.ParseMode = "Markdown"
+			tenantBot.Send(followUp)
+
+			go ai.StartPersonaOnboarding(ctx, h.DB, tenantBot, tenant.ID, ownerID, h.Manager.Responder.Client, h.Manager.Logger)
+		}
 		return
 
 	default:
