@@ -226,7 +226,7 @@ func min(a, b int) int {
 }
 
 // processInstagramWebhook processes Instagram webhook events
-// Instagram messaging uses the same structure as Facebook but with object="instagram"
+// Instagram messaging uses both "messaging" format (traditional) and "changes" format (newer/test webhooks)
 func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body []byte) {
 	h.Logger.Info("📱 Parsing Instagram webhook payload")
 
@@ -238,10 +238,11 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 			zap.String("payload", string(payloadJSON)))
 	}
 
+	// Try both formats: "messaging" (traditional) and "changes" (test/newer webhooks)
 	var payload struct {
 		Object string `json:"object"`
 		Entry  []struct {
-			ID        string `json:"id"` // This is the instagram_business_account.id
+			ID        string `json:"id"` // This is the instagram_business_account.id (or "0" in test webhooks)
 			Time      int64  `json:"time"`
 			Messaging []struct {
 				Sender struct {
@@ -256,6 +257,22 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 					Text string `json:"text"`
 				} `json:"message"`
 			} `json:"messaging"`
+			Changes []struct {
+				Field string `json:"field"`
+				Value struct {
+					Sender struct {
+						ID string `json:"id"`
+					} `json:"sender"`
+					Recipient struct {
+						ID string `json:"id"` // This is the instagram_business_account.id
+					} `json:"recipient"`
+					Timestamp FlexibleTimestamp `json:"timestamp"` // Can be string or int64
+					Message   struct {
+						MID  string `json:"mid"`
+						Text string `json:"text"`
+					} `json:"message"`
+				} `json:"value"`
+			} `json:"changes"`
 		} `json:"entry"`
 	}
 
@@ -279,61 +296,138 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 		h.Logger.Info("📬 Processing Instagram webhook entry",
 			zap.Int("entry_index", i),
 			zap.String("entry_id", entry.ID),
-			zap.Int("messaging_count", len(entry.Messaging)))
+			zap.Int("messaging_count", len(entry.Messaging)),
+			zap.Int("changes_count", len(entry.Changes)))
 
-		if len(entry.Messaging) == 0 {
-			h.Logger.Warn("⚠️ Instagram entry has no messaging events",
-				zap.String("entry_id", entry.ID))
-			continue
+		// Determine Instagram Business Account ID from entry ID
+		// Test webhooks use "0", real webhooks use actual instagram_business_account.id
+		igAccountID := entry.ID
+		if igAccountID == "0" || igAccountID == "" {
+			// Test webhook - try to resolve from recipient ID or find connected Instagram account
+			h.Logger.Info("🔍 Test webhook detected, attempting to resolve Instagram account ID")
+			// For test webhooks, we'll try to find any connected Instagram account for testing
+			// In production, entry.ID will be the actual instagram_business_account.id
 		}
 
-		// Resolve tenant from entry ID (instagram_business_account.id)
-		tenantID, err := h.resolveTenantFromExternalID(entry.ID, "instagram")
-		if err != nil {
-			h.Logger.Warn("⚠️ Could not resolve tenant from Instagram webhook",
-				zap.String("platform", "instagram"),
-				zap.String("external_id", entry.ID),
-				zap.Error(err))
-			continue
-		}
+		// Process messages from "messaging" array (traditional format)
+		messagesProcessed := 0
+		for _, msg := range entry.Messaging {
+			messagesProcessed++
 
-		h.Logger.Info("✅ Tenant resolved for Instagram",
-			zap.Uint("tenant_id", tenantID),
-			zap.String("external_id", entry.ID),
-			zap.String("platform", "instagram"))
-
-		// Process each message
-		for j, msg := range entry.Messaging {
-			h.Logger.Info("💬 Processing Instagram message",
-				zap.Int("message_index", j),
-				zap.Uint("tenant_id", tenantID),
-				zap.String("sender_id", msg.Sender.ID),
-				zap.String("recipient_id", msg.Recipient.ID),
-				zap.String("message_id", msg.Message.MID),
-				zap.String("message_preview", truncateString(msg.Message.Text, 100)),
-				zap.Int64("timestamp", msg.Timestamp))
-
-			incomingMsg := IncomingMessage{
-				Platform:         "instagram",
-				TenantID:         tenantID,
-				CustomerID:       msg.Sender.ID,
-				CustomerName:     "",
-				CustomerUsername: "",
-				MessageID:        msg.Message.MID,
-				Content:          msg.Message.Text,
-				MessageType:      "text",
-				ThreadID:         msg.Sender.ID,
-				Timestamp:        time.Unix(msg.Timestamp/1000, 0),
-				Metadata:         map[string]interface{}{"entry_id": entry.ID},
+			// Use recipient ID if entry ID is "0" (test webhook)
+			if igAccountID == "0" || igAccountID == "" {
+				igAccountID = msg.Recipient.ID
+				h.Logger.Info("✅ Using recipient ID as Instagram account ID for test webhook",
+					zap.String("instagram_account_id", igAccountID))
 			}
 
-			h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
-				zap.Uint("tenant_id", tenantID),
-				zap.String("customer_id", msg.Sender.ID))
+			// Resolve tenant from Instagram Business Account ID
+			tenantID, err := h.resolveTenantFromExternalID(igAccountID, "instagram")
+			if err != nil {
+				h.Logger.Warn("⚠️ Could not resolve tenant from Instagram webhook",
+					zap.String("platform", "instagram"),
+					zap.String("external_id", igAccountID),
+					zap.String("entry_id", entry.ID),
+					zap.Error(err))
+				// For test webhooks, try using recipient ID if entry ID doesn't work
+				if igAccountID == msg.Recipient.ID {
+					continue // Already tried recipient ID
+				}
+				// Try recipient ID as fallback
+				tenantID, err = h.resolveTenantFromExternalID(msg.Recipient.ID, "instagram")
+				if err != nil {
+					continue
+				}
+				igAccountID = msg.Recipient.ID
+			}
 
-			go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
+			h.Logger.Info("✅ Tenant resolved for Instagram",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("external_id", igAccountID),
+				zap.String("entry_id", entry.ID),
+				zap.String("platform", "instagram"))
+
+			h.processInstagramMessage(ctx, tenantID, igAccountID, msg.Sender.ID, msg.Message.MID, msg.Message.Text, msg.Timestamp, entry.ID)
+		}
+
+		// Process messages from "changes" array (test/newer webhook format)
+		for _, change := range entry.Changes {
+			if change.Field != "messages" {
+				continue // Skip non-message changes
+			}
+
+			// Use recipient ID if entry ID is "0" (test webhook)
+			if igAccountID == "0" || igAccountID == "" {
+				igAccountID = change.Value.Recipient.ID
+				h.Logger.Info("✅ Using recipient ID as Instagram account ID for test webhook (changes format)",
+					zap.String("instagram_account_id", igAccountID))
+			}
+
+			// Resolve tenant from Instagram Business Account ID
+			tenantID, err := h.resolveTenantFromExternalID(igAccountID, "instagram")
+			if err != nil {
+				h.Logger.Warn("⚠️ Could not resolve tenant from Instagram webhook (changes format)",
+					zap.String("platform", "instagram"),
+					zap.String("external_id", igAccountID),
+					zap.String("entry_id", entry.ID),
+					zap.Error(err))
+				// Try recipient ID as fallback
+				tenantID, err = h.resolveTenantFromExternalID(change.Value.Recipient.ID, "instagram")
+				if err != nil {
+					continue
+				}
+				igAccountID = change.Value.Recipient.ID
+			}
+
+			h.Logger.Info("✅ Tenant resolved for Instagram (changes format)",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("external_id", igAccountID),
+				zap.String("entry_id", entry.ID),
+				zap.String("platform", "instagram"))
+
+			timestamp := change.Value.Timestamp.Int64()
+			h.processInstagramMessage(ctx, tenantID, igAccountID, change.Value.Sender.ID, change.Value.Message.MID, change.Value.Message.Text, timestamp, entry.ID)
+			messagesProcessed++
+		}
+
+		if messagesProcessed == 0 {
+			h.Logger.Warn("⚠️ Instagram entry has no messaging events",
+				zap.String("entry_id", entry.ID),
+				zap.Int("messaging_count", len(entry.Messaging)),
+				zap.Int("changes_count", len(entry.Changes)))
 		}
 	}
+}
+
+// processInstagramMessage processes a single Instagram message
+func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenantID uint, igAccountID, senderID, messageID, text string, timestamp int64, entryID string) {
+	h.Logger.Info("💬 Processing Instagram message",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("sender_id", senderID),
+		zap.String("recipient_id", igAccountID),
+		zap.String("message_id", messageID),
+		zap.String("message_preview", truncateString(text, 100)),
+		zap.Int64("timestamp", timestamp))
+
+	incomingMsg := IncomingMessage{
+		Platform:         "instagram",
+		TenantID:         tenantID,
+		CustomerID:       senderID,
+		CustomerName:     "",
+		CustomerUsername: "",
+		MessageID:        messageID,
+		Content:          text,
+		MessageType:      "text",
+		ThreadID:         senderID,
+		Timestamp:        time.Unix(timestamp/1000, 0),
+		Metadata:         map[string]interface{}{"entry_id": entryID},
+	}
+
+	h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("customer_id", senderID))
+
+	go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
 }
 
 // FlexibleTimestamp handles both string and int64 timestamps from Meta webhooks
