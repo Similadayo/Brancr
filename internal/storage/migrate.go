@@ -41,6 +41,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&PostLog{},
 		&Conversation{},
 		&Interaction{},
+		// Recurring templates
+		&RecurringTemplate{},
 		// Analytics models
 		&PostAnalytics{},
 		&CampaignAnalytics{},

@@ -104,7 +104,8 @@ func (m *TenantBotManager) InitBots() error {
 	}
 
 	var tenants []storage.Tenant
-	if err := m.DB.Where("status = ?", "Active").Find(&tenants).Error; err != nil {
+	// Load tenants with active status (case-insensitive: "active", "Active", "ACTIVE")
+	if err := m.DB.Where("LOWER(status) = ?", "active").Find(&tenants).Error; err != nil {
 		return fmt.Errorf("failed to fetch tenants: %w", err)
 	}
 	if len(tenants) == 0 {
