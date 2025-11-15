@@ -33,10 +33,19 @@ func (m *BulkUploadManager) DetectBulkUpload(tenantID uint, sessionID string) (b
 	var items []storage.MediaItem
 	if err := m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).
 		Find(&items).Error; err != nil {
+		m.Logger.Error("failed to detect bulk upload",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return false, 0, err
 	}
 
 	count := len(items)
+	m.Logger.Info("🔍 Bulk upload detection",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("session_id", sessionID),
+		zap.Int("item_count", count))
+	
 	// Consider 10+ items as bulk upload
 	return count >= 10, count, nil
 }
@@ -49,15 +58,32 @@ func (m *BulkUploadManager) ProcessBulkUpload(
 	chatID int64,
 	sessionID string,
 ) error {
-	// Get all items from session
+	// Get all items from session - retry a few times to ensure we have all items
 	var items []storage.MediaItem
-	if err := m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).
-		Find(&items).Error; err != nil {
+	maxRetries := 3
+	var err error
+	
+	for i := 0; i < maxRetries; i++ {
+		if err = m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).
+			Find(&items).Error; err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	
+	if err != nil {
+		m.Logger.Error("failed to fetch items after retries",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("session_id", sessionID),
+			zap.Error(err))
 		return fmt.Errorf("failed to fetch items: %w", err)
 	}
 
 	if len(items) < 10 {
 		// Not a bulk upload, handle normally
+		m.Logger.Info("not enough items for bulk upload",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int("item_count", len(items)))
 		return nil
 	}
 
@@ -66,6 +92,11 @@ func (m *BulkUploadManager) ProcessBulkUpload(
 		zap.Uint("tenant_id", tenantID),
 		zap.String("session_id", sessionID),
 		zap.Int("item_count", count))
+	
+	// Ensure bot is available
+	if bot == nil {
+		return fmt.Errorf("bot instance not available for tenant %d", tenantID)
+	}
 
 	// Create bulk upload session
 	bulkSession := storage.BulkUploadSession{

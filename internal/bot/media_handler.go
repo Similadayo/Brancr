@@ -14,6 +14,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 )
 
@@ -98,21 +99,94 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 	time.AfterFunc(2*time.Minute, func() {
 		m.sessionFinalizers.Delete(key)
 	})
-	go m.FinalizeCarouselSession(ctx, bot, tenantID, msg.Chat.ID, sessionID)
+	// Pass tenantID and chatID instead of bot instance to avoid stale references
+	go m.FinalizeCarouselSession(ctx, tenantID, msg.Chat.ID, sessionID)
 }
 
-func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sessionID string) {
-	time.Sleep(3 * time.Second) // wait for all media to arrive
-
+func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID uint, chatID int64, sessionID string) {
+	// Get bot instance fresh - it might not have been available when goroutine started
+	bot, ok := m.GetBot(tenantID)
+	if !ok || bot == nil {
+		m.Logger.Warn("bot instance not found for tenant in FinalizeCarouselSession, attempting to initialize",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("session_id", sessionID))
+		// Try to initialize bot if tenant exists
+		var tenant storage.Tenant
+		if err := m.DB.First(&tenant, tenantID).Error; err == nil && tenant.TelegramBotToken != "" {
+			// Decrypt token and create bot
+			token, err := utils.DecryptToken(tenant.TelegramBotToken)
+			if err == nil {
+				newBot, err := tgbotapi.NewBotAPI(token)
+				if err == nil {
+					m.Mutex.Lock()
+					m.Bots[tenantID] = newBot
+					m.Mutex.Unlock()
+					bot = newBot
+					m.Logger.Info("✅ Bot instance initialized in FinalizeCarouselSession",
+						zap.Uint("tenant_id", tenantID))
+				}
+			}
+		}
+		if bot == nil {
+			m.Logger.Error("failed to get bot instance after retry - cannot send response",
+				zap.Uint("tenant_id", tenantID),
+				zap.Int64("chat_id", chatID))
+			// Still process the upload, but can't send messages
+		}
+	}
+	// Smart wait: Check item count and wait accordingly
+	// For bulk uploads (20+), we need more time
+	maxWaitTime := 30 * time.Second
+	checkInterval := 2 * time.Second
+	startTime := time.Now()
+	
 	var items []storage.MediaItem
+	var lastCount int
+	
+	// Wait for items to arrive, checking periodically
+	for time.Since(startTime) < maxWaitTime {
+		time.Sleep(checkInterval)
+		
+		if err := m.DB.Where("tenant_id = ? AND session_id = ? AND status = ?", tenantID, sessionID, "pending").Find(&items).Error; err != nil {
+			m.Logger.Error("failed to fetch session items", zap.Error(err))
+			continue
+		}
+		
+		currentCount := len(items)
+		
+		// If count hasn't changed in 2 checks, assume all items arrived
+		if currentCount == lastCount && currentCount > 0 {
+			// Wait a bit more for any stragglers
+			time.Sleep(2 * time.Second)
+			break
+		}
+		
+		// For large uploads (20+), wait longer
+		if currentCount >= 20 {
+			// Wait additional time for bulk uploads
+			time.Sleep(5 * time.Second)
+		}
+		
+		lastCount = currentCount
+	}
+	
+	// Final fetch of all items (including processed)
 	if err := m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).Find(&items).Error; err != nil {
 		m.Logger.Error("failed to fetch session items", zap.Error(err))
 		return
 	}
 
 	if len(items) == 0 {
+		m.Logger.Warn("no items found for session",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("session_id", sessionID))
 		return
 	}
+	
+	m.Logger.Info("📦 Finalizing media session",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("session_id", sessionID),
+		zap.Int("item_count", len(items)))
 
 	// ✅ Determine type
 	assetType := "image"
@@ -157,19 +231,48 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, bot *tgb
 
 	// ✅ Check if this is a bulk upload (10+ items)
 	bulkManager := NewBulkUploadManager(m.DB, m.Logger)
-	isBulk, _, err := bulkManager.DetectBulkUpload(tenantID, sessionID)
+	isBulk, itemCount, err := bulkManager.DetectBulkUpload(tenantID, sessionID)
+	
+	m.Logger.Info("🔍 Bulk upload check",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("session_id", sessionID),
+		zap.Bool("is_bulk", isBulk),
+		zap.Int("item_count", itemCount),
+		zap.Error(err))
+	
 	if err == nil && isBulk {
 		// Handle as bulk upload
+		m.Logger.Info("📦 Processing bulk upload",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int("item_count", itemCount))
+		
+		// Send acknowledgment message
+		ackMsg := fmt.Sprintf("📦 *Bulk Upload Detected!*\n\nI found %d images. Processing them now...", itemCount)
+		ack := tgbotapi.NewMessage(chatID, ackMsg)
+		ack.ParseMode = "Markdown"
+		if bot != nil {
+			bot.Send(ack)
+		}
+		
 		if err := bulkManager.ProcessBulkUpload(ctx, bot, tenantID, chatID, sessionID); err != nil {
 			m.Logger.Error("failed to process bulk upload", zap.Error(err))
 			// Fallback to normal flow
-			m.StartPostFlow(bot, chatID, asset.ID)
+			if bot != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Bulk upload processing failed. Falling back to normal flow."))
+				m.StartPostFlow(bot, chatID, asset.ID)
+			}
 		}
 		return
 	}
 
 	// ✅ Normal flow: Trigger interactive post creation flow
-	m.StartPostFlow(bot, chatID, asset.ID)
+	if bot != nil {
+		m.StartPostFlow(bot, chatID, asset.ID)
+	} else {
+		m.Logger.Error("bot instance is nil, cannot start post flow",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int64("chat_id", chatID))
+	}
 
 }
 
