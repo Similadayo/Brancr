@@ -139,7 +139,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 	maxWaitTime := 30 * time.Second
 	checkInterval := 2 * time.Second
 	startTime := time.Now()
-	
+
 	var items []storage.MediaItem
 	var lastCount int
 	
@@ -267,7 +267,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 
 	// ✅ Normal flow: Trigger interactive post creation flow
 	if bot != nil {
-		m.StartPostFlow(bot, chatID, asset.ID)
+	m.StartPostFlow(bot, chatID, asset.ID)
 	} else {
 		m.Logger.Error("bot instance is nil, cannot start post flow",
 			zap.Uint("tenant_id", tenantID),
