@@ -3,6 +3,7 @@ package tenantapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -74,6 +76,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/integrations/{platform}/verify", h.verifyIntegration)
 		r.Post("/tenant/integrations/{platform}/repair", h.repairIntegration)
 		r.Get("/tenant/integrations/{platform}/debug", h.debugIntegration) // Debug endpoint to check account details
+		// Manual Page subscription endpoint (for Instagram)
+		r.Post("/tenant/integrations/instagram/subscribe", h.subscribeInstagramPage)
 
 		// Scheduled posts CRUD
 		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
@@ -717,6 +721,122 @@ func (h *Handler) repairIntegration(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message":  message,
 		"platform": platform,
+	})
+}
+
+// subscribeInstagramPage manually subscribes the Facebook Page to receive Instagram message webhooks
+// This is useful for debugging and fixing webhook issues
+func (h *Handler) subscribeInstagramPage(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get Instagram account
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "instagram").First(&account).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":   "instagram_not_found",
+			"message": "Instagram account not connected. Please connect Instagram first.",
+		})
+		return
+	}
+
+	// Get the connected Facebook Page ID
+	ctx := r.Context()
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// Decrypt token
+	token := account.AccessToken
+	if decrypted, err := utils.DecryptToken(account.AccessToken); err == nil {
+		token = decrypted
+	}
+
+	// Get Instagram Business Account ID
+	igAccountID := account.ExternalID
+	if igAccountID == "" {
+		igAccountID = account.PageID
+	}
+
+	if igAccountID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "instagram_id_missing",
+			"message": "Instagram Business Account ID not found. Please verify Instagram first.",
+		})
+		return
+	}
+
+	// Find connected Facebook Page
+	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=connected_page&access_token=%s", igAccountID, token)
+	pageResp, err := client.Get(pageURL)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "failed_to_fetch_page",
+			"message": fmt.Sprintf("Failed to fetch connected Facebook Page: %v", err),
+		})
+		return
+	}
+	defer pageResp.Body.Close()
+
+	pageBody, _ := io.ReadAll(pageResp.Body)
+	if pageResp.StatusCode >= 400 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "no_connected_page",
+			"message": fmt.Sprintf("No connected Facebook Page found. Response: %s", string(pageBody)),
+		})
+		return
+	}
+
+	var pageData struct {
+		ConnectedPage struct {
+			ID string `json:"id"`
+		} `json:"connected_page"`
+	}
+
+	if err := json.Unmarshal(pageBody, &pageData); err != nil || pageData.ConnectedPage.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "page_parse_error",
+			"message": "Could not parse connected Facebook Page ID",
+		})
+		return
+	}
+
+	pageID := pageData.ConnectedPage.ID
+
+	// Subscribe Page to receive Instagram message webhooks
+	// Import the function from social package
+	subscribeErr := social.SubscribePageToInstagramMessages(ctx, client, pageID, token)
+	if subscribeErr != nil {
+		h.Logger.Warn("failed to subscribe Instagram Page",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("page_id", pageID),
+			zap.String("instagram_id", igAccountID),
+			zap.Error(subscribeErr))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "subscription_failed",
+			"message": fmt.Sprintf("Failed to subscribe Page to Instagram messages: %v", subscribeErr),
+			"page_id": pageID,
+			"hint":    "This might be normal if already subscribed. Check Meta Dashboard webhook configuration.",
+		})
+		return
+	}
+
+	h.Logger.Info("✅ Successfully subscribed Instagram Page",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("page_id", pageID),
+		zap.String("instagram_id", igAccountID))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":      true,
+		"message":      "Page successfully subscribed to receive Instagram message webhooks",
+		"page_id":      pageID,
+		"instagram_id": igAccountID,
+		"next_steps": []string{
+			"1. Verify webhook URL in Meta Dashboard points to Railway",
+			"2. Ensure 'messages' subscription is enabled in Meta Dashboard",
+			"3. Test webhook by sending a DM to your Instagram account",
+		},
 	})
 }
 

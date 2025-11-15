@@ -75,13 +75,17 @@ func VerifySocialConnection(ctx context.Context, acc *storage.SocialAccount, db 
 			acc.PageID = igID // Also save to PageID for backward compatibility
 		}
 
-		// Step 2.5️⃣ — Subscribe Page to app for Instagram message webhooks
-		// CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
-		subscribeErr := subscribePageToInstagramMessages(ctx, client, pageID, acc.AccessToken)
-		if subscribeErr != nil {
-			// Log warning but don't fail verification - subscription might already exist
-			fmt.Printf("⚠️ Failed to subscribe Page to Instagram messages (may already be subscribed): %v\n", subscribeErr)
-		}
+	// Step 2.5️⃣ — Subscribe Page to app for Instagram message webhooks
+	// CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
+	fmt.Printf("📨 Attempting to subscribe Page %s to receive Instagram message webhooks...\n", pageID)
+	subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, acc.AccessToken)
+	if subscribeErr != nil {
+		// Log warning but don't fail verification - subscription might already exist
+		fmt.Printf("⚠️ Failed to subscribe Page to Instagram messages (may already be subscribed): %v\n", subscribeErr)
+		fmt.Printf("⚠️ Instagram DMs may not work without Page subscription. Please check Meta Dashboard webhook configuration.\n")
+	} else {
+		fmt.Printf("✅ Page %s successfully subscribed to receive Instagram message webhooks\n", pageID)
+	}
 
 		// Step 3️⃣ — Fetch actual Instagram profile info
 		igInfoURL := fmt.Sprintf("https://graph.facebook.com/v17.0/%s?fields=id,name,username&access_token=%s", igID, acc.AccessToken)
@@ -550,10 +554,10 @@ func persistSocialAccount(acc *storage.SocialAccount, plainToken string, db *gor
 	_ = db.Save(acc).Error
 }
 
-// subscribePageToInstagramMessages subscribes a Facebook Page to receive Instagram message webhooks
+// SubscribePageToInstagramMessages subscribes a Facebook Page to receive Instagram message webhooks
 // This is CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
 // According to Meta documentation: POST /{page-id}/subscribed_apps?subscribed_fields=messages&access_token={page-access-token}
-func subscribePageToInstagramMessages(ctx context.Context, client *http.Client, pageID, accessToken string) error {
+func SubscribePageToInstagramMessages(ctx context.Context, client *http.Client, pageID, accessToken string) error {
 	// Decrypt token if needed
 	token := accessToken
 	if decrypted, err := utils.DecryptToken(accessToken); err == nil {
@@ -578,13 +582,18 @@ func subscribePageToInstagramMessages(ctx context.Context, client *http.Client, 
 	q.Set("access_token", token)
 	req.URL.RawQuery = q.Encode()
 	
+	fmt.Printf("📤 POST %s?access_token=***\n", endpoint)
+	fmt.Printf("📤 Body: subscribed_fields=messages\n")
+	
 	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Printf("❌ Subscription request failed: %v\n", err)
 		return fmt.Errorf("subscription request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	
 	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("📥 Response: Status %d, Body: %s\n", resp.StatusCode, string(body))
 	
 	// Check if subscription succeeded (200 OK) or already exists (may return different status)
 	if resp.StatusCode == http.StatusOK {
@@ -664,7 +673,7 @@ func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 					for _, page := range pagesData.Data {
 						if page.InstagramBusinessAccount.ID == igBusinessAccountID {
 							// Found the page! Subscribe it
-							subscribeErr := subscribePageToInstagramMessages(ctx, client, page.ID, accessToken)
+							subscribeErr := SubscribePageToInstagramMessages(ctx, client, page.ID, accessToken)
 							return page.ID, subscribeErr
 						}
 					}
@@ -690,7 +699,7 @@ func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 	
 	pageID := pageData.ConnectedPage.ID
 	
-	// Step 2: Subscribe the Page to receive Instagram message webhooks
-	subscribeErr := subscribePageToInstagramMessages(ctx, client, pageID, accessToken)
+		// Step 2: Subscribe the Page to receive Instagram message webhooks
+		subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, accessToken)
 	return pageID, subscribeErr
 }
