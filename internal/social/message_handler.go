@@ -391,9 +391,9 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.String("message_id", response.MessageID),
 			zap.String("message_preview", truncateString(reply, 50)))
 	} else {
-		h.Logger.Info("✅ Instagram DM sent",
-			zap.String("recipient_id", threadID),
-			zap.String("message_preview", truncateString(reply, 50)))
+	h.Logger.Info("✅ Instagram DM sent",
+		zap.String("recipient_id", threadID),
+		zap.String("message_preview", truncateString(reply, 50)))
 	}
 
 	return nil
@@ -525,8 +525,8 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 			zap.String("message_preview", truncateString(reply, 50)))
 	} else {
 		h.Logger.Info("✅ Facebook Messenger message sent",
-			zap.String("recipient_id", threadID),
-			zap.String("message_preview", truncateString(reply, 50)))
+		zap.String("recipient_id", threadID),
+		zap.String("message_preview", truncateString(reply, 50)))
 	}
 
 	return nil
