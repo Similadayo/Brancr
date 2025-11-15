@@ -130,7 +130,20 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 
 	for _, a := range assets {
 		var arr []string
-		_ = json.Unmarshal([]byte(a.URLs), &arr)
+		if err := json.Unmarshal([]byte(a.URLs), &arr); err != nil {
+			s.Logger.Error("scheduler: failed to unmarshal URLs", 
+				zap.Uint("asset_id", a.ID),
+				zap.Error(err))
+			continue
+		}
+		
+		// Log URLs for debugging
+		s.Logger.Info("scheduler: processing asset URLs",
+			zap.Uint("asset_id", a.ID),
+			zap.String("asset_type", a.Type),
+			zap.Int("url_count", len(arr)),
+			zap.Strings("urls", arr))
+		
 		urls = append(urls, arr...)
 
 		itemType := inferMediaType(a.Type, arr)
