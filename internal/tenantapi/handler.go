@@ -2046,7 +2046,7 @@ func (h *Handler) suggestReplies(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listMedia(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in")
 		return
 	}
 	query := h.DB.Where("tenant_id = ?", claims.TenantID)
@@ -2059,30 +2059,46 @@ func (h *Handler) listMedia(w http.ResponseWriter, r *http.Request) {
 	if campaign := r.URL.Query().Get("campaign"); campaign != "" {
 		query = query.Where("campaign = ?", campaign)
 	}
+	// Pagination: cursor (id) and limit
 	limit := 50
 	if s := r.URL.Query().Get("limit"); s != "" {
 		if v, err := strconv.Atoi(s); err == nil && v > 0 && v <= 200 {
 			limit = v
 		}
 	}
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		if id, err := strconv.Atoi(cursor); err == nil && id > 0 {
+			query = query.Where("id < ?", id)
+		}
+	}
 	var assets []storage.MediaAsset
-	if err := query.Order("created_at DESC").Limit(limit).Find(&assets).Error; err != nil {
-		http.Error(w, "failed to list media", http.StatusInternalServerError)
+	if err := query.Order("id DESC").Limit(limit + 1).Find(&assets).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "list_media_failed", "Failed to list media")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": assets})
+	var nextCursor *uint
+	if len(assets) > limit {
+		last := assets[len(assets)-1]
+		tmp := last.ID
+		nextCursor = &tmp
+		assets = assets[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       assets,
+		"next_cursor": nextCursor,
+	})
 }
 
 func (h *Handler) getMedia(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in")
 		return
 	}
 	id := chi.URLParam(r, "id")
 	var asset storage.MediaAsset
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&asset).Error; err != nil {
-		http.Error(w, "media not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "media_not_found", "Media not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, asset)
@@ -2232,15 +2248,37 @@ func (h *Handler) getOptimalTimes(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listBulkUploads(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in")
 		return
+	}
+	limit := 20
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 && v <= 100 {
+			limit = v
+		}
+	}
+	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		if id, err := strconv.Atoi(cursor); err == nil && id > 0 {
+			query = query.Where("id < ?", id)
+		}
 	}
 	var sessions []storage.BulkUploadSession
-	if err := h.DB.Where("tenant_id = ?", claims.TenantID).Order("created_at DESC").Limit(50).Find(&sessions).Error; err != nil {
-		http.Error(w, "failed to list bulk uploads", http.StatusInternalServerError)
+	if err := query.Order("id DESC").Limit(limit + 1).Find(&sessions).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "list_bulk_uploads_failed", "Failed to list bulk uploads")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": sessions})
+	var nextCursor *uint
+	if len(sessions) > limit {
+		last := sessions[len(sessions)-1]
+		tmp := last.ID
+		nextCursor = &tmp
+		sessions = sessions[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       sessions,
+		"next_cursor": nextCursor,
+	})
 }
 
 func (h *Handler) getBulkUpload(w http.ResponseWriter, r *http.Request) {
@@ -2274,6 +2312,18 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// writeError returns a consistent error envelope: { "error": { "code", "message" } }
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	})
 }
 
 // =======================
@@ -2561,7 +2611,7 @@ func (h *Handler) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in")
 		return
 	}
 
@@ -2569,25 +2619,37 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	status := r.URL.Query().Get("status")
 	search := r.URL.Query().Get("search")
+	limit := 50
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 && v <= 200 {
+			limit = v
+		}
+	}
+	cursor := r.URL.Query().Get("cursor")
 
-	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+	query := h.DB.Model(&storage.Conversation{}).Where("conversations.tenant_id = ?", claims.TenantID)
 
 	if platform != "" {
-		query = query.Where("platform = ?", platform)
+		query = query.Where("conversations.platform = ?", platform)
 	}
 	if status != "" {
-		query = query.Where("status = ?", status)
+		query = query.Where("conversations.status = ?", status)
 	}
 	if search != "" {
 		// Search in interactions content
 		query = query.Joins("JOIN interactions ON interactions.conversation_id = conversations.id").
 			Where("interactions.content ILIKE ?", "%"+search+"%")
 	}
+	if cursor != "" {
+		if id, err := strconv.Atoi(cursor); err == nil && id > 0 {
+			query = query.Where("conversations.id < ?", id)
+		}
+	}
 
 	var conversations []storage.Conversation
-	if err := query.Order("last_message_at DESC").Limit(100).Find(&conversations).Error; err != nil {
+	if err := query.Order("conversations.id DESC").Limit(limit + 1).Find(&conversations).Error; err != nil {
 		h.Logger.Error("fetch conversations", zap.Error(err))
-		http.Error(w, "could not fetch conversations", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "list_conversations_failed", "Could not fetch conversations")
 		return
 	}
 
@@ -2606,8 +2668,11 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt       time.Time  `json:"updated_at"`
 	}
 
-	resp := make([]conversationResp, 0, len(conversations))
-	for _, conv := range conversations {
+	resp := make([]conversationResp, 0, min(len(conversations), limit))
+	for i, conv := range conversations {
+		if i >= limit {
+			break
+		}
 		var customer storage.Customer
 		h.DB.Where("id = ?", conv.CustomerID).First(&customer)
 
@@ -2638,28 +2703,36 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	var nextCursor *uint
+	if len(conversations) > len(resp) {
+		last := conversations[len(resp)]
+		tmp := last.ID
+		nextCursor = &tmp
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"conversations": resp,
+		"items":       resp,
+		"next_cursor": nextCursor,
 	})
 }
 
 func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in")
 		return
 	}
 
 	conversationID := chi.URLParam(r, "id")
 	if conversationID == "" {
-		http.Error(w, "conversation id required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing_conversation_id", "Conversation id is required")
 		return
 	}
 
 	var conversation storage.Conversation
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).
 		First(&conversation).Error; err != nil {
-		http.Error(w, "conversation not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "conversation_not_found", "Conversation not found")
 		return
 	}
 
@@ -2720,13 +2793,13 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in")
 		return
 	}
 
 	conversationID := chi.URLParam(r, "id")
 	if conversationID == "" {
-		http.Error(w, "conversation id required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing_conversation_id", "Conversation id is required")
 		return
 	}
 
@@ -2735,26 +2808,26 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid request body")
 		return
 	}
 
 	if req.Message == "" {
-		http.Error(w, "message is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "missing_message", "Message is required")
 		return
 	}
 
 	var conversation storage.Conversation
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).
 		First(&conversation).Error; err != nil {
-		http.Error(w, "conversation not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "conversation_not_found", "Conversation not found")
 		return
 	}
 
 	// Get customer
 	var customer storage.Customer
 	if err := h.DB.Where("id = ?", conversation.CustomerID).First(&customer).Error; err != nil {
-		http.Error(w, "customer not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "customer_not_found", "Customer not found")
 		return
 	}
 
@@ -2762,7 +2835,7 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	var account storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, conversation.Platform).
 		First(&account).Error; err != nil {
-		http.Error(w, fmt.Sprintf("%s account not connected", conversation.Platform), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "integration_missing", fmt.Sprintf("%s account not connected", conversation.Platform))
 		return
 	}
 
@@ -2772,7 +2845,7 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	err := h.sendPlatformReply(ctx, conversation.Platform, &account, &customer, req.Message)
 	if err != nil {
 		h.Logger.Error("failed to send reply", zap.Error(err))
-		http.Error(w, fmt.Sprintf("failed to send reply: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "send_reply_failed", fmt.Sprintf("Failed to send reply: %v", err))
 		return
 	}
 

@@ -25,8 +25,13 @@ func (f *FacebookConnector) PostMedia(ctx context.Context, acc *storage.SocialAc
 
 	// Parse media URLs
 	var urls []string
-	if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil || len(urls) == 0 {
-		return fmt.Errorf("no media URLs provided")
+	if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil {
+		urls = nil
+	}
+
+	// If no media provided, post a text-only status to the page feed
+	if len(urls) == 0 {
+		return f.postText(ctx, acc, caption)
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -154,6 +159,42 @@ func (f *FacebookConnector) postCarousel(ctx context.Context, client *http.Clien
 	}
 
 	fmt.Printf("✅ [Facebook] Posted carousel (%d images) successfully to PageID=%s\n", len(urls), acc.PageID)
+	return nil
+}
+
+// postText posts a text-only status to the Facebook Page feed
+func (f *FacebookConnector) postText(ctx context.Context, acc *storage.SocialAccount, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("cannot post empty text to Facebook")
+	}
+	feedURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/feed", acc.PageID)
+	if acc.PageID == "" {
+		feedURL = "https://graph.facebook.com/v18.0/me/feed"
+	}
+
+	form := url.Values{}
+	form.Set("message", message)
+	form.Set("access_token", acc.AccessToken)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", feedURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create text post request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("text post request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Facebook feed error %d: %s", resp.StatusCode, string(body))
+	}
+
+	fmt.Printf("✅ [Facebook] Posted text status successfully to PageID=%s\n", acc.PageID)
 	return nil
 }
 
