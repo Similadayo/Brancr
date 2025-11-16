@@ -22,6 +22,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"strconv"
 )
 
 const (
@@ -49,6 +50,12 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
+	// Public OAuth (start/callback)
+	r.Route("/oauth", func(r chi.Router) {
+		r.Get("/{platform}/start", h.oauthStart)
+		r.Get("/{platform}/callback", h.oauthCallback)
+	})
+
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/signup", h.signup)
 		r.Post("/login", h.login)
@@ -68,6 +75,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/onboarding/persona", h.updatePersona)
 		r.Post("/tenant/onboarding/business-details", h.updateBusinessDetails)
 		r.Post("/tenant/onboarding/complete", h.completeOnboarding)
+		// Post-onboarding settings
+		r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
+		r.Put("/tenant/settings/persona", h.updatePersonaSettings)
 
 		r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 
@@ -84,7 +94,10 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// Scheduled posts CRUD
 		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
 		r.Get("/tenant/scheduled-posts/{id}", h.getScheduledPost)
+		r.Put("/tenant/scheduled-posts/{id}", h.updateScheduledPost)
 		r.Delete("/tenant/scheduled-posts/{id}", h.deleteScheduledPost)
+		// Calendar range view
+		r.Get("/tenant/calendar", h.getCalendar)
 
 		// Overview and stats
 		r.Get("/tenant/overview", h.overview)
@@ -92,6 +105,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// WhatsApp provider-owned model (new)
 		r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
 		r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
+		r.Post("/tenant/whatsapp/select-number", h.selectWhatsAppNumber)
 		r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
 		r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
 
@@ -117,9 +131,30 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/conversations", h.listConversations)
 		r.Get("/tenant/conversations/{id}", h.getConversation)
 		r.Post("/tenant/conversations/{id}/replies", h.sendReply)
+		r.Put("/tenant/conversations/{id}", h.updateConversation)
+		r.Post("/tenant/conversations/{id}/suggest-replies", h.suggestReplies)
 
 		// Analytics API
 		r.Get("/tenant/analytics", h.getAnalytics)
+
+		// Media Library
+		r.Get("/tenant/media", h.listMedia)
+		r.Get("/tenant/media/{id}", h.getMedia)
+		r.Post("/tenant/media", h.createMedia)
+		r.Put("/tenant/media/{id}", h.updateMedia)
+		r.Delete("/tenant/media/{id}", h.deleteMedia)
+
+		// Post creation
+		r.Post("/tenant/posts", h.createPost)
+		r.Post("/tenant/posts/generate-caption", h.generateCaption)
+		r.Get("/tenant/posts/optimal-times", h.getOptimalTimes)
+
+		// Bulk uploads
+		r.Get("/tenant/bulk-uploads", h.listBulkUploads)
+		r.Get("/tenant/bulk-uploads/{id}", h.getBulkUpload)
+		r.Post("/tenant/bulk-uploads", h.createBulkUpload)
+		r.Put("/tenant/bulk-uploads/{id}", h.updateBulkUploadStatus)
+		r.Post("/tenant/bulk-uploads/{id}/cancel", h.cancelBulkUpload)
 
 		// Team Management API (coming soon - placeholder)
 		r.Get("/tenant/team/members", h.listTeamMembers)
@@ -127,6 +162,36 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/team/members/{id}", h.getTeamMember)
 		r.Put("/tenant/team/members/{id}", h.updateTeamMember)
 		r.Delete("/tenant/team/members/{id}", h.deleteTeamMember)
+	})
+}
+
+// OAuth start: placeholder URL generation
+func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
+	platform := chi.URLParam(r, "platform")
+	tenantID := r.URL.Query().Get("tenant_id")
+	success := r.URL.Query().Get("success_redirect")
+	if platform == "" || tenantID == "" {
+		http.Error(w, "platform and tenant_id required", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"platform":         platform,
+		"auth_url":         fmt.Sprintf("https://auth.%s.brancr.com/start?tenant_id=%s", platform, url.QueryEscape(tenantID)),
+		"success_redirect": success,
+	})
+}
+
+// OAuth callback: stub
+func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	platform := chi.URLParam(r, "platform")
+	code := r.URL.Query().Get("code")
+	if platform == "" || code == "" {
+		http.Error(w, "platform and code required", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"platform": platform,
+		"message":  "OAuth callback received",
 	})
 }
 
@@ -1629,6 +1694,580 @@ func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
 		"message":     "Onboarding completed! You can now connect your social media accounts.",
 		"redirect_to": "/dashboard",
 	})
+}
+
+// =======================
+// Settings (post-onboarding)
+// =======================
+func (h *Handler) updateBusinessProfileSettings(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		Name           *string `json:"name"`
+		Industry       *string `json:"industry"`
+		Description    *string `json:"description"`
+		Location       *string `json:"location"`
+		Website        *string `json:"website"`
+		OperatingHours *string `json:"operating_hours"`
+		Timezone       *string `json:"timezone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	var profile storage.BusinessProfile
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&profile).Error; err != nil {
+		profile = storage.BusinessProfile{TenantID: claims.TenantID}
+	}
+	if req.Name != nil {
+		profile.Name = *req.Name
+	}
+	if req.Industry != nil {
+		profile.Industry = *req.Industry
+	}
+	if req.Description != nil {
+		profile.Description = *req.Description
+	}
+	if req.Location != nil {
+		profile.Location = *req.Location
+	}
+	if req.Website != nil {
+		profile.Website = *req.Website
+	}
+	if req.OperatingHours != nil {
+		profile.OperatingHours = *req.OperatingHours
+	}
+	if err := h.DB.Save(&profile).Error; err != nil {
+		h.Logger.Error("failed to update business profile settings", zap.Error(err))
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	if req.Timezone != nil && *req.Timezone != "" {
+		var tenant storage.Tenant
+		if err := h.DB.First(&tenant, claims.TenantID).Error; err == nil {
+			tenant.Timezone = *req.Timezone
+			_ = h.DB.Save(&tenant).Error
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Business profile updated"})
+}
+
+func (h *Handler) updatePersonaSettings(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		BotName    *string `json:"bot_name"`
+		Tone       *string `json:"tone"`
+		Language   *string `json:"language"`
+		Humor      *bool   `json:"humor"`
+		StyleNotes *string `json:"style_notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	var persona storage.Persona
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&persona).Error; err != nil {
+		persona = storage.Persona{TenantID: claims.TenantID}
+	}
+	if req.BotName != nil {
+		persona.BotName = *req.BotName
+	}
+	if req.Tone != nil {
+		persona.Tone = *req.Tone
+	}
+	if req.Language != nil {
+		persona.Language = *req.Language
+	}
+	if req.Humor != nil {
+		persona.Humor = *req.Humor
+	}
+	if req.StyleNotes != nil {
+		persona.StyleNotes = *req.StyleNotes
+	}
+	if err := h.DB.Save(&persona).Error; err != nil {
+		h.Logger.Error("failed to update persona settings", zap.Error(err))
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Persona updated"})
+}
+
+// =======================
+// Scheduled posts updates & calendar
+// =======================
+func (h *Handler) updateScheduledPost(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	postID := chi.URLParam(r, "id")
+	if postID == "" {
+		http.Error(w, "post id required", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		ScheduledAt *string  `json:"scheduled_at"` // RFC3339
+		Caption     *string  `json:"caption"`
+		Platforms   []string `json:"platforms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	var post storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, postID).First(&post).Error; err != nil {
+		http.Error(w, "scheduled post not found", http.StatusNotFound)
+		return
+	}
+	if req.Caption != nil {
+		post.Caption = *req.Caption
+	}
+	if req.ScheduledAt != nil && *req.ScheduledAt != "" {
+		if t, err := time.Parse(time.RFC3339, *req.ScheduledAt); err == nil {
+			post.ScheduledAt = &t
+		} else {
+			http.Error(w, "invalid scheduled_at", http.StatusBadRequest)
+			return
+		}
+	}
+	if req.Platforms != nil {
+		if b, err := json.Marshal(req.Platforms); err == nil {
+			post.Platforms = string(b)
+		}
+	}
+	if err := h.DB.Save(&post).Error; err != nil {
+		h.Logger.Error("failed to update scheduled post", zap.Error(err))
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (h *Handler) getCalendar(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	startStr := r.URL.Query().Get("start")
+	endStr := r.URL.Query().Get("end")
+	if startStr == "" || endStr == "" {
+		http.Error(w, "start and end required (YYYY-MM-DD or RFC3339)", http.StatusBadRequest)
+		return
+	}
+	// Parse dates (accept YYYY-MM-DD)
+	parseDay := func(s string) (time.Time, error) {
+		if len(s) == 10 {
+			return time.Parse("2006-01-02", s)
+		}
+		return time.Parse(time.RFC3339, s)
+	}
+	start, err1 := parseDay(startStr)
+	end, err2 := parseDay(endStr)
+	if err1 != nil || err2 != nil {
+		http.Error(w, "invalid date range", http.StatusBadRequest)
+		return
+	}
+	var posts []storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ? AND scheduled_at >= ? AND scheduled_at <= ?", claims.TenantID, start, end).
+		Order("scheduled_at ASC").Find(&posts).Error; err != nil {
+		http.Error(w, "failed to fetch calendar", http.StatusInternalServerError)
+		return
+	}
+	type calPost struct {
+		ID          uint       `json:"id"`
+		Name        string     `json:"name"`
+		Status      string     `json:"status"`
+		ScheduledAt *time.Time `json:"scheduled_at"`
+		Platforms   []string   `json:"platforms"`
+	}
+	resp := make([]calPost, 0, len(posts))
+	for _, p := range posts {
+		var plats []string
+		if strings.TrimSpace(p.Platforms) != "" {
+			_ = json.Unmarshal([]byte(p.Platforms), &plats)
+		}
+		resp = append(resp, calPost{
+			ID:          p.ID,
+			Name:        p.Name,
+			Status:      p.Status,
+			ScheduledAt: p.ScheduledAt,
+			Platforms:   plats,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": resp})
+}
+
+// =======================
+// WhatsApp helpers
+// =======================
+func (h *Handler) selectWhatsAppNumber(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		NumberID string `json:"number_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.NumberID) == "" {
+		http.Error(w, "number_id required", http.StatusBadRequest)
+		return
+	}
+	// Reuse assignPhoneNumber by setting URL param is cumbersome; directly implement here
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("id = ? OR phone_number_id = ?", req.NumberID, req.NumberID).First(&phoneNum).Error; err != nil {
+		http.Error(w, "phone number not found", http.StatusNotFound)
+		return
+	}
+	if phoneNum.Status != "available" || (phoneNum.TenantID != nil && *phoneNum.TenantID != 0) {
+		http.Error(w, "phone number is not available", http.StatusBadRequest)
+		return
+	}
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
+		http.Error(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	now := time.Now()
+	phoneNum.TenantID = &claims.TenantID
+	phoneNum.DisplayName = tenant.Name
+	phoneNum.Status = "assigned"
+	phoneNum.AssignedAt = &now
+	if err := h.DB.Save(&phoneNum).Error; err != nil {
+		http.Error(w, "failed to assign number", http.StatusInternalServerError)
+		return
+	}
+	// Ensure social account exists/updated
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error; err != nil {
+		account = storage.SocialAccount{
+			TenantID:   claims.TenantID,
+			Platform:   "whatsapp",
+			PageID:     phoneNum.PhoneNumberID,
+			ExternalID: phoneNum.PhoneNumberID,
+			Username:   phoneNum.PhoneNumber,
+			Connected:  true,
+			Mode:       "provider_owned",
+		}
+		_ = h.DB.Create(&account).Error
+	} else {
+		account.PageID = phoneNum.PhoneNumberID
+		account.ExternalID = phoneNum.PhoneNumberID
+		account.Username = phoneNum.PhoneNumber
+		account.Connected = true
+		account.Mode = "provider_owned"
+		_ = h.DB.Save(&account).Error
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":         "WhatsApp number assigned successfully",
+		"phone_number":    phoneNum.PhoneNumber,
+		"phone_number_id": phoneNum.PhoneNumberID,
+	})
+}
+
+// =======================
+// Conversations enhancements
+// =======================
+func (h *Handler) updateConversation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	conversationID := chi.URLParam(r, "id")
+	if conversationID == "" {
+		http.Error(w, "conversation id required", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Status string   `json:"status"`
+		Tags   []string `json:"tags"`
+		Notes  string   `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	var conv storage.Conversation
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).
+		First(&conv).Error; err != nil {
+		http.Error(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+	if req.Status != "" {
+		conv.Status = req.Status
+	}
+	if err := h.DB.Save(&conv).Error; err != nil {
+		http.Error(w, "failed to update", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (h *Handler) suggestReplies(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	conversationID := chi.URLParam(r, "id")
+	if conversationID == "" {
+		http.Error(w, "conversation id required", http.StatusBadRequest)
+		return
+	}
+	// Fetch last interaction content to base suggestions on
+	var last storage.Interaction
+	if err := h.DB.Where("tenant_id = ? AND conversation_id = ?", claims.TenantID, conversationID).
+		Order("created_at DESC").First(&last).Error; err != nil {
+		http.Error(w, "no conversation messages found", http.StatusNotFound)
+		return
+	}
+	// Very basic heuristic suggestions (placeholder). Can integrate AI client.
+	suggestions := []string{
+		"Thanks for reaching out! Could you share a bit more detail?",
+		"Happy to help with that. Would you prefer Instagram or Facebook for this post?",
+		"I can schedule this for you. Do you have a preferred date/time?",
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": suggestions})
+}
+
+// =======================
+// Media Library
+// =======================
+func (h *Handler) listMedia(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+	if t := r.URL.Query().Get("type"); t != "" {
+		query = query.Where("type = ?", t)
+	}
+	if tag := r.URL.Query().Get("tag"); tag != "" {
+		query = query.Where("tags LIKE ?", "%"+tag+"%")
+	}
+	if campaign := r.URL.Query().Get("campaign"); campaign != "" {
+		query = query.Where("campaign = ?", campaign)
+	}
+	limit := 50
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 && v <= 200 {
+			limit = v
+		}
+	}
+	var assets []storage.MediaAsset
+	if err := query.Order("created_at DESC").Limit(limit).Find(&assets).Error; err != nil {
+		http.Error(w, "failed to list media", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": assets})
+}
+
+func (h *Handler) getMedia(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var asset storage.MediaAsset
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&asset).Error; err != nil {
+		http.Error(w, "media not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, asset)
+}
+
+func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
+	// Stub: in production, return signed URL for S3/GCS then accept finalize callback
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"message":  "Use pre-signed upload workflow",
+		"tenantId": claims.TenantID,
+	})
+}
+
+func (h *Handler) updateMedia(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var asset storage.MediaAsset
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&asset).Error; err != nil {
+		http.Error(w, "media not found", http.StatusNotFound)
+		return
+	}
+	var req struct {
+		Tags    []string `json:"tags"`
+		Caption *string  `json:"caption"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Tags != nil {
+		if b, err := json.Marshal(req.Tags); err == nil {
+			asset.Tags = string(b)
+		}
+	}
+	if req.Caption != nil {
+		asset.Caption = *req.Caption
+	}
+	if err := h.DB.Save(&asset).Error; err != nil {
+		http.Error(w, "failed to update media", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func (h *Handler) deleteMedia(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).Delete(&storage.MediaAsset{}).Error; err != nil {
+		http.Error(w, "failed to delete", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// =======================
+// Post creation
+// =======================
+func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		MediaIDs    []uint    `json:"media_ids"`
+		Caption     string    `json:"caption"`
+		Platforms   []string  `json:"platforms"`
+		ScheduledAt string    `json:"scheduled_at"` // RFC3339
+		Name        string    `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.MediaIDs) == 0 {
+		http.Error(w, "media_ids required", http.StatusBadRequest)
+		return
+	}
+	var scheduledAt *time.Time
+	if req.ScheduledAt != "" {
+		if t, err := time.Parse(time.RFC3339, req.ScheduledAt); err == nil {
+			scheduledAt = &t
+		} else {
+			http.Error(w, "invalid scheduled_at", http.StatusBadRequest)
+			return
+		}
+	}
+	mediaJSON, _ := json.Marshal(req.MediaIDs)
+	platsJSON, _ := json.Marshal(req.Platforms)
+	post := storage.ScheduledPost{
+		TenantID:      claims.TenantID,
+		Name:          req.Name,
+		Caption:       req.Caption,
+		MediaAssetIDs: string(mediaJSON),
+		Platforms:     string(platsJSON),
+		ScheduledAt:   scheduledAt,
+		Status:        "scheduled",
+	}
+	if err := h.DB.Create(&post).Error; err != nil {
+		http.Error(w, "failed to create post", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": post.ID})
+}
+
+func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		Context string `json:"context"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Context) == "" {
+		http.Error(w, "context required", http.StatusBadRequest)
+		return
+	}
+	// Simple placeholder caption
+	caption := fmt.Sprintf("✨ %s\n\n#brancr #socialmedia", req.Context)
+	writeJSON(w, http.StatusOK, map[string]string{"caption": caption, "tenant_id": fmt.Sprintf("%d", claims.TenantID)})
+}
+
+func (h *Handler) getOptimalTimes(w http.ResponseWriter, r *http.Request) {
+	// Basic placeholder with next few hours
+	now := time.Now().UTC().Truncate(time.Hour)
+	result := []map[string]any{
+		{"at": now.Add(6 * time.Hour), "score": 0.78},
+		{"at": now.Add(24 * time.Hour).Add(10 * time.Hour), "score": 0.82},
+		{"at": now.Add(48 * time.Hour).Add(9 * time.Hour), "score": 0.80},
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"times": result})
+}
+
+// =======================
+// Bulk uploads (basic)
+// =======================
+func (h *Handler) listBulkUploads(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var sessions []storage.BulkUploadSession
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).Order("created_at DESC").Limit(50).Find(&sessions).Error; err != nil {
+		http.Error(w, "failed to list bulk uploads", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": sessions})
+}
+
+func (h *Handler) getBulkUpload(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var sess storage.BulkUploadSession
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&sess).Error; err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (h *Handler) createBulkUpload(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "Bulk upload creation via dashboard not implemented yet"})
+}
+
+func (h *Handler) updateBulkUploadStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "Pause/Resume not implemented yet"})
+}
+
+func (h *Handler) cancelBulkUpload(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "Cancel not implemented yet"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
