@@ -1166,33 +1166,10 @@ func (h *Handler) assignPhoneNumber(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Subscribe phone number to webhooks for receiving messages
-	// IMPORTANT: Use Meta's phone_number_id (phoneNum.PhoneNumberID), NOT database id
-	// The endpoint accepts database id, but webhook subscription requires Meta's phone_number_id
-	systemToken := h.Config.MetaSystemUserToken
-	if systemToken != "" && phoneNum.PhoneNumberID != "" {
-		go func() {
-			// Subscribe phone number to receive webhook events using Meta's phone_number_id
-			// This is async to avoid blocking the response
-			social.SubscribePhoneNumberToWebhooks(h.Logger, phoneNum.PhoneNumberID, systemToken)
-		}()
-	} else {
-		if systemToken == "" {
-			h.Logger.Warn("webhook subscription skipped: system token not configured",
-				zap.String("phone_number_id", phoneNum.PhoneNumberID),
-				zap.Uint("tenant_id", claims.TenantID))
-		}
-		if phoneNum.PhoneNumberID == "" {
-			h.Logger.Error("webhook subscription failed: phone_number_id is empty",
-				zap.Uint("database_id", phoneNum.ID),
-				zap.Uint("tenant_id", claims.TenantID))
-		}
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":         "WhatsApp number assigned successfully",
 		"phone_number":    phoneNum.PhoneNumber,
-		"phone_number_id": phoneNum.PhoneNumberID, // Meta's phone_number_id, not database id
+		"phone_number_id": phoneNum.PhoneNumberID,
 	})
 }
 
