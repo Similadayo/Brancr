@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,12 +21,12 @@ import (
 
 // MessageHandler processes incoming messages from social platforms
 type MessageHandler struct {
-	DB               *gorm.DB
-	Logger           *zap.Logger
-	IntentDetector   *ai.IntentDetector
-	Responder        *ai.CustomerResponder
-	SystemToken      string // Brancr's system user token for provider-owned WhatsApp model
-	EscalationFunc   func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
+	DB             *gorm.DB
+	Logger         *zap.Logger
+	IntentDetector *ai.IntentDetector
+	Responder      *ai.CustomerResponder
+	SystemToken    string // Brancr's system user token for provider-owned WhatsApp model
+	EscalationFunc func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
 }
 
 // IncomingMessage represents a message from a social platform
@@ -391,9 +392,9 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.String("message_id", response.MessageID),
 			zap.String("message_preview", truncateString(reply, 50)))
 	} else {
-	h.Logger.Info("✅ Instagram DM sent",
-		zap.String("recipient_id", threadID),
-		zap.String("message_preview", truncateString(reply, 50)))
+		h.Logger.Info("✅ Instagram DM sent",
+			zap.String("recipient_id", threadID),
+			zap.String("message_preview", truncateString(reply, 50)))
 	}
 
 	return nil
@@ -525,11 +526,35 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 			zap.String("message_preview", truncateString(reply, 50)))
 	} else {
 		h.Logger.Info("✅ Facebook Messenger message sent",
-		zap.String("recipient_id", threadID),
-		zap.String("message_preview", truncateString(reply, 50)))
+			zap.String("recipient_id", threadID),
+			zap.String("message_preview", truncateString(reply, 50)))
 	}
 
 	return nil
+}
+
+// normalizePhoneNumber normalizes a phone number to E.164 format required by WhatsApp Business API
+// E.164 format: +[country code][number] (e.g., +1234567890)
+func normalizePhoneNumber(phone string) string {
+	// Remove all non-digit characters except +
+	re := regexp.MustCompile(`[^\d+]`)
+	cleaned := re.ReplaceAllString(phone, "")
+
+	// If it doesn't start with +, add it (assuming it's missing country code)
+	// Meta webhooks usually provide numbers in E.164 format already
+	if !strings.HasPrefix(cleaned, "+") {
+		// If it starts with 0, remove it (common in some countries)
+		if strings.HasPrefix(cleaned, "0") {
+			cleaned = cleaned[1:]
+		}
+		// If no + prefix, assume it needs one (but this is a guess - webhook should provide correct format)
+		// For now, return as-is if it looks like a valid number
+		if len(cleaned) >= 10 {
+			cleaned = "+" + cleaned
+		}
+	}
+
+	return cleaned
 }
 
 // sendWhatsAppReply sends a reply via WhatsApp Business API
@@ -569,19 +594,39 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		return fmt.Errorf("WhatsApp access token not found")
 	}
 
+	// Normalize phone number to E.164 format (required by WhatsApp Business API)
+	normalizedPhone := normalizePhoneNumber(customerID)
+	if normalizedPhone == "" || !strings.HasPrefix(normalizedPhone, "+") {
+		h.Logger.Warn("⚠️ Phone number may not be in E.164 format",
+			zap.String("original", customerID),
+			zap.String("normalized", normalizedPhone))
+		// Use original if normalization failed
+		normalizedPhone = customerID
+	}
+
 	// WhatsApp Business API endpoint
 	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages?access_token=%s", phoneNumberID, accessToken)
 
 	payload := map[string]interface{}{
 		"messaging_product": "whatsapp",
-		"to":                customerID, // WhatsApp phone number (e.g., "1234567890")
+		"to":                normalizedPhone, // WhatsApp phone number in E.164 format (e.g., "+1234567890")
 		"type":              "text",
 		"text": map[string]string{
 			"body": reply,
 		},
 	}
 
-	jsonData, _ := json.Marshal(payload)
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	h.Logger.Info("📤 Sending WhatsApp message",
+		zap.String("phone_number_id", phoneNumberID),
+		zap.String("to_original", customerID),
+		zap.String("to_normalized", normalizedPhone),
+		zap.String("message_preview", truncateString(reply, 50)))
+
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -595,19 +640,79 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		h.Logger.Error("WhatsApp API error",
-			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(body)),
-			zap.String("phone_number_id", phoneNumberID))
-		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, string(body))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
 	}
 
-	h.Logger.Info("✅ WhatsApp message sent",
-		zap.String("phone_number_id", phoneNumberID),
-		zap.String("to", customerID),
-		zap.String("message_preview", truncateString(reply, 50)))
+	// Parse response to check for errors (Meta sometimes returns 200 with errors in body)
+	var apiResponse struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Error *struct {
+			Message   string `json:"message"`
+			Type      string `json:"type"`
+			Code      int    `json:"code"`
+			ErrorData struct {
+				MessagingProduct string `json:"messaging_product"`
+				Details          string `json:"details"`
+			} `json:"error_data"`
+		} `json:"error"`
+	}
+
+	responseStr := string(body)
+	if err := json.Unmarshal(body, &apiResponse); err == nil {
+		// Check for errors in response body (even if status is 200)
+		if apiResponse.Error != nil {
+			errorMsg := fmt.Sprintf("WhatsApp API error: %s (code: %d, type: %s)",
+				apiResponse.Error.Message, apiResponse.Error.Code, apiResponse.Error.Type)
+
+			// Check for specific error codes that indicate delivery issues
+			if apiResponse.Error.Code == 131047 {
+				errorMsg += "\n\n⚠️ Message outside 24-hour window: You can only send template messages outside the 24-hour messaging window."
+			} else if apiResponse.Error.Code == 131026 {
+				errorMsg += "\n\n⚠️ Invalid phone number format: Phone number must be in E.164 format (e.g., +1234567890)."
+			} else if apiResponse.Error.Code == 131031 {
+				errorMsg += "\n\n⚠️ Recipient phone number not registered on WhatsApp."
+			}
+
+			h.Logger.Error("WhatsApp API error in response",
+				zap.Int("error_code", apiResponse.Error.Code),
+				zap.String("error_type", apiResponse.Error.Type),
+				zap.String("error_message", apiResponse.Error.Message),
+				zap.String("phone_number_id", phoneNumberID),
+				zap.String("to", normalizedPhone),
+				zap.String("full_response", responseStr))
+
+			return errors.New(errorMsg)
+		}
+	}
+
+	// Check HTTP status code
+	if resp.StatusCode >= 400 {
+		h.Logger.Error("WhatsApp API HTTP error",
+			zap.Int("status", resp.StatusCode),
+			zap.String("response", responseStr),
+			zap.String("phone_number_id", phoneNumberID),
+			zap.String("to", normalizedPhone))
+		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, responseStr)
+	}
+
+	// Log success with message ID if available
+	if len(apiResponse.Messages) > 0 {
+		h.Logger.Info("✅ WhatsApp message sent successfully",
+			zap.String("phone_number_id", phoneNumberID),
+			zap.String("to", normalizedPhone),
+			zap.String("message_id", apiResponse.Messages[0].ID),
+			zap.String("message_preview", truncateString(reply, 50)))
+	} else {
+		h.Logger.Info("✅ WhatsApp message sent",
+			zap.String("phone_number_id", phoneNumberID),
+			zap.String("to", normalizedPhone),
+			zap.String("message_preview", truncateString(reply, 50)),
+			zap.String("response", responseStr))
+	}
 
 	return nil
 }
