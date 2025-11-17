@@ -435,6 +435,12 @@ func encryptToken(token string) (string, error) {
 	return enc, nil
 }
 
+// SubscribePhoneNumberToWebhooks subscribes a phone number to receive webhook events
+// This is a public wrapper for the private subscribePhoneNumber function
+func SubscribePhoneNumberToWebhooks(logger *zap.Logger, phoneID, accessToken string) {
+	subscribePhoneNumber(logger, phoneID, accessToken)
+}
+
 func subscribePhoneNumber(logger *zap.Logger, phoneID, tenantToken string) {
 	phoneID = strings.TrimSpace(phoneID)
 	tenantToken = strings.TrimSpace(tenantToken)

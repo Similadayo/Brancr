@@ -510,6 +510,20 @@ func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
 			zap.String("phone_number", phoneRequest.PhoneNumber),
 			zap.Uint("tenant_id", phoneRequest.TenantID))
 
+		// Subscribe phone number to webhooks for receiving messages
+		// Use system token for provider-owned model
+		systemToken := ctx.Config.MetaSystemUserToken
+		if systemToken != "" {
+			go func() {
+				// Subscribe phone number to receive webhook events
+				// This is async to avoid blocking the response
+				social.SubscribePhoneNumberToWebhooks(ctx.Logger, phoneNum.PhoneNumberID, systemToken)
+			}()
+		} else {
+			ctx.Logger.Warn("webhook subscription skipped: system token not configured",
+				zap.String("phone_number_id", phoneNum.PhoneNumberID))
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
