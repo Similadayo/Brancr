@@ -1166,21 +1166,6 @@ func (h *Handler) assignPhoneNumber(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Subscribe phone number to webhooks for receiving messages
-	// Use system token for provider-owned model
-	systemToken := h.Config.MetaSystemUserToken
-	if systemToken != "" {
-		go func() {
-			// Subscribe phone number to receive webhook events
-			// This is async to avoid blocking the response
-			social.SubscribePhoneNumberToWebhooks(h.Logger, phoneNum.PhoneNumberID, systemToken)
-		}()
-	} else {
-		h.Logger.Warn("webhook subscription skipped: system token not configured",
-			zap.String("phone_number_id", phoneNum.PhoneNumberID),
-			zap.Uint("tenant_id", claims.TenantID))
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":         "WhatsApp number assigned successfully",
 		"phone_number":    phoneNum.PhoneNumber,
