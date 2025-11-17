@@ -27,7 +27,7 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 	}
 
 	wabaID := cfg.BrancrWABAID
-	
+
 	// Try to get phone numbers directly from WABA ID
 	// Request all fields we need including verification status
 	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status&access_token=%s", wabaID, cfg.BrancrWABAToken)
@@ -43,26 +43,26 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	
+
 	// If we get an error saying it's a Business node, try to get WABAs from Business first
 	if resp.StatusCode == 400 && strings.Contains(string(body), "Business") && strings.Contains(string(body), "phone_numbers") {
 		if logger != nil {
 			logger.Warn("BrancrWABAID appears to be a Business ID, attempting to get WABA from Business", zap.String("business_id", wabaID))
 		}
-		
+
 		// Get owned WABAs from Business
 		wabaEndpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/owned_whatsapp_business_accounts?access_token=%s", wabaID, cfg.BrancrWABAToken)
 		wabaReq, err := http.NewRequest(http.MethodGet, wabaEndpoint, nil)
 		if err != nil {
 			return fmt.Errorf("failed to create WABA request: %w", err)
 		}
-		
+
 		wabaResp, err := http.DefaultClient.Do(wabaReq)
 		if err != nil {
 			return fmt.Errorf("WABA request failed: %w", err)
 		}
 		defer wabaResp.Body.Close()
-		
+
 		wabaBody, _ := io.ReadAll(wabaResp.Body)
 		if wabaResp.StatusCode >= 400 {
 			if logger != nil {
@@ -70,27 +70,27 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 			}
 			return fmt.Errorf("failed to get WABAs from Business (status %d): %s. Please ensure BRANCR_WABA_ID is a WABA ID, not a Business ID.", wabaResp.StatusCode, string(wabaBody))
 		}
-		
+
 		var wabaResponse struct {
 			Data []struct {
 				ID string `json:"id"`
 			} `json:"data"`
 		}
-		
+
 		if err := json.Unmarshal(wabaBody, &wabaResponse); err != nil {
 			return fmt.Errorf("failed to parse WABA response: %w", err)
 		}
-		
+
 		if len(wabaResponse.Data) == 0 {
 			return fmt.Errorf("no WABAs found for Business ID %s. Please configure BRANCR_WABA_ID with an actual WABA ID.", wabaID)
 		}
-		
+
 		// Use the first WABA ID
 		wabaID = wabaResponse.Data[0].ID
 		if logger != nil {
 			logger.Info("found WABA from Business", zap.String("waba_id", wabaID))
 		}
-		
+
 		// Retry with the actual WABA ID
 		// Request all fields we need including verification status
 		endpoint = fmt.Sprintf("https://graph.facebook.com/v20.0/%s/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status&access_token=%s", wabaID, cfg.BrancrWABAToken)
@@ -98,16 +98,16 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 		if err != nil {
 			return fmt.Errorf("failed to create request: %w", err)
 		}
-		
+
 		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("request failed: %w", err)
 		}
 		defer resp.Body.Close()
-		
+
 		body, _ = io.ReadAll(resp.Body)
 	}
-	
+
 	if resp.StatusCode >= 400 {
 		if logger != nil {
 			logger.Error("failed to fetch phone numbers", zap.Int("status", resp.StatusCode), zap.ByteString("body", body), zap.String("endpoint", endpoint))
@@ -117,10 +117,10 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 
 	var response struct {
 		Data []struct {
-			ID                 string `json:"id"`
-			DisplayPhoneNumber string `json:"display_phone_number"`
-			VerifiedName       string `json:"verified_name"`
-			QualityRating      string `json:"quality_rating"`
+			ID                     string `json:"id"`
+			DisplayPhoneNumber     string `json:"display_phone_number"`
+			VerifiedName           string `json:"verified_name"`
+			QualityRating          string `json:"quality_rating"`
 			CodeVerificationStatus string `json:"code_verification_status"` // PENDING, VERIFIED, etc.
 		} `json:"data"`
 		Paging struct {
@@ -143,13 +143,12 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 		if err == gorm.ErrRecordNotFound {
 			// Create new phone number
 			phoneNum = storage.WhatsAppPhoneNumber{
-				PhoneNumberID:     phoneData.ID,
-				PhoneNumber:       phoneData.DisplayPhoneNumber,
-				WABAID:            wabaID, // Use the resolved WABA ID
-				VerifiedName:      phoneData.VerifiedName,
-				QualityRating:     phoneData.QualityRating,
-				VerificationStatus: phoneData.CodeVerificationStatus, // Store Meta's verification status
-				Status:            "available",
+				PhoneNumberID: phoneData.ID,
+				PhoneNumber:   phoneData.DisplayPhoneNumber,
+				WABAID:        wabaID, // Use the resolved WABA ID
+				VerifiedName:  phoneData.VerifiedName,
+				QualityRating: phoneData.QualityRating,
+				Status:        "available",
 			}
 			if err := db.Create(&phoneNum).Error; err != nil {
 				if logger != nil {
@@ -158,30 +157,27 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 				continue
 			}
 			if logger != nil {
-				logger.Info("created phone number", 
-					zap.String("phone_id", phoneData.ID), 
+				logger.Info("created phone number",
+					zap.String("phone_id", phoneData.ID),
 					zap.String("number", phoneData.DisplayPhoneNumber),
 					zap.String("verification_status", phoneData.CodeVerificationStatus),
 					zap.String("verified_name", phoneData.VerifiedName))
 			}
 		} else if err == nil {
-			// Update existing phone number (sync verification status even if assigned)
-			phoneNum.VerifiedName = phoneData.VerifiedName
-			phoneNum.QualityRating = phoneData.QualityRating
-			phoneNum.VerificationStatus = phoneData.CodeVerificationStatus // Always update verification status
-			
-			// Only update internal status if not assigned
+			// Update existing phone number (only if not assigned)
 			if phoneNum.TenantID == nil || *phoneNum.TenantID == 0 {
+				phoneNum.VerifiedName = phoneData.VerifiedName
+				phoneNum.QualityRating = phoneData.QualityRating
 				phoneNum.Status = "available"
 			}
-			
+
 			if err := db.Save(&phoneNum).Error; err != nil {
 				if logger != nil {
 					logger.Error("failed to update phone number", zap.Error(err), zap.String("phone_id", phoneData.ID))
 				}
 				continue
 			}
-			
+
 			if logger != nil {
 				logger.Debug("synced phone number verification status",
 					zap.String("phone_id", phoneData.ID),
