@@ -1047,43 +1047,35 @@ func (h *Handler) listAvailablePhoneNumbers(w http.ResponseWriter, r *http.Reque
 	h.DB.Where("status = ? AND (tenant_id IS NULL OR tenant_id = 0)", "available").Find(&available)
 
 	type phoneNumber struct {
-		ID                 uint   `json:"id"`
-		PhoneNumberID      string `json:"phone_number_id"`
-		PhoneNumber        string `json:"phone_number"`
-		DisplayName        string `json:"display_name"`
-		VerifiedName       string `json:"verified_name"`
-		VerificationStatus string `json:"verification_status"` // PENDING, VERIFIED, etc.
-		IsVerified         bool   `json:"is_verified"`         // true if both code verified AND display name approved
-		Status             string `json:"status"`
+		ID            uint   `json:"id"`
+		PhoneNumberID string `json:"phone_number_id"`
+		PhoneNumber   string `json:"phone_number"`
+		DisplayName   string `json:"display_name"`
+		VerifiedName  string `json:"verified_name"`
+		Status        string `json:"status"`
 	}
 
 	availableResp := make([]phoneNumber, 0, len(available))
 	for _, num := range available {
-		isVerified := num.VerificationStatus == "VERIFIED" && num.VerifiedName != ""
 		availableResp = append(availableResp, phoneNumber{
-			ID:                 num.ID,
-			PhoneNumberID:      num.PhoneNumberID,
-			PhoneNumber:        num.PhoneNumber,
-			DisplayName:        num.DisplayName,
-			VerifiedName:       num.VerifiedName,
-			VerificationStatus: num.VerificationStatus,
-			IsVerified:         isVerified,
-			Status:             num.Status,
+			ID:            num.ID,
+			PhoneNumberID: num.PhoneNumberID,
+			PhoneNumber:   num.PhoneNumber,
+			DisplayName:   num.DisplayName,
+			VerifiedName:  num.VerifiedName,
+			Status:        num.Status,
 		})
 	}
 
 	var current *phoneNumber
 	if currentAssignment.ID != 0 {
-		isVerified := currentAssignment.VerificationStatus == "VERIFIED" && currentAssignment.VerifiedName != ""
 		current = &phoneNumber{
-			ID:                 currentAssignment.ID,
-			PhoneNumberID:      currentAssignment.PhoneNumberID,
-			PhoneNumber:        currentAssignment.PhoneNumber,
-			DisplayName:        currentAssignment.DisplayName,
-			VerifiedName:       currentAssignment.VerifiedName,
-			VerificationStatus: currentAssignment.VerificationStatus,
-			IsVerified:         isVerified,
-			Status:             currentAssignment.Status,
+			ID:            currentAssignment.ID,
+			PhoneNumberID: currentAssignment.PhoneNumberID,
+			PhoneNumber:   currentAssignment.PhoneNumber,
+			DisplayName:   currentAssignment.DisplayName,
+			VerifiedName:  currentAssignment.VerifiedName,
+			Status:        currentAssignment.Status,
 		}
 	}
 
@@ -1197,20 +1189,15 @@ func (h *Handler) getAssignedPhoneNumber(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Determine if number is fully verified (both code verification and display name approved)
-	isVerified := phoneNum.VerificationStatus == "VERIFIED" && phoneNum.VerifiedName != ""
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"assigned":            true,
-		"id":                  phoneNum.ID,
-		"phone_number_id":     phoneNum.PhoneNumberID,
-		"phone_number":        phoneNum.PhoneNumber,
-		"display_name":        phoneNum.DisplayName,
-		"verified_name":       phoneNum.VerifiedName,
-		"quality_rating":      phoneNum.QualityRating,
-		"verification_status": phoneNum.VerificationStatus, // PENDING, VERIFIED, etc.
-		"is_verified":         isVerified,                  // true if both code verified AND display name approved
-		"assigned_at":         phoneNum.AssignedAt,
+		"assigned":        true,
+		"id":              phoneNum.ID,
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"phone_number":    phoneNum.PhoneNumber,
+		"display_name":    phoneNum.DisplayName,
+		"verified_name":   phoneNum.VerifiedName,
+		"quality_rating":  phoneNum.QualityRating,
+		"assigned_at":     phoneNum.AssignedAt,
 	})
 }
 
