@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"strconv"
+
 	"github.com/go-chi/chi/v5"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/config"
@@ -22,7 +24,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
-	"strconv"
 )
 
 const (
@@ -1046,35 +1047,43 @@ func (h *Handler) listAvailablePhoneNumbers(w http.ResponseWriter, r *http.Reque
 	h.DB.Where("status = ? AND (tenant_id IS NULL OR tenant_id = 0)", "available").Find(&available)
 
 	type phoneNumber struct {
-		ID            uint   `json:"id"`
-		PhoneNumberID string `json:"phone_number_id"`
-		PhoneNumber   string `json:"phone_number"`
-		DisplayName   string `json:"display_name"`
-		VerifiedName  string `json:"verified_name"`
-		Status        string `json:"status"`
+		ID                 uint   `json:"id"`
+		PhoneNumberID      string `json:"phone_number_id"`
+		PhoneNumber        string `json:"phone_number"`
+		DisplayName        string `json:"display_name"`
+		VerifiedName       string `json:"verified_name"`
+		VerificationStatus string `json:"verification_status"` // PENDING, VERIFIED, etc.
+		IsVerified         bool   `json:"is_verified"`         // true if both code verified AND display name approved
+		Status             string `json:"status"`
 	}
 
 	availableResp := make([]phoneNumber, 0, len(available))
 	for _, num := range available {
+		isVerified := num.VerificationStatus == "VERIFIED" && num.VerifiedName != ""
 		availableResp = append(availableResp, phoneNumber{
-			ID:            num.ID,
-			PhoneNumberID: num.PhoneNumberID,
-			PhoneNumber:   num.PhoneNumber,
-			DisplayName:   num.DisplayName,
-			VerifiedName:  num.VerifiedName,
-			Status:        num.Status,
+			ID:                 num.ID,
+			PhoneNumberID:      num.PhoneNumberID,
+			PhoneNumber:        num.PhoneNumber,
+			DisplayName:        num.DisplayName,
+			VerifiedName:       num.VerifiedName,
+			VerificationStatus: num.VerificationStatus,
+			IsVerified:         isVerified,
+			Status:             num.Status,
 		})
 	}
 
 	var current *phoneNumber
 	if currentAssignment.ID != 0 {
+		isVerified := currentAssignment.VerificationStatus == "VERIFIED" && currentAssignment.VerifiedName != ""
 		current = &phoneNumber{
-			ID:            currentAssignment.ID,
-			PhoneNumberID: currentAssignment.PhoneNumberID,
-			PhoneNumber:   currentAssignment.PhoneNumber,
-			DisplayName:   currentAssignment.DisplayName,
-			VerifiedName:  currentAssignment.VerifiedName,
-			Status:        currentAssignment.Status,
+			ID:                 currentAssignment.ID,
+			PhoneNumberID:      currentAssignment.PhoneNumberID,
+			PhoneNumber:        currentAssignment.PhoneNumber,
+			DisplayName:        currentAssignment.DisplayName,
+			VerifiedName:       currentAssignment.VerifiedName,
+			VerificationStatus: currentAssignment.VerificationStatus,
+			IsVerified:         isVerified,
+			Status:             currentAssignment.Status,
 		}
 	}
 
@@ -1188,15 +1197,20 @@ func (h *Handler) getAssignedPhoneNumber(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Determine if number is fully verified (both code verification and display name approved)
+	isVerified := phoneNum.VerificationStatus == "VERIFIED" && phoneNum.VerifiedName != ""
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"assigned":        true,
-		"id":              phoneNum.ID,
-		"phone_number_id": phoneNum.PhoneNumberID,
-		"phone_number":    phoneNum.PhoneNumber,
-		"display_name":    phoneNum.DisplayName,
-		"verified_name":   phoneNum.VerifiedName,
-		"quality_rating":  phoneNum.QualityRating,
-		"assigned_at":     phoneNum.AssignedAt,
+		"assigned":            true,
+		"id":                  phoneNum.ID,
+		"phone_number_id":     phoneNum.PhoneNumberID,
+		"phone_number":        phoneNum.PhoneNumber,
+		"display_name":        phoneNum.DisplayName,
+		"verified_name":       phoneNum.VerifiedName,
+		"quality_rating":      phoneNum.QualityRating,
+		"verification_status": phoneNum.VerificationStatus, // PENDING, VERIFIED, etc.
+		"is_verified":         isVerified,                  // true if both code verified AND display name approved
+		"assigned_at":         phoneNum.AssignedAt,
 	})
 }
 
@@ -2160,11 +2174,11 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		MediaIDs    []uint    `json:"media_ids"`
-		Caption     string    `json:"caption"`
-		Platforms   []string  `json:"platforms"`
-		ScheduledAt string    `json:"scheduled_at"` // RFC3339
-		Name        string    `json:"name"`
+		MediaIDs    []uint   `json:"media_ids"`
+		Caption     string   `json:"caption"`
+		Platforms   []string `json:"platforms"`
+		ScheduledAt string   `json:"scheduled_at"` // RFC3339
+		Name        string   `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.MediaIDs) == 0 {
 		http.Error(w, "media_ids required", http.StatusBadRequest)
@@ -2297,18 +2311,18 @@ func (h *Handler) listTemplates(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type templateResp struct {
-		ID             uint       `json:"id"`
-		Name           string     `json:"name"`
-		Frequency      string     `json:"frequency"`
-		Schedule       string     `json:"schedule"`
-		MediaTemplate  string     `json:"media_template"`
-		CaptionTemplate string    `json:"caption_template"`
-		Platforms      []string   `json:"platforms"`
-		Active         bool       `json:"active"`
-		NextRun        *time.Time `json:"next_run"`
-		LastRun        *time.Time `json:"last_run"`
-		CreatedAt      time.Time  `json:"created_at"`
-		UpdatedAt      time.Time  `json:"updated_at"`
+		ID              uint       `json:"id"`
+		Name            string     `json:"name"`
+		Frequency       string     `json:"frequency"`
+		Schedule        string     `json:"schedule"`
+		MediaTemplate   string     `json:"media_template"`
+		CaptionTemplate string     `json:"caption_template"`
+		Platforms       []string   `json:"platforms"`
+		Active          bool       `json:"active"`
+		NextRun         *time.Time `json:"next_run"`
+		LastRun         *time.Time `json:"last_run"`
+		CreatedAt       time.Time  `json:"created_at"`
+		UpdatedAt       time.Time  `json:"updated_at"`
 	}
 
 	resp := make([]templateResp, 0, len(templates))
@@ -2593,17 +2607,17 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 
 	// Get customer info and last message for each conversation
 	type conversationResp struct {
-		ID              uint       `json:"id"`
-		CustomerID      uint       `json:"customer_id"`
-		CustomerName    string     `json:"customer_name"`
-		CustomerAvatar  string     `json:"customer_avatar"`
-		Platform        string     `json:"platform"`
-		Status          string     `json:"status"`
-		LastMessage     string     `json:"last_message"`
-		LastMessageAt   time.Time  `json:"last_message_at"`
-		UnreadCount     int        `json:"unread_count"`
-		CreatedAt       time.Time  `json:"created_at"`
-		UpdatedAt       time.Time  `json:"updated_at"`
+		ID             uint      `json:"id"`
+		CustomerID     uint      `json:"customer_id"`
+		CustomerName   string    `json:"customer_name"`
+		CustomerAvatar string    `json:"customer_avatar"`
+		Platform       string    `json:"platform"`
+		Status         string    `json:"status"`
+		LastMessage    string    `json:"last_message"`
+		LastMessageAt  time.Time `json:"last_message_at"`
+		UnreadCount    int       `json:"unread_count"`
+		CreatedAt      time.Time `json:"created_at"`
+		UpdatedAt      time.Time `json:"updated_at"`
 	}
 
 	resp := make([]conversationResp, 0, len(conversations))
@@ -2674,17 +2688,17 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		Find(&interactions)
 
 	type interactionResp struct {
-		ID              uint      `json:"id"`
-		Direction       string    `json:"direction"`
-		MessageType     string    `json:"message_type"`
-		Content         string    `json:"content"`
-		DetectedIntent  string    `json:"detected_intent"`
-		DetectedTone    string    `json:"detected_tone"`
-		ResponseType    string    `json:"response_type"`
-		ResponseStatus  string    `json:"response_status"`
-		SuggestedReply  string    `json:"suggested_reply"`
-		FinalReply      string    `json:"final_reply"`
-		CreatedAt       time.Time `json:"created_at"`
+		ID             uint      `json:"id"`
+		Direction      string    `json:"direction"`
+		MessageType    string    `json:"message_type"`
+		Content        string    `json:"content"`
+		DetectedIntent string    `json:"detected_intent"`
+		DetectedTone   string    `json:"detected_tone"`
+		ResponseType   string    `json:"response_type"`
+		ResponseStatus string    `json:"response_status"`
+		SuggestedReply string    `json:"suggested_reply"`
+		FinalReply     string    `json:"final_reply"`
+		CreatedAt      time.Time `json:"created_at"`
 	}
 
 	messages := make([]interactionResp, 0, len(interactions))
@@ -2705,15 +2719,15 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":             conversation.ID,
-		"customer_id":    conversation.CustomerID,
-		"customer_name":  customer.DisplayName,
+		"id":              conversation.ID,
+		"customer_id":     conversation.CustomerID,
+		"customer_name":   customer.DisplayName,
 		"customer_avatar": customer.ProfilePicURL,
-		"platform":       conversation.Platform,
-		"status":         conversation.Status,
-		"messages":       messages,
-		"created_at":     conversation.CreatedAt,
-		"updated_at":     conversation.UpdatedAt,
+		"platform":        conversation.Platform,
+		"status":          conversation.Status,
+		"messages":        messages,
+		"created_at":      conversation.CreatedAt,
+		"updated_at":      conversation.UpdatedAt,
 	})
 }
 
@@ -2797,8 +2811,8 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	h.DB.Save(&conversation)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"message": "Reply sent successfully",
+		"success":        true,
+		"message":        "Reply sent successfully",
 		"interaction_id": interaction.ID,
 	})
 }
@@ -2885,7 +2899,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	if platform != "" {
 		analyticsQuery = analyticsQuery.Where("platform = ?", platform)
 	}
-	
+
 	var postAnalytics []storage.PostAnalytics
 	if err := analyticsQuery.Find(&postAnalytics).Error; err == nil {
 		analyticsCount = int64(len(postAnalytics))
@@ -2904,15 +2918,15 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 
 	// Get platform breakdown with engagement metrics
 	type platformStats struct {
-		Platform        string  `json:"platform"`
-		Posts           int64   `json:"posts"`
-		Conversations   int64   `json:"conversations"`
-		Impressions     int64   `json:"impressions"`
-		Reach           int64   `json:"reach"`
-		Likes           int64   `json:"likes"`
-		Comments        int64   `json:"comments"`
-		Shares          int64   `json:"shares"`
-		EngagementRate  float64 `json:"engagement_rate"`
+		Platform       string  `json:"platform"`
+		Posts          int64   `json:"posts"`
+		Conversations  int64   `json:"conversations"`
+		Impressions    int64   `json:"impressions"`
+		Reach          int64   `json:"reach"`
+		Likes          int64   `json:"likes"`
+		Comments       int64   `json:"comments"`
+		Shares         int64   `json:"shares"`
+		EngagementRate float64 `json:"engagement_rate"`
 	}
 
 	var platformBreakdown []platformStats
@@ -2921,12 +2935,12 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		if platform != "" && platform != p {
 			continue
 		}
-		
+
 		var posts int64
 		h.DB.Model(&storage.ScheduledPost{}).
 			Where("tenant_id = ? AND platforms LIKE ? AND created_at >= ? AND created_at <= ?", claims.TenantID, "%"+p+"%", start, end).
 			Count(&posts)
-		
+
 		var convos int64
 		h.DB.Model(&storage.Conversation{}).
 			Where("tenant_id = ? AND platform = ? AND created_at >= ? AND created_at <= ?", claims.TenantID, p, start, end).
@@ -2971,23 +2985,23 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	if totalResponses > 0 {
 		responseDistribution = map[string]any{
 			"auto_reply": map[string]any{
-				"count": autoReplyCount,
+				"count":      autoReplyCount,
 				"percentage": float64(autoReplyCount) / float64(totalResponses) * 100,
 			},
 			"manual": map[string]any{
-				"count": manualCount,
+				"count":      manualCount,
 				"percentage": float64(manualCount) / float64(totalResponses) * 100,
 			},
 			"escalated": map[string]any{
-				"count": escalatedCount,
+				"count":      escalatedCount,
 				"percentage": float64(escalatedCount) / float64(totalResponses) * 100,
 			},
 		}
 	} else {
 		responseDistribution = map[string]any{
 			"auto_reply": map[string]any{"count": 0, "percentage": 0},
-			"manual": map[string]any{"count": 0, "percentage": 0},
-			"escalated": map[string]any{"count": 0, "percentage": 0},
+			"manual":     map[string]any{"count": 0, "percentage": 0},
+			"escalated":  map[string]any{"count": 0, "percentage": 0},
 		}
 	}
 
@@ -2999,12 +3013,12 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			"interactions":    interactionsCount,
 		},
 		"engagement": map[string]any{
-			"total_impressions":  totalImpressions,
-			"total_reach":        totalReach,
-			"total_likes":        totalLikes,
-			"total_comments":     totalComments,
-			"total_shares":       totalShares,
-			"avg_engagement_rate": avgEngagementRate,
+			"total_impressions":    totalImpressions,
+			"total_reach":          totalReach,
+			"total_likes":          totalLikes,
+			"total_comments":       totalComments,
+			"total_shares":         totalShares,
+			"avg_engagement_rate":  avgEngagementRate,
 			"posts_with_analytics": analyticsCount,
 		},
 		"response_distribution": responseDistribution,
@@ -3196,7 +3210,7 @@ func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAcco
 		"messaging_product": "whatsapp",
 		"to":                recipientID,
 		"type":              "text",
-		"text": map[string]string{"body": message},
+		"text":              map[string]string{"body": message},
 	}
 
 	jsonData, _ := json.Marshal(payload)
