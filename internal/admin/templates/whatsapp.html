@@ -13,10 +13,11 @@
       <strong style="color: var(--text-primary);">For Admin-Provided Numbers:</strong>
       <ol style="margin: 8px 0 0 0; padding-left: 20px; color: var(--text-secondary); line-height: 1.8;">
         <li>Add the phone number in <a href="https://business.facebook.com/latest/whatsapp_manager/phone_numbers/?business_id=3193061764188941&tab=phone-numbers&nav_ref=whatsapp_manager&asset_id=761025876954971" target="_blank" style="color: var(--accent);">Meta Business Manager</a></li>
-        <li>Meta will send a verification code to the phone number</li>
-        <li>Enter the verification code in Meta's UI to complete verification</li>
         <li>Click <strong>"🔄 Sync from Meta"</strong> below to import the number into Brancr's database</li>
-        <li>The number will appear in the table with status "Available"</li>
+        <li>If number shows "Pending" status, click <strong>"📝 Register"</strong> button in the Actions column</li>
+        <li>Click <strong>"🔑 Request Code"</strong> - Meta will send a verification code to the phone number</li>
+        <li>Enter the verification code in the modal that appears</li>
+        <li>The number will activate and status will change to "Available"</li>
       </ol>
     </div>
     <div>
@@ -108,6 +109,8 @@
             <span class="badge success">Available</span>
           {{else if eq .Status "assigned"}}
             <span class="badge info">Assigned</span>
+          {{else if eq .Status "pending"}}
+            <span class="badge warning">Pending</span>
           {{else if eq .Status "pending_verification"}}
             <span class="badge warning">Pending</span>
           {{else if eq .Status "suspended"}}
@@ -146,6 +149,22 @@
             <button 
               class="btn-secondary request-code-btn" 
               style="padding: 6px 12px; font-size: 12px; margin-right: 8px;"
+              data-phone-number-id="{{.PhoneNumberID}}"
+              data-phone-number="{{.PhoneNumber}}">
+              🔑 Request Code
+            </button>
+          {{else if or (eq .Status "pending") (eq .Status "pending_verification")}}
+            <button 
+              class="btn-primary register-btn" 
+              style="padding: 6px 12px; font-size: 12px; margin-right: 8px;"
+              data-phone-number-id="{{.PhoneNumberID}}"
+              data-phone-number="{{.PhoneNumber}}"
+              onclick="registerNumber('{{.PhoneNumberID}}', '{{.PhoneNumber}}')">
+              📝 Register
+            </button>
+            <button 
+              class="btn-secondary request-code-btn" 
+              style="padding: 6px 12px; font-size: 12px;"
               data-phone-number-id="{{.PhoneNumberID}}"
               data-phone-number="{{.PhoneNumber}}">
               🔑 Request Code
@@ -465,6 +484,43 @@ function verifyRequest(requestID, phoneNumber, verificationCode) {
   .catch(err => {
     console.error('Request error:', err);
     alert('Error: ' + err.message);
+  });
+}
+
+function registerNumber(phoneNumberID, phoneNumber) {
+  if (!confirm(`Register ${phoneNumber}?\n\nThis will activate the number. You can then request a verification code.`)) {
+    return;
+  }
+  
+  fetch('/admin/whatsapp/register', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    body: JSON.stringify({
+      phone_number_id: phoneNumberID
+    })
+  })
+  .then(async res => {
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server error (${res.status}): ${text || res.statusText}`);
+    }
+    return res.json();
+  })
+  .then(data => {
+    if (data.error) {
+      alert('Error: ' + (data.message || data.error));
+    } else {
+      alert('✅ ' + data.message + '\n\nYou can now request a verification code.');
+      location.reload();
+    }
+  })
+  .catch(err => {
+    console.error('Request error:', err);
+    alert('Error registering: ' + err.message);
   });
 }
 

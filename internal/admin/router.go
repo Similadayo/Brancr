@@ -34,6 +34,7 @@ func AdminRouter(ctx *AdminContext) http.Handler {
 		r.Get("/whatsapp", WhatsAppNumbersPageHandler(ctx))              // HTML page
 		r.Get("/whatsapp/numbers", WhatsAppNumbersHandler(ctx))          // JSON API endpoint
 		r.Post("/whatsapp/sync", WhatsAppSyncHandler(ctx))
+		r.Post("/whatsapp/register", WhatsAppRegisterNumberHandler(ctx)) // Register phone number (required before verify)
 		r.Post("/whatsapp/request-code", WhatsAppAddNumberHandler(ctx)) // Request verification code for existing number
 		r.Post("/whatsapp/verify", WhatsAppVerifyNumberHandler(ctx))
 		

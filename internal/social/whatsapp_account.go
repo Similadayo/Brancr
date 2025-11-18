@@ -275,14 +275,91 @@ func RequestPhoneNumberFromMeta(logger *zap.Logger, cfg *config.Config, phoneNum
 	return response.ID, nil
 }
 
+// RegisterPhoneNumber registers a phone number with Meta (REQUIRED before verification)
+// This must be called BEFORE verify_code to activate the number
+func RegisterPhoneNumber(logger *zap.Logger, cfg *config.Config, phoneNumberID string) error {
+	if cfg.BrancrWABAID == "" || cfg.BrancrWABAToken == "" {
+		return fmt.Errorf("WABA ID or token not configured")
+	}
+
+	systemToken := cfg.MetaSystemUserToken
+	if systemToken == "" {
+		systemToken = cfg.BrancrWABAToken // Fallback to WABA token
+	}
+	if systemToken == "" {
+		return fmt.Errorf("system user token not configured")
+	}
+
+	// Meta API endpoint to register phone number
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v19.0/%s/register", phoneNumberID)
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+systemToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to register phone number", zap.Int("status", resp.StatusCode), zap.ByteString("body", body))
+		}
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Success bool   `json:"success"`
+		Message string `json:"message,omitempty"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		if logger != nil {
+			logger.Warn("failed to parse register response", zap.Error(err), zap.ByteString("body", body))
+		}
+		// Still consider it success if we got 200 OK
+		if resp.StatusCode == 200 {
+			if logger != nil {
+				logger.Info("phone number registered successfully", zap.String("phone_number_id", phoneNumberID))
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if logger != nil {
+		logger.Info("phone number registered successfully",
+			zap.String("phone_number_id", phoneNumberID),
+			zap.Bool("success", response.Success))
+	}
+
+	return nil
+}
+
 // VerifyPhoneNumberWithCode completes phone number verification by submitting the code
+// NOTE: Must call RegisterPhoneNumber FIRST before calling this
 func VerifyPhoneNumberWithCode(logger *zap.Logger, cfg *config.Config, phoneNumberID, verificationCode string) error {
 	if cfg.BrancrWABAID == "" || cfg.BrancrWABAToken == "" {
 		return fmt.Errorf("WABA ID or token not configured")
 	}
 
+	systemToken := cfg.MetaSystemUserToken
+	if systemToken == "" {
+		systemToken = cfg.BrancrWABAToken // Fallback to WABA token
+	}
+	if systemToken == "" {
+		return fmt.Errorf("system user token not configured")
+	}
+
 	// Meta API endpoint to verify phone number with code
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/verify_code", phoneNumberID)
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v19.0/%s/verify_code", phoneNumberID)
 
 	payload := map[string]string{
 		"code": verificationCode,
@@ -299,7 +376,7 @@ func VerifyPhoneNumberWithCode(logger *zap.Logger, cfg *config.Config, phoneNumb
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.URL.RawQuery = "access_token=" + cfg.BrancrWABAToken
+	req.Header.Set("Authorization", "Bearer "+systemToken)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

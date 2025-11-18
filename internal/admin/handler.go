@@ -258,6 +258,56 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 	}
 }
 
+// WhatsAppRegisterNumberHandler registers a phone number with Meta (required before verification)
+func WhatsAppRegisterNumberHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			PhoneNumberID string `json:"phone_number_id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.PhoneNumberID == "" {
+			http.Error(w, "phone_number_id is required", http.StatusBadRequest)
+			return
+		}
+
+		if ctx.Config.BrancrWABAID == "" || ctx.Config.BrancrWABAToken == "" {
+			http.Error(w, "WhatsApp WABA not configured", http.StatusBadRequest)
+			return
+		}
+
+		// Register the phone number
+		if err := social.RegisterPhoneNumber(ctx.Logger, ctx.Config, req.PhoneNumberID); err != nil {
+			ctx.Logger.Error("failed to register phone number", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "failed to register phone number",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		ctx.Logger.Info("phone number registered successfully", zap.String("phone_number_id", req.PhoneNumberID))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Phone number registered successfully. You can now verify it with the verification code.",
+			"phone_number_id": req.PhoneNumberID,
+		})
+	}
+}
+
 // WhatsAppVerifyNumberHandler verifies a phone number with the code sent by Meta
 func WhatsAppVerifyNumberHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +336,22 @@ func WhatsAppVerifyNumberHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
-		// Verify phone number with code
+		// STEP 1: Register the phone number (REQUIRED before verification)
+		// This activates the number and makes it ready for verification
+		if err := social.RegisterPhoneNumber(ctx.Logger, ctx.Config, req.PhoneNumberID); err != nil {
+			ctx.Logger.Error("failed to register phone number", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "failed to register phone number",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		ctx.Logger.Info("phone number registered successfully", zap.String("phone_number_id", req.PhoneNumberID))
+
+		// STEP 2: Verify phone number with code (must be called AFTER register)
 		if err := social.VerifyPhoneNumberWithCode(ctx.Logger, ctx.Config, req.PhoneNumberID, req.VerificationCode); err != nil {
 			ctx.Logger.Error("failed to verify phone number", zap.Error(err))
 			w.Header().Set("Content-Type", "application/json")
@@ -439,7 +504,21 @@ func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
-		// Verify phone number with code
+		// STEP 1: Register the phone number (REQUIRED before verification)
+		if err := social.RegisterPhoneNumber(ctx.Logger, ctx.Config, phoneRequest.PhoneNumberID); err != nil {
+			ctx.Logger.Error("failed to register phone number", zap.Error(err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "failed to register phone number",
+				"message": err.Error(),
+			})
+			return
+		}
+
+		ctx.Logger.Info("phone number registered successfully", zap.String("phone_number_id", phoneRequest.PhoneNumberID))
+
+		// STEP 2: Verify phone number with code (must be called AFTER register)
 		if err := social.VerifyPhoneNumberWithCode(ctx.Logger, ctx.Config, phoneRequest.PhoneNumberID, phoneRequest.VerificationCode); err != nil {
 			ctx.Logger.Error("failed to verify phone number", zap.Error(err))
 			w.Header().Set("Content-Type", "application/json")
