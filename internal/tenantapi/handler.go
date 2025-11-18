@@ -109,6 +109,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/whatsapp/select-number", h.selectWhatsAppNumber)
 		r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
 		r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
+		r.Get("/tenant/whatsapp/webhook-status", h.checkWebhookStatus)
+		r.Post("/tenant/whatsapp/resubscribe", h.resubscribeWebhook)
+		r.Get("/tenant/whatsapp/diagnostics", h.comprehensiveDiagnostics)
 
 		// Tenant-provided phone numbers
 		r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
@@ -1239,6 +1242,241 @@ func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": "WhatsApp number disconnected successfully",
 	})
+}
+
+func (h *Handler) checkWebhookStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get tenant's assigned number
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned": false,
+			"message":  "No WhatsApp number assigned",
+		})
+		return
+	}
+
+	// Check webhook subscription status
+	systemToken := h.Config.MetaSystemUserToken
+	if systemToken == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned":        true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"subscribed":      false,
+			"error":           "System token not configured",
+		})
+		return
+	}
+
+	subscribed, err := social.CheckPhoneNumberWebhookSubscription(h.Logger, phoneNum.PhoneNumberID, systemToken)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned":        true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"subscribed":      false,
+			"error":           err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"assigned":        true,
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"phone_number":    phoneNum.PhoneNumber,
+		"subscribed":      subscribed,
+		"message":         map[bool]string{true: "Webhook is subscribed", false: "Webhook is NOT subscribed - messages won't be received"}[subscribed],
+	})
+}
+
+func (h *Handler) resubscribeWebhook(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get tenant's assigned number
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		http.Error(w, "no WhatsApp number assigned", http.StatusNotFound)
+		return
+	}
+
+	systemToken := h.Config.MetaSystemUserToken
+	if systemToken == "" {
+		http.Error(w, "system token not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Resubscribe (async)
+	go func() {
+		social.SubscribePhoneNumberToWebhooks(h.Logger, phoneNum.PhoneNumberID, systemToken)
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":         "Webhook resubscription initiated",
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"note":            "Check webhook status in a few seconds",
+	})
+}
+
+func (h *Handler) comprehensiveDiagnostics(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	diagnostics := map[string]any{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"tenant_id": claims.TenantID,
+		"errors":    []string{},
+		"warnings":  []string{},
+	}
+
+	// 1. Check if number is assigned
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		diagnostics["assigned"] = false
+		diagnostics["error"] = "No WhatsApp number assigned"
+		writeJSON(w, http.StatusOK, diagnostics)
+		return
+	}
+
+	diagnostics["assigned"] = true
+	diagnostics["phone_number_id"] = phoneNum.PhoneNumberID
+	diagnostics["phone_number"] = phoneNum.PhoneNumber
+	diagnostics["verified_name"] = phoneNum.VerifiedName
+	diagnostics["quality_rating"] = phoneNum.QualityRating
+
+	// 2. Check system token
+	systemToken := h.Config.MetaSystemUserToken
+	if systemToken == "" {
+		diagnostics["system_token_configured"] = false
+		errors := diagnostics["errors"].([]string)
+		errors = append(errors, "META_SYSTEM_USER_TOKEN not configured")
+		diagnostics["errors"] = errors
+		writeJSON(w, http.StatusOK, diagnostics)
+		return
+	}
+	diagnostics["system_token_configured"] = true
+
+	// 3. Get phone number status from Meta
+	metaStatus, err := social.GetPhoneNumberStatus(h.Logger, phoneNum.PhoneNumberID, systemToken)
+	if err != nil {
+		diagnostics["meta_status_check"] = map[string]any{
+			"success": false,
+			"error":   err.Error(),
+		}
+	} else {
+		diagnostics["meta_status_check"] = map[string]any{
+			"success":                  true,
+			"verified_name":            metaStatus["verified_name"],
+			"quality_rating":            metaStatus["quality_rating"],
+			"code_verification_status": metaStatus["code_verification_status"],
+			"status":                   metaStatus["status"],
+		}
+
+		// Check if verification is complete
+		verificationStatus, _ := metaStatus["code_verification_status"].(string)
+		if verificationStatus != "VERIFIED" {
+			warnings := diagnostics["warnings"].([]string)
+			warnings = append(warnings, fmt.Sprintf("Phone number verification status: %s (should be VERIFIED)", verificationStatus))
+			diagnostics["warnings"] = warnings
+		}
+	}
+
+	// 4. Check phone number-level webhook subscription
+	phoneSubscribed, err := social.CheckPhoneNumberWebhookSubscription(h.Logger, phoneNum.PhoneNumberID, systemToken)
+	if err != nil {
+		diagnostics["phone_webhook_subscription"] = map[string]any{
+			"subscribed": false,
+			"error":      err.Error(),
+		}
+	} else {
+		diagnostics["phone_webhook_subscription"] = map[string]any{
+			"subscribed": phoneSubscribed,
+		}
+		if !phoneSubscribed {
+			errors := diagnostics["errors"].([]string)
+			errors = append(errors, "Phone number is NOT subscribed to webhooks - inbound messages won't be received")
+			diagnostics["errors"] = errors
+		}
+	}
+
+	// 5. Check WABA-level subscription
+	wabaID := h.Config.BrancrWABAID
+	if wabaID != "" {
+		wabaSubscribed, fields, err := social.CheckWABASubscription(h.Logger, wabaID, systemToken)
+		if err != nil {
+			diagnostics["waba_webhook_subscription"] = map[string]any{
+				"subscribed": false,
+				"error":      err.Error(),
+			}
+		} else {
+			diagnostics["waba_webhook_subscription"] = map[string]any{
+				"subscribed":        wabaSubscribed,
+				"subscribed_fields": fields,
+			}
+			if !wabaSubscribed {
+				warnings := diagnostics["warnings"].([]string)
+				warnings = append(warnings, "WABA is NOT subscribed to webhooks - this may prevent message delivery")
+				diagnostics["warnings"] = warnings
+			}
+		}
+	} else {
+		diagnostics["waba_webhook_subscription"] = map[string]any{
+			"error": "BRANCR_WABA_ID not configured",
+		}
+	}
+
+	// 6. Check social account
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error; err == nil {
+		diagnostics["social_account"] = map[string]any{
+			"exists":      true,
+			"connected":   account.Connected,
+			"mode":        account.Mode,
+			"page_id":     account.PageID,
+			"external_id": account.ExternalID,
+		}
+		if !account.Connected {
+			errors := diagnostics["errors"].([]string)
+			errors = append(errors, "Social account is not marked as connected")
+			diagnostics["errors"] = errors
+		}
+		if account.Mode != "provider_owned" {
+			warnings := diagnostics["warnings"].([]string)
+			warnings = append(warnings, fmt.Sprintf("Account mode is '%s' but should be 'provider_owned'", account.Mode))
+			diagnostics["warnings"] = warnings
+		}
+	} else {
+		diagnostics["social_account"] = map[string]any{
+			"exists": false,
+			"error":  "Social account not found",
+		}
+		errors := diagnostics["errors"].([]string)
+		errors = append(errors, "Social account not found - webhook routing may fail")
+		diagnostics["errors"] = errors
+	}
+
+	// 7. Overall health check
+	errors := diagnostics["errors"].([]string)
+	warnings := diagnostics["warnings"].([]string)
+
+	diagnostics["health"] = map[string]any{
+		"status":  map[bool]string{true: "healthy", false: "unhealthy"}[len(errors) == 0],
+		"errors":  errors,
+		"warnings": warnings,
+		"ready":   len(errors) == 0 && phoneSubscribed,
+	}
+
+	writeJSON(w, http.StatusOK, diagnostics)
 }
 
 func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Request) {

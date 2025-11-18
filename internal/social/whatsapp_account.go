@@ -477,7 +477,7 @@ func attemptPhoneSubscription(logger *zap.Logger, phoneID, tenantToken string, a
 	}
 
 	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", phoneID)
-	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader("subscribed_fields=messages"))
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader("subscribed_fields=messages,statuses"))
 	if err != nil {
 		if logger != nil {
 			logger.Warn("whatsapp phone subscription build failed", zap.String("phone_number_id", phoneID), zap.Error(err))
@@ -619,6 +619,126 @@ func CheckPhoneNumberWebhookSubscription(logger *zap.Logger, phoneID, accessToke
 	return false, nil
 }
 
+// CheckWABASubscription checks if the app is subscribed to WABA-level webhooks
+func CheckWABASubscription(logger *zap.Logger, wabaID, accessToken string) (bool, []string, error) {
+	if wabaID == "" || accessToken == "" {
+		return false, nil, fmt.Errorf("waba_id and access_token are required")
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", wabaID)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	q := make(url.Values)
+	q.Set("access_token", accessToken)
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("failed to check WABA subscription",
+				zap.String("waba_id", wabaID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return false, nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Data []struct {
+			AppID            string   `json:"id"`
+			SubscribedFields []string `json:"subscribed_fields"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		if logger != nil {
+			logger.Warn("failed to parse WABA subscription check response",
+				zap.String("waba_id", wabaID),
+				zap.Error(err),
+				zap.ByteString("body", body))
+		}
+		return false, nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Check if our app is subscribed and get subscribed fields
+	for _, app := range response.Data {
+		hasMessages := false
+		for _, field := range app.SubscribedFields {
+			if field == "messages" {
+				hasMessages = true
+			}
+		}
+		if hasMessages {
+			if logger != nil {
+				logger.Info("WABA is subscribed to webhooks",
+					zap.String("waba_id", wabaID),
+					zap.String("app_id", app.AppID),
+					zap.Strings("subscribed_fields", app.SubscribedFields))
+			}
+			return true, app.SubscribedFields, nil
+		}
+	}
+
+	if logger != nil {
+		logger.Warn("WABA is not subscribed to messages webhook",
+			zap.String("waba_id", wabaID),
+			zap.Int("apps_count", len(response.Data)))
+	}
+	return false, nil, nil
+}
+
+// GetPhoneNumberStatus gets detailed status of a phone number from Meta
+func GetPhoneNumberStatus(logger *zap.Logger, phoneID, accessToken string) (map[string]interface{}, error) {
+	if phoneID == "" || accessToken == "" {
+		return nil, fmt.Errorf("phone_number_id and access_token are required")
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,status&access_token=%s", phoneID, accessToken)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("failed to get phone number status",
+				zap.String("phone_number_id", phoneID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var status map[string]interface{}
+	if err := json.Unmarshal(body, &status); err != nil {
+		if logger != nil {
+			logger.Warn("failed to parse phone number status",
+				zap.String("phone_number_id", phoneID),
+				zap.Error(err),
+				zap.ByteString("body", body))
+		}
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return status, nil
+}
+
 func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID string) {
 	if strings.TrimSpace(wabaID) == "" || cfg == nil {
 		return
@@ -634,7 +754,7 @@ func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, w
 
 	data := url.Values{}
 	data.Set("access_token", sysToken)
-	data.Set("subscribed_fields", "messages")
+	data.Set("subscribed_fields", "messages,statuses")
 
 	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", wabaID)
 	resp, err := http.PostForm(endpoint, data)

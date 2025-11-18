@@ -596,18 +596,69 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	
+	// Parse response to check for errors (Meta sometimes returns 200 with errors in body)
+	var apiResponse struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Error *struct {
+			Message   string `json:"message"`
+			Type      string `json:"type"`
+			Code      int    `json:"code"`
+			ErrorData struct {
+				MessagingProduct string `json:"messaging_product"`
+				Details          string `json:"details"`
+			} `json:"error_data"`
+		} `json:"error"`
+	}
+	
+	responseStr := string(body)
+	if err := json.Unmarshal(body, &apiResponse); err == nil {
+		if apiResponse.Error != nil {
+			errorMsg := fmt.Sprintf("WhatsApp API error: %s (code: %d, type: %s)",
+				apiResponse.Error.Message, apiResponse.Error.Code, apiResponse.Error.Type)
+			
+			// Specific error code handling
+			if apiResponse.Error.Code == 131047 {
+				errorMsg += "\n\n⚠️ 24-hour messaging window expired. Customer must initiate conversation first, or use an approved message template."
+			} else if apiResponse.Error.Code == 131026 {
+				errorMsg += "\n\n⚠️ Invalid recipient phone number. Ensure number is in E.164 format (+[country code][number])."
+			} else if apiResponse.Error.Code == 131031 {
+				errorMsg += "\n\n⚠️ Phone number not registered on WhatsApp or user has blocked your number."
+			}
+			
+			h.Logger.Error("WhatsApp API error in response",
+				zap.String("phone_number_id", phoneNumberID),
+				zap.String("to", customerID),
+				zap.Int("error_code", apiResponse.Error.Code),
+				zap.String("error_type", apiResponse.Error.Type),
+				zap.String("error_message", apiResponse.Error.Message),
+				zap.String("response", responseStr))
+			return errors.New(errorMsg)
+		}
+	}
+	
 	if resp.StatusCode >= 400 {
 		h.Logger.Error("WhatsApp API error",
 			zap.Int("status", resp.StatusCode),
-			zap.String("response", string(body)),
+			zap.String("response", responseStr),
 			zap.String("phone_number_id", phoneNumberID))
-		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, responseStr)
 	}
 
+	// Log message ID for tracking delivery status
+	messageID := ""
+	if len(apiResponse.Messages) > 0 {
+		messageID = apiResponse.Messages[0].ID
+	}
+	
 	h.Logger.Info("✅ WhatsApp message sent",
 		zap.String("phone_number_id", phoneNumberID),
 		zap.String("to", customerID),
-		zap.String("message_preview", truncateString(reply, 50)))
+		zap.String("message_id", messageID),
+		zap.String("message_preview", truncateString(reply, 50)),
+		zap.String("note", "Check webhook for delivery status (sent/delivered/read)"))
 
 	return nil
 }
