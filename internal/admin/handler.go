@@ -233,6 +233,28 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
+		// CRITICAL: Register the phone number FIRST if it hasn't been registered yet
+		// Meta requires registration before requesting a verification code
+		// If status is "pending" or "pending_verification", register first
+		if phoneNum.Status == "pending" || phoneNum.Status == "pending_verification" {
+			ctx.Logger.Info("registering phone number before requesting code",
+				zap.String("phone_number_id", phoneNum.PhoneNumberID),
+				zap.String("status", phoneNum.Status))
+			
+			if err := social.RegisterPhoneNumber(ctx.Logger, ctx.Config, phoneNum.PhoneNumberID); err != nil {
+				ctx.Logger.Error("failed to register phone number before requesting code", zap.Error(err))
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error":   "failed to register phone number",
+					"message": "Phone number must be registered before requesting verification code. Error: " + err.Error(),
+				})
+				return
+			}
+			
+			ctx.Logger.Info("phone number registered successfully, proceeding to request code",
+				zap.String("phone_number_id", phoneNum.PhoneNumberID))
+		}
+
 		// Request verification code for the existing phone number
 		if err := social.RequestPhoneNumberVerificationCode(ctx.Logger, ctx.Config, phoneNum.PhoneNumberID, "SMS", "en_US"); err != nil {
 			ctx.Logger.Error("failed to request verification code", zap.Error(err))
