@@ -109,6 +109,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/whatsapp/select-number", h.selectWhatsAppNumber)
 		r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
 		r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
+		r.Get("/tenant/whatsapp/webhook-status", h.checkWebhookStatus)
+		r.Post("/tenant/whatsapp/resubscribe", h.resubscribeWebhook)
 
 		// Tenant-provided phone numbers
 		r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
@@ -1167,6 +1169,25 @@ func (h *Handler) assignPhoneNumber(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Subscribe phone number to webhooks (async, with retries)
+	systemToken := h.Config.MetaSystemUserToken
+	if systemToken != "" && phoneNum.PhoneNumberID != "" {
+		go func() {
+			social.SubscribePhoneNumberToWebhooks(h.Logger, phoneNum.PhoneNumberID, systemToken)
+		}()
+	} else {
+		if systemToken == "" {
+			h.Logger.Warn("webhook subscription skipped: system token not configured",
+				zap.String("phone_number_id", phoneNum.PhoneNumberID),
+				zap.Uint("tenant_id", claims.TenantID))
+		}
+		if phoneNum.PhoneNumberID == "" {
+			h.Logger.Error("webhook subscription failed: phone_number_id is empty",
+				zap.Uint("database_id", phoneNum.ID),
+				zap.Uint("tenant_id", claims.TenantID))
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":         "WhatsApp number assigned successfully",
 		"phone_number":    phoneNum.PhoneNumber,
@@ -1238,6 +1259,87 @@ func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": "WhatsApp number disconnected successfully",
+	})
+}
+
+func (h *Handler) checkWebhookStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get tenant's assigned number
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned": false,
+			"message":  "No WhatsApp number assigned",
+		})
+		return
+	}
+
+	// Check webhook subscription status
+	systemToken := h.Config.MetaSystemUserToken
+	if systemToken == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned":        true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"subscribed":      false,
+			"error":           "System token not configured",
+		})
+		return
+	}
+
+	subscribed, err := social.CheckPhoneNumberWebhookSubscription(h.Logger, phoneNum.PhoneNumberID, systemToken)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"assigned":        true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"subscribed":      false,
+			"error":           err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"assigned":        true,
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"phone_number":    phoneNum.PhoneNumber,
+		"subscribed":      subscribed,
+		"message":         map[bool]string{true: "Webhook is subscribed", false: "Webhook is NOT subscribed - messages won't be received"}[subscribed],
+	})
+}
+
+func (h *Handler) resubscribeWebhook(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get tenant's assigned number
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
+		http.Error(w, "no WhatsApp number assigned", http.StatusNotFound)
+		return
+	}
+
+	systemToken := h.Config.MetaSystemUserToken
+	if systemToken == "" {
+		http.Error(w, "system token not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Resubscribe (async)
+	go func() {
+		social.SubscribePhoneNumberToWebhooks(h.Logger, phoneNum.PhoneNumberID, systemToken)
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":         "Webhook resubscription initiated",
+		"phone_number_id": phoneNum.PhoneNumberID,
+		"note":            "Check webhook status in a few seconds",
 	})
 }
 

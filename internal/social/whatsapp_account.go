@@ -68,7 +68,7 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 			if logger != nil {
 				logger.Error("failed to get WABAs from Business", zap.Int("status", wabaResp.StatusCode), zap.ByteString("body", wabaBody))
 			}
-			return fmt.Errorf("failed to get WABAs from Business (status %d): %s. Please ensure BRANCR_WABA_ID is a WABA ID, not a Business ID.", wabaResp.StatusCode, string(wabaBody))
+			return fmt.Errorf("failed to get WABAs from Business (status %d): %s. Please ensure BRANCR_WABA_ID is a WABA ID, not a Business ID", wabaResp.StatusCode, string(wabaBody))
 		}
 
 		var wabaResponse struct {
@@ -82,7 +82,7 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 		}
 
 		if len(wabaResponse.Data) == 0 {
-			return fmt.Errorf("no WABAs found for Business ID %s. Please configure BRANCR_WABA_ID with an actual WABA ID.", wabaID)
+			return fmt.Errorf("no WABAs found for Business ID %s. Please configure BRANCR_WABA_ID with an actual WABA ID", wabaID)
 		}
 
 		// Use the first WABA ID
@@ -164,10 +164,12 @@ func SyncPhoneNumbersFromMeta(db *gorm.DB, logger *zap.Logger, cfg *config.Confi
 					zap.String("verified_name", phoneData.VerifiedName))
 			}
 		} else if err == nil {
-			// Update existing phone number (only if not assigned)
+			// Update verification status and quality rating (always update these from Meta)
+			phoneNum.VerifiedName = phoneData.VerifiedName
+			phoneNum.QualityRating = phoneData.QualityRating
+
+			// Only update internal status if not assigned
 			if phoneNum.TenantID == nil || *phoneNum.TenantID == 0 {
-				phoneNum.VerifiedName = phoneData.VerifiedName
-				phoneNum.QualityRating = phoneData.QualityRating
 				phoneNum.Status = "available"
 			}
 
@@ -466,7 +468,6 @@ func subscribePhoneNumber(logger *zap.Logger, phoneID, tenantToken string) {
 }
 
 func attemptPhoneSubscription(logger *zap.Logger, phoneID, tenantToken string, attempt int) {
-	const maxAttempts = 5
 	backoff := []time.Duration{
 		5 * time.Second,
 		15 * time.Second,
@@ -544,6 +545,78 @@ func retryPhoneSubscription(logger *zap.Logger, phoneID, tenantToken string, att
 	time.AfterFunc(wait, func() {
 		attemptPhoneSubscription(logger, phoneID, tenantToken, attempt+1)
 	})
+}
+
+// CheckPhoneNumberWebhookSubscription checks if a phone number is subscribed to webhooks
+func CheckPhoneNumberWebhookSubscription(logger *zap.Logger, phoneID, accessToken string) (bool, error) {
+	if phoneID == "" || accessToken == "" {
+		return false, fmt.Errorf("phone_number_id and access_token are required")
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", phoneID)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	q := make(url.Values)
+	q.Set("access_token", accessToken)
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("failed to check webhook subscription",
+				zap.String("phone_number_id", phoneID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return false, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Data []struct {
+			AppID            string   `json:"id"`
+			SubscribedFields []string `json:"subscribed_fields"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		if logger != nil {
+			logger.Warn("failed to parse subscription check response",
+				zap.String("phone_number_id", phoneID),
+				zap.Error(err),
+				zap.ByteString("body", body))
+		}
+		return false, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Check if our app is subscribed and has messages field
+	for _, app := range response.Data {
+		for _, field := range app.SubscribedFields {
+			if field == "messages" {
+				if logger != nil {
+					logger.Info("phone number is subscribed to webhooks",
+						zap.String("phone_number_id", phoneID),
+						zap.String("app_id", app.AppID))
+				}
+				return true, nil
+			}
+		}
+	}
+
+	if logger != nil {
+		logger.Warn("phone number is not subscribed to messages webhook",
+			zap.String("phone_number_id", phoneID),
+			zap.Int("apps_count", len(response.Data)))
+	}
+	return false, nil
 }
 
 func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID string) {
