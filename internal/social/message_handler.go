@@ -391,9 +391,9 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.String("message_id", response.MessageID),
 			zap.String("message_preview", truncateString(reply, 50)))
 	} else {
-		h.Logger.Info("✅ Instagram DM sent",
-			zap.String("recipient_id", threadID),
-			zap.String("message_preview", truncateString(reply, 50)))
+	h.Logger.Info("✅ Instagram DM sent",
+		zap.String("recipient_id", threadID),
+		zap.String("message_preview", truncateString(reply, 50)))
 	}
 
 	return nil
@@ -652,7 +652,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 	if len(apiResponse.Messages) > 0 {
 		messageID = apiResponse.Messages[0].ID
 	}
-	
+
 	h.Logger.Info("✅ WhatsApp message sent",
 		zap.String("phone_number_id", phoneNumberID),
 		zap.String("to", customerID),
