@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/admin"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/tenantapi"
 	"github.com/similadayo/brancr/pkg/metrics"
 )
@@ -63,6 +64,10 @@ func SetupRouter(app *App) http.Handler {
 			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/meta","message":"Meta webhook endpoint is reachable"}`)
 		})
 	}
+
+	// OAuth success page (public, no auth required)
+	oauthSuccessHandler := social.NewOAuthSuccessHandler()
+	r.Get("/oauth/success", oauthSuccessHandler.HandleSuccess)
 
 	if app.Services.MetaOAuthHandler != nil {
 		r.Get("/api/oauth/meta/start", app.Services.MetaOAuthHandler.StartOAuth)

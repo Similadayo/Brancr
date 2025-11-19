@@ -171,20 +171,25 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	stateRaw := query.Get("state")
 	if stateRaw == "" {
-		http.Error(w, "state missing", http.StatusBadRequest)
+		h.Logger.Warn("Meta OAuth callback received without state parameter")
+		// Redirect to success page with error status instead of returning error
+		h.respondError(w, r, h.getDefaultSuccessURL(), "OAuth state parameter missing. This may happen if the OAuth flow was interrupted.")
 		return
 	}
 
 	state, err := h.decodeState(stateRaw)
 	if err != nil {
 		h.Logger.Error("failed to decode meta oauth state", zap.Error(err))
-		http.Error(w, "invalid state", http.StatusBadRequest)
+		// Redirect to success page with error status instead of returning error
+		h.respondError(w, r, h.getDefaultSuccessURL(), "Invalid OAuth state. Please try connecting again.")
 		return
 	}
 
 	code := query.Get("code")
 	if code == "" {
-		http.Error(w, "authorization code missing", http.StatusBadRequest)
+		h.Logger.Warn("Meta OAuth callback received without authorization code")
+		// Redirect to success page with error status instead of returning error
+		h.respondError(w, r, state.SuccessRedirect, "Authorization code missing. The OAuth flow may have been cancelled.")
 		return
 	}
 
@@ -944,45 +949,62 @@ func (h *MetaOAuthHandler) respondError(w http.ResponseWriter, r *http.Request, 
 		trimmed = trimmed[:200]
 	}
 
-	if redirect != "" {
-		if uri, err := url.Parse(redirect); err == nil {
-			q := uri.Query()
-			q.Set("status", "error")
-			q.Set("reason", trimmed)
-			uri.RawQuery = q.Encode()
-			http.Redirect(w, r, uri.String(), http.StatusFound)
-			return
-		}
+	errorURL := redirect
+	if errorURL == "" {
+		errorURL = h.getDefaultSuccessURL()
 	}
 
+	if uri, err := url.Parse(errorURL); err == nil {
+		q := uri.Query()
+		q.Set("status", "error")
+		q.Set("reason", trimmed)
+		uri.RawQuery = q.Encode()
+		http.Redirect(w, r, uri.String(), http.StatusFound)
+		return
+	}
+
+	// Fallback to error response if redirect URL is invalid
 	http.Error(w, trimmed, http.StatusBadRequest)
 }
 
 func (h *MetaOAuthHandler) respondSuccess(w http.ResponseWriter, r *http.Request, state metaOAuthState, result *metaOAuthResult) {
-	if state.SuccessRedirect != "" {
-		if uri, err := url.Parse(state.SuccessRedirect); err == nil {
-			platforms := make([]string, len(result.Connected))
-			for i, item := range result.Connected {
-				platforms[i] = item.Platform
-			}
-
-			q := uri.Query()
-			q.Set("status", "success")
-			if len(platforms) > 0 {
-				q.Set("platforms", strings.Join(platforms, ","))
-			}
-			if len(result.Warnings) > 0 {
-				q.Set("warnings", strconv.Itoa(len(result.Warnings)))
-			}
-			uri.RawQuery = q.Encode()
-			http.Redirect(w, r, uri.String(), http.StatusFound)
-			return
-		}
+	successURL := state.SuccessRedirect
+	if successURL == "" {
+		successURL = h.getDefaultSuccessURL()
 	}
 
+	if uri, err := url.Parse(successURL); err == nil {
+		platforms := make([]string, len(result.Connected))
+		for i, item := range result.Connected {
+			platforms[i] = item.Platform
+		}
+
+		q := uri.Query()
+		q.Set("status", "success")
+		if len(platforms) > 0 {
+			q.Set("platforms", strings.Join(platforms, ","))
+		}
+		if len(result.Warnings) > 0 {
+			q.Set("warnings", strconv.Itoa(len(result.Warnings)))
+		}
+		uri.RawQuery = q.Encode()
+		http.Redirect(w, r, uri.String(), http.StatusFound)
+		return
+	}
+
+	// Fallback to JSON if redirect URL is invalid
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(result)
+}
+
+// getDefaultSuccessURL returns the default OAuth success page URL
+func (h *MetaOAuthHandler) getDefaultSuccessURL() string {
+	if h.SuccessRedirect != "" {
+		return h.SuccessRedirect
+	}
+	// Default to OAuth success page endpoint
+	return "/oauth/success"
 }
 
 func newRequestWithContext(ctx context.Context, method, endpoint string, body io.Reader) *http.Request {
