@@ -334,21 +334,28 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 
 		// Provide specific guidance for common errors based on Meta's error codes
 		if apiError.Error.Code == 3 {
-			errorMsg += "\n\n⚠️ Meta App Capability Issue:\n"
+			h.Logger.Error("❌ INSTAGRAM MESSAGING CAPABILITY MISSING",
+				zap.Int("error_code", apiError.Error.Code),
+				zap.String("error_type", apiError.Error.Type),
+				zap.String("error_message", apiError.Error.Message),
+				zap.String("fbtrace_id", apiError.Error.FbtraceID),
+				zap.String("action_required", "Enable Instagram Messaging capability in Meta Developer Console"))
+			
+			errorMsg += "\n\n❌ INSTAGRAM MESSAGING CAPABILITY MISSING:\n"
 			errorMsg += "Your Meta app doesn't have the 'Instagram Messaging' capability enabled.\n"
-			errorMsg += "This is different from permissions - capabilities are app-level features.\n\n"
-			errorMsg += "🔧 Fix this in Meta Developer Console:\n"
-			errorMsg += "1. Go to your Meta App → Products\n"
+			errorMsg += "This is REQUIRED even for test/development mode.\n\n"
+			errorMsg += "🔧 IMMEDIATE ACTION REQUIRED:\n"
+			errorMsg += "1. Go to: https://developers.facebook.com/apps/{YOUR_APP_ID}/dashboard\n"
 			errorMsg += "2. Click 'Add Product' → Find 'Instagram Messaging' → Click 'Set Up'\n"
-			errorMsg += "3. Complete the setup flow (webhook URL, verify token, etc.)\n"
-			errorMsg += "4. Go to App Review → Permissions and Features\n"
-			errorMsg += "5. Submit 'instagram_manage_messages' for App Review (REQUIRED)\n"
-			errorMsg += "6. Wait for approval (can take 1-7 days)\n"
-			errorMsg += "7. Ensure your app is in 'Live' mode (not Development) after approval\n\n"
-			errorMsg += "📝 Note: Instagram Messaging is a restricted feature that requires:\n"
-			errorMsg += "   - App Review approval\n"
-			errorMsg += "   - Live mode (not Development mode)\n"
-			errorMsg += "   - Valid business verification (for some use cases)"
+			errorMsg += "3. Configure webhook URL: https://your-domain.com/api/webhooks/meta\n"
+			errorMsg += "4. Set verify token (must match META_WEBHOOK_VERIFY_TOKEN)\n"
+			errorMsg += "5. Subscribe to 'messages' field\n"
+			errorMsg += "6. Go to App Review → Permissions and Features\n"
+			errorMsg += "7. Submit 'instagram_manage_messages' for App Review\n"
+			errorMsg += "8. Wait for approval (1-7 days typically)\n\n"
+			errorMsg += "⚠️ IMPORTANT: Instagram Messaging requires App Review approval\n"
+			errorMsg += "   even for development/testing. Facebook Messenger works without\n"
+			errorMsg += "   approval, but Instagram does not."
 		} else if apiError.Error.Code == 190 {
 			errorMsg += "\n\n⚠️ Invalid Access Token:\n"
 			errorMsg += "Your Page Access Token may be expired or invalid.\n"
