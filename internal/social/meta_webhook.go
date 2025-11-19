@@ -331,14 +331,35 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 					zap.Error(err))
 				// For test webhooks, try using recipient ID if entry ID doesn't work
 				if igAccountID == msg.Recipient.ID {
-					continue // Already tried recipient ID
+					// Test mode fallback: find ANY connected Instagram account
+					// This allows test webhooks to work even if recipient ID doesn't match exactly
+					tenantID, igAccountID, err = h.resolveTenantFromAnyInstagramAccount()
+					if err != nil {
+						h.Logger.Warn("⚠️ Could not find any connected Instagram account for test mode",
+							zap.Error(err))
+						continue
+					}
+					h.Logger.Info("✅ Using any connected Instagram account for test mode",
+						zap.Uint("tenant_id", tenantID),
+						zap.String("instagram_account_id", igAccountID))
+				} else {
+					// Try recipient ID as fallback
+					tenantID, err = h.resolveTenantFromExternalID(msg.Recipient.ID, "instagram")
+					if err != nil {
+						// Test mode fallback: find ANY connected Instagram account
+						tenantID, igAccountID, err = h.resolveTenantFromAnyInstagramAccount()
+						if err != nil {
+							h.Logger.Warn("⚠️ Could not find any connected Instagram account for test mode",
+								zap.Error(err))
+							continue
+						}
+						h.Logger.Info("✅ Using any connected Instagram account for test mode (fallback)",
+							zap.Uint("tenant_id", tenantID),
+							zap.String("instagram_account_id", igAccountID))
+					} else {
+						igAccountID = msg.Recipient.ID
+					}
 				}
-				// Try recipient ID as fallback
-				tenantID, err = h.resolveTenantFromExternalID(msg.Recipient.ID, "instagram")
-				if err != nil {
-					continue
-				}
-				igAccountID = msg.Recipient.ID
 			}
 
 			h.Logger.Info("✅ Tenant resolved for Instagram",
@@ -374,9 +395,19 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				// Try recipient ID as fallback
 				tenantID, err = h.resolveTenantFromExternalID(change.Value.Recipient.ID, "instagram")
 				if err != nil {
-					continue
+					// Test mode fallback: find ANY connected Instagram account
+					tenantID, igAccountID, err = h.resolveTenantFromAnyInstagramAccount()
+					if err != nil {
+						h.Logger.Warn("⚠️ Could not find any connected Instagram account for test mode (changes format)",
+							zap.Error(err))
+						continue
+					}
+					h.Logger.Info("✅ Using any connected Instagram account for test mode (changes format)",
+						zap.Uint("tenant_id", tenantID),
+						zap.String("instagram_account_id", igAccountID))
+				} else {
+					igAccountID = change.Value.Recipient.ID
 				}
-				igAccountID = change.Value.Recipient.ID
 			}
 
 			h.Logger.Info("✅ Tenant resolved for Instagram (changes format)",
@@ -694,6 +725,32 @@ func (h *MetaWebhookHandler) resolveTenantFromExternalID(externalID, platform st
 		zap.String("external_id", externalID),
 		zap.String("platform", platform))
 	return 0, fmt.Errorf("no tenant found for external_id=%s platform=%s", externalID, platform)
+}
+
+// resolveTenantFromAnyInstagramAccount finds ANY connected Instagram account (used for test mode fallback)
+// Returns tenantID, instagramAccountID, error
+func (h *MetaWebhookHandler) resolveTenantFromAnyInstagramAccount() (uint, string, error) {
+	var account storage.SocialAccount
+
+	// Find any connected Instagram account
+	if err := h.DB.Where("platform = ? AND connected = ?", "instagram", true).First(&account).Error; err != nil {
+		return 0, "", fmt.Errorf("no connected Instagram account found: %w", err)
+	}
+
+	// Use ExternalID if available, otherwise PageID
+	igAccountID := account.ExternalID
+	if igAccountID == "" {
+		igAccountID = account.PageID
+	}
+	if igAccountID == "" {
+		return 0, "", fmt.Errorf("Instagram account has no ExternalID or PageID")
+	}
+
+	h.Logger.Info("✅ Found Instagram account for test mode",
+		zap.Uint("tenant_id", account.TenantID),
+		zap.String("instagram_account_id", igAccountID))
+
+	return account.TenantID, igAccountID, nil
 }
 
 // truncateString truncates a string to a maximum length

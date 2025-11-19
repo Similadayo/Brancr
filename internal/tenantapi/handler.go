@@ -1511,24 +1511,10 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// New flow: Tenant requests number → Admin sees request → Admin adds in Meta BM → Meta sends code to tenant → Tenant provides code to admin → Admin verifies
-
 	// Format phone number (ensure + prefix)
 	phoneNumber := strings.TrimSpace(req.PhoneNumber)
 	if !strings.HasPrefix(phoneNumber, "+") {
 		phoneNumber = "+" + phoneNumber
-	}
-
-	// Check if tenant already has a pending request for this number
-	var existingRequest storage.WhatsAppPhoneNumberRequest
-	if err := h.DB.Where("tenant_id = ? AND phone_number = ? AND status IN (?)", claims.TenantID, phoneNumber, []string{"pending", "added_to_meta", "verification_code_sent"}).First(&existingRequest).Error; err == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":      "request_already_exists",
-			"message":    fmt.Sprintf("You already have a pending request for %s. Status: %s. Please wait for admin to process it.", phoneNumber, existingRequest.Status),
-			"request_id": existingRequest.ID,
-			"status":     existingRequest.Status,
-		})
-		return
 	}
 
 	// Check if number is already assigned to this tenant
@@ -1541,7 +1527,83 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Create a new phone number request
+	// 🚀 METHOD 1 AUTOMATED FLOW: Check if number exists in WABA pool (pre-provisioned)
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("phone_number = ? AND tenant_id IS NULL", phoneNumber).First(&phoneNum).Error; err == nil {
+		// Number exists in pool and is available - AUTOMATE the flow!
+		h.Logger.Info("phone number found in WABA pool, starting automated onboarding",
+			zap.String("phone_number", phoneNumber),
+			zap.String("phone_number_id", phoneNum.PhoneNumberID),
+			zap.Uint("tenant_id", claims.TenantID))
+
+		// Step 1: Register the number (if needed)
+		if phoneNum.Status == "pending" || phoneNum.Status == "pending_verification" {
+			if err := social.RegisterPhoneNumber(h.Logger, h.Config, phoneNum.PhoneNumberID); err != nil {
+				h.Logger.Error("failed to register phone number", zap.Error(err))
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"error":   "registration_failed",
+					"message": "Failed to register phone number: " + err.Error(),
+				})
+				return
+			}
+			h.Logger.Info("phone number registered successfully", zap.String("phone_number_id", phoneNum.PhoneNumberID))
+		}
+
+		// Step 2: Request verification code (Meta will send SMS to tenant's phone)
+		if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNum.PhoneNumberID, "SMS", "en_US"); err != nil {
+			h.Logger.Error("failed to request verification code", zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "code_request_failed",
+				"message": "Failed to request verification code: " + err.Error(),
+			})
+			return
+		}
+
+		// Step 3: Create a request record to track the verification flow
+		request := storage.WhatsAppPhoneNumberRequest{
+			TenantID:      claims.TenantID,
+			PhoneNumber:   phoneNumber,
+			DisplayName:   req.DisplayName,
+			PhoneNumberID: phoneNum.PhoneNumberID,
+			Status:        "verification_code_sent", // Code has been sent
+		}
+
+		if err := h.DB.Create(&request).Error; err != nil {
+			h.Logger.Error("failed to create phone number request", zap.Error(err))
+			// Don't fail - code was already sent
+		}
+
+		h.Logger.Info("verification code sent to tenant",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("phone_number", phoneNumber),
+			zap.String("phone_number_id", phoneNum.PhoneNumberID))
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":         true,
+			"request_id":      request.ID,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"phone_number":    phoneNumber,
+			"message":         fmt.Sprintf("✅ Verification code sent to %s! Please check your phone and enter the code using the verify-number endpoint.", phoneNumber),
+			"next_step":       "verify_number",
+			"automated":       true,
+		})
+		return
+	}
+
+	// Number not in pool - fallback to admin request OR embedded signup
+	// Check if tenant already has a pending request for this number
+	var existingRequest storage.WhatsAppPhoneNumberRequest
+	if err := h.DB.Where("tenant_id = ? AND phone_number = ? AND status IN (?)", claims.TenantID, phoneNumber, []string{"pending", "added_to_meta", "verification_code_sent"}).First(&existingRequest).Error; err == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":      "request_already_exists",
+			"message":    fmt.Sprintf("You already have a pending request for %s. Status: %s.", phoneNumber, existingRequest.Status),
+			"request_id": existingRequest.ID,
+			"status":     existingRequest.Status,
+		})
+		return
+	}
+
+	// Create admin request (for numbers not in pool - admin needs to add to Meta BM first)
 	request := storage.WhatsAppPhoneNumberRequest{
 		TenantID:    claims.TenantID,
 		PhoneNumber: phoneNumber,
@@ -1555,7 +1617,7 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	h.Logger.Info("tenant created phone number request",
+	h.Logger.Info("tenant created phone number request (not in pool)",
 		zap.Uint("tenant_id", claims.TenantID),
 		zap.String("phone_number", phoneNumber),
 		zap.Uint("request_id", request.ID))
@@ -1563,8 +1625,10 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":      true,
 		"request_id":   request.ID,
-		"message":      "Phone number request submitted. Admin will add your number to Meta Business Manager. Meta will send a verification code to your phone - please provide that code to admin once you receive it.",
 		"phone_number": phoneNumber,
+		"message":      "Phone number request submitted. Admin will add your number to Meta Business Manager. Once added, you'll receive a verification code.",
+		"automated":    false,
+		"fallback":     "admin_request",
 	})
 }
 
@@ -1606,7 +1670,76 @@ func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Update request with verification code
+	// 🚀 AUTOMATED FLOW: If phone_number_id exists, verify automatically
+	if phoneRequest.PhoneNumberID != "" {
+		h.Logger.Info("automated verification flow - verifying with Meta",
+			zap.String("phone_number_id", phoneRequest.PhoneNumberID),
+			zap.Uint("tenant_id", claims.TenantID))
+
+		// Verify the code with Meta
+		if err := social.VerifyPhoneNumberWithCode(h.Logger, h.Config, phoneRequest.PhoneNumberID, req.VerificationCode); err != nil {
+			h.Logger.Error("verification failed", zap.Error(err))
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "verification_failed",
+				"message": "Invalid verification code: " + err.Error(),
+			})
+			return
+		}
+
+		// Sync phone numbers to update status
+		if err := social.SyncPhoneNumbersFromMeta(h.DB, h.Logger, h.Config); err != nil {
+			h.Logger.Warn("verification succeeded but sync failed", zap.Error(err))
+		}
+
+		// Assign the number to the tenant automatically
+		var phoneNum storage.WhatsAppPhoneNumber
+		if err := h.DB.Where("phone_number_id = ?", phoneRequest.PhoneNumberID).First(&phoneNum).Error; err != nil {
+			h.Logger.Error("phone number not found after verification", zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "assignment_failed",
+				"message": "Number verified but could not be assigned. Please contact support.",
+			})
+			return
+		}
+
+		// Assign to tenant
+		phoneNum.TenantID = &claims.TenantID
+		now := time.Now()
+		phoneNum.AssignedAt = &now
+		if err := h.DB.Save(&phoneNum).Error; err != nil {
+			h.Logger.Error("failed to assign phone number", zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "assignment_failed",
+				"message": "Number verified but assignment failed. Please contact support.",
+			})
+			return
+		}
+
+		// Subscribe to webhooks
+		social.SubscribePhoneNumberToWebhooks(h.Logger, phoneNum.PhoneNumberID, h.Config.BrancrWABAToken)
+
+		// Update request status
+		phoneRequest.VerificationCode = req.VerificationCode
+		phoneRequest.Status = "verified"
+		phoneRequest.ProcessedAt = &now
+		h.DB.Save(&phoneRequest)
+
+		h.Logger.Info("✅ phone number verified and assigned automatically",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("phone_number", phoneRequest.PhoneNumber),
+			zap.String("phone_number_id", phoneRequest.PhoneNumberID))
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":         true,
+			"phone_number_id": phoneNum.PhoneNumberID,
+			"phone_number":     phoneNum.PhoneNumber,
+			"message":         fmt.Sprintf("✅ Success! Your WhatsApp number %s is now connected and ready to receive messages.", phoneNum.PhoneNumber),
+			"automated":       true,
+		})
+		return
+	}
+
+	// Manual flow: Update request with verification code (admin will verify)
 	phoneRequest.VerificationCode = req.VerificationCode
 	phoneRequest.Status = "verification_code_sent"
 
@@ -1616,7 +1749,7 @@ func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.Logger.Info("tenant provided verification code",
+	h.Logger.Info("tenant provided verification code (manual flow)",
 		zap.Uint("tenant_id", claims.TenantID),
 		zap.Uint("request_id", req.RequestID),
 		zap.String("phone_number", phoneRequest.PhoneNumber))
@@ -1624,6 +1757,7 @@ func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "Verification code received. Admin will verify it with Meta and complete the setup. You'll be notified once your number is ready.",
+		"automated": false,
 	})
 }
 
