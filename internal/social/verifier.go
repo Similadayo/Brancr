@@ -496,8 +496,9 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 		acc.Username = payload.Username
 
 		// CRITICAL: Subscribe the connected Facebook Page to receive Instagram message webhooks
-		// We need to find the connected Page first
-		pageID, pageSubscribeErr := findAndSubscribeInstagramPage(ctx, client, payload.ID, token)
+		// Try to use stored PageID first, fallback to querying pages
+		storedPageID := acc.PageID
+		pageID, pageSubscribeErr := FindAndSubscribeInstagramPage(ctx, client, payload.ID, token, storedPageID)
 		if pageSubscribeErr != nil {
 			// Log warning but don't fail verification - subscription might already exist
 			fmt.Printf("⚠️ Failed to subscribe Page for Instagram messages (may already be subscribed): %v\n", pageSubscribeErr)
@@ -724,13 +725,22 @@ func getAppIDFromToken(ctx context.Context, client *http.Client, token string) (
 	return result.Data.AppID, nil
 }
 
-// findAndSubscribeInstagramPage finds the Facebook Page connected to an Instagram Business Account
+// FindAndSubscribeInstagramPage finds the Facebook Page connected to an Instagram Business Account
 // and subscribes it to receive Instagram message webhooks
-// Note: Instagram Business Accounts (IGUser) don't have a connected_page field.
-// We must query the user's pages and find the one with matching instagram_business_account.id
-func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igBusinessAccountID, accessToken string) (string, error) {
-	// Query all pages the user manages and find the one connected to this Instagram account
-	// The Instagram Business Account is linked via pages.instagram_business_account.id
+// If pageID is provided (stored during OAuth), use it directly. Otherwise, try to query pages.
+// Note: When using a Page Access Token, /me/accounts doesn't work (Page nodes don't have accounts field).
+func FindAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igBusinessAccountID, accessToken, storedPageID string) (string, error) {
+	// If we have the Facebook Page ID stored (from OAuth), use it directly
+	if storedPageID != "" {
+		subscribeErr := SubscribePageToInstagramMessages(ctx, client, storedPageID, accessToken)
+		if subscribeErr == nil {
+			return storedPageID, nil
+		}
+		// If subscription fails, fall through to try finding the page
+	}
+
+	// Fallback: Try to query pages (only works with User Access Token, not Page Access Token)
+	// If accessToken is a Page Access Token, this will fail with "accounts field doesn't exist on Page"
 	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?fields=id,instagram_business_account{id}&access_token=%s", accessToken)
 	
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
@@ -746,7 +756,11 @@ func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 
 	pageBody, _ := io.ReadAll(pageResp.Body)
 	if pageResp.StatusCode >= 400 {
-		return "", fmt.Errorf("failed to fetch pages (status %d): %s", pageResp.StatusCode, string(pageBody))
+		// If we have a stored page ID but subscription failed, return that error
+		if storedPageID != "" {
+			return storedPageID, fmt.Errorf("failed to subscribe page %s (status %d): %s", storedPageID, pageResp.StatusCode, string(pageBody))
+		}
+		return "", fmt.Errorf("failed to fetch pages (status %d): %s. Note: Page Access Tokens cannot query /me/accounts. Please reconnect Instagram to store the Facebook Page ID.", pageResp.StatusCode, string(pageBody))
 	}
 
 	var pagesData struct {

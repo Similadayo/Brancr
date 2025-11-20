@@ -860,75 +860,23 @@ func (h *Handler) subscribeInstagramPage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Find connected Facebook Page
-	// Note: Instagram Business Accounts don't have connected_page field.
-	// We need to query user's pages and find the one with matching instagram_business_account.id
-	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?fields=id,instagram_business_account{id}&access_token=%s", token)
-	
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "failed_to_create_request",
-			"message": fmt.Sprintf("Failed to create request: %v", err),
-		})
-		return
-	}
-	
-	pageResp, err := client.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "failed_to_fetch_pages",
-			"message": fmt.Sprintf("Failed to fetch pages: %v", err),
-		})
-		return
-	}
-	defer pageResp.Body.Close()
-
-	pageBody, _ := io.ReadAll(pageResp.Body)
-	if pageResp.StatusCode >= 400 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "failed_to_fetch_pages",
-			"message": fmt.Sprintf("Failed to fetch pages (status %d): %s", pageResp.StatusCode, string(pageBody)),
-		})
-		return
-	}
-
-	var pagesData struct {
-		Data []struct {
-			ID                       string `json:"id"`
-			InstagramBusinessAccount *struct {
-				ID string `json:"id"`
-			} `json:"instagram_business_account"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(pageBody, &pagesData); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "page_parse_error",
-			"message": fmt.Sprintf("Could not parse pages response: %v", err),
-		})
-		return
-	}
-
-	// Find the page with matching Instagram Business Account ID
-	var pageID string
-	for _, page := range pagesData.Data {
-		if page.InstagramBusinessAccount != nil && page.InstagramBusinessAccount.ID == igAccountID {
-			pageID = page.ID
-			break
+	// Try to use stored Facebook Page ID first (from OAuth), then fallback to querying
+	pageID := account.PageID // This should be the Facebook Page ID if connected via OAuth
+	if pageID == "" {
+		// Fallback: Query pages to find the one connected to this Instagram account
+		// Note: This only works with User Access Tokens, not Page Access Tokens
+		var err error
+		pageID, err = social.FindAndSubscribeInstagramPage(ctx, client, igAccountID, token, "")
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "no_connected_page",
+				"message": fmt.Sprintf("No Facebook Page ID stored and failed to query: %v. Please reconnect Instagram via OAuth to store the Page ID.", err),
+			})
+			return
 		}
 	}
 
-	if pageID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "no_connected_page",
-			"message": fmt.Sprintf("No Facebook Page found connected to Instagram Business Account %s", igAccountID),
-		})
-		return
-	}
-
 	// Subscribe Page to receive Instagram message webhooks
-	// Import the function from social package
 	subscribeErr := social.SubscribePageToInstagramMessages(ctx, client, pageID, token)
 	if subscribeErr != nil {
 		h.Logger.Warn("failed to subscribe Instagram Page",

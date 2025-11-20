@@ -369,15 +369,15 @@ func (h *MetaOAuthHandler) processPlatforms(ctx context.Context, state metaOAuth
 				continue
 			}
 
-			if err := h.saveInstagramAccount(ctx, state.TenantID, pageData.Instagram, pageData.Page.AccessToken, expiresAt); err != nil {
+			if err := h.saveInstagramAccount(ctx, state.TenantID, pageData.Instagram, pageData.Page.ID, pageData.Page.AccessToken, expiresAt); err != nil {
 				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "instagram", Message: err.Error()})
 				continue
 			}
 
 			result.Connected = append(result.Connected, metaPlatformResult{
 				Platform:   "instagram",
-				PageID:     pageData.Instagram.ID,
-				ExternalID: pageData.Instagram.ID,
+				PageID:     pageData.Page.ID, // Facebook Page ID (for subscription)
+				ExternalID: pageData.Instagram.ID, // Instagram Business Account ID (for messaging)
 				Username:   pageData.Instagram.Username,
 				Message:    "Instagram Business Account connected",
 			})
@@ -739,12 +739,15 @@ func (h *MetaOAuthHandler) saveFacebookAccount(ctx context.Context, tenantID uin
 	})
 }
 
-func (h *MetaOAuthHandler) saveInstagramAccount(ctx context.Context, tenantID uint, ig *metaInstagramAccount, pageToken string, expiresAt *time.Time) error {
+func (h *MetaOAuthHandler) saveInstagramAccount(ctx context.Context, tenantID uint, ig *metaInstagramAccount, facebookPageID, pageToken string, expiresAt *time.Time) error {
 	if ig == nil || ig.ID == "" {
 		return errors.New("instagram account missing")
 	}
 	if pageToken == "" {
 		return errors.New("page token missing for instagram")
+	}
+	if facebookPageID == "" {
+		return errors.New("facebook page id missing for instagram")
 	}
 
 	encrypted, err := utils.EncryptToken(pageToken)
@@ -755,8 +758,8 @@ func (h *MetaOAuthHandler) saveInstagramAccount(ctx context.Context, tenantID ui
 	return h.upsertSocialAccount(ctx, tenantID, "instagram", func(acc *storage.SocialAccount) {
 		acc.AccessToken = encrypted
 		acc.RefreshToken = ""
-		acc.PageID = ig.ID
-		acc.ExternalID = ig.ID
+		acc.PageID = facebookPageID // Store Facebook Page ID (needed for webhook subscription)
+		acc.ExternalID = ig.ID // Store Instagram Business Account ID (used for messaging API and webhook routing)
 		acc.Username = ig.Username
 		acc.Mode = "oauth2"
 		acc.Connected = true
