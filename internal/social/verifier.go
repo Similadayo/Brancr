@@ -736,7 +736,9 @@ func FindAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 		if subscribeErr == nil {
 			return storedPageID, nil
 		}
-		// If subscription fails, fall through to try finding the page
+		// If subscription fails with stored page ID, return that error directly
+		// Don't try to query /me/accounts as it will fail with Page Access Tokens
+		return storedPageID, fmt.Errorf("failed to subscribe page %s: %w", storedPageID, subscribeErr)
 	}
 
 	// Fallback: Try to query pages (only works with User Access Token, not Page Access Token)
@@ -756,11 +758,7 @@ func FindAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 
 	pageBody, _ := io.ReadAll(pageResp.Body)
 	if pageResp.StatusCode >= 400 {
-		// If we have a stored page ID but subscription failed, return that error
-		if storedPageID != "" {
-			return storedPageID, fmt.Errorf("failed to subscribe page %s (status %d): %s", storedPageID, pageResp.StatusCode, string(pageBody))
-		}
-		return "", fmt.Errorf("failed to fetch pages (status %d): %s. Note: Page Access Tokens cannot query /me/accounts. Please reconnect Instagram to store the Facebook Page ID.", pageResp.StatusCode, string(pageBody))
+		return "", fmt.Errorf("failed to fetch pages (status %d): %s. Note: Page Access Tokens cannot query /me/accounts. Please reconnect Instagram via OAuth to store the Facebook Page ID.", pageResp.StatusCode, string(pageBody))
 	}
 
 	var pagesData struct {
