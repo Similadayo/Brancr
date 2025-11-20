@@ -726,65 +726,56 @@ func getAppIDFromToken(ctx context.Context, client *http.Client, token string) (
 
 // findAndSubscribeInstagramPage finds the Facebook Page connected to an Instagram Business Account
 // and subscribes it to receive Instagram message webhooks
+// Note: Instagram Business Accounts (IGUser) don't have a connected_page field.
+// We must query the user's pages and find the one with matching instagram_business_account.id
 func findAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igBusinessAccountID, accessToken string) (string, error) {
-	// Step 1: Get the connected Facebook Page ID from the Instagram Business Account
-	// The Instagram Business Account has a connected_page field that links to the Facebook Page
-	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=connected_page&access_token=%s", igBusinessAccountID, accessToken)
-	pageResp, err := client.Get(pageURL)
+	// Query all pages the user manages and find the one connected to this Instagram account
+	// The Instagram Business Account is linked via pages.instagram_business_account.id
+	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?fields=id,instagram_business_account{id}&access_token=%s", accessToken)
+	
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch connected page: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	
+	pageResp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch pages: %w", err)
 	}
 	defer pageResp.Body.Close()
 
 	pageBody, _ := io.ReadAll(pageResp.Body)
 	if pageResp.StatusCode >= 400 {
-		// If we can't find the page, try alternative approach: query pages that have this Instagram account
-		// Fallback: Try to find pages that have this Instagram account linked
-		fallbackURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?fields=id,instagram_business_account&access_token=%s", accessToken)
-		fallbackResp, fallbackErr := client.Get(fallbackURL)
-		if fallbackErr == nil {
-			defer fallbackResp.Body.Close()
-			fallbackBody, _ := io.ReadAll(fallbackResp.Body)
-			if fallbackResp.StatusCode == 200 {
-				var pagesData struct {
-					Data []struct {
-						ID                       string `json:"id"`
-						InstagramBusinessAccount struct {
-							ID string `json:"id"`
-						} `json:"instagram_business_account"`
-					} `json:"data"`
-				}
-				if json.Unmarshal(fallbackBody, &pagesData) == nil {
-					for _, page := range pagesData.Data {
-						if page.InstagramBusinessAccount.ID == igBusinessAccountID {
-							// Found the page! Subscribe it
-							subscribeErr := SubscribePageToInstagramMessages(ctx, client, page.ID, accessToken)
-							return page.ID, subscribeErr
-						}
-					}
-				}
-			}
+		return "", fmt.Errorf("failed to fetch pages (status %d): %s", pageResp.StatusCode, string(pageBody))
+	}
+
+	var pagesData struct {
+		Data []struct {
+			ID                       string `json:"id"`
+			InstagramBusinessAccount *struct {
+				ID string `json:"id"`
+			} `json:"instagram_business_account"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(pageBody, &pagesData); err != nil {
+		return "", fmt.Errorf("failed to parse pages response: %w", err)
+	}
+
+	// Find the page with matching Instagram Business Account ID
+	var pageID string
+	for _, page := range pagesData.Data {
+		if page.InstagramBusinessAccount != nil && page.InstagramBusinessAccount.ID == igBusinessAccountID {
+			pageID = page.ID
+			break
 		}
-		return "", fmt.Errorf("failed to find connected Facebook Page: %s", string(pageBody))
 	}
 
-	var pageData struct {
-		ConnectedPage struct {
-			ID string `json:"id"`
-		} `json:"connected_page"`
+	if pageID == "" {
+		return "", fmt.Errorf("no Facebook Page found connected to Instagram Business Account %s", igBusinessAccountID)
 	}
 
-	if err := json.Unmarshal(pageBody, &pageData); err != nil {
-		return "", fmt.Errorf("failed to parse connected page response: %w", err)
-	}
-
-	if pageData.ConnectedPage.ID == "" {
-		return "", fmt.Errorf("no connected Facebook Page found for Instagram Business Account")
-	}
-
-	pageID := pageData.ConnectedPage.ID
-
-	// Step 2: Subscribe the Page to receive Instagram message webhooks
+	// Subscribe the Page to receive Instagram message webhooks
 	subscribeErr := SubscribePageToInstagramMessages(ctx, client, pageID, accessToken)
 	return pageID, subscribeErr
 }
