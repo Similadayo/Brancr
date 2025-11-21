@@ -95,6 +95,17 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
             width: 100%;
             padding: 48px 32px;
             text-align: center;
+            animation: fadeIn 0.3s ease-out;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
         .icon {
             font-size: 64px;
@@ -138,7 +149,10 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
             border-radius: 8px;
             font-weight: 600;
             transition: all 0.2s;
-            margin-top: 8px;
+            margin: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
         }
         .button:hover {
             background: #5568d3;
@@ -148,7 +162,6 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
         .button-secondary {
             background: #e2e8f0;
             color: #4a5568;
-            margin-left: 12px;
         }
         .button-secondary:hover {
             background: #cbd5e0;
@@ -158,6 +171,12 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
             color: #718096;
             margin-top: 24px;
         }
+        .auto-close-notice {
+            font-size: 12px;
+            color: #a0aec0;
+            margin-top: 16px;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -166,19 +185,54 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
         <h1>{{.Title}}</h1>
         <p class="message {{if .IsSuccess}}success{{else}}error{{end}}">{{.Message}}</p>
         <div>
-            <a href="#" onclick="window.close(); return false;" class="button">Close Window</a>
+            <button onclick="closeWindow()" class="button">Close Window</button>
             {{if .IsSuccess}}
-            <a href="/admin/social" class="button button-secondary">View Accounts</a>
+            <a href="/admin/social" class="button button-secondary" target="_blank">View Accounts</a>
             {{end}}
         </div>
         <p class="close-hint">You can safely close this window</p>
+        <p class="auto-close-notice" id="countdown"></p>
     </div>
     <script>
-        // Auto-close after 5 seconds if opened in popup
-        if (window.opener) {
-            setTimeout(function() {
+        // Check if opened in popup (has window.opener)
+        var isPopup = window.opener !== null;
+        var countdownSeconds = 3;
+        
+        function closeWindow() {
+            if (isPopup) {
                 window.close();
-            }, 5000);
+            } else {
+                // If not in popup, redirect to dashboard or show message
+                window.location.href = '/admin';
+            }
+        }
+        
+        // Auto-close after countdown if opened in popup
+        if (isPopup) {
+            var countdownEl = document.getElementById('countdown');
+            var interval = setInterval(function() {
+                if (countdownSeconds > 0) {
+                    countdownEl.textContent = 'This window will close automatically in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...';
+                    countdownSeconds--;
+                } else {
+                    clearInterval(interval);
+                    countdownEl.textContent = 'Closing...';
+                    window.close();
+                }
+            }, 1000);
+        } else {
+            // If not in popup, hide countdown
+            document.getElementById('countdown').style.display = 'none';
+        }
+        
+        // Also try to notify opener if it exists (for Telegram bot flow)
+        if (window.opener) {
+            try {
+                // Try to post message to opener (if it's expecting it)
+                window.opener.postMessage({type: 'oauth_success', status: '{{.IsSuccess}}', platforms: '{{.Platforms}}'}, '*');
+            } catch (e) {
+                // Ignore if cross-origin or not supported
+            }
         }
     </script>
 </body>

@@ -958,13 +958,22 @@ func (h *MetaOAuthHandler) respondError(w http.ResponseWriter, r *http.Request, 
 		errorURL = h.getDefaultSuccessURL()
 	}
 
+	// Convert relative path to absolute URL if needed
+	if !strings.HasPrefix(errorURL, "http://") && !strings.HasPrefix(errorURL, "https://") {
+		scheme := "https"
+		if r.TLS == nil {
+			scheme = "http"
+		}
+		errorURL = fmt.Sprintf("%s://%s%s", scheme, r.Host, errorURL)
+	}
+
 	if uri, err := url.Parse(errorURL); err == nil {
-			q := uri.Query()
-			q.Set("status", "error")
-			q.Set("reason", trimmed)
-			uri.RawQuery = q.Encode()
-			http.Redirect(w, r, uri.String(), http.StatusFound)
-			return
+		q := uri.Query()
+		q.Set("status", "error")
+		q.Set("reason", trimmed)
+		uri.RawQuery = q.Encode()
+		http.Redirect(w, r, uri.String(), http.StatusFound)
+		return
 	}
 
 	// Fallback to error response if redirect URL is invalid
@@ -977,23 +986,32 @@ func (h *MetaOAuthHandler) respondSuccess(w http.ResponseWriter, r *http.Request
 		successURL = h.getDefaultSuccessURL()
 	}
 
-	if uri, err := url.Parse(successURL); err == nil {
-			platforms := make([]string, len(result.Connected))
-			for i, item := range result.Connected {
-				platforms[i] = item.Platform
-			}
+	// Convert relative path to absolute URL if needed
+	if !strings.HasPrefix(successURL, "http://") && !strings.HasPrefix(successURL, "https://") {
+		scheme := "https"
+		if r.TLS == nil {
+			scheme = "http"
+		}
+		successURL = fmt.Sprintf("%s://%s%s", scheme, r.Host, successURL)
+	}
 
-			q := uri.Query()
-			q.Set("status", "success")
-			if len(platforms) > 0 {
-				q.Set("platforms", strings.Join(platforms, ","))
-			}
-			if len(result.Warnings) > 0 {
-				q.Set("warnings", strconv.Itoa(len(result.Warnings)))
-			}
-			uri.RawQuery = q.Encode()
-			http.Redirect(w, r, uri.String(), http.StatusFound)
-			return
+	if uri, err := url.Parse(successURL); err == nil {
+		platforms := make([]string, len(result.Connected))
+		for i, item := range result.Connected {
+			platforms[i] = item.Platform
+		}
+
+		q := uri.Query()
+		q.Set("status", "success")
+		if len(platforms) > 0 {
+			q.Set("platforms", strings.Join(platforms, ","))
+		}
+		if len(result.Warnings) > 0 {
+			q.Set("warnings", strconv.Itoa(len(result.Warnings)))
+		}
+		uri.RawQuery = q.Encode()
+		http.Redirect(w, r, uri.String(), http.StatusFound)
+		return
 	}
 
 	// Fallback to JSON if redirect URL is invalid
@@ -1004,10 +1022,7 @@ func (h *MetaOAuthHandler) respondSuccess(w http.ResponseWriter, r *http.Request
 
 // getDefaultSuccessURL returns the default OAuth success page URL
 func (h *MetaOAuthHandler) getDefaultSuccessURL() string {
-	if h.SuccessRedirect != "" {
-		return h.SuccessRedirect
-	}
-	// Default to OAuth success page endpoint
+	// Always use our OAuth success page (works great for popups and redirects)
 	return "/oauth/success"
 }
 
