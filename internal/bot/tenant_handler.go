@@ -443,11 +443,20 @@ func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantI
 
 	delete(tenantSessions, chatID)
 
+	// Send loading/verifying message immediately
+	loadingMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("🔍 Verifying your %s connection...", strings.Title(platform)))
+	loadingSent, _ := bot.Send(loadingMsg)
+
 	go func() {
 		ctx := context.Background()
 		var acc storage.SocialAccount
 		if err := h.Manager.DB.Where("tenant_id = ? AND platform = ?", tenantID, platform).First(&acc).Error; err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("No %s account connected yet.", platform)))
+			// Delete loading message and send error
+			bot.Request(tgbotapi.NewDeleteMessage(chatID, loadingSent.MessageID))
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ No %s account connected yet. Please connect it first.", strings.Title(platform))))
+			// Show connection menu after error
+			time.Sleep(1 * time.Second)
+			h.sendConnectionStatus(bot, chatID, tenantID)
 			return
 		}
 
@@ -458,12 +467,26 @@ func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantI
 		}
 
 		msg, err := social.VerifySocialConnection(ctx, &acc, h.Manager.DB)
+		
+		// Delete loading message
+		bot.Request(tgbotapi.NewDeleteMessage(chatID, loadingSent.MessageID))
+		
 		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("I couldn't verify your %s connection: %v", strings.Title(platform), err)))
+			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ I couldn't verify your %s connection:\n\n%s", strings.Title(platform), err.Error()))
+			bot.Send(errorMsg)
+			// Show connection menu after error
+			time.Sleep(1 * time.Second)
+			h.sendConnectionStatus(bot, chatID, tenantID)
 			return
 		}
 
-		bot.Send(tgbotapi.NewMessage(chatID, msg))
+		// Send success message
+		successMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ %s", msg))
+		bot.Send(successMsg)
+		
+		// Show connection status menu after successful verification
+		time.Sleep(1 * time.Second)
+		h.sendConnectionStatus(bot, chatID, tenantID)
 	}()
 }
 
