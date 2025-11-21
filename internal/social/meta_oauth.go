@@ -141,7 +141,11 @@ func (h *MetaOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authURL.RawQuery = params.Encode()
-	h.Logger.Info("Redirecting to Meta OAuth", zap.Uint("tenant_id", state.TenantID), zap.Strings("platforms", platforms))
+	h.Logger.Info("Redirecting to Meta OAuth",
+		zap.Uint("tenant_id", state.TenantID),
+		zap.Strings("platforms", platforms),
+		zap.String("redirect_uri", h.RedirectURI),
+		zap.String("state_token_length", fmt.Sprintf("%d", len(stateToken))))
 
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
 }
@@ -171,10 +175,35 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	stateRaw := query.Get("state")
 	if stateRaw == "" {
+		// Log all available information for debugging
 		h.Logger.Warn("Meta OAuth callback received without state parameter",
 			zap.String("url", r.URL.String()),
+			zap.String("full_url", r.URL.String()),
 			zap.String("query_params", r.URL.RawQuery),
-			zap.String("redirect_uri", r.Referer()))
+			zap.String("referer", r.Referer()),
+			zap.String("user_agent", r.UserAgent()),
+			zap.String("expected_redirect_uri", h.RedirectURI),
+			zap.String("code_param", query.Get("code")),
+			zap.String("error_param", query.Get("error")),
+			zap.String("error_description", query.Get("error_description")))
+		
+		// Check if there's an error from Meta
+		if errParam := query.Get("error"); errParam != "" {
+			errDesc := query.Get("error_description")
+			h.Logger.Error("Meta OAuth returned an error",
+				zap.String("error", errParam),
+				zap.String("error_description", errDesc))
+			
+			errorMsg := fmt.Sprintf("Meta OAuth error: %s", errParam)
+			if errDesc != "" {
+				errorMsg += fmt.Sprintf("\n\nDetails: %s", errDesc)
+			}
+			if errParam == "redirect_uri_mismatch" {
+				errorMsg += fmt.Sprintf("\n\n⚠️ Redirect URI mismatch detected!\n\nExpected: %s\n\nPlease verify this exact URL is in your Meta Developer Console → Facebook Login → Settings → Valid OAuth Redirect URIs", h.RedirectURI)
+			}
+			h.respondError(w, r, h.getDefaultSuccessURL(), errorMsg)
+			return
+		}
 		
 		// Provide more helpful error message
 		errorMsg := "OAuth state parameter missing. This usually happens when:\n• The redirect URL in Meta Developer Console doesn't match exactly\n• The OAuth flow was interrupted or cancelled\n• Please check your Meta app settings and try connecting again"
@@ -185,6 +214,9 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(userAgent, "Telegram") || strings.Contains(referer, "telegram.org") {
 			errorMsg += "\n\n💡 Tip: If you're connecting from Telegram, make sure you complete the OAuth flow in the browser window. Don't close it until you see a success message."
 		}
+		
+		// Add diagnostic info
+		errorMsg += fmt.Sprintf("\n\n🔍 Diagnostic: Expected redirect URI: %s", h.RedirectURI)
 		
 		// Redirect to success page with error status
 		h.respondError(w, r, h.getDefaultSuccessURL(), errorMsg)
