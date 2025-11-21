@@ -171,9 +171,23 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	stateRaw := query.Get("state")
 	if stateRaw == "" {
-		h.Logger.Warn("Meta OAuth callback received without state parameter")
-		// Redirect to success page with error status instead of returning error
-		h.respondError(w, r, h.getDefaultSuccessURL(), "OAuth state parameter missing. This may happen if the OAuth flow was interrupted.")
+		h.Logger.Warn("Meta OAuth callback received without state parameter",
+			zap.String("url", r.URL.String()),
+			zap.String("query_params", r.URL.RawQuery),
+			zap.String("redirect_uri", r.Referer()))
+		
+		// Provide more helpful error message
+		errorMsg := "OAuth state parameter missing. This usually happens when:\n• The redirect URL in Meta Developer Console doesn't match exactly\n• The OAuth flow was interrupted or cancelled\n• Please check your Meta app settings and try connecting again"
+		
+		// Check if request came from Telegram (User-Agent or Referer)
+		userAgent := r.UserAgent()
+		referer := r.Referer()
+		if strings.Contains(userAgent, "Telegram") || strings.Contains(referer, "telegram.org") {
+			errorMsg += "\n\n💡 Tip: If you're connecting from Telegram, make sure you complete the OAuth flow in the browser window. Don't close it until you see a success message."
+		}
+		
+		// Redirect to success page with error status
+		h.respondError(w, r, h.getDefaultSuccessURL(), errorMsg)
 		return
 	}
 

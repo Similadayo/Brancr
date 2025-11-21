@@ -87,6 +87,18 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
             justify-content: center;
             padding: 20px;
         }
+        .telegram-notice {
+            background: #0088cc;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            display: none;
+        }
+        .telegram-notice.show {
+            display: block;
+        }
         .container {
             background: white;
             border-radius: 16px;
@@ -179,45 +191,95 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
         }
     </style>
 </head>
-<body>
+    <body>
     <div class="container">
+        <div class="telegram-notice" id="telegramNotice">
+            📱 <strong>Connection complete!</strong> You can now close this window and return to Telegram to verify your connection.
+        </div>
         <div class="icon">{{.Icon}}</div>
         <h1>{{.Title}}</h1>
         <p class="message {{if .IsSuccess}}success{{else}}error{{end}}">{{.Message}}</p>
         <div>
-            <button onclick="closeWindow()" class="button">Close Window</button>
             {{if .IsSuccess}}
+            <button onclick="closeWindow()" class="button">Close Window</button>
             <a href="/admin/social" class="button button-secondary" target="_blank">View Accounts</a>
+            {{else}}
+            <button onclick="retryConnection()" class="button">Try Again</button>
+            <button onclick="closeWindow()" class="button button-secondary">Close Window</button>
             {{end}}
         </div>
-        <p class="close-hint">You can safely close this window</p>
+        <p class="close-hint">{{if .IsSuccess}}You can safely close this window{{else}}You can try again or close this window{{end}}</p>
         <p class="auto-close-notice" id="countdown"></p>
     </div>
     <script>
-        // Check if opened in popup (has window.opener)
-        var isPopup = window.opener !== null;
-        var countdownSeconds = 3;
+        // Detect if we're in Telegram's in-app browser
+        var isTelegram = /Telegram|TelegramWebApp|TelegramBot/i.test(navigator.userAgent);
         
-        function closeWindow() {
-            if (isPopup) {
-                window.close();
-            } else {
-                // If not in popup, redirect to dashboard or show message
-                window.location.href = '/admin';
+        // Check if opened in popup (has window.opener) or Telegram browser
+        var isPopup = window.opener !== null || isTelegram;
+        var countdownSeconds = isTelegram ? 2 : 3;
+        
+        // Show Telegram notice if in Telegram browser
+        if (isTelegram) {
+            var telegramNotice = document.getElementById('telegramNotice');
+            if (telegramNotice) {
+                telegramNotice.classList.add('show');
             }
         }
         
-        // Auto-close after countdown if opened in popup
+        function closeWindow() {
+            if (isTelegram) {
+                // In Telegram, try to close or go back
+                if (window.Telegram && window.Telegram.WebApp) {
+                    // Telegram WebApp API
+                    window.Telegram.WebApp.close();
+                } else if (window.history.length > 1) {
+                    // Try to go back
+                    window.history.back();
+                } else {
+                    // Last resort: try to close
+                    window.close();
+                }
+            } else if (isPopup) {
+                window.close();
+            } else {
+                // If not in popup, redirect to dashboard
+                window.location.href = '/admin';
+            }
+        }
+        function retryConnection() {
+            if (isTelegram) {
+                // In Telegram, close and tell user to try again from bot
+                closeWindow();
+            } else if (isPopup) {
+                // If opened in popup, close and let parent handle retry
+                window.close();
+            } else {
+                // If not in popup, redirect back to dashboard connection page
+                window.location.href = '/admin/social';
+            }
+        }
+        function getUrlParameter(name) {
+            name = name.replace(/[\[]/, '\\[').replace(/[\]]/, '\\]');
+            var regex = new RegExp('[\\?&]' + name + '=([^&#]*)');
+            var results = regex.exec(location.search);
+            return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
+        }
+        
+        // Auto-close after countdown if opened in popup or Telegram
         if (isPopup) {
             var countdownEl = document.getElementById('countdown');
             var interval = setInterval(function() {
                 if (countdownSeconds > 0) {
-                    countdownEl.textContent = 'This window will close automatically in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...';
+                    var message = isTelegram 
+                        ? 'Returning to Telegram in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...'
+                        : 'This window will close automatically in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...';
+                    countdownEl.textContent = message;
                     countdownSeconds--;
                 } else {
                     clearInterval(interval);
-                    countdownEl.textContent = 'Closing...';
-                    window.close();
+                    countdownEl.textContent = isTelegram ? 'Returning to Telegram...' : 'Closing...';
+                    closeWindow();
                 }
             }, 1000);
         } else {
