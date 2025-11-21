@@ -199,16 +199,16 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
         <div class="icon">{{.Icon}}</div>
         <h1>{{.Title}}</h1>
         <p class="message {{if .IsSuccess}}success{{else}}error{{end}}">{{.Message}}</p>
-        <div>
+        <div id="buttonContainer">
             {{if .IsSuccess}}
-            <button onclick="closeWindow()" class="button">Close Window</button>
-            <a href="/admin/social" class="button button-secondary" target="_blank">View Accounts</a>
+            <!-- Buttons hidden by default, shown only for non-Telegram/non-popup users -->
+            <button onclick="closeWindow()" class="button" id="closeBtn" style="display: none;">Close Window</button>
             {{else}}
             <button onclick="retryConnection()" class="button">Try Again</button>
             <button onclick="closeWindow()" class="button button-secondary">Close Window</button>
             {{end}}
         </div>
-        <p class="close-hint">{{if .IsSuccess}}You can safely close this window{{else}}You can try again or close this window{{end}}</p>
+        <p class="close-hint" id="hintText">Returning to Telegram...</p>
         <p class="auto-close-notice" id="countdown"></p>
     </div>
     <script>
@@ -217,7 +217,6 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
         
         // Check if opened in popup (has window.opener) or Telegram browser
         var isPopup = window.opener !== null || isTelegram;
-        var countdownSeconds = isTelegram ? 2 : 3;
         
         // Show Telegram notice if in Telegram browser
         if (isTelegram) {
@@ -225,26 +224,29 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
             if (telegramNotice) {
                 telegramNotice.classList.add('show');
             }
+            // For Telegram, update the hint text
+            var hintText = document.getElementById('hintText');
+            if (hintText) {
+                hintText.textContent = 'Returning to Telegram...';
+            }
         }
         
         function closeWindow() {
             if (isTelegram) {
-                // In Telegram, try to close or go back
+                // In Telegram, try to close the in-app browser to return to chat
                 if (window.Telegram && window.Telegram.WebApp) {
-                    // Telegram WebApp API
+                    // Telegram WebApp API - close the webview
                     window.Telegram.WebApp.close();
-                } else if (window.history.length > 1) {
-                    // Try to go back
-                    window.history.back();
                 } else {
-                    // Last resort: try to close
+                    // Fallback: try to close the window (Telegram will handle it)
                     window.close();
                 }
             } else if (isPopup) {
+                // Regular popup: just close
                 window.close();
             } else {
-                // If not in popup, redirect to dashboard
-                window.location.href = '/admin';
+                // If not in popup, don't redirect - just show button (user can close manually)
+                // Don't redirect to dashboard automatically
             }
         }
         function retryConnection() {
@@ -266,25 +268,64 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
             return results === null ? '' : decodeURIComponent(results[1].replace(/\+/g, ' '));
         }
         
-        // Auto-close after countdown if opened in popup or Telegram
-        if (isPopup) {
-            var countdownEl = document.getElementById('countdown');
-            var interval = setInterval(function() {
-                if (countdownSeconds > 0) {
-                    var message = isTelegram 
-                        ? 'Returning to Telegram in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...'
-                        : 'This window will close automatically in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...';
-                    countdownEl.textContent = message;
-                    countdownSeconds--;
-                } else {
-                    clearInterval(interval);
-                    countdownEl.textContent = isTelegram ? 'Returning to Telegram...' : 'Closing...';
-                    closeWindow();
-                }
+        // Auto-close logic
+        var countdownEl = document.getElementById('countdown');
+        var isSuccess = {{if .IsSuccess}}true{{else}}false{{end}};
+        
+        if (isTelegram && isSuccess) {
+            // For Telegram: Hide all buttons, show success message, auto-close quickly
+            var buttonContainer = document.getElementById('buttonContainer');
+            if (buttonContainer) {
+                buttonContainer.style.display = 'none'; // Hide all buttons
+            }
+            if (countdownEl) {
+                countdownEl.textContent = '✅ Connection successful! Returning to Telegram...';
+            }
+            // Close after 1 second so user sees the success message
+            setTimeout(function() {
+                closeWindow();
             }, 1000);
+        } else if (isPopup && isSuccess) {
+            // For regular popups: Show countdown
+            var countdownSeconds = 3;
+            if (countdownEl) {
+                var interval = setInterval(function() {
+                    if (countdownSeconds > 0) {
+                        countdownEl.textContent = 'This window will close automatically in ' + countdownSeconds + ' second' + (countdownSeconds > 1 ? 's' : '') + '...';
+                        countdownSeconds--;
+                    } else {
+                        clearInterval(interval);
+                        countdownEl.textContent = 'Closing...';
+                        closeWindow();
+                    }
+                }, 1000);
+            }
+        } else if (!isSuccess) {
+            // For errors: Show close button and hint
+            var closeBtn = document.getElementById('closeBtn');
+            if (closeBtn) {
+                closeBtn.style.display = 'inline-block';
+            }
+            var hintText = document.getElementById('hintText');
+            if (hintText) {
+                hintText.textContent = 'You can try again or close this window';
+            }
+            if (countdownEl) {
+                countdownEl.style.display = 'none';
+            }
         } else {
-            // If not in popup, hide countdown
-            document.getElementById('countdown').style.display = 'none';
+            // Not in popup and success: Hide countdown, show close button
+            var closeBtn = document.getElementById('closeBtn');
+            if (closeBtn) {
+                closeBtn.style.display = 'inline-block';
+            }
+            if (countdownEl) {
+                countdownEl.style.display = 'none';
+            }
+            var hintText = document.getElementById('hintText');
+            if (hintText && !isTelegram) {
+                hintText.textContent = 'You can safely close this window';
+            }
         }
         
         // Also try to notify opener if it exists (for Telegram bot flow)
