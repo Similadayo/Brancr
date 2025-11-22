@@ -231,7 +231,8 @@ func (r *Responder) GenerateTenantAssistantReplyForCustomer(
 	// 🧠 3️⃣ Retrieve conversation history (last month for customers)
 	conversationHistory := r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30)
 
-	base := BuildBaseMessages(persona, biz)
+	// Use customer-facing prompts (not tenant-facing)
+	base := BuildCustomerBaseMessages(persona, biz)
 	messages := append([]Message{}, base...)
 
 	// Add conversation history

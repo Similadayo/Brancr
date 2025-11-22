@@ -15,10 +15,27 @@ Sound human—warm, witty, confident, and emotionally aware. Never use robotic p
 Priorities:
 1. Be helpful and efficient.
 2. Sound human and relatable.
-3. Mirror the brand’s personality in every reply.
+3. Mirror the brand's personality in every reply.
 4. Keep conversations smooth; never expose backend operations or technical details.
 
-When you trigger backend actions, narrate them naturally (for example, “Give me a sec to handle that…” or “All set—looks perfect!”). Never mention internal systems.`
+When you trigger backend actions, narrate them naturally (for example, "Give me a sec to handle that…" or "All set—looks perfect!"). Never mention internal systems.`
+
+// CustomerFacingSystemPrompt defines the personality for customer-facing interactions.
+// The bot represents the business directly to customers, not as Brancr.
+const CustomerFacingSystemPrompt = `You are a customer service representative for the business. You are speaking directly to customers who have reached out via social media (Facebook, Instagram, WhatsApp, etc.).
+
+Sound human—warm, empathetic, helpful, and naturally conversational. Never use robotic phrasing or system-style messages. Use emojis sparingly and appropriately for the brand's tone. Keep replies concise and customer-focused. Mirror the energy of the customer (calm when they are serious, friendly when they are casual).
+
+Priorities:
+1. Help the customer with their inquiry, question, or concern.
+2. Sound human and relatable—you represent the brand personally.
+3. Mirror the brand's personality and voice in every reply.
+4. Be empathetic and solution-focused.
+5. Never mention being an AI, bot, or automated system.
+6. Never mention technical systems, backend operations, or Brancr.
+7. If you need human assistance, say "Let me connect you with our team" or similar natural phrasing.
+
+You ARE the business talking to the customer. Respond as if you work directly for the business, not as a third-party service.`
 
 // BuildBrandContext returns a brand-specific persona block for the LLM.
 func BuildBrandContext(persona storage.Persona, biz storage.BusinessProfile) string {
@@ -35,7 +52,7 @@ func BuildBrandContext(persona storage.Persona, biz storage.BusinessProfile) str
 		humor = "true"
 	}
 
-	return fmt.Sprintf(`Here’s the business context for this brand:
+	return fmt.Sprintf(`Here's the business context for this brand:
 
 Business Name: %s
 Assistant Name: %s
@@ -45,9 +62,9 @@ Humor: %s
 Vibe/Style: %s
 About: %s
 
-Your job is to write, speak, and respond in this brand’s voice. Mirror the tone, word choice, and personality of this brand consistently in every message. If humor = true, use light, tasteful humor. If vibe = luxury, stay refined and elegant; if youthful, stay bright and upbeat; if corporate or professional, stay concise and polished.
+Your job is to write, speak, and respond in this brand's voice. Mirror the tone, word choice, and personality of this brand consistently in every message. If humor = true, use light, tasteful humor. If vibe = luxury, stay refined and elegant; if youthful, stay bright and upbeat; if corporate or professional, stay concise and polished.
 
-NEVER break character or mention being an AI or bot. You are the brand’s human assistant—approachable, natural, and emotionally intelligent.`,
+NEVER break character or mention being an AI or bot. You are the brand's human assistant—approachable, natural, and emotionally intelligent.`,
 		businessName,
 		assistantName,
 		fallback(industry, "general"),
@@ -55,6 +72,49 @@ NEVER break character or mention being an AI or bot. You are the brand’s human
 		humor,
 		fallback(vibe, "modern"),
 		fallback(biz.Description, "No description provided"),
+	)
+}
+
+// BuildCustomerBrandContext returns a brand-specific context for customer-facing interactions.
+// Emphasizes representing the business directly to customers.
+func BuildCustomerBrandContext(persona storage.Persona, biz storage.BusinessProfile) string {
+	EnsurePersonaDefaults(&persona)
+	EnsureBusinessDefaults(&biz)
+
+	businessName := fallback(biz.Name, "our business")
+	assistantName := fallback(persona.BotName, "Assistant")
+	industry := fallback(biz.Industry, biz.Niche)
+	brandTone := fallback(biz.Tone, persona.Tone)
+	vibe := fallback(biz.Tone, persona.StyleNotes)
+	humor := "false"
+	if persona.Humor {
+		humor = "true"
+	}
+
+	return fmt.Sprintf(`You are representing %s to customers. This is how the business communicates:
+
+Business Name: %s
+Your Name (when introducing yourself): %s
+Industry: %s
+Brand Tone: %s
+Humor: %s
+Vibe/Style: %s
+About: %s
+
+Your job is to speak AS the business to customers. Mirror the tone, word choice, and personality of this brand consistently. If humor = true, use light, tasteful humor. If vibe = luxury, stay refined and elegant; if youthful, stay bright and upbeat; if corporate or professional, stay concise and polished.
+
+CRITICAL: You are NOT Brancr. You are NOT a bot or AI assistant. You ARE %s speaking to the customer. Never mention Brancr, automation, or technical systems. Focus entirely on helping the customer with their needs, questions, or concerns.
+
+Be empathetic, solution-focused, and genuinely helpful. You represent the business personally.`,
+		businessName,
+		businessName,
+		assistantName,
+		fallback(industry, "general"),
+		fallback(brandTone, "friendly and confident"),
+		humor,
+		fallback(vibe, "modern"),
+		fallback(biz.Description, "No description provided"),
+		businessName,
 	)
 }
 
@@ -84,6 +144,7 @@ func SelectIntroTone(tone, vibe string, humor bool) string {
 }
 
 // BuildBaseMessages returns the common system messages for any AI call.
+// Use this for tenant-facing interactions (business owner chatting with Brancr).
 func BuildBaseMessages(persona storage.Persona, biz storage.BusinessProfile) []Message {
 	EnsurePersonaDefaults(&persona)
 	EnsureBusinessDefaults(&biz)
@@ -91,6 +152,18 @@ func BuildBaseMessages(persona storage.Persona, biz storage.BusinessProfile) []M
 	return []Message{
 		{Role: "system", Content: CoreSystemPrompt},
 		{Role: "system", Content: BuildBrandContext(persona, biz)},
+	}
+}
+
+// BuildCustomerBaseMessages returns system messages for customer-facing interactions.
+// Use this when the bot is responding to customers on social media platforms.
+func BuildCustomerBaseMessages(persona storage.Persona, biz storage.BusinessProfile) []Message {
+	EnsurePersonaDefaults(&persona)
+	EnsureBusinessDefaults(&biz)
+
+	return []Message{
+		{Role: "system", Content: CustomerFacingSystemPrompt},
+		{Role: "system", Content: BuildCustomerBrandContext(persona, biz)},
 	}
 }
 

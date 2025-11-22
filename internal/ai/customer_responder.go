@@ -46,7 +46,8 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 	// Load conversation history
 	conversationHistory := r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30) // Last 30 days
 
-	base := BuildBaseMessages(persona, biz)
+	// Use customer-facing prompts (not tenant-facing)
+	base := BuildCustomerBaseMessages(persona, biz)
 	messages := append([]Message{}, base...)
 
 	// Add conversation history
