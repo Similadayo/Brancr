@@ -1467,6 +1467,8 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		PhoneNumber string `json:"phone_number"` // e.g., "+1234567890"
 		DisplayName string `json:"display_name"` // Optional: defaults to tenant name
+		CodeMethod  string `json:"code_method"`  // Optional: "SMS" or "VOICE" (defaults to "SMS")
+		Locale      string `json:"locale"`       // Optional: locale code (defaults to "en_US")
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1527,8 +1529,20 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 			h.Logger.Info("phone number registered successfully", zap.String("phone_number_id", phoneNum.PhoneNumberID))
 		}
 
-		// Step 2: Request verification code (Meta will send SMS to tenant's phone)
-		if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNum.PhoneNumberID, "SMS", "en_US"); err != nil {
+		// Step 2: Request verification code (Meta will send SMS/Voice to tenant's phone)
+		codeMethod := req.CodeMethod
+		if codeMethod == "" {
+			codeMethod = "SMS" // Default to SMS
+		}
+		if codeMethod != "SMS" && codeMethod != "VOICE" {
+			codeMethod = "SMS" // Fallback to SMS if invalid
+		}
+		locale := req.Locale
+		if locale == "" {
+			locale = "en_US" // Default locale
+		}
+		
+		if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNum.PhoneNumberID, codeMethod, locale); err != nil {
 			h.Logger.Error("failed to request verification code", zap.Error(err))
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error":   "code_request_failed",
@@ -1556,12 +1570,17 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 			zap.String("phone_number", phoneNumber),
 			zap.String("phone_number_id", phoneNum.PhoneNumberID))
 
+		methodText := "SMS"
+		if codeMethod == "VOICE" {
+			methodText = "voice call"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":         true,
 			"request_id":      request.ID,
 			"phone_number_id": phoneNum.PhoneNumberID,
 			"phone_number":    phoneNumber,
-			"message":         fmt.Sprintf("✅ Verification code sent to %s! Please check your phone and enter the code using the verify-number endpoint.", phoneNumber),
+			"code_method":     codeMethod,
+			"message":         fmt.Sprintf("✅ Verification code sent via %s to %s! Please check your phone and enter the code.", methodText, phoneNumber),
 			"next_step":       "verify_number",
 			"automated":       true,
 		})
