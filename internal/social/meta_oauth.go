@@ -411,7 +411,10 @@ func (h *MetaOAuthHandler) processPlatforms(ctx context.Context, state metaOAuth
 
 		case "instagram":
 			if pageData == nil || pageData.Instagram == nil {
-				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "instagram", Message: "no Instagram business account linked"})
+				result.Warnings = append(result.Warnings, metaPlatformResult{
+					Platform: "instagram",
+					Message: "no Instagram Business Account linked to your Facebook Page. To connect Instagram:\n1. Convert your Instagram account to Business/Creator account in Instagram app settings\n2. Link your Instagram Business Account to your Facebook Page in Instagram app settings → Page\n3. Make sure you're an admin of both the Facebook Page and Instagram Business Account\nThen try connecting again.",
+				})
 				continue
 			}
 
@@ -481,7 +484,7 @@ func (h *MetaOAuthHandler) selectPage(ctx context.Context, accessToken string, s
 	}
 
 	if len(pages) == 0 {
-		return nil, errors.New("no Facebook pages available for this user")
+		return nil, errors.New("no Facebook pages available for this user. To use Facebook Messenger or Instagram messaging, you must:\n1. Create a Facebook Page (free) at facebook.com/pages/create\n2. For Instagram: Convert your Instagram account to Business/Creator account in Instagram app settings\n3. Link your Instagram Business Account to your Facebook Page in Instagram app settings → Page\nThen try connecting again.")
 	}
 
 	var selected *metaPage
