@@ -601,12 +601,7 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 	h.Manager.DB.Where("tenant_id = ? AND connected = ?", tenantID, true).Find(&accounts)
 	
 	// Build context-aware menu text
-	businessName := tenant.Name
-	if businessProfile.Name != "" {
-		businessName = businessProfile.Name
-	}
-	
-	text := fmt.Sprintf("🎛️ *Brancr Control Center*\n\n*%s*", businessName)
+	text := "🎛️ *Brancr Control Center*"
 	
 	if tenant.OnboardingComplete && persona.BotName != "" {
 		tone := persona.Tone
