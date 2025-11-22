@@ -216,6 +216,33 @@ func (a *App) Run() error {
 	}()
 	a.Services.Logger.Info("🔄 Recurring template processor started (checking every minute)")
 
+	// WhatsApp Phone Number Sync from Meta
+	go func() {
+		// Sync immediately on startup
+		if err := social.SyncPhoneNumbersFromMeta(a.Services.DB, a.Services.Logger, a.Services.Config); err != nil {
+			a.Services.Logger.Warn("initial phone number sync failed", zap.Error(err))
+		} else {
+			a.Services.Logger.Info("✅ Initial phone number sync completed")
+		}
+
+		// Then sync every 15 minutes
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctxSched.Done():
+				return
+			case <-ticker.C:
+				if err := social.SyncPhoneNumbersFromMeta(a.Services.DB, a.Services.Logger, a.Services.Config); err != nil {
+					a.Services.Logger.Warn("periodic phone number sync failed", zap.Error(err))
+				} else {
+					a.Services.Logger.Debug("✅ Periodic phone number sync completed")
+				}
+			}
+		}
+	}()
+	a.Services.Logger.Info("📞 WhatsApp phone number sync started (syncing every 15 minutes)")
+
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

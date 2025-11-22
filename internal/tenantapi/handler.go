@@ -1587,8 +1587,92 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Number not in pool - fallback to admin request OR embedded signup
-	// Check if tenant already has a pending request for this number
+	// Number not in pool - sync from Meta first to check if it exists
+	h.Logger.Info("phone number not in database pool, syncing from Meta",
+		zap.String("phone_number", phoneNumber),
+		zap.Uint("tenant_id", claims.TenantID))
+	
+	// Sync phone numbers from Meta to ensure DB is up-to-date
+	if err := social.SyncPhoneNumbersFromMeta(h.DB, h.Logger, h.Config); err != nil {
+		h.Logger.Warn("failed to sync phone numbers from Meta, proceeding with fallback", zap.Error(err))
+	} else {
+		// Check again after sync
+		var phoneNumAfterSync storage.WhatsAppPhoneNumber
+		if err := h.DB.Where("phone_number = ? AND tenant_id IS NULL", phoneNumber).First(&phoneNumAfterSync).Error; err == nil {
+			// Number found after sync! Proceed with automated flow
+			h.Logger.Info("phone number found in Meta after sync, starting automated onboarding",
+				zap.String("phone_number", phoneNumber),
+				zap.String("phone_number_id", phoneNumAfterSync.PhoneNumberID),
+				zap.Uint("tenant_id", claims.TenantID))
+
+			// Step 1: Register the number (if needed)
+			if phoneNumAfterSync.Status == "pending" || phoneNumAfterSync.Status == "pending_verification" {
+				if err := social.RegisterPhoneNumber(h.Logger, h.Config, phoneNumAfterSync.PhoneNumberID); err != nil {
+					h.Logger.Error("failed to register phone number", zap.Error(err))
+					writeJSON(w, http.StatusInternalServerError, map[string]any{
+						"error":   "registration_failed",
+						"message": "Failed to register phone number: " + err.Error(),
+					})
+					return
+				}
+				h.Logger.Info("phone number registered successfully", zap.String("phone_number_id", phoneNumAfterSync.PhoneNumberID))
+			}
+
+			// Step 2: Request verification code
+			codeMethod := req.CodeMethod
+			if codeMethod == "" {
+				codeMethod = "SMS" // Default to SMS
+			}
+			if codeMethod != "SMS" && codeMethod != "VOICE" {
+				codeMethod = "SMS" // Fallback to SMS if invalid
+			}
+			locale := req.Locale
+			if locale == "" {
+				locale = "en_US" // Default locale
+			}
+			
+			if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNumAfterSync.PhoneNumberID, codeMethod, locale); err != nil {
+				h.Logger.Error("failed to request verification code", zap.Error(err))
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"error":   "code_request_failed",
+					"message": "Failed to request verification code: " + err.Error(),
+				})
+				return
+			}
+
+			// Step 3: Create a request record
+			request := storage.WhatsAppPhoneNumberRequest{
+				TenantID:      claims.TenantID,
+				PhoneNumber:   phoneNumber,
+				DisplayName:   req.DisplayName,
+				PhoneNumberID: phoneNumAfterSync.PhoneNumberID,
+				Status:        "verification_code_sent",
+			}
+
+			if err := h.DB.Create(&request).Error; err != nil {
+				h.Logger.Error("failed to create phone number request", zap.Error(err))
+				// Don't fail - code was already sent
+			}
+
+			methodText := "SMS"
+			if codeMethod == "VOICE" {
+				methodText = "voice call"
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"success":         true,
+				"request_id":      request.ID,
+				"phone_number_id": phoneNumAfterSync.PhoneNumberID,
+				"phone_number":    phoneNumber,
+				"code_method":     codeMethod,
+				"message":         fmt.Sprintf("✅ Verification code sent via %s to %s! Please check your phone and enter the code.", methodText, phoneNumber),
+				"next_step":       "verify_number",
+				"automated":       true,
+			})
+			return
+		}
+	}
+
+	// Still not in pool - check if tenant already has a pending request for this number
 	var existingRequest storage.WhatsAppPhoneNumberRequest
 	if err := h.DB.Where("tenant_id = ? AND phone_number = ? AND status IN (?)", claims.TenantID, phoneNumber, []string{"pending", "added_to_meta", "verification_code_sent"}).First(&existingRequest).Error; err == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
