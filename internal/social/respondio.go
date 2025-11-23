@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"go.uber.org/zap"
@@ -80,8 +81,9 @@ func (c *RespondIOClient) SendMessage(ctx context.Context, identifier string, te
 	}
 
 	// Construct API endpoint
-	// identifier should be URL-encoded (phone numbers with + need encoding)
-	endpoint := fmt.Sprintf("%s/contact/%s/message", RespondIOBaseURL, identifier)
+	// identifier must be URL-encoded (phone numbers with + need encoding)
+	// Use url.PathEscape to properly encode the phone number
+	endpoint := fmt.Sprintf("%s/contact/%s/message", RespondIOBaseURL, url.PathEscape(identifier))
 
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonData))
@@ -156,7 +158,8 @@ func (c *RespondIOClient) GetContact(ctx context.Context, identifier string) (ma
 		return nil, fmt.Errorf("Respond.io API key not configured")
 	}
 
-	endpoint := fmt.Sprintf("%s/contact/%s", RespondIOBaseURL, identifier)
+	// URL-encode identifier (phone numbers with + need encoding)
+	endpoint := fmt.Sprintf("%s/contact/%s", RespondIOBaseURL, url.PathEscape(identifier))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -193,7 +196,8 @@ func (c *RespondIOClient) CreateOrUpdateContact(ctx context.Context, identifier 
 		return fmt.Errorf("Respond.io API key not configured")
 	}
 
-	endpoint := fmt.Sprintf("%s/contact/create_or_update/%s", RespondIOBaseURL, identifier)
+	// URL-encode identifier (phone numbers with + need encoding)
+	endpoint := fmt.Sprintf("%s/contact/create_or_update/%s", RespondIOBaseURL, url.PathEscape(identifier))
 
 	jsonData, err := json.Marshal(contactData)
 	if err != nil {

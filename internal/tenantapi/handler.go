@@ -3792,18 +3792,79 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// For Respond.io, we use a shared account (configured globally)
-	// Tenant's phone number is used as the customer identifier
-	// We just need to create a SocialAccount record
+	ctx := r.Context()
 
-	// Check if account already exists (disconnected)
+	// Step 1: Get WhatsApp channel from Respond.io workspace
+	respondIOClient := social.NewRespondIOClient(h.Config.RespondIOAPIKey, h.Logger)
+	channels, err := respondIOClient.ListChannels(ctx)
+	if err != nil {
+		h.Logger.Error("failed to list Respond.io channels", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "channel_fetch_failed",
+			"message": "Failed to fetch WhatsApp channel from Respond.io: " + err.Error(),
+		})
+		return
+	}
+
+	// Find WhatsApp channel
+	var whatsappChannelID string
+	for _, channel := range channels {
+		channelType, _ := channel["type"].(string)
+		channelID, _ := channel["id"].(string)
+		channelName, _ := channel["name"].(string)
+		
+		h.Logger.Info("Found Respond.io channel",
+			zap.String("type", channelType),
+			zap.String("id", channelID),
+			zap.String("name", channelName))
+
+		// Look for WhatsApp channel
+		if channelType == "whatsapp" || strings.Contains(strings.ToLower(channelName), "whatsapp") {
+			whatsappChannelID = channelID
+			break
+		}
+	}
+
+	if whatsappChannelID == "" {
+		h.Logger.Error("no WhatsApp channel found in Respond.io workspace")
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "no_whatsapp_channel",
+			"message": "No WhatsApp channel found in your Respond.io workspace. Please add a WhatsApp channel in Respond.io dashboard first.",
+			"available_channels": len(channels),
+		})
+		return
+	}
+
+	h.Logger.Info("✅ Found WhatsApp channel in Respond.io",
+		zap.String("channel_id", whatsappChannelID),
+		zap.Uint("tenant_id", tenantID))
+
+	// Step 2: Create or update contact in Respond.io (using tenant's phone number)
+	// This ensures the contact exists for sending/receiving messages
+	contactData := map[string]interface{}{
+		"name": phoneNumber, // Use phone number as name initially
+		"channels": []map[string]interface{}{
+			{
+				"type": "whatsapp",
+				"value": phoneNumber,
+			},
+		},
+	}
+
+	// Create or update contact in Respond.io
+	if err := respondIOClient.CreateOrUpdateContact(ctx, phoneNumber, contactData); err != nil {
+		h.Logger.Warn("failed to create/update contact in Respond.io (may already exist)", zap.Error(err))
+		// Don't fail - contact might already exist or be created automatically
+	}
+
+	// Step 3: Create or update SocialAccount record with channel ID
 	var account storage.SocialAccount
-	err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error
+	err = h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error
 	if err == nil {
 		// Update existing account
 		account.Connected = true
-		account.PageID = phoneNumber // Store phone number here for reference
-		account.ExternalID = ""      // Respond.io uses contact ID, not channel ID for multi-tenant
+		account.PageID = phoneNumber        // Store phone number for reference
+		account.ExternalID = whatsappChannelID // Store Respond.io WhatsApp channel ID
 		account.Mode = "respondio"
 		if err := h.DB.Save(&account).Error; err != nil {
 			h.Logger.Error("failed to update WhatsApp account", zap.Error(err))
@@ -3816,8 +3877,8 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 			TenantID:   tenantID,
 			Platform:   "whatsapp",
 			Connected:  true,
-			PageID:     phoneNumber, // Store phone number for reference
-			ExternalID: "",          // Will be set when we get channel ID from Respond.io
+			PageID:     phoneNumber,        // Store phone number for reference
+			ExternalID: whatsappChannelID,  // Store Respond.io WhatsApp channel ID (CRITICAL!)
 			Mode:       "respondio",
 			Username:   phoneNumber,
 		}
@@ -3830,15 +3891,17 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 
 	h.Logger.Info("✅ WhatsApp connected via Respond.io",
 		zap.Uint("tenant_id", tenantID),
-		zap.String("phone_number", phoneNumber))
+		zap.String("phone_number", phoneNumber),
+		zap.String("channel_id", whatsappChannelID))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":       true,
 		"provider":      "respondio",
 		"phone_number":  phoneNumber,
+		"channel_id":    whatsappChannelID,
 		"message":       fmt.Sprintf("✅ WhatsApp connected successfully via Respond.io! Your number %s is ready to receive messages.", phoneNumber),
 		"account_id":    account.ID,
-		"note":          "Respond.io uses a shared account. Messages will be sent from the configured Respond.io number to your customers.",
+		"note":          "Respond.io uses a shared account. Messages will be sent from the configured Respond.io WhatsApp number to your customers.",
 	})
 }
 
