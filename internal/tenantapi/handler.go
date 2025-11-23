@@ -1193,37 +1193,68 @@ func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Get tenant's assigned number
-	var phoneNum storage.WhatsAppPhoneNumber
-	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err != nil {
-		http.Error(w, "no WhatsApp number assigned", http.StatusNotFound)
-		return
-	}
-
-	// Unassign from tenant
-	phoneNum.TenantID = nil
-	phoneNum.Status = "available"
-	phoneNum.AssignedAt = nil
-
-	if err := h.DB.Save(&phoneNum).Error; err != nil {
-		h.Logger.Error("failed to disconnect phone number", zap.Error(err))
-		http.Error(w, "failed to disconnect", http.StatusInternalServerError)
-		return
-	}
-
-	// Update social account
+	// Step 1: Disconnect SocialAccount (for Respond.io/Gupshup connections)
 	var account storage.SocialAccount
-	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error; err == nil {
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, "whatsapp", true).First(&account).Error; err == nil {
+		// Found connected WhatsApp account - disconnect it
 		account.Connected = false
-		account.PageID = ""
-		account.ExternalID = ""
-		account.Username = ""
-		h.DB.Save(&account)
+		// Keep phone number and channel ID for potential reconnection
+		// account.PageID = "" // Keep phone number
+		// account.ExternalID = "" // Keep channel ID
+		
+		if err := h.DB.Save(&account).Error; err != nil {
+			h.Logger.Error("failed to disconnect social account", zap.Error(err))
+			http.Error(w, "failed to disconnect", http.StatusInternalServerError)
+			return
+		}
+
+		h.Logger.Info("✅ WhatsApp disconnected (SocialAccount)",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("mode", account.Mode),
+			zap.String("phone_number", account.PageID))
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "WhatsApp disconnected successfully",
+			"provider": account.Mode,
+		})
+		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
-		"message": "WhatsApp number disconnected successfully",
-	})
+	// Step 2: Try provider-owned model (legacy - WhatsAppPhoneNumber)
+	var phoneNum storage.WhatsAppPhoneNumber
+	if err := h.DB.Where("tenant_id = ? AND status = ?", claims.TenantID, "assigned").First(&phoneNum).Error; err == nil {
+		// Unassign from tenant
+		phoneNum.TenantID = nil
+		phoneNum.Status = "available"
+		phoneNum.AssignedAt = nil
+
+		if err := h.DB.Save(&phoneNum).Error; err != nil {
+			h.Logger.Error("failed to disconnect phone number", zap.Error(err))
+			http.Error(w, "failed to disconnect", http.StatusInternalServerError)
+			return
+		}
+
+		// Also update social account if it exists
+		var socialAccount storage.SocialAccount
+		if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&socialAccount).Error; err == nil {
+			socialAccount.Connected = false
+			h.DB.Save(&socialAccount)
+		}
+
+		h.Logger.Info("✅ WhatsApp disconnected (Provider-owned)",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("phone_number", phoneNum.PhoneNumber))
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "WhatsApp number disconnected successfully",
+		})
+		return
+	}
+
+	// No WhatsApp connection found
+	http.Error(w, "no WhatsApp connection found to disconnect", http.StatusNotFound)
 }
 
 func (h *Handler) checkWebhookStatus(w http.ResponseWriter, r *http.Request) {
