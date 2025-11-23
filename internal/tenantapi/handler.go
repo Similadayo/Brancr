@@ -3839,29 +3839,99 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 
 	// Find WhatsApp channel
 	var whatsappChannelID string
+	var channelStatus string
 	for _, channel := range channels {
 		channelType, _ := channel["type"].(string)
-		channelID, _ := channel["id"].(string)
 		channelName, _ := channel["name"].(string)
+		
+		// Handle channel ID as string or number (e.g., 440617)
+		var channelID string
+		if idStr, ok := channel["id"].(string); ok {
+			channelID = idStr
+		} else if idNum, ok := channel["id"].(float64); ok {
+			channelID = fmt.Sprintf("%.0f", idNum) // Convert 440617.0 to "440617"
+		} else if idNum, ok := channel["id"].(int); ok {
+			channelID = fmt.Sprintf("%d", idNum)
+		}
+		
+		if status, ok := channel["status"].(string); ok {
+			channelStatus = status
+		} else if status, ok := channel["available"].(bool); ok {
+			if status {
+				channelStatus = "available"
+			} else {
+				channelStatus = "unavailable"
+			}
+		}
 		
 		h.Logger.Info("Found Respond.io channel",
 			zap.String("type", channelType),
 			zap.String("id", channelID),
-			zap.String("name", channelName))
+			zap.String("name", channelName),
+			zap.String("status", channelStatus),
+			zap.Any("full_channel", channel))
 
-		// Look for WhatsApp channel
-		if channelType == "whatsapp" || strings.Contains(strings.ToLower(channelName), "whatsapp") {
+		// Look for WhatsApp channel (accept even if unavailable - we can still send messages)
+		// Match by type OR name contains "whatsapp" OR contains "wa" (abbreviation)
+		isWhatsApp := channelType == "whatsapp" || 
+			channelType == "wa" ||
+			channelType == "whatsapp_business_platform" ||
+			strings.Contains(strings.ToLower(channelName), "whatsapp") ||
+			strings.Contains(strings.ToLower(channelName), "wa business")
+		
+		if isWhatsApp && channelID != "" {
 			whatsappChannelID = channelID
+			if channelStatus != "" && channelStatus != "available" {
+				h.Logger.Warn("⚠️ WhatsApp channel found but status is not 'available'",
+					zap.String("channel_id", channelID),
+					zap.String("status", channelStatus),
+					zap.String("note", "Channel may still work for sending messages, but you may need to activate it in Respond.io dashboard"))
+			}
 			break
 		}
 	}
 
 	if whatsappChannelID == "" {
-		h.Logger.Error("no WhatsApp channel found in Respond.io workspace")
+		h.Logger.Error("no WhatsApp channel found in Respond.io workspace",
+			zap.Int("total_channels", len(channels)),
+			zap.Any("all_channels", channels))
+		
+		// List available channel types and details for debugging
+		channelTypes := []string{}
+		channelDetails := []map[string]interface{}{}
+		for _, ch := range channels {
+			chDetail := map[string]interface{}{}
+			if t, ok := ch["type"].(string); ok {
+				channelTypes = append(channelTypes, t)
+				chDetail["type"] = t
+			}
+			if id, ok := ch["id"].(string); ok {
+				chDetail["id"] = id
+			} else if id, ok := ch["id"].(float64); ok {
+				chDetail["id"] = fmt.Sprintf("%.0f", id) // Convert float64 to string
+			}
+			if name, ok := ch["name"].(string); ok {
+				chDetail["name"] = name
+			}
+			if status, ok := ch["status"].(string); ok {
+				chDetail["status"] = status
+			}
+			channelDetails = append(channelDetails, chDetail)
+		}
+		
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "no_whatsapp_channel",
-			"message": "No WhatsApp channel found in your Respond.io workspace. Please add a WhatsApp channel in Respond.io dashboard first.",
-			"available_channels": len(channels),
+			"message": "No WhatsApp channel found in your Respond.io workspace. Please ensure you have a WhatsApp channel added and it's visible in Settings → Channels.",
+			"total_channels": len(channels),
+			"channel_types": channelTypes,
+			"channel_details": channelDetails,
+			"help": "If you see channel ID 440617 in Respond.io dashboard but it's not found here, the channel might need to be activated or the API might need different permissions.",
+			"troubleshooting": []string{
+				"1. Check Respond.io dashboard: Settings → Channels → WhatsApp Business (ID: 440617)",
+				"2. Ensure the channel is connected (even if marked 'Unavailable', it should still have an ID)",
+				"3. Verify API key has permission to list channels",
+				"4. Check if channel status needs to be 'available' or if we can use unavailable channels",
+			},
 		})
 		return
 	}

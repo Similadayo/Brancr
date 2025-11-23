@@ -252,17 +252,47 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("Respond.io API error %d: %s", resp.StatusCode, string(body))
+		// Log detailed error for debugging
+		if c.Logger != nil {
+			c.Logger.Error("Respond.io list channels API error",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", bodyStr),
+				zap.String("endpoint", endpoint))
+		}
+		return nil, fmt.Errorf("Respond.io API error %d: %s", resp.StatusCode, bodyStr)
 	}
 
+	// Try parsing as standard response structure
 	var response struct {
 		Data []map[string]interface{} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+		// Maybe it's a different structure - try direct array
+		var directArray []map[string]interface{}
+		if err2 := json.Unmarshal(body, &directArray); err2 == nil {
+			if c.Logger != nil {
+				c.Logger.Info("Respond.io channels returned as direct array",
+					zap.Int("count", len(directArray)))
+			}
+			return directArray, nil
+		}
+		
+		// Log raw response for debugging
+		if c.Logger != nil {
+			c.Logger.Warn("Failed to parse Respond.io channels response",
+				zap.Error(err),
+				zap.String("response_preview", truncateStringForRespondIO(bodyStr, 500)))
+		}
+		return nil, fmt.Errorf("failed to parse channels response: %w (response: %s)", err, truncateStringForRespondIO(bodyStr, 200))
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("✅ Successfully fetched Respond.io channels",
+			zap.Int("count", len(response.Data)))
 	}
 
 	return response.Data, nil
