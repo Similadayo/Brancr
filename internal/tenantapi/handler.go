@@ -3739,6 +3739,7 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PhoneNumber string `json:"phone_number"` // e.g., "+2347039841392"
 		Provider    string `json:"provider"`     // "respondio", "gupshup", or "auto" (default)
+		ChannelID   string `json:"channel_id"`   // Optional: manual Respond.io channel ID override (e.g., "440617")
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3796,7 +3797,7 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 
 	case "respondio":
 		// For Respond.io, we use the shared account
-		h.connectWhatsAppRespondIO(w, r, claims.TenantID, phoneNumber)
+		h.connectWhatsAppRespondIO(w, r, claims.TenantID, phoneNumber, req.ChannelID)
 
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -3814,7 +3815,7 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 }
 
 // connectWhatsAppRespondIO - Connect WhatsApp via Respond.io (simplified - uses shared account)
-func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string) {
+func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string, manualChannelID string) {
 	if h.Config.RespondIOAPIKey == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "respondio_not_configured",
@@ -3891,6 +3892,17 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	// If no WhatsApp channel found but we have 0 channels total, 
+	// the API might not be returning channels properly
+	// Allow fallback: use channel ID directly if provided in request
+	if whatsappChannelID == "" && manualChannelID != "" {
+		h.Logger.Warn("⚠️ No WhatsApp channel found in API response, but channel_id provided in request. Using provided channel ID.",
+			zap.String("channel_id", manualChannelID),
+			zap.Int("channels_returned", len(channels)),
+			zap.String("note", "Channel exists in dashboard but API returned empty. Using manual channel ID as workaround."))
+		whatsappChannelID = manualChannelID
+	}
+
 	if whatsappChannelID == "" {
 		h.Logger.Error("no WhatsApp channel found in Respond.io workspace",
 			zap.Int("total_channels", len(channels)),
@@ -3921,16 +3933,21 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "no_whatsapp_channel",
-			"message": "No WhatsApp channel found in your Respond.io workspace. Please ensure you have a WhatsApp channel added and it's visible in Settings → Channels.",
+			"message": "No WhatsApp channel found in Respond.io API response. The channel exists in dashboard (ID: 440617) but API returned 0 channels.",
 			"total_channels": len(channels),
 			"channel_types": channelTypes,
 			"channel_details": channelDetails,
-			"help": "If you see channel ID 440617 in Respond.io dashboard but it's not found here, the channel might need to be activated or the API might need different permissions.",
+			"workaround": "Since channel ID 440617 exists in your dashboard, you can manually specify it by adding 'channel_id': '440617' to your request body.",
 			"troubleshooting": []string{
-				"1. Check Respond.io dashboard: Settings → Channels → WhatsApp Business (ID: 440617)",
-				"2. Ensure the channel is connected (even if marked 'Unavailable', it should still have an ID)",
-				"3. Verify API key has permission to list channels",
-				"4. Check if channel status needs to be 'available' or if we can use unavailable channels",
+				"1. The API returned 0 channels - this might be a permissions or endpoint issue",
+				"2. Your channel (ID: 440617) exists in dashboard but isn't returned by the API",
+				"3. As a workaround, add 'channel_id': '440617' to your POST request body",
+				"4. Or verify API key has permission to list channels in Respond.io settings",
+			},
+			"example_request": map[string]any{
+				"phone_number": phoneNumber,
+				"provider": "respondio",
+				"channel_id": "440617", // Manual override
 			},
 		})
 		return

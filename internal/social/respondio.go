@@ -254,6 +254,15 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
 
+	// Always log the raw response for debugging
+	if c.Logger != nil {
+		c.Logger.Info("Respond.io list channels API response",
+			zap.Int("status", resp.StatusCode),
+			zap.String("endpoint", endpoint),
+			zap.Int("body_length", len(bodyStr)),
+			zap.String("response_preview", truncateStringForRespondIO(bodyStr, 1000)))
+	}
+
 	if resp.StatusCode >= 400 {
 		// Log detailed error for debugging
 		if c.Logger != nil {
@@ -268,6 +277,8 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 	// Try parsing as standard response structure
 	var response struct {
 		Data []map[string]interface{} `json:"data"`
+		Channels []map[string]interface{} `json:"channels"` // Alternative field name
+		Results []map[string]interface{} `json:"results"`   // Another possible field name
 	}
 
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -276,7 +287,8 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 		if err2 := json.Unmarshal(body, &directArray); err2 == nil {
 			if c.Logger != nil {
 				c.Logger.Info("Respond.io channels returned as direct array",
-					zap.Int("count", len(directArray)))
+					zap.Int("count", len(directArray)),
+					zap.String("raw_response", truncateStringForRespondIO(bodyStr, 500)))
 			}
 			return directArray, nil
 		}
@@ -285,17 +297,35 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 		if c.Logger != nil {
 			c.Logger.Warn("Failed to parse Respond.io channels response",
 				zap.Error(err),
-				zap.String("response_preview", truncateStringForRespondIO(bodyStr, 500)))
+				zap.String("response_preview", truncateStringForRespondIO(bodyStr, 1000)),
+				zap.String("full_response", bodyStr))
 		}
-		return nil, fmt.Errorf("failed to parse channels response: %w (response: %s)", err, truncateStringForRespondIO(bodyStr, 200))
+		return nil, fmt.Errorf("failed to parse channels response: %w (response: %s)", err, truncateStringForRespondIO(bodyStr, 500))
+	}
+
+	// Check multiple possible response formats
+	var channels []map[string]interface{}
+	if len(response.Data) > 0 {
+		channels = response.Data
+	} else if len(response.Channels) > 0 {
+		channels = response.Channels
+	} else if len(response.Results) > 0 {
+		channels = response.Results
 	}
 
 	if c.Logger != nil {
-		c.Logger.Info("✅ Successfully fetched Respond.io channels",
-			zap.Int("count", len(response.Data)))
+		if len(channels) == 0 {
+			c.Logger.Warn("⚠️ Respond.io API returned 0 channels",
+				zap.String("endpoint", endpoint),
+				zap.String("response_structure", truncateStringForRespondIO(bodyStr, 1000)),
+				zap.String("note", "Channel exists in dashboard (ID: 440617) but API returned empty. This could be a permissions issue or the API endpoint might need space ID."))
+		} else {
+			c.Logger.Info("✅ Successfully fetched Respond.io channels",
+				zap.Int("count", len(channels)))
+		}
 	}
 
-	return response.Data, nil
+	return channels, nil
 }
 
 // truncateStringForRespondIO truncates a string to a maximum length
