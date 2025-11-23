@@ -113,12 +113,16 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/whatsapp/resubscribe", h.resubscribeWebhook)
 		r.Get("/tenant/whatsapp/diagnostics", h.comprehensiveDiagnostics)
 
-		// Tenant-provided phone numbers
+		// Tenant-provided phone numbers (for Gupshup/Meta direct)
 		r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
 		r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
 		r.Post("/tenant/whatsapp/check-number", h.checkTenantPhoneNumber) // Check if number is ready to verify
 
-		// Legacy embedded signup (keep for migration)
+		// New simplified WhatsApp connection (Respond.io/Gupshup)
+		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
+		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
+
+		// Legacy embedded signup (deprecated - keeping for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
 			r.Post("/code", h.handleWhatsAppExchangeCode)
 			r.Post("/session", h.handleWhatsAppSession)
@@ -1587,12 +1591,29 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Number not in pool - sync from Meta first to check if it exists
-	h.Logger.Info("phone number not in database pool, syncing from Meta",
+	// Number not in pool - try to add it to WABA first, then sync
+	h.Logger.Info("phone number not in database pool, attempting to add to WABA",
 		zap.String("phone_number", phoneNumber),
 		zap.Uint("tenant_id", claims.TenantID))
 	
-	// Sync phone numbers from Meta to ensure DB is up-to-date
+	// Step 1: Try to add phone number to WABA via Meta API
+	phoneNumberID, err := social.RequestPhoneNumberFromMeta(h.Logger, h.Config, phoneNumber, req.DisplayName)
+	if err != nil {
+		h.Logger.Warn("failed to add phone number to WABA via API, will sync to check if it exists",
+			zap.String("phone_number", phoneNumber),
+			zap.Error(err))
+		// Continue to sync - number might already exist
+	} else if phoneNumberID != "" {
+		h.Logger.Info("phone number added to WABA successfully",
+			zap.String("phone_number", phoneNumber),
+			zap.String("phone_number_id", phoneNumberID))
+		// Sync to get the number into our database
+		if err := social.SyncPhoneNumbersFromMeta(h.DB, h.Logger, h.Config); err != nil {
+			h.Logger.Warn("failed to sync after adding number", zap.Error(err))
+		}
+	}
+	
+	// Step 2: Sync phone numbers from Meta to ensure DB is up-to-date
 	if err := social.SyncPhoneNumbersFromMeta(h.DB, h.Logger, h.Config); err != nil {
 		h.Logger.Warn("failed to sync phone numbers from Meta, proceeding with fallback", zap.Error(err))
 	} else {
@@ -1707,9 +1728,10 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		"success":      true,
 		"request_id":   request.ID,
 		"phone_number": phoneNumber,
-		"message":      "Phone number request submitted. Admin will add your number to Meta Business Manager. Once added, you'll receive a verification code.",
+		"message":      "📋 Phone number request submitted! Our admin team will add your number to WhatsApp Business Manager. You'll receive an SMS verification code automatically once it's added (usually within 1-2 business hours). You'll be notified via email when it's ready.",
 		"automated":    false,
 		"fallback":     "admin_request",
+		"next_steps":   "We'll add your number to our WhatsApp Business Account, sync it to our system, then send you a verification code. Check back in 1-2 hours or wait for email notification.",
 	})
 }
 
@@ -3672,4 +3694,187 @@ func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAcco
 	}
 
 	return nil
+}
+
+// connectWhatsApp - New simplified WhatsApp connection endpoint for Respond.io/Gupshup
+// This replaces the Meta embedded signup flow
+func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		PhoneNumber string `json:"phone_number"` // e.g., "+2347039841392"
+		Provider    string `json:"provider"`     // "respondio", "gupshup", or "auto" (default)
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PhoneNumber == "" {
+		http.Error(w, "phone_number is required", http.StatusBadRequest)
+		return
+	}
+
+	// Normalize phone number
+	phoneNumber := strings.TrimSpace(req.PhoneNumber)
+	if !strings.HasPrefix(phoneNumber, "+") {
+		phoneNumber = "+" + phoneNumber
+	}
+
+	// Determine provider
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" || provider == "auto" {
+		// Auto-detect: Prefer Gupshup if source number configured, else Respond.io
+		if h.Config.GupshupSourceNumber != "" {
+			provider = "gupshup"
+		} else if h.Config.RespondIOAPIKey != "" {
+			provider = "respondio"
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "no_provider_configured",
+				"message": "Neither Gupshup nor Respond.io is configured. Please contact support.",
+			})
+			return
+		}
+	}
+
+	// Check if tenant already has a WhatsApp account connected
+	var existingAccount storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, "whatsapp", true).First(&existingAccount).Error; err == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "already_connected",
+			"message": "You already have WhatsApp connected. Please disconnect first to connect a new number.",
+			"account": map[string]any{
+				"external_id": existingAccount.ExternalID,
+				"phone_number": existingAccount.PageID,
+			},
+		})
+		return
+	}
+
+	// Route to appropriate provider flow
+	switch provider {
+	case "gupshup":
+		// Use existing phone number verification flow
+		h.connectWhatsAppGupshup(w, r, claims.TenantID, phoneNumber)
+
+	case "respondio":
+		// For Respond.io, we use the shared account
+		h.connectWhatsAppRespondIO(w, r, claims.TenantID, phoneNumber)
+
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "invalid_provider",
+			"message": fmt.Sprintf("Invalid provider '%s'. Use 'gupshup', 'respondio', or 'auto'.", provider),
+		})
+	}
+}
+
+// connectWhatsAppGupshup - Connect WhatsApp via Gupshup (uses phone verification)
+func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string) {
+	// Use existing request-number flow for Gupshup
+	// This will check if number exists in Meta pool and request verification code
+	h.requestTenantPhoneNumber(w, r)
+}
+
+// connectWhatsAppRespondIO - Connect WhatsApp via Respond.io (simplified - uses shared account)
+func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string) {
+	if h.Config.RespondIOAPIKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "respondio_not_configured",
+			"message": "Respond.io is not configured. Please contact support or use Gupshup instead.",
+		})
+		return
+	}
+
+	// For Respond.io, we use a shared account (configured globally)
+	// Tenant's phone number is used as the customer identifier
+	// We just need to create a SocialAccount record
+
+	// Check if account already exists (disconnected)
+	var account storage.SocialAccount
+	err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error
+	if err == nil {
+		// Update existing account
+		account.Connected = true
+		account.PageID = phoneNumber // Store phone number here for reference
+		account.ExternalID = ""      // Respond.io uses contact ID, not channel ID for multi-tenant
+		account.Mode = "respondio"
+		if err := h.DB.Save(&account).Error; err != nil {
+			h.Logger.Error("failed to update WhatsApp account", zap.Error(err))
+			http.Error(w, "failed to connect", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// Create new account
+		account = storage.SocialAccount{
+			TenantID:   tenantID,
+			Platform:   "whatsapp",
+			Connected:  true,
+			PageID:     phoneNumber, // Store phone number for reference
+			ExternalID: "",          // Will be set when we get channel ID from Respond.io
+			Mode:       "respondio",
+			Username:   phoneNumber,
+		}
+		if err := h.DB.Create(&account).Error; err != nil {
+			h.Logger.Error("failed to create WhatsApp account", zap.Error(err))
+			http.Error(w, "failed to connect", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	h.Logger.Info("✅ WhatsApp connected via Respond.io",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("phone_number", phoneNumber))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":       true,
+		"provider":      "respondio",
+		"phone_number":  phoneNumber,
+		"message":       fmt.Sprintf("✅ WhatsApp connected successfully via Respond.io! Your number %s is ready to receive messages.", phoneNumber),
+		"account_id":    account.ID,
+		"note":          "Respond.io uses a shared account. Messages will be sent from the configured Respond.io number to your customers.",
+	})
+}
+
+// getWhatsAppConnectionStatus - Get current WhatsApp connection status
+func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var account storage.SocialAccount
+	err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error
+
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"connected": false,
+			"provider":  "none",
+			"message":   "WhatsApp is not connected. Use POST /api/tenant/whatsapp/connect to connect.",
+		})
+		return
+	}
+
+	status := map[string]any{
+		"connected": account.Connected,
+		"provider":  account.Mode,
+		"account_id": account.ID,
+	}
+
+	if account.Connected {
+		status["phone_number"] = account.PageID
+		status["external_id"] = account.ExternalID
+		status["message"] = fmt.Sprintf("✅ WhatsApp connected via %s", strings.ToUpper(account.Mode))
+	} else {
+		status["message"] = "WhatsApp account exists but is not connected"
+	}
+
+	writeJSON(w, http.StatusOK, status)
 }

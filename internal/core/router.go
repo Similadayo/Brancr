@@ -65,6 +65,26 @@ func SetupRouter(app *App) http.Handler {
 		})
 	}
 
+	// Respond.io webhook endpoint for incoming WhatsApp messages (OPTIONAL - only needed if using webhooks on Advanced plan)
+	if app.Services.RespondIOWebhookHandler != nil {
+		r.HandleFunc("/api/webhooks/respondio", app.Services.RespondIOWebhookHandler.HandleRespondIOWebhook)
+		r.Get("/api/webhooks/respondio/test", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/respondio","message":"Respond.io webhook endpoint is reachable (optional - webhooks not required for sending messages)"}`)
+		})
+	}
+
+	// Gupshup webhook endpoint for incoming WhatsApp messages
+	if app.Services.GupshupWebhookHandler != nil {
+		r.HandleFunc("/api/webhooks/gupshup", app.Services.GupshupWebhookHandler.HandleGupshupWebhook)
+		r.Get("/api/webhooks/gupshup/test", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/gupshup","message":"Gupshup webhook endpoint is reachable"}`)
+		})
+	}
+
 	// OAuth success page (public, no auth required)
 	oauthSuccessHandler := social.NewOAuthSuccessHandler()
 	r.Get("/oauth/success", oauthSuccessHandler.HandleSuccess)

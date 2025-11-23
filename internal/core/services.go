@@ -30,16 +30,18 @@ type Services struct {
 	CaptionOptimizer  *CaptionOptimizerImpl
 
 	// Bot Services
-	BotManager         *bot.TenantBotManager
-	EscalationHandler  *bot.EscalationHandler
+	BotManager        *bot.TenantBotManager
+	EscalationHandler *bot.EscalationHandler
 
 	// Social Services
-	MessageHandler        *social.MessageHandler
-	MetaWebhookHandler    *social.MetaWebhookHandler
-	MetaOAuthHandler      *social.MetaOAuthHandler
-	Scheduler             *social.Scheduler
-	EmbeddedSignupHandler *social.EmbeddedSignupHandler
-	TikTokOAuthHandler    *social.TikTokOAuthHandler
+	MessageHandler           *social.MessageHandler
+	MetaWebhookHandler       *social.MetaWebhookHandler
+	RespondIOWebhookHandler  *social.RespondIOWebhookHandler
+	GupshupWebhookHandler    *social.GupshupWebhookHandler
+	MetaOAuthHandler         *social.MetaOAuthHandler
+	Scheduler                *social.Scheduler
+	EmbeddedSignupHandler    *social.EmbeddedSignupHandler
+	TikTokOAuthHandler       *social.TikTokOAuthHandler
 
 	// Analytics Services
 	AnalyticsService *analytics.Service
@@ -142,13 +144,43 @@ func (s *Services) initSocial() error {
 		return nil
 	}
 
+	// Initialize Gupshup client if API credentials are configured (Priority 1 for multi-tenant)
+	// Note: SourceNumber is optional - can be set later after Go Live is complete
+	var gupshupClient *social.GupshupClient
+	if s.Config.GupshupAPIKey != "" && s.Config.GupshupAppName != "" {
+		gupshupClient = social.NewGupshupClient(
+			s.Config.GupshupAPIKey,
+			s.Config.GupshupAppName,
+			s.Config.GupshupSourceNumber, // Can be empty - will log warning when sending
+			s.Logger,
+		)
+		if s.Config.GupshupSourceNumber != "" {
+			s.Logger.Info("✅ Gupshup client initialized for WhatsApp integration (multi-tenant optimized)")
+		} else {
+			s.Logger.Info("✅ Gupshup client initialized (API key and app name configured, but Source Number not set yet - complete Go Live to add it)")
+		}
+	} else {
+		s.Logger.Info("ℹ️  Gupshup API credentials not configured — WhatsApp will use Respond.io or Meta Direct API")
+	}
+
+	// Initialize Respond.io client if API key is configured (Priority 2)
+	var respondIOClient *social.RespondIOClient
+	if s.Config.RespondIOAPIKey != "" {
+		respondIOClient = social.NewRespondIOClient(s.Config.RespondIOAPIKey, s.Logger)
+		s.Logger.Info("✅ Respond.io client initialized for WhatsApp integration")
+	} else {
+		s.Logger.Info("ℹ️  Respond.io API key not configured — WhatsApp will use Meta Direct API fallback")
+	}
+
 	// Initialize Message Handler
 	messageHandler := &social.MessageHandler{
 		DB:             s.DB,
 		Logger:         s.Logger,
 		IntentDetector: s.IntentDetector,
 		Responder:      s.CustomerResponder,
-		SystemToken:    s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp
+		SystemToken:    s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp (fallback)
+		RespondIO:      respondIOClient,          // Respond.io client for WhatsApp integration (Priority 2)
+		Gupshup:        gupshupClient,            // Gupshup client for WhatsApp integration (Priority 1)
 		EscalationFunc: escalationFunc,
 	}
 	s.MessageHandler = messageHandler
@@ -156,6 +188,21 @@ func (s *Services) initSocial() error {
 	// Initialize Meta Webhook Handler
 	metaWebhookHandler := social.NewMetaWebhookHandler(s.DB, s.Logger, messageHandler)
 	s.MetaWebhookHandler = metaWebhookHandler
+
+	// Initialize Respond.io Webhook Handler (OPTIONAL - only needed if you want to receive incoming messages via webhook)
+	// Note: Webhooks require Advanced plan on Respond.io. Sending messages works fine without webhooks.
+	if s.Config.RespondIOAPIKey != "" {
+		respondIOWebhookHandler := social.NewRespondIOWebhookHandler(s.DB, s.Logger, messageHandler)
+		s.RespondIOWebhookHandler = respondIOWebhookHandler
+		s.Logger.Info("✅ Respond.io webhook handler initialized (optional - webhooks are not required for sending messages)")
+	}
+
+	// Initialize Gupshup Webhook Handler
+	if s.Config.GupshupAPIKey != "" && s.Config.GupshupAppName != "" {
+		gupshupWebhookHandler := social.NewGupshupWebhookHandler(s.DB, s.Logger, messageHandler)
+		s.GupshupWebhookHandler = gupshupWebhookHandler
+		s.Logger.Info("✅ Gupshup webhook handler initialized")
+	}
 
 	if oauthHandler, err := social.NewMetaOAuthHandler(s.DB, s.Logger, s.Config); err != nil {
 		s.Logger.Warn("failed to initialize Meta OAuth handler", zap.Error(err))

@@ -24,7 +24,9 @@ type MessageHandler struct {
 	Logger         *zap.Logger
 	IntentDetector *ai.IntentDetector
 	Responder      *ai.CustomerResponder
-	SystemToken    string // Brancr's system user token for provider-owned WhatsApp model
+	SystemToken    string           // Brancr's system user token for provider-owned WhatsApp model (legacy)
+	RespondIO      *RespondIOClient // Respond.io API client for WhatsApp integration
+	Gupshup        *GupshupClient   // Gupshup API client for WhatsApp integration
 	EscalationFunc func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
 }
 
@@ -59,10 +61,21 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 		intent = h.IntentDetector.FallbackDetection(msg.Content)
 	}
 
+	// Step 2.5: Create or get conversation
+	conversation, err := h.createOrGetConversation(ctx, msg, customer.ID)
+	var conversationID uint
+	if err != nil {
+		h.Logger.Error("failed to create/get conversation", zap.Error(err))
+		// Continue anyway - conversation is not critical for processing
+	} else {
+		conversationID = conversation.ID
+	}
+
 	// Step 3: Log interaction
 	interaction := storage.Interaction{
 		TenantID:          msg.TenantID,
 		CustomerID:        customer.ID,
+		ConversationID:    conversationID, // Link to conversation (0 if creation failed)
 		Platform:          msg.Platform,
 		Direction:         "incoming",
 		MessageType:       msg.MessageType,
@@ -78,6 +91,13 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 
 	if err := h.DB.Create(&interaction).Error; err != nil {
 		h.Logger.Error("failed to log interaction", zap.Error(err))
+	}
+
+	// Update conversation last message time
+	if conversation != nil && conversation.ID > 0 {
+		conversation.LastMessageAt = msg.Timestamp
+		conversation.Status = "active"
+		h.DB.Save(&conversation)
 	}
 
 	// Step 4: Decide: auto-reply or escalate
@@ -152,6 +172,50 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	}
 
 	return &customer, nil
+}
+
+// createOrGetConversation creates or gets a conversation for the customer on this platform
+func (h *MessageHandler) createOrGetConversation(ctx context.Context, msg IncomingMessage, customerID uint) (*storage.Conversation, error) {
+	// Use ThreadID as PlatformThreadID (platform-specific conversation/thread ID)
+	platformThreadID := msg.ThreadID
+	if platformThreadID == "" {
+		// If no ThreadID, use CustomerID as thread ID (common for WhatsApp)
+		platformThreadID = msg.CustomerID
+	}
+
+	var conversation storage.Conversation
+	err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ? AND platform_thread_id = ?",
+		msg.TenantID, customerID, msg.Platform, platformThreadID).First(&conversation).Error
+
+	if err == nil {
+		// Conversation exists, update last message time
+		conversation.LastMessageAt = msg.Timestamp
+		conversation.Status = "active"
+		h.DB.Save(&conversation)
+		return &conversation, nil
+	}
+
+	// Create new conversation
+	conversation = storage.Conversation{
+		TenantID:         msg.TenantID,
+		CustomerID:       customerID,
+		Platform:         msg.Platform,
+		PlatformThreadID: platformThreadID,
+		Status:           "active",
+		LastMessageAt:    msg.Timestamp,
+	}
+
+	if err := h.DB.Create(&conversation).Error; err != nil {
+		return nil, fmt.Errorf("failed to create conversation: %w", err)
+	}
+
+	h.Logger.Info("✅ Created new conversation",
+		zap.Uint("tenant_id", msg.TenantID),
+		zap.Uint("customer_id", customerID),
+		zap.String("platform", msg.Platform),
+		zap.String("thread_id", platformThreadID))
+
+	return &conversation, nil
 }
 
 // escalateToTenant sends message to tenant's Telegram control center
@@ -340,7 +404,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 				zap.String("error_message", apiError.Error.Message),
 				zap.String("fbtrace_id", apiError.Error.FbtraceID),
 				zap.String("action_required", "Enable Instagram Messaging capability in Meta Developer Console"))
-			
+
 			errorMsg += "\n\n❌ INSTAGRAM MESSAGING CAPABILITY MISSING:\n"
 			errorMsg += "Your Meta app doesn't have the 'Instagram Messaging' capability enabled.\n"
 			errorMsg += "This is REQUIRED even for test/development mode.\n\n"
@@ -398,9 +462,9 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.String("message_id", response.MessageID),
 			zap.String("message_preview", truncateString(reply, 50)))
 	} else {
-	h.Logger.Info("✅ Instagram DM sent",
-		zap.String("recipient_id", threadID),
-		zap.String("message_preview", truncateString(reply, 50)))
+		h.Logger.Info("✅ Instagram DM sent",
+			zap.String("recipient_id", threadID),
+			zap.String("message_preview", truncateString(reply, 50)))
 	}
 
 	return nil
@@ -540,8 +604,68 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 }
 
 // sendWhatsAppReply sends a reply via WhatsApp Business API
-// For provider-owned model, uses Brancr's system user token with tenant's assigned phone_number_id
+// Priority order: Respond.io > Gupshup > Meta Direct API
+// Note: Gupshup requires "Go Live" completion, so Respond.io is primary until that's done
 func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAccount, customerID, reply string) error {
+	// Priority 1: Try Respond.io first (most reliable, no OAuth required)
+	if h.RespondIO != nil {
+		identifier := customerID
+		channelID := acc.ExternalID // WhatsApp channel ID from Respond.io
+
+		h.Logger.Info("📤 Attempting to send WhatsApp message via Respond.io",
+			zap.String("identifier", identifier),
+			zap.String("channel_id", channelID),
+			zap.String("message_preview", truncateString(reply, 50)))
+
+		response, err := h.RespondIO.SendMessage(ctx, identifier, reply, channelID)
+		if err != nil {
+			h.Logger.Warn("⚠️ Respond.io send failed, trying Gupshup",
+				zap.String("identifier", identifier),
+				zap.Error(err))
+			// Fall through to Gupshup
+		} else {
+			messageID := response.ID
+			if messageID == "" {
+				messageID = response.MessageID
+			}
+			h.Logger.Info("✅ WhatsApp message sent via Respond.io",
+				zap.String("identifier", identifier),
+				zap.String("message_id", messageID),
+				zap.String("status", response.Status))
+			return nil
+		}
+	}
+
+	// Priority 2: Try Gupshup (requires "Go Live" completion - currently stuck on Meta OAuth)
+	if h.Gupshup != nil {
+		h.Logger.Info("📤 Attempting to send WhatsApp message via Gupshup",
+			zap.String("customer_id", customerID),
+			zap.String("message_preview", truncateString(reply, 50)))
+
+		response, err := h.Gupshup.SendMessage(ctx, customerID, reply)
+		if err != nil {
+			h.Logger.Warn("⚠️ Gupshup send failed (OAuth flow stuck - need to complete 'Go Live'), trying Meta Direct API",
+				zap.String("customer_id", customerID),
+				zap.Error(err))
+			// Fall through to Meta Direct API
+		} else {
+			h.Logger.Info("✅ WhatsApp message sent via Gupshup",
+				zap.String("customer_id", customerID),
+				zap.String("message_id", response.MessageID),
+				zap.String("status", response.Status))
+			return nil
+		}
+	}
+
+	// Priority 3: Fallback to Meta Direct API
+	h.Logger.Info("📤 Sending WhatsApp message via Meta Direct API (fallback)",
+		zap.String("customer_id", customerID))
+	return h.sendWhatsAppReplyMeta(ctx, acc, customerID, reply)
+}
+
+// sendWhatsAppReplyMeta sends a reply via Meta Direct WhatsApp Business API (fallback)
+// This is the legacy implementation using Meta's direct API
+func (h *MessageHandler) sendWhatsAppReplyMeta(ctx context.Context, acc *storage.SocialAccount, customerID, reply string) error {
 	// Get phone_number_id (this is the tenant's assigned number)
 	phoneNumberID := acc.PageID
 	if phoneNumberID == "" {
@@ -603,7 +727,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	
+
 	// Parse response to check for errors (Meta sometimes returns 200 with errors in body)
 	var apiResponse struct {
 		Messages []struct {
@@ -619,13 +743,13 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 			} `json:"error_data"`
 		} `json:"error"`
 	}
-	
+
 	responseStr := string(body)
 	if err := json.Unmarshal(body, &apiResponse); err == nil {
 		if apiResponse.Error != nil {
 			errorMsg := fmt.Sprintf("WhatsApp API error: %s (code: %d, type: %s)",
 				apiResponse.Error.Message, apiResponse.Error.Code, apiResponse.Error.Type)
-			
+
 			// Specific error code handling
 			if apiResponse.Error.Code == 131047 {
 				errorMsg += "\n\n⚠️ 24-hour messaging window expired. Customer must initiate conversation first, or use an approved message template."
@@ -634,7 +758,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 			} else if apiResponse.Error.Code == 131031 {
 				errorMsg += "\n\n⚠️ Phone number not registered on WhatsApp or user has blocked your number."
 			}
-			
+
 			h.Logger.Error("WhatsApp API error in response",
 				zap.String("phone_number_id", phoneNumberID),
 				zap.String("to", customerID),
@@ -645,7 +769,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 			return errors.New(errorMsg)
 		}
 	}
-	
+
 	if resp.StatusCode >= 400 {
 		h.Logger.Error("WhatsApp API error",
 			zap.Int("status", resp.StatusCode),
@@ -660,7 +784,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		messageID = apiResponse.Messages[0].ID
 	}
 
-	h.Logger.Info("✅ WhatsApp message sent",
+	h.Logger.Info("✅ WhatsApp message sent via Meta Direct API",
 		zap.String("phone_number_id", phoneNumberID),
 		zap.String("to", customerID),
 		zap.String("message_id", messageID),

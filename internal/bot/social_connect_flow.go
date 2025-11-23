@@ -63,11 +63,38 @@ func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID
 		tenantSessions[chatID] = tenantsession
 
 	case "whatsapp":
-		if m.sendMetaEmbeddedSignup(bot, tenantID, chatID) {
-			return
+		// New simplified WhatsApp connection via Respond.io/Gupshup
+		// Direct tenants to the dashboard to connect via the new flow
+		baseURL, err := utils.GetPublicURL()
+		if err != nil {
+			baseURL = "https://www.brancr.com"
 		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		
+		connectURL := fmt.Sprintf("%s/app/integrations/whatsapp", baseURL)
+		
+		info := "📱 *Connect WhatsApp*\n\n" +
+			"Brancr now uses *Respond.io* and *Gupshup* for WhatsApp integration.\n\n" +
+			"To connect your WhatsApp number:\n" +
+			"1️⃣ Open the dashboard link below\n" +
+			"2️⃣ Enter your phone number\n" +
+			"3️⃣ Follow the verification steps\n\n" +
+			"*Note:* The connection process is handled through our dashboard for security."
 
-		sendPlain(bot, chatID, "I couldn't generate the Meta embedded-signup link right now. Please try again shortly or contact support to finish onboarding your WhatsApp number.")
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonURL("🔗 Open Dashboard", connectURL),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),
+			),
+		)
+
+		msg := tgbotapi.NewMessage(chatID, info)
+		msg.ParseMode = "Markdown"
+		msg.DisableWebPagePreview = true
+		msg.ReplyMarkup = keyboard
+		bot.Send(msg)
 		return
 
 	default:

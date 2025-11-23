@@ -41,6 +41,10 @@ type Config struct {
 	TikTokDefaultPrivacy string
 	CORSAllowedOrigins   string
 	TenantCookieDomain   string
+	RespondIOAPIKey      string // Respond.io API access token for WhatsApp integration
+	GupshupAPIKey        string // Gupshup API key for WhatsApp integration
+	GupshupAppName       string // Gupshup app name
+	GupshupSourceNumber  string // Gupshup source number (phone number)
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -84,6 +88,10 @@ func Load() *Config {
 		TikTokDefaultPrivacy: os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
 		CORSAllowedOrigins:   getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
 		TenantCookieDomain:   getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
+		RespondIOAPIKey:      os.Getenv("RESPOND_IO_API_KEY"), // Respond.io API access token
+		GupshupAPIKey:        os.Getenv("GUPSHUP_API_KEY"),     // Gupshup API key
+		GupshupAppName:       os.Getenv("GUPSHUP_APP_NAME"),      // Gupshup app name
+		GupshupSourceNumber:  os.Getenv("GUPSHUP_SOURCE_NUMBER"), // Gupshup source number
 	}
 
 	validateConfig(cfg)
@@ -133,6 +141,12 @@ func validateConfig(cfg *Config) {
 	}
 	if cfg.TikTokRedirectURI == "" {
 		log.Println("ℹ️  TIKTOK_REDIRECT_URI not configured — TikTok OAuth callbacks will fail.")
+	}
+	if cfg.RespondIOAPIKey == "" {
+		log.Println("ℹ️  RESPOND_IO_API_KEY not set — Respond.io WhatsApp integration will be disabled.")
+	}
+	if cfg.GupshupAPIKey == "" || cfg.GupshupAppName == "" {
+		log.Println("ℹ️  GUPSHUP_API_KEY or GUPSHUP_APP_NAME not set — Gupshup WhatsApp integration will be disabled.")
 	}
 	log.Printf("🧩 Brancr Config loaded — ENV=%s PORT=%s\n", cfg.AppEnv, cfg.Port)
 }
