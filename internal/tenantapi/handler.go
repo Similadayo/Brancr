@@ -3857,12 +3857,16 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 
 	h.Logger.Info("✅ Generated Gupshup Partner onboarding link",
 		zap.Uint("tenant_id", tenantID),
-		zap.String("redirect_url", redirectURL))
+		zap.String("redirect_url", redirectURL),
+		zap.String("onboarding_link", onboardingLink),
+		zap.String("partner_id", h.Config.GupshupPartnerID))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
 		"status":         "pending_onboarding",
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
+		"redirect_url":   redirectURL,
+		"note":           "If you see 'Unauthorised access', ensure the redirect URL is whitelisted in Gupshup Partner Console at https://partner.gupshup.io",
 	})
 }
 
