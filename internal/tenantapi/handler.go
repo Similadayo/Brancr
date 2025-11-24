@@ -3752,35 +3752,40 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.PhoneNumber == "" {
-		http.Error(w, "phone_number is required", http.StatusBadRequest)
-		return
-	}
-
-	// Normalize phone number
-	phoneNumber := strings.TrimSpace(req.PhoneNumber)
-	if !strings.HasPrefix(phoneNumber, "+") {
-		phoneNumber = "+" + phoneNumber
-	}
-
-	// Determine provider
+	// Determine provider first (to check if phone number is required)
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
 	if provider == "" || provider == "auto" {
-		// Auto-detect: Prefer Gupshup if source number configured, else Respond.io
-		if h.Config.GupshupSourceNumber != "" {
+		// Auto-detect: Prefer Gupshup Partner if configured, else Respond.io
+		if h.Config.GupshupPartnerAPIKey != "" && h.Config.GupshupPartnerID != "" {
+			provider = "gupshup_partner"
+		} else if h.Config.GupshupSourceNumber != "" {
 			provider = "gupshup"
 		} else if h.Config.RespondIOAPIKey != "" {
 			provider = "respondio"
 		} else {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"error":   "no_provider_configured",
-				"message": "Neither Gupshup nor Respond.io is configured. Please contact support.",
+				"message": "Neither Gupshup Partner nor Respond.io is configured. Please contact support.",
 			})
 			return
 		}
 	}
 
-	// Check if tenant already has a WhatsApp account connected
+	// Normalize phone number (optional for Gupshup Partner, required for Respond.io)
+	phoneNumber := strings.TrimSpace(req.PhoneNumber)
+	
+	// For Respond.io, phone number is required
+	if provider == "respondio" && phoneNumber == "" {
+		http.Error(w, "phone_number is required for Respond.io provider", http.StatusBadRequest)
+		return
+	}
+	
+	// For Gupshup Partner, phone number is optional (will be selected in Gupshup UI)
+	if phoneNumber != "" && !strings.HasPrefix(phoneNumber, "+") {
+		phoneNumber = "+" + phoneNumber
+	}
+
+	// Check if tenant already has a WhatsApp account connected (check both SocialAccount and WhatsAppApp)
 	var existingAccount storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, "whatsapp", true).First(&existingAccount).Error; err == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -3792,6 +3797,23 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		return
+	}
+
+	// Check WhatsAppApp table (for Gupshup Partner)
+	var existingApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&existingApp).Error; err == nil {
+		if existingApp.Status == "live" || existingApp.Status == "pending_onboarding" || existingApp.Status == "pending_verification" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "already_connected",
+				"message": fmt.Sprintf("You already have a WhatsApp connection in progress (status: %s). Please wait for it to complete or disconnect first.", existingApp.Status),
+				"account": map[string]any{
+					"app_id":       existingApp.GupshupAppID,
+					"phone_number": existingApp.PhoneNumber,
+					"status":       existingApp.Status,
+				},
+			})
+			return
+		}
 	}
 
 	// Route to appropriate provider flow
