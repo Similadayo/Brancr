@@ -48,7 +48,7 @@ func SetupRouter(app *App) http.Handler {
 	r.Mount("/admin", admin.AdminRouter(adminCtx))
 	r.Mount("/bot", TenantRouter(app))
 
-	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis)
+	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.GupshupPartnerClient)
 	r.Route("/api", func(api chi.Router) {
 		apiHandler.RegisterRoutes(api)
 	})
@@ -77,11 +77,11 @@ func SetupRouter(app *App) http.Handler {
 
 	// Gupshup webhook endpoint for incoming WhatsApp messages
 	if app.Services.GupshupWebhookHandler != nil {
-		r.HandleFunc("/api/webhooks/gupshup", app.Services.GupshupWebhookHandler.HandleGupshupWebhook)
+		r.HandleFunc("/webhooks/gupshup", app.Services.GupshupWebhookHandler.HandleGupshupWebhook)
 		r.Get("/api/webhooks/gupshup/test", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/gupshup","message":"Gupshup webhook endpoint is reachable"}`)
+			fmt.Fprintf(w, `{"status":"ok","endpoint":"/webhooks/gupshup","message":"Gupshup webhook endpoint is reachable"}`)
 		})
 	}
 

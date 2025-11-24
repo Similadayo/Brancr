@@ -203,6 +203,20 @@ type WhatsAppPhoneNumberRequest struct {
 	ProcessedAt     *time.Time // When admin processed the request
 }
 
+// WhatsAppApp represents a Gupshup Partner app for a tenant (multi-tenant WhatsApp)
+type WhatsAppApp struct {
+	gorm.Model
+	TenantID        uint   `gorm:"index;not null"`
+	GupshupAppID    string `gorm:"type:text;not null;index"`    // UUID from Gupshup redirect callback
+	GupshupAppToken string `gorm:"type:text;not null"`          // Encrypted token from callback
+	WABAID          string `gorm:"type:text"`
+	BusinessID      string `gorm:"type:text"`
+	PhoneNumberID   string `gorm:"type:text"`
+	PhoneNumber     string `gorm:"type:text"`                   // From redirect callback
+	Status          string `gorm:"size:50;default:'pending_onboarding'"` // pending_onboarding, pending_verification, live, failed
+	Mode            string `gorm:"size:50;default:'gupshup_partner'"`
+}
+
 // Persona — each tenant’s bot personality profile
 type Persona struct {
 	TenantID   uint   `gorm:"primaryKey"`

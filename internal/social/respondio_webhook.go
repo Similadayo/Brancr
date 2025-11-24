@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -120,13 +121,17 @@ func (h *RespondIOWebhookHandler) handleIncomingMessage(ctx context.Context, dat
 		zap.String("text_preview", truncateString(msg.Text, 100)))
 
 	// Find tenant by channel ID or contact identifier
-	// For now, we'll need to match based on phone number or channel
+	// CRITICAL: Must match tenant exactly - no fallback for security
 	tenantID, err := h.resolveTenantFromRespondIOChannel(msg.ChannelID, msg.ContactID)
 	if err != nil {
-		h.Logger.Warn("⚠️ Could not resolve tenant for Respond.io message",
+		h.Logger.Error("❌ SECURITY: Rejecting Respond.io message - tenant resolution failed",
 			zap.String("channel_id", msg.ChannelID),
 			zap.String("contact_id", msg.ContactID),
-			zap.Error(err))
+			zap.String("message_id", msg.MessageID),
+			zap.Error(err),
+			zap.String("action", "Message rejected to prevent routing to wrong tenant"))
+		// DO NOT process message if tenant cannot be determined
+		// This prevents messages from being routed to wrong tenant
 		return
 	}
 
@@ -180,40 +185,59 @@ func (h *RespondIOWebhookHandler) handleDeliveryStatus(ctx context.Context, data
 }
 
 // resolveTenantFromRespondIOChannel resolves tenant ID from Respond.io channel or contact
-// This matches the channel/contact to a tenant's WhatsApp account
+// SECURITY: Must match tenant exactly - no fallback to prevent routing to wrong tenant
 func (h *RespondIOWebhookHandler) resolveTenantFromRespondIOChannel(channelID, contactID string) (uint, error) {
-	// Try to find tenant by channel ID stored in ExternalID or PageID
+	// Strategy 1: Match by channel ID (most reliable)
+	// Channel ID is stored in ExternalID when tenant connects
 	var account storage.SocialAccount
 	if channelID != "" {
-		if err := h.DB.Where("platform = ? AND (external_id = ? OR page_id = ?)", "whatsapp", channelID, channelID).First(&account).Error; err == nil {
+		if err := h.DB.Where("platform = ? AND connected = ? AND external_id = ?", "whatsapp", true, channelID).First(&account).Error; err == nil {
+			h.Logger.Info("✅ Tenant resolved by channel ID",
+				zap.Uint("tenant_id", account.TenantID),
+				zap.String("channel_id", channelID))
+			return account.TenantID, nil
+		}
+		// Also try page_id as fallback (some tenants might store channel ID there)
+		if err := h.DB.Where("platform = ? AND connected = ? AND page_id = ?", "whatsapp", true, channelID).First(&account).Error; err == nil {
+			h.Logger.Info("✅ Tenant resolved by channel ID in page_id",
+				zap.Uint("tenant_id", account.TenantID),
+				zap.String("channel_id", channelID))
 			return account.TenantID, nil
 		}
 	}
 
-	// Try to find by contact ID (phone number)
+	// Strategy 2: Match by contact ID (phone number)
+	// Phone number is stored in PageID when tenant connects
 	if contactID != "" {
-		// Remove + prefix if present
-		phoneNumber := contactID
-		if len(phoneNumber) > 0 && phoneNumber[0] == '+' {
-			phoneNumber = phoneNumber[1:]
+		// Normalize phone number - try with and without +
+		phoneNumberWithPlus := contactID
+		phoneNumberWithoutPlus := strings.TrimPrefix(contactID, "+")
+		
+		// Try exact match with +
+		if err := h.DB.Where("platform = ? AND connected = ? AND page_id = ?", "whatsapp", true, phoneNumberWithPlus).First(&account).Error; err == nil {
+			h.Logger.Info("✅ Tenant resolved by phone number (with +)",
+				zap.Uint("tenant_id", account.TenantID),
+				zap.String("phone_number", phoneNumberWithPlus))
+			return account.TenantID, nil
 		}
-
-		// Try to match by phone number stored somewhere
-		// This is a simplified approach - you may need to store phone numbers differently
-		if err := h.DB.Where("platform = ? AND (external_id LIKE ? OR page_id LIKE ?)", "whatsapp", "%"+phoneNumber+"%", "%"+phoneNumber+"%").First(&account).Error; err == nil {
+		
+		// Try exact match without +
+		if err := h.DB.Where("platform = ? AND connected = ? AND page_id = ?", "whatsapp", true, phoneNumberWithoutPlus).First(&account).Error; err == nil {
+			h.Logger.Info("✅ Tenant resolved by phone number (without +)",
+				zap.Uint("tenant_id", account.TenantID),
+				zap.String("phone_number", phoneNumberWithoutPlus))
 			return account.TenantID, nil
 		}
 	}
 
-	// Fallback: Find first active WhatsApp account (for single-tenant testing)
-	var fallbackAccount storage.SocialAccount
-	if err := h.DB.Where("platform = ? AND connected = ?", "whatsapp", true).First(&fallbackAccount).Error; err == nil {
-		h.Logger.Info("⚠️ Using fallback tenant resolution for Respond.io",
-			zap.Uint("tenant_id", fallbackAccount.TenantID),
-			zap.String("channel_id", channelID))
-		return fallbackAccount.TenantID, nil
-	}
+	// NO FALLBACK: Reject message if tenant cannot be determined
+	// This prevents messages from being routed to wrong tenant (security critical)
+	h.Logger.Error("❌ SECURITY: Could not resolve tenant for Respond.io webhook",
+		zap.String("channel_id", channelID),
+		zap.String("contact_id", contactID),
+		zap.String("reason", "No matching tenant found - rejecting message to prevent data leak"),
+		zap.String("action_required", "Ensure tenant's SocialAccount has correct ExternalID (channel ID: "+channelID+") or PageID (phone number: "+contactID+")"))
 
-	return 0, fmt.Errorf("could not resolve tenant for Respond.io channel %s / contact %s", channelID, contactID)
+	return 0, fmt.Errorf("could not resolve tenant for Respond.io channel %s / contact %s - message rejected for security", channelID, contactID)
 }
 

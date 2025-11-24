@@ -32,21 +32,23 @@ const (
 )
 
 type Handler struct {
-	DB     *gorm.DB
-	Logger *zap.Logger
-	Config *config.Config
-	Redis  *redis.Client
+	DB             *gorm.DB
+	Logger         *zap.Logger
+	Config         *config.Config
+	Redis          *redis.Client
+	GupshupPartner *social.GupshupPartnerClient
 
 	signupCache sync.Map
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client) *Handler {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient) *Handler {
 	return &Handler{
-		DB:     db,
-		Logger: logger,
-		Config: cfg,
-		Redis:  redis,
+		DB:             db,
+		Logger:         logger,
+		Config:         cfg,
+		Redis:          redis,
+		GupshupPartner: gupshupPartner,
 	}
 }
 
@@ -56,6 +58,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/{platform}/start", h.oauthStart)
 		r.Get("/{platform}/callback", h.oauthCallback)
 	})
+
+	// Public Gupshup Partner callback (no auth required - Gupshup redirects here)
+	r.Get("/tenant/whatsapp/callback", h.handleWhatsAppGupshupCallback)
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/signup", h.signup)
@@ -118,9 +123,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
 		r.Post("/tenant/whatsapp/check-number", h.checkTenantPhoneNumber) // Check if number is ready to verify
 
-		// New simplified WhatsApp connection (Respond.io/Gupshup)
-		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
-		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
+	// New simplified WhatsApp connection (Respond.io/Gupshup Partner)
+	r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
+	r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
 
 		// Legacy embedded signup (deprecated - keeping for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -3791,9 +3796,9 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 
 	// Route to appropriate provider flow
 	switch provider {
-	case "gupshup":
-		// Use existing phone number verification flow
-		h.connectWhatsAppGupshup(w, r, claims.TenantID, phoneNumber)
+	case "gupshup", "gupshup_partner":
+		// Use Gupshup Partner onboarding link flow (multi-tenant)
+		h.connectWhatsAppGupshupPartner(w, r, claims.TenantID, phoneNumber)
 
 	case "respondio":
 		// For Respond.io, we use the shared account
@@ -3802,16 +3807,41 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "invalid_provider",
-			"message": fmt.Sprintf("Invalid provider '%s'. Use 'gupshup', 'respondio', or 'auto'.", provider),
+			"message": fmt.Sprintf("Invalid provider '%s'. Use 'gupshup_partner', 'respondio', or 'auto'.", provider),
 		})
 	}
 }
 
-// connectWhatsAppGupshup - Connect WhatsApp via Gupshup (uses phone verification)
-func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string) {
-	// Use existing request-number flow for Gupshup
-	// This will check if number exists in Meta pool and request verification code
-	h.requestTenantPhoneNumber(w, r)
+// connectWhatsAppGupshupPartner - Connect WhatsApp via Gupshup Partner API (multi-tenant)
+func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string) {
+	if h.Config.GupshupPartnerAPIKey == "" || h.Config.GupshupPartnerID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "gupshup_partner_not_configured",
+			"message": "Gupshup Partner API is not configured. Please contact support.",
+		})
+		return
+	}
+
+	// Generate onboarding redirect link (VERIFIED: only correct method)
+	redirectURL := fmt.Sprintf("%s/api/tenant/whatsapp/callback?tenant_id=%d", h.Config.PublicURL, tenantID)
+	onboardingLink := h.GupshupPartner.GenerateOnboardingLink(h.Config.GupshupPartnerID, redirectURL)
+
+	// Store pending status (app doesn't exist yet - will be created after onboarding)
+	h.DB.Create(&storage.WhatsAppApp{
+		TenantID: tenantID,
+		Status:   "pending_onboarding",
+		Mode:     "gupshup_partner",
+	})
+
+	h.Logger.Info("✅ Generated Gupshup Partner onboarding link",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("redirect_url", redirectURL))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"onboarding_url": onboardingLink,
+		"status":         "pending_onboarding",
+		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
+	})
 }
 
 // connectWhatsAppRespondIO - Connect WhatsApp via Respond.io (simplified - uses shared account)
@@ -4023,6 +4053,108 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleWhatsAppGupshupCallback - Handle Gupshup Partner redirect callback after onboarding
+func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.Request) {
+	// Extract tenant_id from query param (passed in redirect URL)
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	tenantID, err := strconv.ParseUint(tenantIDStr, 10, 32)
+	if err != nil {
+		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=invalid_tenant_id", h.Config.FrontendURL)
+		http.Redirect(w, r, errorURL, http.StatusFound)
+		return
+	}
+
+	// VERIFIED: Gupshup redirects with these params after onboarding
+	appID := r.URL.Query().Get("appId")
+	token := r.URL.Query().Get("token")
+	wabaID := r.URL.Query().Get("wabaId")
+	phoneNumber := r.URL.Query().Get("phoneNumber")
+	status := r.URL.Query().Get("status") // "live" or "pending_verification"
+
+	if appID == "" {
+		h.Logger.Warn("Gupshup callback missing appId",
+			zap.Uint64("tenant_id", tenantID),
+			zap.String("query", r.URL.RawQuery))
+		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=missing_app_id", h.Config.FrontendURL)
+		http.Redirect(w, r, errorURL, http.StatusFound)
+		return
+	}
+
+	// Encrypt token before storing
+	encryptedToken, err := utils.EncryptToken(token)
+	if err != nil {
+		h.Logger.Error("Failed to encrypt Gupshup token", zap.Error(err))
+		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=encryption_failed", h.Config.FrontendURL)
+		http.Redirect(w, r, errorURL, http.StatusFound)
+		return
+	}
+
+	// Update or create WhatsAppApp record
+	var waApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ?", uint(tenantID)).First(&waApp).Error; err != nil {
+		// Create new record
+		waApp = storage.WhatsAppApp{
+			TenantID:        uint(tenantID),
+			GupshupAppID:    appID,
+			GupshupAppToken: encryptedToken,
+			WABAID:          wabaID,
+			PhoneNumber:     phoneNumber,
+			Status:          status,
+			Mode:            "gupshup_partner",
+		}
+		if err := h.DB.Create(&waApp).Error; err != nil {
+			h.Logger.Error("Failed to create WhatsAppApp", zap.Error(err))
+			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=database_error", h.Config.FrontendURL)
+			http.Redirect(w, r, errorURL, http.StatusFound)
+			return
+		}
+	} else {
+		// Update existing record
+		waApp.GupshupAppID = appID
+		waApp.GupshupAppToken = encryptedToken
+		waApp.WABAID = wabaID
+		waApp.PhoneNumber = phoneNumber
+		waApp.Status = status
+		if err := h.DB.Save(&waApp).Error; err != nil {
+			h.Logger.Error("Failed to update WhatsAppApp", zap.Error(err))
+			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=database_error", h.Config.FrontendURL)
+			http.Redirect(w, r, errorURL, http.StatusFound)
+			return
+		}
+	}
+
+	// Configure webhook callback URL (VERIFIED endpoint)
+	if h.GupshupPartner != nil {
+		webhookURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
+		if err := h.GupshupPartner.SetCallback(r.Context(), appID, webhookURL); err != nil {
+			h.Logger.Warn("Failed to set webhook callback", zap.Error(err), zap.String("app_id", appID))
+			// Continue anyway - webhook can be set manually
+		}
+	}
+
+	// Sync to SocialAccount for compatibility with existing code
+	var socialAcc storage.SocialAccount
+	h.DB.Where("tenant_id = ? AND platform = ?", uint(tenantID), "whatsapp").FirstOrCreate(&socialAcc, storage.SocialAccount{
+		TenantID: uint(tenantID),
+		Platform: "whatsapp",
+	})
+	socialAcc.ExternalID = appID       // Gupshup App ID (for webhook routing)
+	socialAcc.PageID = phoneNumber     // Phone number
+	socialAcc.Connected = (status == "live")
+	socialAcc.Mode = "gupshup_partner"
+	h.DB.Save(&socialAcc)
+
+	h.Logger.Info("✅ Gupshup Partner app onboarding completed",
+		zap.Uint64("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("phone_number", phoneNumber),
+		zap.String("status", status))
+
+	// Redirect to frontend success page
+	successURL := fmt.Sprintf("%s/integrations/whatsapp?status=%s", h.Config.FrontendURL, status)
+	http.Redirect(w, r, successURL, http.StatusFound)
+}
+
 // getWhatsAppConnectionStatus - Get current WhatsApp connection status
 func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
@@ -4031,6 +4163,26 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Check Gupshup Partner WhatsAppApp first
+	var waApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&waApp).Error; err == nil {
+		status := map[string]any{
+			"connected":    waApp.Status == "live",
+			"provider":     waApp.Mode,
+			"phone_number": waApp.PhoneNumber,
+			"app_id":       waApp.GupshupAppID,
+			"status":       waApp.Status,
+		}
+		if waApp.Status == "live" {
+			status["message"] = "✅ WhatsApp connected via Gupshup Partner"
+		} else {
+			status["message"] = fmt.Sprintf("WhatsApp status: %s", waApp.Status)
+		}
+		writeJSON(w, http.StatusOK, status)
+		return
+	}
+
+	// Fallback to SocialAccount (for Respond.io or legacy)
 	var account storage.SocialAccount
 	err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "whatsapp").First(&account).Error
 
@@ -4044,8 +4196,8 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	}
 
 	status := map[string]any{
-		"connected": account.Connected,
-		"provider":  account.Mode,
+		"connected":  account.Connected,
+		"provider":   account.Mode,
 		"account_id": account.ID,
 	}
 

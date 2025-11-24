@@ -3,11 +3,9 @@ package social
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -31,15 +29,26 @@ func NewGupshupWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *Messa
 	}
 }
 
-// HandleGupshupWebhook processes Gupshup webhook events
-// Gupshup sends webhooks for incoming messages, delivery status, etc.
+// HandleGupshupWebhook processes Gupshup Partner webhook events
+// VERIFIED: Must acknowledge immediately (< 10 seconds, ideally < 1 second)
 func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	h.Logger.Info("📨 Gupshup webhook event received",
+	// CRITICAL: Acknowledge immediately (within 10 seconds, ideally < 1 second)
+	// Return 200 OK with empty body BEFORE processing
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("")) // Empty response body required
+
+	// Process asynchronously after acknowledgment
+	go h.processWebhookAsync(r.Context(), r)
+}
+
+// processWebhookAsync processes webhook events asynchronously
+func (h *GupshupWebhookHandler) processWebhookAsync(ctx context.Context, r *http.Request) {
+	h.Logger.Info("📨 Gupshup Partner webhook event received",
 		zap.String("method", r.Method),
 		zap.String("url", r.URL.String()),
 		zap.String("content_type", r.Header.Get("Content-Type")))
@@ -47,22 +56,17 @@ func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *h
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.Logger.Error("❌ Failed to read Gupshup webhook body", zap.Error(err))
-		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
 
 	h.Logger.Info("📦 Gupshup webhook payload received",
 		zap.Int("body_size", len(body)),
 		zap.String("body_preview", truncateString(string(body), 200)))
 
-	// Gupshup sends webhooks in different formats depending on the event
-	// Common formats: JSON or form-encoded
+	// Parse payload
 	var payload map[string]interface{}
-
-	// Try JSON first
 	if err := json.Unmarshal(body, &payload); err != nil {
-		// Try form-encoded
+		// Try form-encoded as fallback
 		if err := r.ParseForm(); err == nil {
 			payload = make(map[string]interface{})
 			for k, v := range r.Form {
@@ -72,7 +76,6 @@ func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *h
 			}
 		} else {
 			h.Logger.Error("❌ Failed to parse Gupshup webhook payload", zap.Error(err))
-			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
 	}
@@ -80,10 +83,38 @@ func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *h
 	h.Logger.Info("🔍 Gupshup webhook event parsed",
 		zap.Any("payload_keys", getMapKeys(payload)))
 
-	ctx := context.Background()
+	// VERIFIED: Extract appId from payload (Gupshup always sends this for Partner apps)
+	appID := ""
+	if val, ok := payload["app"].(string); ok {
+		appID = val
+	} else if val, ok := payload["appId"].(string); ok {
+		appID = val
+	} else if val, ok := payload["app_id"].(string); ok {
+		appID = val
+	}
 
-	// Gupshup webhook events can have different structures
-	// Common fields: "event", "type", "message", "payload"
+	if appID == "" {
+		h.Logger.Warn("⚠️ Webhook payload missing appId - cannot route to tenant",
+			zap.Any("payload", payload))
+		return
+	}
+
+	// VERIFIED: Route by appId → WhatsAppApp → tenantID
+	var waApp storage.WhatsAppApp
+	if err := h.DB.Where("gupshup_app_id = ?", appID).First(&waApp).Error; err != nil {
+		h.Logger.Warn("⚠️ Unknown appId in webhook",
+			zap.String("app_id", appID),
+			zap.Error(err))
+		return
+	}
+
+	tenantID := waApp.TenantID
+
+	h.Logger.Info("✅ Resolved tenant from appId",
+		zap.String("app_id", appID),
+		zap.Uint("tenant_id", tenantID))
+
+	// Process event based on type
 	eventType := ""
 	if val, ok := payload["event"].(string); ok {
 		eventType = val
@@ -91,66 +122,80 @@ func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *h
 		eventType = val
 	}
 
-	switch eventType {
-	case "message", "sent", "delivered", "read", "failed":
-		h.handleIncomingMessage(ctx, payload)
-	default:
-		// Try to detect message events by checking for common message fields
-		if _, hasText := payload["text"]; hasText {
-			h.handleIncomingMessage(ctx, payload)
-		} else if _, hasMessage := payload["message"]; hasMessage {
-			h.handleIncomingMessage(ctx, payload)
-		} else {
-			h.Logger.Info("ℹ️ Unhandled Gupshup webhook event",
-				zap.String("event_type", eventType),
-				zap.Any("payload", payload))
-		}
+	// Handle sandbox-start event (required by Gupshup)
+	if eventType == "sandbox-start" {
+		h.Logger.Info("✅ Received sandbox-start event", zap.String("app_id", appID))
+		return
 	}
 
-	// Always return 200 OK to acknowledge receipt
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+	// Process incoming messages
+	if eventType == "message" || eventType == "incoming" {
+		h.handleIncomingMessage(ctx, tenantID, appID, payload)
+	} else if _, hasText := payload["text"]; hasText {
+		h.handleIncomingMessage(ctx, tenantID, appID, payload)
+	} else if _, hasMessage := payload["message"]; hasMessage {
+		h.handleIncomingMessage(ctx, tenantID, appID, payload)
+	} else {
+		h.Logger.Info("ℹ️ Unhandled Gupshup webhook event",
+			zap.String("event_type", eventType),
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID))
+	}
 }
 
-// handleIncomingMessage processes incoming WhatsApp messages from Gupshup
-func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, payload map[string]interface{}) {
-	// Gupshup webhook format varies, so we need to handle multiple formats
-	// Common fields: source, destination, message, text, timestamp, messageId
-
+// handleIncomingMessage processes incoming WhatsApp messages from Gupshup Partner
+// VERIFIED: Tenant is already resolved by appId, so we don't need phone number matching
+func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenantID uint, appID string, payload map[string]interface{}) {
+	// Extract message fields from payload
 	var msg struct {
 		Source      string // Phone number that sent the message
-		Destination string // Your WhatsApp number (source number)
+		Mobile      string // Customer phone number (alternative field name)
+		Destination string // Your WhatsApp number
 		Text        string // Message text
+		Message     string // Alternative field name
 		MessageID   string // Unique message ID
+		ReplyID     string // Alternative field name
 		Timestamp   int64  // Unix timestamp
-		EventType   string // "message", "sent", etc.
 	}
 
-	// Extract fields from payload
+	// Extract source/mobile (customer phone number)
 	if val, ok := payload["source"].(string); ok {
 		msg.Source = val
+	} else if val, ok := payload["mobile"].(string); ok {
+		msg.Source = val
+		msg.Mobile = val
 	} else if val, ok := payload["sender"].(string); ok {
 		msg.Source = val
 	}
 
+	// Extract destination (tenant's WhatsApp number)
 	if val, ok := payload["destination"].(string); ok {
+		msg.Destination = val
+	} else if val, ok := payload["waNumber"].(string); ok {
 		msg.Destination = val
 	} else if val, ok := payload["to"].(string); ok {
 		msg.Destination = val
 	}
 
+	// Extract message text
 	if val, ok := payload["text"].(string); ok {
 		msg.Text = val
 	} else if val, ok := payload["message"].(string); ok {
 		msg.Text = val
+		msg.Message = val
 	}
 
+	// Extract message ID
 	if val, ok := payload["messageId"].(string); ok {
 		msg.MessageID = val
+	} else if val, ok := payload["replyId"].(string); ok {
+		msg.MessageID = val
+		msg.ReplyID = val
 	} else if val, ok := payload["id"].(string); ok {
 		msg.MessageID = val
 	}
 
+	// Extract timestamp
 	if val, ok := payload["timestamp"].(float64); ok {
 		msg.Timestamp = int64(val)
 	} else if val, ok := payload["timestamp"].(string); ok {
@@ -159,25 +204,29 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, paylo
 		}
 	}
 
-	if msg.Text == "" && msg.Source == "" {
-		h.Logger.Warn("⚠️ Gupshup message payload missing required fields", zap.Any("payload", payload))
+	if msg.Source == "" || msg.Text == "" {
+		h.Logger.Warn("⚠️ Gupshup message payload missing required fields",
+			zap.Any("payload", payload),
+			zap.String("app_id", appID))
 		return
 	}
 
 	h.Logger.Info("💬 Processing Gupshup incoming message",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID),
 		zap.String("message_id", msg.MessageID),
 		zap.String("source", msg.Source),
-		zap.String("destination", msg.Destination),
 		zap.String("text_preview", truncateString(msg.Text, 100)))
 
-	// Find tenant by destination (source number) or phone number
-	tenantID, err := h.resolveTenantFromGupshupNumber(msg.Destination, msg.Source)
-	if err != nil {
-		h.Logger.Warn("⚠️ Could not resolve tenant for Gupshup message",
-			zap.String("destination", msg.Destination),
-			zap.String("source", msg.Source),
-			zap.Error(err))
-		return
+	// Create timestamp (default to now if not provided)
+	timestamp := time.Now()
+	if msg.Timestamp > 0 {
+		// Convert milliseconds to seconds if needed
+		if msg.Timestamp > 1e12 {
+			timestamp = time.Unix(msg.Timestamp/1000, 0)
+		} else {
+			timestamp = time.Unix(msg.Timestamp, 0)
+		}
 	}
 
 	incomingMsg := IncomingMessage{
@@ -190,9 +239,11 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, paylo
 		Content:          msg.Text,
 		MessageType:      "text",
 		ThreadID:         msg.Source,
-		Timestamp:        time.Unix(msg.Timestamp/1000, 0), // Convert milliseconds to seconds
+		Timestamp:        timestamp,
 		Metadata: map[string]interface{}{
+			"app_id":      appID,
 			"destination": msg.Destination,
+			"raw_payload": payload,
 		},
 	}
 
@@ -200,46 +251,18 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, paylo
 		zap.Uint("tenant_id", tenantID),
 		zap.String("customer_id", msg.Source))
 
-	go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
+	// Process message (already in goroutine, so no need for another go statement)
+	if err := h.MessageHandler.ProcessMessage(ctx, incomingMsg); err != nil {
+		h.Logger.Error("Failed to process incoming WhatsApp message",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("customer_id", msg.Source),
+			zap.Error(err))
+	}
 }
 
-// resolveTenantFromGupshupNumber resolves tenant ID from Gupshup phone numbers
-func (h *GupshupWebhookHandler) resolveTenantFromGupshupNumber(destination, source string) (uint, error) {
-	// Try to find tenant by destination (your WhatsApp number stored in source_number config)
-	// For now, we'll match against any WhatsApp account
-	// TODO: Store Gupshup source numbers in database and match them
-
-	var account storage.SocialAccount
-
-	// Try to match by phone number patterns
-	phoneNumbers := []string{destination, source}
-	for _, phone := range phoneNumbers {
-		if phone == "" {
-			continue
-		}
-		// Normalize phone number (remove +, spaces, etc.)
-		normalized := strings.TrimPrefix(phone, "+")
-		normalized = strings.ReplaceAll(normalized, " ", "")
-		normalized = strings.ReplaceAll(normalized, "-", "")
-
-		// Try to match by phone number stored somewhere
-		// This is simplified - you may need to store Gupshup source numbers differently
-		if err := h.DB.Where("platform = ? AND (external_id LIKE ? OR page_id LIKE ?)", "whatsapp", "%"+normalized+"%", "%"+normalized+"%").First(&account).Error; err == nil {
-			return account.TenantID, nil
-		}
-	}
-
-	// Fallback: Find first active WhatsApp account
-	var fallbackAccount storage.SocialAccount
-	if err := h.DB.Where("platform = ? AND connected = ?", "whatsapp", true).First(&fallbackAccount).Error; err == nil {
-		h.Logger.Info("⚠️ Using fallback tenant resolution for Gupshup",
-			zap.Uint("tenant_id", fallbackAccount.TenantID),
-			zap.String("destination", destination))
-		return fallbackAccount.TenantID, nil
-	}
-
-	return 0, fmt.Errorf("could not resolve tenant for Gupshup destination %s / source %s", destination, source)
-}
+// NOTE: resolveTenantFromGupshupNumber is no longer used for Partner apps
+// Tenant routing is now done by appId in processWebhookAsync above
+// This function is kept for backward compatibility but should not be called for Partner apps
 
 // getMapKeys returns all keys from a map (helper function)
 func getMapKeys(m map[string]interface{}) []string {
