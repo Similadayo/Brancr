@@ -13,11 +13,22 @@ import (
 	"gorm.io/gorm"
 )
 
+// ReplySender interface for sending replies to customers
+type ReplySender interface {
+	SendReply(ctx context.Context, tenantID uint, platform, threadID, customerID, reply string) error
+}
+
 // EscalationHandler manages escalated messages from the MessageHandler
 type EscalationHandler struct {
-	DB      *gorm.DB
-	Logger  *zap.Logger
-	Manager *TenantBotManager
+	DB            *gorm.DB
+	Logger        *zap.Logger
+	Manager       *TenantBotManager
+	MessageHandler ReplySender // Set after initialization via SetMessageHandler
+}
+
+// SetMessageHandler sets the MessageHandler for sending replies
+func (h *EscalationHandler) SetMessageHandler(handler ReplySender) {
+	h.MessageHandler = handler
 }
 
 // PendingEscalation tracks escalations waiting for tenant approval
@@ -85,8 +96,7 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 			"💬 Message: %s\n\n"+
 			"🎯 Intent: %s (%.0f%% confidence)\n"+
 			"😊 Tone: %s\n\n"+
-			"💡 Suggested reply:\n%s\n\n"+
-			"Reply 'approve %d' to send, or edit and send your own message.",
+			"💡 Suggested reply:\n%s",
 		strings.Title(intent),
 		customerName,
 		strings.Title(platform),
@@ -95,11 +105,22 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 		confidence*100,
 		tone,
 		suggestedReply,
-		interactionID,
+	)
+
+	// Create keyboard with quick action buttons
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Approve & Send", fmt.Sprintf("escalate:approve:%d", interactionID)),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Edit Reply", fmt.Sprintf("escalate:edit:%d", interactionID)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("❌ Ignore", fmt.Sprintf("escalate:ignore:%d", interactionID)),
+		),
 	)
 
 	msg := tgbotapi.NewMessage(tenant.OwnerTelegramID, escalationMsg)
 	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
 	
 	if _, err := bot.Send(msg); err != nil {
 		return fmt.Errorf("failed to send escalation: %w", err)
@@ -202,8 +223,48 @@ func (h *EscalationHandler) sendApprovedReply(ctx context.Context, esc *PendingE
 		return fmt.Errorf("customer not found: %w", err)
 	}
 	
-	// TODO: Send reply via platform connector
-	// This will integrate with message_handler's sendReply methods
+	// Load conversation to get thread ID
+	var conversation storage.Conversation
+	threadID := customer.PlatformID // Default to customer ID
+	if interaction.ConversationID > 0 {
+		if err := h.DB.First(&conversation, interaction.ConversationID).Error; err == nil {
+			threadID = conversation.PlatformThreadID
+		}
+	}
+	if threadID == "" {
+		threadID = customer.PlatformID
+	}
+	
+	// Get social account for the platform
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", 
+		esc.TenantID, esc.Platform, true).First(&acc).Error; err != nil {
+		h.Logger.Error("failed to find connected account for reply",
+			zap.Uint("tenant_id", esc.TenantID),
+			zap.String("platform", esc.Platform),
+			zap.Error(err))
+		return fmt.Errorf("no connected %s account found", esc.Platform)
+	}
+	
+	// Use MessageHandler to send reply if available
+	var sendErr error
+	if h.MessageHandler != nil {
+		sendErr = h.MessageHandler.SendReply(ctx, esc.TenantID, esc.Platform, threadID, customer.PlatformID, reply)
+	} else {
+		// Fallback: return error asking user to reconnect
+		sendErr = fmt.Errorf("message handler not configured - please contact support")
+		h.Logger.Error("message handler not set in escalation handler",
+			zap.Uint("tenant_id", esc.TenantID),
+			zap.String("platform", esc.Platform))
+	}
+	
+	if sendErr != nil {
+		h.Logger.Error("failed to send reply to customer",
+			zap.Error(sendErr),
+			zap.String("platform", esc.Platform),
+			zap.Uint("customer_id", customer.ID))
+		return fmt.Errorf("failed to send reply: %w", sendErr)
+	}
 	
 	// Update interaction
 	now := time.Now()

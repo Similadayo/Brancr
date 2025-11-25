@@ -584,6 +584,14 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		bot.Send(tgbotapi.NewMessage(chatID, "AI customization is coming soon!"))
 	case "postflow":
 		h.handlePostFlowCallback(bot, tenantID, chatID, arg)
+	case "escalate":
+		// Handle escalation actions: approve, edit, ignore
+		// arg format: "approve:123" or "edit:123" or "ignore:123"
+		h.handleEscalationCallback(bot, tenantID, chatID, arg)
+	case "platforms":
+		// Handle platform selection for posts
+		// arg format: "toggle:instagram:true" or "all" or "confirm"
+		h.handlePlatformSelectionCallback(bot, tenantID, chatID, arg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
@@ -598,7 +606,7 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 	h.Manager.DB.First(&tenant, tenantID)
 	persona = ai.GetPersona(h.Manager.DB, tenantID)
 	_ = h.Manager.DB.Where("tenant_id = ?", tenantID).First(&businessProfile).Error
-	h.Manager.DB.Where("tenant_id = ? AND connected = ?", tenantID, true).Find(&accounts)
+	h.Manager.DB.Where("tenant_id = ?", tenantID).Find(&accounts)
 	
 	// Build context-aware menu text
 	text := "🎛️ *Brancr Control Center*"
@@ -611,13 +619,28 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 		text += fmt.Sprintf("\n\n🤖 AI: *%s* (%s tone)", persona.BotName, tone)
 	}
 	
-	if len(accounts) > 0 {
-		text += "\n\n📱 *Connected:* "
-		platforms := make([]string, 0, len(accounts))
-		for _, acc := range accounts {
-			platforms = append(platforms, strings.Title(acc.Platform))
+	// Show platform connection status with visual indicators
+	platformStatus := map[string]bool{
+		"instagram": false,
+		"facebook":  false,
+		"whatsapp":  false,
+		"tiktok":    false,
+		"youtube":   false,
+	}
+	
+	for _, acc := range accounts {
+		if _, ok := platformStatus[acc.Platform]; ok {
+			platformStatus[acc.Platform] = acc.Connected
 		}
-		text += strings.Join(platforms, ", ")
+	}
+	
+	text += "\n\n📱 *Platform Status:*"
+	for platform, connected := range platformStatus {
+		statusIcon := "❌"
+		if connected {
+			statusIcon = "✅"
+		}
+		text += fmt.Sprintf("\n%s %s", statusIcon, strings.Title(platform))
 	}
 	
 	text += "\n\nWhat would you like to do?"

@@ -1,0 +1,128 @@
+package bot
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.uber.org/zap"
+)
+
+// handleEscalationCallback processes escalation action callbacks (approve, edit, ignore)
+func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	// Parse callback: "approve:123" or "edit:123" or "ignore:123"
+	parts := strings.Split(arg, ":")
+	if len(parts) < 3 {
+		h.Manager.Logger.Warn("invalid escalation callback format", zap.String("arg", arg))
+		return
+	}
+	
+	action := parts[1] // "approve", "edit", "ignore"
+	interactionIDStr := parts[2]
+	
+	interactionID, err := strconv.ParseUint(interactionIDStr, 10, 32)
+	if err != nil {
+		h.Manager.Logger.Warn("invalid interaction ID in escalation callback", zap.String("id", interactionIDStr))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid escalation ID. Please try again."))
+		return
+	}
+	
+	ctx := context.Background()
+	
+	switch action {
+	case "approve":
+		// Approve and send suggested reply
+		// Access EscalationHandler through Manager
+		if h.Manager.EscalationHandler != nil {
+			err := h.Manager.EscalationHandler.HandleEscalationResponse(ctx, tenantID, chatID, fmt.Sprintf("approve %d", interactionID))
+			if err != nil {
+				h.Manager.Logger.Error("failed to approve escalation", zap.Error(err))
+				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Couldn't send reply: %v. Please try typing 'approve %d' instead.", err, interactionID)))
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "✅ Reply sent to customer!"))
+			}
+		} else {
+			h.Manager.Logger.Warn("escalation handler not configured in bot manager")
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Escalation handler not yet configured. Please use text commands: 'approve <interaction_id>' or type your reply."))
+		}
+		
+	case "edit":
+		// Prompt user to edit the reply
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✏️ Type your custom reply for interaction %d. It will be sent immediately.", interactionID)))
+		// Store that we're waiting for edited reply
+		// TODO: Store edit session state
+		
+	case "ignore":
+		// Remove from pending escalations
+		if h.Manager.EscalationHandler != nil {
+			// Mark interaction as ignored
+			bot.Send(tgbotapi.NewMessage(chatID, "👌 Ignored. You can respond later if needed."))
+		}
+		
+	default:
+		h.Manager.Logger.Warn("unknown escalation action", zap.String("action", action))
+	}
+}
+
+// handlePlatformSelectionCallback processes platform selection for posts
+func (h *TenantWebhookHandler) handlePlatformSelectionCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	sess, ok := tenantSessions[chatID]
+	if !ok || sess.Step != 4 {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Post session expired. Please start over."))
+		return
+	}
+	
+	parts := strings.Split(arg, ":")
+	if len(parts) < 2 {
+		return
+	}
+	
+	action := parts[1]
+	
+	switch action {
+	case "toggle":
+		if len(parts) < 4 {
+			return
+		}
+		platform := parts[2]
+		shouldSelect := parts[3] == "true"
+		
+		// Toggle platform in session
+		found := false
+		var newPlatforms []string
+		for _, p := range sess.Platforms {
+			if p == platform {
+				found = true
+				if shouldSelect {
+					newPlatforms = append(newPlatforms, p)
+				}
+			} else {
+				newPlatforms = append(newPlatforms, p)
+			}
+		}
+		if !found && shouldSelect {
+			newPlatforms = append(newPlatforms, platform)
+		}
+		sess.Platforms = newPlatforms
+		
+		// Refresh the platform selection UI
+		h.Manager.showPlatformSelection(bot, chatID, sess)
+		
+	case "all":
+		// Select all available platforms
+		sess.Platforms = []string{"instagram", "facebook", "whatsapp", "tiktok", "youtube"}
+		h.Manager.showPlatformSelection(bot, chatID, sess)
+		
+	case "confirm":
+		// Confirm selection and move to next step
+		if len(sess.Platforms) == 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Please select at least one platform."))
+			return
+		}
+		sess.Step = 5
+		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
+	}
+}
+

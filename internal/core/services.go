@@ -129,6 +129,9 @@ func (s *Services) initEscalationHandler() error {
 		Manager: s.BotManager,
 	}
 	s.EscalationHandler = escalationHandler
+	
+	// Note: MessageHandler will be set later in initSocial, 
+	// so we'll need to link them after both are initialized
 	return nil
 }
 
@@ -200,6 +203,15 @@ func (s *Services) initSocial() error {
 		EscalationFunc:   escalationFunc,
 	}
 	s.MessageHandler = messageHandler
+
+	// Link MessageHandler to EscalationHandler for sending replies
+	if s.EscalationHandler != nil {
+		s.EscalationHandler.SetMessageHandler(messageHandler)
+		// Also link EscalationHandler to BotManager for easy access
+		if s.BotManager != nil {
+			s.BotManager.EscalationHandler = s.EscalationHandler
+		}
+	}
 
 	// Initialize Meta Webhook Handler
 	metaWebhookHandler := social.NewMetaWebhookHandler(s.DB, s.Logger, messageHandler)

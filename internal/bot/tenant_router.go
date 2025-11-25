@@ -35,6 +35,7 @@ type TenantBotManager struct {
 	Responder         *ai.Responder
 	AdminBot          *tgbotapi.BotAPI
 	AnalyticsHandler  *AnalyticsHandler // Analytics handler for tenant requests
+	EscalationHandler *EscalationHandler // Escalation handler for managing customer escalations
 	Config            *config.Config
 	sessionFinalizers sync.Map
 }

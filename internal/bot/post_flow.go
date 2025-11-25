@@ -27,6 +27,7 @@ type PostSession struct {
 	BatchSchedule  bool     // Batch scheduling multiple posts
 	BatchSpacing   string   // e.g., "24 hours apart"
 	OriginalInputs []string // For batch scheduling
+	TenantID       uint     // Added to check connected platforms
 }
 
 var tenantSessions = make(map[int64]*PostSession) // chatID → session
@@ -44,6 +45,8 @@ func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, ass
 		MediaType:    ma.Type,
 		IsCarousel:   ma.Type == "carousel",
 	}
+	// Extract tenant ID from media asset
+	sess.TenantID = ma.TenantID
 	tenantSessions[chatID] = sess
 
 	prompt := fmt.Sprintf("✅ %s uploaded and ready. Want me to turn it into a post?", strings.Title(ma.Type))
@@ -92,6 +95,10 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	sess, ok := tenantSessions[chatID]
 	if !ok {
 		return
+	}
+	// Ensure tenant ID is set
+	if sess.TenantID == 0 {
+		sess.TenantID = tenantID
 	}
 
 	lower := strings.ToLower(strings.TrimSpace(text))
@@ -149,14 +156,16 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 
 	case 4:
+		// Try to parse platforms from text first (for backward compatibility)
 		platforms := m.parsePlatforms(text)
 		if len(platforms) == 0 {
-			bot.Send(tgbotapi.NewMessage(chatID, "I didn’t catch the platforms. Try “Instagram and Facebook” or just “all”."))
+			// Show platform selection with inline buttons instead of text input
+			m.showPlatformSelection(bot, chatID, sess)
 			return
 		}
 		sess.Platforms = platforms
 		sess.Step = 5
-		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try “now”, “tomorrow at 9am”, or “next week at 10am”."))
+		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
 
 	case 5:
 		sess.ScheduleInput = text
@@ -236,6 +245,85 @@ func (m *TenantBotManager) parsePlatforms(input string) []string {
 	}
 
 	return platforms
+}
+
+// showPlatformSelection displays platform selection with inline checkboxes
+func (m *TenantBotManager) showPlatformSelection(bot *tgbotapi.BotAPI, chatID int64, sess *PostSession) {
+	if sess.TenantID == 0 {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: Could not determine your account. Please try again."))
+		return
+	}
+	
+	// Check which platforms are connected
+	var accounts []storage.SocialAccount
+	m.DB.Where("tenant_id = ? AND connected = ?", sess.TenantID, true).Find(&accounts)
+	
+	connectedPlatforms := make(map[string]bool)
+	for _, acc := range accounts {
+		connectedPlatforms[acc.Platform] = true
+	}
+	
+	selectedPlatforms := make(map[string]bool)
+	for _, p := range sess.Platforms {
+		selectedPlatforms[p] = true
+	}
+	
+	// Build keyboard with checkboxes
+	availablePlatforms := []string{"instagram", "facebook", "whatsapp", "tiktok", "youtube"}
+	
+	var rows [][]tgbotapi.InlineKeyboardButton
+	var row []tgbotapi.InlineKeyboardButton
+	
+	for i, platform := range availablePlatforms {
+		isConnected := connectedPlatforms[platform]
+		isSelected := selectedPlatforms[platform]
+		
+		icon := "☐"
+		if isSelected {
+			icon = "☑️"
+		}
+		
+		label := fmt.Sprintf("%s %s", icon, strings.Title(platform))
+		if !isConnected {
+			label += " (not connected)"
+		}
+		
+		// Toggle selection state in callback data
+		newSelected := !isSelected
+		callbackData := fmt.Sprintf("platforms:toggle:%s:%v", platform, newSelected)
+		
+		button := tgbotapi.NewInlineKeyboardButtonData(label, callbackData)
+		row = append(row, button)
+		
+		// Add 2 buttons per row
+		if len(row) == 2 || i == len(availablePlatforms)-1 {
+			rows = append(rows, row)
+			row = []tgbotapi.InlineKeyboardButton{}
+		}
+	}
+	
+	// Add action buttons
+	actionRow := tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("✅ Continue", "platforms:confirm"),
+		tgbotapi.NewInlineKeyboardButtonData("All Platforms", "platforms:all"),
+	)
+	rows = append(rows, actionRow)
+	
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	
+	msgText := "📱 *Select Platforms*\n\nChoose where to post. Tap platforms to select/deselect."
+	if len(selectedPlatforms) > 0 {
+		platformList := make([]string, 0, len(selectedPlatforms))
+		for p := range selectedPlatforms {
+			platformList = append(platformList, strings.Title(p))
+		}
+		msgText += fmt.Sprintf("\n\n✅ Selected: %s", strings.Join(platformList, ", "))
+	}
+	
+	msg := tgbotapi.NewMessage(chatID, msgText)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
 }
 
 func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sess *PostSession) {
