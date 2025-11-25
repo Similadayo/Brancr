@@ -170,7 +170,18 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	case 5:
 		sess.ScheduleInput = text
 		m.Logger.Info("user provided schedule input", zap.Uint("tenant_id", tenantID), zap.String("input", text))
-		// Show preview before finalizing
+		
+		// Check if scheduling for "now" - auto-confirm and post immediately
+		lower := strings.ToLower(strings.TrimSpace(text))
+		if lower == "now" || strings.Contains(lower, "now") {
+			// For immediate posts, skip preview and finalize directly
+			m.Logger.Info("immediate post requested, skipping preview", zap.Uint("tenant_id", tenantID))
+			m.finalizePostFlow(bot, tenantID, chatID, sess)
+			delete(tenantSessions, chatID)
+			return
+		}
+		
+		// For future scheduling, show preview
 		m.showPostPreview(bot, tenantID, chatID, sess)
 		return
 	case 6:
