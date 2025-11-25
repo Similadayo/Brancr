@@ -88,9 +88,20 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 	}
 	defer publishResp.Body.Close()
 
+	// Read response body once - check for success ID regardless of status code
+	// Instagram sometimes returns success data even with error status codes
+	body, _ := io.ReadAll(publishResp.Body)
+	
+	var successResponse struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &successResponse); err == nil && successResponse.ID != "" {
+		// Post succeeded - response contains media ID (even if status code was an error)
+		fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s (media_id: %s)\n", igAccountID, successResponse.ID)
+		return nil
+	}
+
 	if publishResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(publishResp.Body)
-		
 		// Parse error response to provide better error messages
 		var apiError struct {
 			Error struct {
@@ -105,6 +116,13 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 		if err := json.Unmarshal(body, &apiError); err == nil {
 			// Handle specific error codes
 			if apiError.Error.Code == 4 && apiError.Error.ErrorSubcode == 2207051 {
+				// For rate limit errors, wait briefly and verify if post actually succeeded
+				// Instagram sometimes returns rate limit errors even when the post succeeds
+				time.Sleep(2 * time.Second) // Brief wait for Instagram to process
+				if verified, err := i.verifyPostPublished(ctx, igAccountID, acc.AccessToken, creationID); err == nil && verified {
+					fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s (verified after rate limit warning)\n", igAccountID)
+					return nil
+				}
 				return fmt.Errorf("Instagram request limit reached (403): Application request limit reached. This usually happens when posting too frequently. Please wait and try again later. Error: %s", apiError.Error.ErrorUserMsg)
 			}
 			if apiError.Error.Code == 190 {
@@ -117,7 +135,16 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 		return fmt.Errorf("Instagram publish error %d: %s", publishResp.StatusCode, string(body))
 	}
 
-	fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s\n", igAccountID)
+	// Success response
+	mediaID := ""
+	if successResponse.ID != "" {
+		mediaID = successResponse.ID
+	}
+	fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s", igAccountID)
+	if mediaID != "" {
+		fmt.Printf(" (media_id: %s)", mediaID)
+	}
+	fmt.Println()
 	return nil
 }
 
@@ -475,6 +502,60 @@ func (i *InstagramConnector) getInstagramAccountID(ctx context.Context, acc *sto
 
 	igID := fmt.Sprintf("%v", igAccount["id"])
 	return igID, nil
+}
+
+// verifyPostPublished checks if a creation_id was actually published despite an error response
+// This handles cases where Instagram's API returns an error but the post actually succeeded
+func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountID, accessToken, creationID string) (bool, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	
+	// Try to query the creation_id as if it were published media
+	// Once published, Instagram converts creation_id to media_id which can be queried
+	mediaURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,timestamp&access_token=%s", creationID, accessToken)
+	resp, err := client.Get(mediaURL)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode == 200 {
+		var result struct {
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.ID != "" {
+			// Creation ID can be queried as media - post was published successfully
+			return true, nil
+		}
+	}
+	
+	// Alternative: Check account's recent media (limit to most recent 5 to avoid rate limits)
+	// Look for a post created in the last few minutes
+	recentMediaURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media?fields=id,timestamp&limit=5&access_token=%s", igAccountID, accessToken)
+	resp2, err := client.Get(recentMediaURL)
+	if err != nil {
+		return false, nil // Don't treat verification failure as error
+	}
+	defer resp2.Body.Close()
+	
+	if resp2.StatusCode == 200 {
+		var mediaList struct {
+			Data []struct {
+				ID        string `json:"id"`
+				Timestamp string `json:"timestamp"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp2.Body).Decode(&mediaList); err == nil {
+			// Check if any recent media matches our creation_id
+			for _, media := range mediaList.Data {
+				if media.ID == creationID {
+					return true, nil
+				}
+			}
+		}
+	}
+	
+	return false, nil // Couldn't verify - assume it failed
 }
 
 func (i *InstagramConnector) HealthCheck(ctx context.Context, acc *storage.SocialAccount) error {
