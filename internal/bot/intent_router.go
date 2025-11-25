@@ -286,6 +286,8 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 	}
 
 	response := "*📅 Your Scheduled Posts:*\n\n"
+	var keyboardRows [][]tgbotapi.InlineKeyboardButton
+	
 	for i, post := range posts {
 		scheduledTime := "not set"
 		if post.ScheduledAt != nil {
@@ -298,11 +300,26 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 		
 		response += fmt.Sprintf("%d. *%s*\n   📱 %s\n   ⏰ %s\n   Status: %s\n\n", 
 			i+1, post.Name, platformStr, scheduledTime, post.Status)
+		
+		// Add cancel button for each post
+		postNameDisplay := post.Name
+		if len(postNameDisplay) > 25 {
+			postNameDisplay = postNameDisplay[:22] + "..."
+		}
+		cancelBtn := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("❌ Cancel %s", postNameDisplay),
+			fmt.Sprintf("post:cancel:%d", post.ID),
+		)
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelBtn})
 	}
 	
-	response += "Type `cancel <name>` to cancel a post."
+	// Add "Cancel All" button
+	cancelAllBtn := tgbotapi.NewInlineKeyboardButtonData("🚫 Cancel All Posts", "post:cancel_all")
+	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelAllBtn})
+	
 	msg := tgbotapi.NewMessage(chatID, response)
 	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 	bot.Send(msg)
 	return true, nil
 }

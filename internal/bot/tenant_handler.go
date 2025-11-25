@@ -217,6 +217,8 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			}
 
 			response := "*📅 Your Scheduled Posts:*\n\n"
+			var keyboardRows [][]tgbotapi.InlineKeyboardButton
+			
 			for i, post := range posts {
 				scheduledTime := "not set"
 				if post.ScheduledAt != nil {
@@ -231,11 +233,26 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 				response += fmt.Sprintf("   📱 Platforms: %s\n", platformStr)
 				response += fmt.Sprintf("   ⏰ Scheduled: %s\n", scheduledTime)
 				response += fmt.Sprintf("   Status: %s\n\n", post.Status)
+				
+				// Add cancel button for each post
+				postNameDisplay := post.Name
+				if len(postNameDisplay) > 25 {
+					postNameDisplay = postNameDisplay[:22] + "..."
+				}
+				cancelBtn := tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("❌ Cancel %s", postNameDisplay),
+					fmt.Sprintf("post:cancel:%d", post.ID),
+				)
+				keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelBtn})
 			}
+			
+			// Add "Cancel All" button
+			cancelAllBtn := tgbotapi.NewInlineKeyboardButtonData("🚫 Cancel All Posts", "post:cancel_all")
+			keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelAllBtn})
 
-			response += "Type `cancel <name>` to cancel a post."
 			msg := tgbotapi.NewMessage(chatID, response)
 			msg.ParseMode = "Markdown"
+			msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 			bot.Send(msg)
 			return
 
@@ -602,6 +619,10 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		// Handle platform selection for posts
 		// arg format: "toggle:instagram:true" or "all" or "confirm"
 		h.handlePlatformSelectionCallback(bot, tenantID, chatID, arg)
+	case "post":
+		// Handle post cancellation callbacks
+		// arg format: "cancel:<post_id>" or "cancel_all"
+		h.handlePostCancelCallback(bot, tenantID, chatID, arg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
