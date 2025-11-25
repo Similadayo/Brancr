@@ -169,8 +169,25 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 
 	case 5:
 		sess.ScheduleInput = text
+		m.Logger.Info("user provided schedule input", zap.Uint("tenant_id", tenantID), zap.String("input", text))
 		// Show preview before finalizing
 		m.showPostPreview(bot, tenantID, chatID, sess)
+		return
+	case 6:
+		// Preview step - allow text confirmation as fallback
+		lower := strings.ToLower(strings.TrimSpace(text))
+		if lower == "yes" || lower == "y" || lower == "confirm" || lower == "ok" {
+			m.finalizePostFlow(bot, tenantID, chatID, sess)
+			delete(tenantSessions, chatID)
+			return
+		}
+		if lower == "no" || lower == "cancel" {
+			delete(tenantSessions, chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "👌 Cancelled. Your media is still saved - you can schedule it later."))
+			return
+		}
+		// If user types something else, remind them about the buttons
+		bot.Send(tgbotapi.NewMessage(chatID, "💡 Please use the buttons above to confirm or edit your post, or type 'yes' to confirm, 'cancel' to cancel."))
 		return
 	}
 }
@@ -401,10 +418,21 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	}
 
 	if err := m.DB.Create(&sp).Error; err != nil {
-		logger.Error("failed to create scheduled post", zap.Error(err))
-		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't schedule the post."))
+		logger.Error("failed to create scheduled post", 
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID),
+			zap.Uint("asset_id", sess.MediaAssetID),
+			zap.Strings("platforms", platforms))
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Couldn't schedule the post: %v. Please try again or contact support.", err)))
 		return
 	}
+	
+	logger.Info("✅ scheduled post created successfully",
+		zap.Uint("post_id", sp.ID),
+		zap.Uint("tenant_id", tenantID),
+		zap.String("name", sp.Name),
+		zap.Strings("platforms", platforms),
+		zap.Time("scheduled_at", *sp.ScheduledAt))
 
 	// Auto-update content calendar
 	calendarManager := NewContentCalendarManager(m.DB, m.Logger)

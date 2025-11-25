@@ -8,6 +8,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/storage"
+	"go.uber.org/zap"
 )
 
 // showPostPreview displays a visual preview of the post before finalizing
@@ -15,13 +16,15 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 	// Load media asset
 	var ma storage.MediaAsset
 	if err := m.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't find that media. Please try again."))
+		m.Logger.Error("failed to load media asset for preview", zap.Uint("asset_id", sess.MediaAssetID), zap.Uint("tenant_id", tenantID), zap.Error(err))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't find that media. Please try uploading again."))
 		return
 	}
 
 	// Parse scheduled time
 	var tenant storage.Tenant
 	if err := m.DB.First(&tenant, tenantID).Error; err != nil {
+		m.Logger.Error("failed to load tenant for preview", zap.Uint("tenant_id", tenantID), zap.Error(err))
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Couldn't find your account. Please try again."))
 		return
 	}
@@ -31,9 +34,17 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 
 	scheduledAt, err := m.parseNaturalScheduleWithTenant(sess.ScheduleInput, tenantID)
 	if err != nil {
+		m.Logger.Warn("failed to parse schedule in preview", zap.String("schedule_input", sess.ScheduleInput), zap.Uint("tenant_id", tenantID), zap.Error(err))
 		m.showSchedulingErrorWithSuggestions(bot, chatID, err)
 		return
 	}
+	
+	m.Logger.Info("showing post preview", 
+		zap.Uint("tenant_id", tenantID),
+		zap.Uint("asset_id", sess.MediaAssetID),
+		zap.String("schedule_input", sess.ScheduleInput),
+		zap.Time("scheduled_at", scheduledAt),
+		zap.Strings("platforms", sess.Platforms))
 
 	// Build preview text
 	var previewParts []string
