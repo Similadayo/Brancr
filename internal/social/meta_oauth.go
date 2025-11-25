@@ -116,6 +116,19 @@ func (h *MetaOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Store state in cookie as backup in case Meta strips the state parameter
+	// Cookie expires in 10 minutes (OAuth flow should complete much faster)
+	stateCookie := &http.Cookie{
+		Name:     "oauth_state_backup",
+		Value:    stateToken,
+		Path:     "/",
+		MaxAge:   600, // 10 minutes
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(h.RedirectURI, "https://"), // Secure only for HTTPS
+		SameSite: http.SameSiteLaxMode,
+	}
+	http.SetCookie(w, stateCookie)
+
 	scopes := h.resolveScopes(platforms)
 	if len(scopes) == 0 {
 		http.Error(w, "no scopes available for requested platforms", http.StatusBadRequest)
@@ -174,6 +187,27 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stateRaw := query.Get("state")
+	if stateRaw == "" {
+		// Try to recover state from cookie (backup mechanism)
+		stateCookie, err := r.Cookie("oauth_state_backup")
+		if err == nil && stateCookie != nil && stateCookie.Value != "" {
+			h.Logger.Info("⚠️ State parameter missing from URL, recovering from cookie backup",
+				zap.String("url", r.URL.String()))
+			stateRaw = stateCookie.Value
+			// Clear the cookie after use
+			clearCookie := &http.Cookie{
+				Name:     "oauth_state_backup",
+				Value:    "",
+				Path:     "/",
+				MaxAge:   -1,
+				HttpOnly: true,
+				Secure:   strings.HasPrefix(h.RedirectURI, "https://"),
+				SameSite: http.SameSiteLaxMode,
+			}
+			http.SetCookie(w, clearCookie)
+		}
+	}
+
 	if stateRaw == "" {
 		// Log all available information for debugging
 		h.Logger.Warn("Meta OAuth callback received without state parameter",
