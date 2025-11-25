@@ -327,14 +327,25 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 	// Decrypt access token if it's encrypted
 	if acc.AccessToken != "" {
 		decrypted, err := utils.DecryptToken(acc.AccessToken)
-		if err == nil {
-			// Only use decrypted if decryption succeeds (token might be plain text in some cases)
+		if err != nil {
+			// Log decryption failure
+			s.Logger.Warn("token decryption failed, using as plain text",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("platform", platform),
+				zap.String("account_id", fmt.Sprintf("%d", acc.ID)),
+				zap.Error(err))
+			// If decryption fails, assume token is already in plain text and use as-is
+		} else {
 			acc.AccessToken = decrypted
 		}
-		// If decryption fails, assume token is already in plain text and use as-is
 	}
 	if acc.RefreshToken != "" {
-		if decrypted, err := utils.DecryptToken(acc.RefreshToken); err == nil {
+		if decrypted, err := utils.DecryptToken(acc.RefreshToken); err != nil {
+			s.Logger.Warn("refresh token decryption failed",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("platform", platform),
+				zap.Error(err))
+		} else {
 			acc.RefreshToken = decrypted
 		}
 	}

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/ai"
@@ -254,12 +255,22 @@ func (s *Services) initSocial() error {
 			if s.BotManager == nil {
 				return
 			}
-			prefix := "✅"
-			if !success {
-				prefix = "⚠️"
+			if success {
+				// Enhanced success message with performance preview
+				preview := fmt.Sprintf(
+					"✅ %s\n\n"+
+					"📊 *Performance Preview*\n"+
+					"Analytics will be available in:\n"+
+					"• Views & Engagement (24hrs)\n"+
+					"• Likes & Comments (real-time)\n"+
+					"• Reach & Impressions (48hrs)\n\n"+
+					"💡 _Check back tomorrow for detailed insights. Use 'analytics' to view your stats._",
+					message)
+				s.BotManager.NotifyOwnerWithMarkdown(tenantID, preview)
+			} else {
+				// Error message stays simple
+				s.BotManager.NotifyOwner(tenantID, "⚠️ "+message)
 			}
-			final := prefix + " " + message
-			s.BotManager.NotifyOwner(tenantID, final)
 		}
 	}
 	s.Scheduler = scheduler

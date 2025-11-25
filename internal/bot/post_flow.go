@@ -370,6 +370,49 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		}
 	}
 
+	// Validate platform connections before proceeding
+	var connectedAccounts []storage.SocialAccount
+	m.DB.Where("tenant_id = ? AND connected = ?", tenantID, true).Find(&connectedAccounts)
+	
+	connectedPlatforms := make(map[string]bool)
+	for _, acc := range connectedAccounts {
+		connectedPlatforms[acc.Platform] = true
+	}
+	
+	// Check which platforms are not connected
+	var missingPlatforms []string
+	var validPlatforms []string
+	for _, platform := range platforms {
+		if !connectedPlatforms[platform] {
+			missingPlatforms = append(missingPlatforms, platform)
+		} else {
+			validPlatforms = append(validPlatforms, platform)
+		}
+	}
+	
+	// If some platforms are missing, warn user but continue with connected ones
+	if len(missingPlatforms) > 0 {
+		warningMsg := fmt.Sprintf("⚠️ *Platform Not Connected*\n\n")
+		for _, p := range missingPlatforms {
+			warningMsg += fmt.Sprintf("• *%s* is not connected yet\n", strings.Title(p))
+		}
+		warningMsg += "\nI'll only post to connected platforms. Connect missing platforms in the menu:\n`/menu` → Connect"
+		
+		bot.Send(tgbotapi.NewMessage(chatID, warningMsg))
+		
+		// If no platforms are connected, stop here
+		if len(validPlatforms) == 0 {
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ None of the selected platforms are connected. Please connect at least one platform before posting."))
+			return
+		}
+		
+		// Update platforms to only include connected ones
+		platforms = validPlatforms
+		logger.Info("filtered out unconnected platforms",
+			zap.Strings("missing", missingPlatforms),
+			zap.Strings("valid", platforms))
+	}
+
 	// Get tenant timezone first
 	var tenant storage.Tenant
 	if err := m.DB.First(&tenant, tenantID).Error; err != nil {

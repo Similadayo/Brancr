@@ -200,8 +200,18 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		case text == "fix instagram" || text == "update instagram id" || strings.HasPrefix(strings.ToLower(text), "fix instagram"):
 			h.fixInstagramAccountID(bot, chatID, uint(tenantID))
 			return
-		case text == "/help" || text == "/menu" || text == "/commands" || text == "/start":
+		case text == "/help" || text == "/menu" || text == "/commands":
 			h.sendOwnerMenu(bot, chatID, uint(tenantID))
+			return
+		case text == "/start":
+			// Check onboarding status on /start
+			h.Manager.CheckAndStartOnboarding(bot, uint(tenantID), chatID)
+			return
+		case text == "checklist" || text == "setup checklist" || text == "setup":
+			h.Manager.showSetupChecklist(bot, uint(tenantID), chatID)
+			return
+		case text == "examples" || text == "example posts":
+			h.Manager.showExamplePosts(bot, chatID)
 			return
 
 		case text == "schedule posts" || text == "scheduled posts" || text == "my posts":
@@ -222,7 +232,23 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			for i, post := range posts {
 				scheduledTime := "not set"
 				if post.ScheduledAt != nil {
-					scheduledTime = post.ScheduledAt.Format("Jan 2, 3:04PM")
+					// Use stored timezone or default to UTC
+					timezone := post.Timezone
+					if timezone == "" {
+						timezone = "UTC"
+					}
+					
+					loc, err := time.LoadLocation(timezone)
+					if err != nil {
+						loc = time.UTC
+					}
+					
+					// Convert UTC time to tenant's timezone for display
+					localTime := post.ScheduledAt.In(loc)
+					scheduledTime = localTime.Format("Jan 2, 3:04PM")
+					if timezone != "UTC" {
+						scheduledTime += fmt.Sprintf(" (%s)", timezone)
+					}
 				}
 
 				var platforms []string
@@ -623,6 +649,9 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		// Handle post cancellation callbacks
 		// arg format: "cancel:<post_id>" or "cancel_all"
 		h.handlePostCancelCallback(bot, tenantID, chatID, arg)
+	case "onboarding":
+		// Handle onboarding wizard callbacks
+		h.handleOnboardingCallback(bot, tenantID, chatID, arg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
@@ -1389,6 +1418,24 @@ func (h *TenantWebhookHandler) showWebhookInfo(bot *tgbotapi.BotAPI, chatID int6
 	msg := tgbotapi.NewMessage(chatID, strings.Join(info, "\n"))
 	msg.ParseMode = "Markdown"
 	bot.Send(msg)
+}
+
+// handleOnboardingCallback processes onboarding wizard callbacks
+func (h *TenantWebhookHandler) handleOnboardingCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	switch arg {
+	case "create_post":
+		bot.Send(tgbotapi.NewMessage(chatID, "📸 Great! Just upload a photo or video and I'll guide you through creating your first post."))
+	case "examples":
+		h.Manager.showExamplePosts(bot, chatID)
+	case "upload":
+		bot.Send(tgbotapi.NewMessage(chatID, "📸 Upload a photo or video to get started with your first post!"))
+	case "checklist":
+		h.Manager.showSetupChecklist(bot, tenantID, chatID)
+	case "skip":
+		bot.Send(tgbotapi.NewMessage(chatID, "👌 No problem! You can access the setup checklist anytime by typing 'checklist' or use 'menu' for all options."))
+	default:
+		h.Manager.Logger.Debug("unhandled onboarding callback", zap.String("arg", arg))
+	}
 }
 
 // fixInstagramAccountID updates existing Instagram accounts with their Instagram Business Account ID

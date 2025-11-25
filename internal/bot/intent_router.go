@@ -291,7 +291,23 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 	for i, post := range posts {
 		scheduledTime := "not set"
 		if post.ScheduledAt != nil {
-			scheduledTime = post.ScheduledAt.Format("Jan 2, 3:04PM")
+			// Use stored timezone or default to UTC
+			timezone := post.Timezone
+			if timezone == "" {
+				timezone = "UTC"
+			}
+			
+			loc, err := time.LoadLocation(timezone)
+			if err != nil {
+				loc = time.UTC
+			}
+			
+			// Convert UTC time to tenant's timezone for display
+			localTime := post.ScheduledAt.In(loc)
+			scheduledTime = localTime.Format("Jan 2, 3:04PM")
+			if timezone != "UTC" {
+				scheduledTime += fmt.Sprintf(" (%s)", timezone)
+			}
 		}
 		
 		var platforms []string

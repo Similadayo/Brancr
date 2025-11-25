@@ -265,6 +265,48 @@ func (m *TenantBotManager) NotifyOwner(tenantID uint, message string) {
 	}
 }
 
+// NotifyOwnerWithMarkdown sends a message with markdown formatting
+func (m *TenantBotManager) NotifyOwnerWithMarkdown(tenantID uint, message string) {
+	if m == nil {
+		return
+	}
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	bot := m.GetBotInstance(tenantID)
+	if bot == nil {
+		if m.Logger != nil {
+			m.Logger.Warn("notify owner: bot instance missing", zap.Uint("tenant_id", tenantID))
+		}
+		return
+	}
+	ownerID := m.GetOwnerID(tenantID)
+	if ownerID == 0 {
+		var tenant storage.Tenant
+		if err := m.DB.WithContext(context.Background()).First(&tenant, tenantID).Error; err != nil {
+			if m.Logger != nil {
+				m.Logger.Warn("notify owner: failed to resolve owner", zap.Uint("tenant_id", tenantID), zap.Error(err))
+			}
+			return
+		}
+		if tenant.OwnerTelegramID == 0 {
+			if m.Logger != nil {
+				m.Logger.Warn("notify owner: tenant has no owner telegram id", zap.Uint("tenant_id", tenantID))
+			}
+			return
+		}
+		ownerID = tenant.OwnerTelegramID
+		m.Mutex.Lock()
+		m.Owners[tenantID] = ownerID
+		m.Mutex.Unlock()
+	}
+	msg := tgbotapi.NewMessage(ownerID, message)
+	msg.ParseMode = "Markdown"
+	if _, err := bot.Send(msg); err != nil && m.Logger != nil {
+		m.Logger.Warn("notify owner: failed to send message", zap.Uint("tenant_id", tenantID), zap.Error(err))
+	}
+}
+
 // ✅ Stop bot
 func (m *TenantBotManager) StopBot(tenantID uint) {
 	m.Mutex.Lock()
