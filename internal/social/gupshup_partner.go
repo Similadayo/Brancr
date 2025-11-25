@@ -17,9 +17,9 @@ const GupshupPartnerBaseURL = "https://partner.gupshup.io"
 
 // GupshupPartnerClient handles API requests to Gupshup Partner API
 type GupshupPartnerClient struct {
-	BaseURL      string
+	BaseURL       string
 	PartnerAPIKey string // Static Partner API key from Partner Console
-	Logger       *zap.Logger
+	Logger        *zap.Logger
 }
 
 // NewGupshupPartnerClient creates a new Gupshup Partner API client
@@ -37,7 +37,18 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL str
 	params := url.Values{}
 	params.Set("partnerId", partnerID)
 	params.Set("redirect", redirectURL)
-	return fmt.Sprintf("%s/partner/app/onboard?%s", c.BaseURL, params.Encode())
+	params.Set("clientSecret", c.PartnerAPIKey) // REQUIRED: Validates partner auth in query params
+
+	link := fmt.Sprintf("%s/partner/app/onboard?%s", c.BaseURL, params.Encode())
+
+	if c.Logger != nil {
+		c.Logger.Info("🔗 Generated Gupshup onboarding link",
+			zap.String("partner_id", partnerID),
+			zap.String("redirect_url", redirectURL),
+			zap.String("link_preview", truncateString(link, 100)))
+	}
+
+	return link
 }
 
 // SetCallback configures webhook callback URL for a Gupshup Partner app
@@ -129,8 +140,8 @@ func (c *GupshupPartnerClient) SendMessage(ctx context.Context, appID, sourcePho
 
 	payload := map[string]interface{}{
 		"channel":     "whatsapp",
-		"source":      sourcePhone,    // Tenant's WhatsApp number
-		"destination": destination,     // Customer's phone number
+		"source":      sourcePhone, // Tenant's WhatsApp number
+		"destination": destination, // Customer's phone number
 		"message": map[string]interface{}{
 			"type": "text",
 			"text": text,
@@ -197,4 +208,3 @@ func (c *GupshupPartnerClient) SendMessage(ctx context.Context, appID, sourcePho
 
 	return nil
 }
-
