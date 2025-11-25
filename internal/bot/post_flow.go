@@ -477,6 +477,22 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		zap.Strings("platforms", platforms),
 		zap.Time("scheduled_at", *sp.ScheduledAt))
 
+	// Check if post is scheduled for "now" (within 5 seconds) and trigger immediate execution
+	now := time.Now().UTC()
+	timeUntilPost := scheduledAtUTC.Sub(now)
+	if timeUntilPost <= 5*time.Second && m.Scheduler != nil {
+		logger.Info("🚀 Post scheduled for now, triggering immediate execution",
+			zap.Uint("post_id", sp.ID),
+			zap.Duration("time_until", timeUntilPost))
+		if err := m.Scheduler.ExecutePostImmediately(sp.ID); err != nil {
+			logger.Warn("failed to execute post immediately, will be picked up by scheduler",
+				zap.Uint("post_id", sp.ID),
+				zap.Error(err))
+		} else {
+			logger.Info("✅ Immediate post execution triggered", zap.Uint("post_id", sp.ID))
+		}
+	}
+
 	// Auto-update content calendar
 	calendarManager := NewContentCalendarManager(m.DB, m.Logger)
 	calendarCtx := context.Background()

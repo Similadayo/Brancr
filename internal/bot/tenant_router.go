@@ -36,6 +36,9 @@ type TenantBotManager struct {
 	AdminBot          *tgbotapi.BotAPI
 	AnalyticsHandler  *AnalyticsHandler // Analytics handler for tenant requests
 	EscalationHandler *EscalationHandler // Escalation handler for managing customer escalations
+	Scheduler         interface { // Interface to avoid circular dependency
+		ExecutePostImmediately(postID uint) error
+	}
 	Config            *config.Config
 	sessionFinalizers sync.Map
 }

@@ -97,6 +97,40 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 	}
 }
 
+// ExecutePostImmediately executes a post immediately without waiting for scheduler poll
+// This is used for "now" posts to avoid delays
+func (s *Scheduler) ExecutePostImmediately(postID uint) error {
+	var p storage.ScheduledPost
+	if err := s.DB.First(&p, postID).Error; err != nil {
+		return fmt.Errorf("post not found: %w", err)
+	}
+	
+	// Only execute if still in scheduled status (not already being processed)
+	if p.Status != "scheduled" {
+		s.Logger.Warn("post not in scheduled status, skipping immediate execution",
+			zap.Uint("post_id", postID),
+			zap.String("status", p.Status))
+		return fmt.Errorf("post status is %s, not scheduled", p.Status)
+	}
+	
+	// Claim the post by updating status to "posting"
+	tx := s.DB.Begin()
+	if err := tx.Model(&storage.ScheduledPost{}).Where("id = ? AND status = ?", postID, "scheduled").Update("status", "posting").Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to claim post: %w", err)
+	}
+	tx.Commit()
+	
+	// Reload to get updated status
+	if err := s.DB.First(&p, postID).Error; err != nil {
+		return fmt.Errorf("failed to reload post: %w", err)
+	}
+	
+	// Execute in background
+	go s.executePost(p)
+	return nil
+}
+
 func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	ctx := context.Background()
 

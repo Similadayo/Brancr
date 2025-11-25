@@ -250,6 +250,12 @@ func (s *Services) initSocial() error {
 
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
+	
+	// Set scheduler on BotManager for immediate post execution
+	if s.BotManager != nil {
+		s.BotManager.Scheduler = scheduler
+	}
+	
 	if s.BotManager != nil {
 		scheduler.PostNotifier = func(ctx context.Context, tenantID uint, platform string, success bool, message string) {
 			if s.BotManager == nil {
