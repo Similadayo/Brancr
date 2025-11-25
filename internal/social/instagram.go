@@ -352,7 +352,7 @@ func (i *InstagramConnector) waitForMediaReady(ctx context.Context, creationID, 
 	statusURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=status_code&access_token=%s", creationID, accessToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	maxAttempts := 30 // 30 attempts * 2 seconds = 60 seconds max wait
+	maxAttempts := 15 // 15 attempts * 2 seconds = 30 seconds max wait (reduced to avoid rate limits)
 	attempt := 0
 
 	for attempt < maxAttempts {

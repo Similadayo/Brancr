@@ -336,7 +336,29 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	} else {
 		// Complete failure
 		if lastError != nil {
-			s.markFailed(p, lastError.Error(), true, false)
+			// Check if error is Instagram rate limit - disable retries to avoid hitting limits
+			errorStr := lastError.Error()
+			isRateLimit := strings.Contains(errorStr, "request limit reached") || 
+				strings.Contains(errorStr, "rate limit") ||
+				strings.Contains(errorStr, "403")
+			
+			// Check if any failed platform was Instagram
+			hasInstagram := false
+			for _, platform := range failed {
+				if platform == "instagram" {
+					hasInstagram = true
+					break
+				}
+			}
+			
+			// Disable retries for Instagram rate limit errors to prevent hitting limits
+			allowRetry := !(hasInstagram && isRateLimit)
+			if !allowRetry {
+				s.Logger.Warn("⚠️ Disabling retries for Instagram rate limit error to prevent further rate limiting",
+					zap.Uint("post_id", p.ID),
+					zap.String("error", errorStr))
+			}
+			s.markFailed(p, lastError.Error(), allowRetry, false)
 		} else {
 			s.markFailed(p, "all platforms failed", true, false)
 		}
@@ -431,17 +453,29 @@ func (s *Scheduler) markFailed(p storage.ScheduledPost, reason string, allowRetr
 		status = "partial_failed"
 	}
 
-	if allowRetry && attempts < 3 {
-		status = "scheduled"
-		// Retry after 5min, 15min, then fail
-		backoffMinutes := []int{5, 15, 60}
-		if attempts-1 < len(backoffMinutes) {
-			retry := time.Now().Add(time.Duration(backoffMinutes[attempts-1]) * time.Minute)
-			nextSchedule = &retry
-			s.Logger.Info("⏱️ Scheduling retry",
-				zap.Uint("post_id", p.ID),
-				zap.Int("attempt", attempts),
-				zap.Time("retry_at", retry))
+	if allowRetry {
+		// Determine max attempts based on error type
+		maxAttempts := 3
+		// Check if this is an Instagram rate limit error - reduce retries
+		if strings.Contains(reason, "request limit reached") || 
+			strings.Contains(reason, "rate limit") ||
+			strings.Contains(reason, "403") {
+			maxAttempts = 1 // Only 1 retry for rate limit errors
+		}
+		
+		if attempts < maxAttempts {
+			status = "scheduled"
+			// Retry after 5min, 15min, then fail (reduced for rate limits)
+			backoffMinutes := []int{5, 15, 60}
+			if attempts-1 < len(backoffMinutes) {
+				retry := time.Now().Add(time.Duration(backoffMinutes[attempts-1]) * time.Minute)
+				nextSchedule = &retry
+				s.Logger.Info("⏱️ Scheduling retry",
+					zap.Uint("post_id", p.ID),
+					zap.Int("attempt", attempts),
+					zap.Int("max_attempts", maxAttempts),
+					zap.Time("retry_at", retry))
+			}
 		}
 	}
 
