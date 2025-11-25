@@ -169,8 +169,9 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 
 	case 5:
 		sess.ScheduleInput = text
-		m.finalizePostFlow(bot, tenantID, chatID, sess)
-		delete(tenantSessions, chatID)
+		// Show preview before finalizing
+		m.showPostPreview(bot, tenantID, chatID, sess)
+		return
 	}
 }
 

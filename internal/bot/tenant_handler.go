@@ -583,7 +583,17 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		// TODO: Implement AI customization flow
 		bot.Send(tgbotapi.NewMessage(chatID, "AI customization is coming soon!"))
 	case "postflow":
-		h.handlePostFlowCallback(bot, tenantID, chatID, arg)
+		// Check if it's a preview action or regular postflow
+		previewActions := map[string]bool{
+			"confirm": true, "post_now": true, "edit_caption": true,
+			"edit_schedule": true, "edit_platforms": true, "cancel": true,
+			"schedule": true,
+		}
+		if previewActions[arg] {
+			h.handlePostPreviewCallback(bot, tenantID, chatID, arg)
+		} else {
+			h.handlePostFlowCallback(bot, tenantID, chatID, arg)
+		}
 	case "escalate":
 		// Handle escalation actions: approve, edit, ignore
 		// arg format: "approve:123" or "edit:123" or "ignore:123"

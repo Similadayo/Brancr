@@ -142,6 +142,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 
 	var items []storage.MediaItem
 	var lastCount int
+	var progressMsgID int // Track progress message for editing
 	
 	// Wait for items to arrive, checking periodically
 	for time.Since(startTime) < maxWaitTime {
@@ -153,6 +154,29 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 		}
 		
 		currentCount := len(items)
+		
+		// Send progress updates for batch uploads (2+ items)
+		if bot != nil && currentCount > 1 && currentCount != lastCount {
+			// Check total expected count (if we can determine it from processed items)
+			var totalItems []storage.MediaItem
+			m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).Find(&totalItems)
+			totalCount := len(totalItems)
+			
+			if totalCount > 1 {
+				progressText := fmt.Sprintf("📤 Uploading... %d/%d images uploaded", currentCount, totalCount)
+				if progressMsgID == 0 {
+					// First progress message
+					msg := tgbotapi.NewMessage(chatID, progressText)
+					if sent, err := bot.Send(msg); err == nil {
+						progressMsgID = sent.MessageID
+					}
+				} else {
+					// Update existing progress message
+					edit := tgbotapi.NewEditMessageText(chatID, progressMsgID, progressText)
+					bot.Send(edit)
+				}
+			}
+		}
 		
 		// If count hasn't changed in 2 checks, assume all items arrived
 		if currentCount == lastCount && currentCount > 0 {
@@ -168,6 +192,12 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 		}
 		
 		lastCount = currentCount
+	}
+	
+	// Delete progress message if it exists
+	if bot != nil && progressMsgID > 0 {
+		deleteMsg := tgbotapi.NewDeleteMessage(chatID, progressMsgID)
+		bot.Send(deleteMsg)
 	}
 	
 	// Final fetch of all items (including processed)
