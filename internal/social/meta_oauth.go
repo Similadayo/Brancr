@@ -853,7 +853,14 @@ func (h *MetaOAuthHandler) upsertSocialAccount(ctx context.Context, tenantID uin
 
 	update(&account)
 
-	return h.DB.WithContext(ctx).Save(&account).Error
+	if err := h.DB.WithContext(ctx).Save(&account).Error; err != nil {
+		return err
+	}
+
+	// Accounts are automatically verified during OAuth flow
+	// Connection is set to Connected=true after successful verification
+	// Verification happens via VerifySocialConnection during the OAuth callback
+	return nil
 }
 
 func (h *MetaOAuthHandler) resolveScopes(platforms []string) []string {

@@ -644,6 +644,50 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 		}
 	}
 	
+	// Get today's stats for quick overview
+	today := time.Now()
+	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	
+	var postsToday int64
+	h.Manager.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND created_at >= ? AND status = ?", tenantID, todayStart, "posted").
+		Count(&postsToday)
+	
+	var messagesToday int64
+	h.Manager.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND created_at >= ? AND direction = ?", tenantID, todayStart, "incoming").
+		Count(&messagesToday)
+	
+	var escalationsToday int64
+	h.Manager.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND response_type = ? AND response_status = ? AND created_at >= ?", tenantID, "escalated", "pending", todayStart).
+		Count(&escalationsToday)
+	
+	// Show quick stats
+	if postsToday > 0 || messagesToday > 0 || escalationsToday > 0 {
+		text += "\n\n📊 *Today:*"
+		if postsToday > 0 {
+			text += fmt.Sprintf(" %d post(s)", postsToday)
+		}
+		if messagesToday > 0 {
+			text += fmt.Sprintf(" %d message(s)", messagesToday)
+		}
+		if escalationsToday > 0 {
+			text += fmt.Sprintf(" %d escalation(s)", escalationsToday)
+		}
+	}
+	
+	// Count unread customer messages (escalations pending tenant response)
+	var unreadCount int64
+	h.Manager.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND response_status = ? AND response_type = ?", tenantID, "pending", "escalated").
+		Count(&unreadCount)
+	
+	// Show unread messages indicator
+	if unreadCount > 0 {
+		text += fmt.Sprintf("\n\n🔔 *%d unread message(s)*", unreadCount)
+	}
+	
 	text += "\n\n📱 *Platform Status:*"
 	for platform, connected := range platformStatus {
 		statusIcon := "❌"

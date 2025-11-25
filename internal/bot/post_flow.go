@@ -413,8 +413,8 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		logger.Warn("failed to update calendar", zap.Error(err))
 	}
 
-	// Generate friendly confirmation message
-	summary := m.generateConfirmationMessage(ma, platforms, scheduledAt, sess.UseAICaption)
+	// Generate friendly confirmation message with timezone
+	summary := m.generateConfirmationMessageWithTimezone(ma, platforms, scheduledAt, tenant.Timezone, sess.UseAICaption)
 	bot.Send(tgbotapi.NewMessage(chatID, summary))
 }
 
@@ -642,6 +642,86 @@ func (m *TenantBotManager) generateConfirmationMessage(ma storage.MediaAsset, pl
 	} else {
 		parts = append(parts, fmt.Sprintf("⏰ %s", scheduledAt.Format("Jan 2 at 3:04 PM")))
 	}
+
+	// Platform list with natural language
+	platformStr := ""
+	if len(platforms) == 1 {
+		platformStr = strings.Title(platforms[0])
+	} else if len(platforms) == 2 {
+		platformStr = fmt.Sprintf("%s & %s", strings.Title(platforms[0]), strings.Title(platforms[1]))
+	} else {
+		for i, p := range platforms {
+			if i > 0 {
+				if i == len(platforms)-1 {
+					platformStr += " & "
+				} else {
+					platformStr += ", "
+				}
+			}
+			platformStr += strings.Title(p)
+		}
+	}
+	parts = append(parts, fmt.Sprintf("📱 to %s", platformStr))
+
+	// AI caption note
+	if useAI {
+		parts = append(parts, "✨ AI will optimize the caption for each platform")
+	}
+
+	return strings.Join(parts, "\n") + "\n\nI'll handle it from here! 🚀"
+}
+
+// generateConfirmationMessageWithTimezone generates confirmation message with timezone info
+func (m *TenantBotManager) generateConfirmationMessageWithTimezone(ma storage.MediaAsset, platforms []string, scheduledAt time.Time, timezone string, useAI bool) string {
+	var parts []string
+
+	// Post name
+	name := ma.Name
+	if name == "" {
+		name = ma.Type
+	}
+
+	// Start with friendly confirmation
+	parts = append(parts, fmt.Sprintf("✅ Scheduled '%s'", name))
+
+	// Media type description
+	if ma.Type == "carousel" {
+		var urls []string
+		json.Unmarshal([]byte(ma.URLs), &urls)
+		parts = append(parts, fmt.Sprintf("📸 %d-image carousel", len(urls)))
+	} else {
+		parts = append(parts, fmt.Sprintf("📸 %s", strings.Title(ma.Type)))
+	}
+
+	// Get timezone location for display
+	loc := time.UTC
+	if timezone != "" {
+		if l, err := time.LoadLocation(timezone); err == nil {
+			loc = l
+		}
+	}
+	scheduledAtLocal := scheduledAt.In(loc)
+
+	// Natural time description with timezone
+	now := time.Now().In(loc)
+	timeUntil := scheduledAtLocal.Sub(now)
+	
+	timezoneAbbr := timezone
+	if timezoneAbbr == "" {
+		timezoneAbbr = "UTC"
+	}
+	
+	var scheduleStr string
+	if timeUntil < 5*time.Minute {
+		scheduleStr = fmt.Sprintf("⏰ *Posting now* (%s)", timezoneAbbr)
+	} else if scheduledAtLocal.Year() == now.Year() && scheduledAtLocal.YearDay() == now.YearDay() {
+		scheduleStr = fmt.Sprintf("⏰ *Today at %s* (%s)", scheduledAtLocal.Format("3:04 PM"), timezoneAbbr)
+	} else if scheduledAtLocal.Year() == now.Year() && scheduledAtLocal.YearDay() == now.YearDay()+1 {
+		scheduleStr = fmt.Sprintf("⏰ *Tomorrow at %s* (%s)", scheduledAtLocal.Format("3:04 PM"), timezoneAbbr)
+	} else {
+		scheduleStr = fmt.Sprintf("⏰ *%s* (%s)", scheduledAtLocal.Format("Jan 2 at 3:04 PM"), timezoneAbbr)
+	}
+	parts = append(parts, scheduleStr)
 
 	// Platform list with natural language
 	platformStr := ""

@@ -61,26 +61,58 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 		previewParts = append(previewParts, fmt.Sprintf("📝 *Name:* %s", name))
 	}
 	
-	// Caption
+	// Caption with platform-specific length warnings
 	caption := sess.Caption
 	if sess.UseAICaption {
 		caption = "✨ AI-generated caption (will be optimized for each platform)"
 	}
+	
+	// Get platforms first for caption length validation
+	platforms := sess.Platforms
+	if len(platforms) == 0 {
+		platforms = []string{"instagram"} // Default
+	}
+	
 	if caption != "" {
 		captionPreview := caption
 		if len(captionPreview) > 100 {
 			captionPreview = captionPreview[:100] + "..."
 		}
 		previewParts = append(previewParts, fmt.Sprintf("💬 *Caption:* %s", captionPreview))
+		
+		// Check platform-specific caption length limits
+		for _, platform := range platforms {
+			length := len(caption)
+			var warning string
+			switch platform {
+			case "instagram":
+				if length > 2200 {
+					warning = fmt.Sprintf("⚠️ Instagram caption exceeds 2200 chars (%d). It will be truncated.", length)
+				} else if length > 125 {
+					warning = fmt.Sprintf("💡 Instagram caption is %d chars (optimal is <125, max 2200).", length)
+				}
+			case "facebook":
+				if length > 63206 {
+					warning = fmt.Sprintf("⚠️ Facebook caption exceeds 63,206 chars (%d). It will be truncated.", length)
+				} else if length > 250 {
+					warning = fmt.Sprintf("💡 Facebook caption is %d chars (optimal is <250).", length)
+				}
+			case "tiktok":
+				if length > 2200 {
+					warning = fmt.Sprintf("⚠️ TikTok caption exceeds 2200 chars (%d). It will be truncated.", length)
+				} else if length > 150 {
+					warning = fmt.Sprintf("💡 TikTok caption is %d chars (optimal is <150).", length)
+				}
+			}
+			if warning != "" {
+				previewParts = append(previewParts, warning)
+			}
+		}
 	} else {
 		previewParts = append(previewParts, "💬 *Caption:* None")
 	}
 	
-	// Platforms
-	platforms := sess.Platforms
-	if len(platforms) == 0 {
-		platforms = []string{"instagram"} // Default
-	}
+	// Platforms (already defined above)
 	platformStr := ""
 	for i, p := range platforms {
 		if i > 0 {

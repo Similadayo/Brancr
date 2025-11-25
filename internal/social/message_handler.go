@@ -103,8 +103,14 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 
 	// Step 4: Decide: auto-reply or escalate
 	if intent.RequiresEscalation || intent.Confidence < 0.6 {
+		// Send clarity message to customer when escalating
+		h.sendEscalationClarityMessage(ctx, msg, customer)
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
+
+	// Step 5: Send "typing..." indicator simulation before generating reply
+	// This makes the AI response feel faster and more natural
+	h.sendTypingIndicator(ctx, msg)
 
 	// Step 5: Generate and send auto-reply
 	reply, err := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform)
@@ -315,7 +321,7 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			h.Logger.Error("❌ Failed to auto-fetch Instagram Business Account ID",
 				zap.Error(err),
 				zap.Uint("tenant_id", acc.TenantID))
-			return fmt.Errorf("Instagram Business Account ID not found. Please run 'fix instagram' or reconnect Instagram. Error: %v", err)
+			return fmt.Errorf("Instagram Business Account ID not found. To fix this:\n1. Type 'verify instagram' in your Telegram bot to reconnect\n2. Or check your Meta Developer Console → ensure Instagram Business Account is linked to your Facebook Page\n3. Make sure you granted 'instagram_manage_messages' permission during OAuth. Error: %v", err)
 		}
 		igAccountID = fetchedID
 		h.Logger.Info("✅ Auto-fetched and saved Instagram Business Account ID",
