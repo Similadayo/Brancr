@@ -44,7 +44,9 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 
 	logger.Info("🖼️ HandleMediaUpdate started",
 		zap.Int("photo_count", len(msg.Photo)),
-		zap.Bool("has_video", msg.Video != nil))
+		zap.Bool("has_video", msg.Video != nil),
+		zap.Bool("has_document", msg.Document != nil),
+		zap.Bool("has_animation", msg.Animation != nil))
 
 	sessionID := msg.MediaGroupID
 	if sessionID == "" {
@@ -56,11 +58,41 @@ func (m *TenantBotManager) HandleMediaUpdate(bot *tgbotapi.BotAPI, tenantID uint
 	if len(msg.Photo) > 0 {
 		resourceType = "image"
 		fileID = msg.Photo[len(msg.Photo)-1].FileID
+		logger.Info("📸 Photo detected", zap.String("file_id", fileID))
 	} else if msg.Video != nil {
 		resourceType = "video"
 		fileID = msg.Video.FileID
+		logger.Info("🎥 Video detected", zap.String("file_id", fileID))
+	} else if msg.Animation != nil {
+		// Animation (GIF) - treat as video for Cloudinary
+		resourceType = "video"
+		fileID = msg.Animation.FileID
+		logger.Info("🎬 Animation/GIF detected", zap.String("file_id", fileID))
+	} else if msg.Document != nil {
+		// Document - check if it's an image file
+		doc := msg.Document
+		mimeType := strings.ToLower(doc.MimeType)
+		if strings.HasPrefix(mimeType, "image/") {
+			resourceType = "image"
+			fileID = doc.FileID
+			logger.Info("📄 Image document detected", zap.String("file_id", fileID), zap.String("mime_type", mimeType))
+		} else if strings.HasPrefix(mimeType, "video/") {
+			resourceType = "video"
+			fileID = doc.FileID
+			logger.Info("📄 Video document detected", zap.String("file_id", fileID), zap.String("mime_type", mimeType))
+		} else {
+			// Unsupported document type
+			logger.Warn("⚠️ Unsupported document type", zap.String("mime_type", mimeType))
+			bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "⚠️ Only images and videos are supported. Your file type ("+mimeType+") cannot be posted."))
+			return
+		}
 	} else {
-		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "⚠️ No media found."))
+		logger.Warn("⚠️ No media found in message",
+			zap.Int("photo_count", len(msg.Photo)),
+			zap.Bool("has_video", msg.Video != nil),
+			zap.Bool("has_document", msg.Document != nil),
+			zap.Bool("has_animation", msg.Animation != nil))
+		bot.Send(tgbotapi.NewMessage(msg.Chat.ID, "⚠️ No media found. Please send a photo or video."))
 		return
 	}
 

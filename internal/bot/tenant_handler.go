@@ -80,8 +80,11 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	ownerID := h.Manager.GetOwnerID(uint(tenantID))
 	isOwner := senderID == ownerID
 
-	// Check if this is media (photo/video) - don't return early for media
-	hasMedia := len(update.Message.Photo) > 0 || update.Message.Video != nil
+	// Check if this is media (photo/video/document/animation) - don't return early for media
+	hasMedia := len(update.Message.Photo) > 0 || 
+		update.Message.Video != nil || 
+		update.Message.Document != nil || 
+		update.Message.Animation != nil
 
 	// Only return if no text AND no media
 	if text == "" && !hasMedia {
@@ -114,13 +117,17 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	// 🖼 Step 2: Media uploads (owner only)
 	hasPhoto := len(update.Message.Photo) > 0
 	hasVideo := update.Message.Video != nil
+	hasDocument := update.Message.Document != nil
+	hasAnimation := update.Message.Animation != nil
 
 	h.Manager.Logger.Info("📸 Media check",
 		zap.Bool("has_photo", hasPhoto),
 		zap.Bool("has_video", hasVideo),
+		zap.Bool("has_document", hasDocument),
+		zap.Bool("has_animation", hasAnimation),
 		zap.Bool("is_owner", isOwner))
 
-	if (hasPhoto || hasVideo) && isOwner {
+	if (hasPhoto || hasVideo || hasDocument || hasAnimation) && isOwner {
 		h.Manager.Logger.Info("🖼️ Media detected from owner - uploading to Cloudinary",
 			zap.Uint("tenant_id", uint(tenantID)))
 
