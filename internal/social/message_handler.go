@@ -101,25 +101,48 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 		h.DB.Save(&conversation)
 	}
 
-	// Step 4: Decide: auto-reply or escalate
-	if intent.RequiresEscalation || intent.Confidence < 0.6 {
-		// Send clarity message to customer when escalating
+	// Step 4: Decide: auto-reply first, escalate only when necessary
+	// Only escalate immediately for truly sensitive cases (refunds, serious complaints)
+	// For most messages, try auto-reply first
+	shouldEscalateImmediately := (intent.Intent == "refund" && intent.Tone == "negative") || 
+		(intent.Intent == "complaint" && intent.Confidence > 0.7)
+	
+	// Very low confidence (< 0.3) means we can't understand the message - escalate
+	shouldTryAutoReply := intent.Confidence >= 0.3
+
+	if shouldEscalateImmediately {
+		// Only escalate immediately for critical refund/complaint cases
+		h.Logger.Info("🚨 Immediate escalation required",
+			zap.String("intent", intent.Intent),
+			zap.String("tone", intent.Tone),
+			zap.Float64("confidence", intent.Confidence))
 		h.sendEscalationClarityMessage(ctx, msg, customer)
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
-	// Step 5: Send "typing..." indicator simulation before generating reply
-	// This makes the AI response feel faster and more natural
-	h.sendTypingIndicator(ctx, msg)
-
-	// Step 5: Generate and send auto-reply
-	reply, err := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform)
-	if err != nil {
-		h.Logger.Error("failed to generate reply", zap.Error(err))
+	// Step 5: Try auto-reply first for most messages
+	if !shouldTryAutoReply {
+		// Very low confidence - escalate instead
+		h.Logger.Info("⚠️ Confidence too low for auto-reply, escalating",
+			zap.Float64("confidence", intent.Confidence),
+			zap.String("intent", intent.Intent))
+		h.sendEscalationClarityMessage(ctx, msg, customer)
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
-	// Step 6: Send reply to platform
+	// Send "typing..." indicator simulation before generating reply
+	// This makes the AI response feel faster and more natural
+	h.sendTypingIndicator(ctx, msg)
+
+	reply, err := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform)
+	if err != nil {
+		h.Logger.Error("failed to generate reply", zap.Error(err))
+		// If reply generation fails, escalate as fallback
+		h.sendEscalationClarityMessage(ctx, msg, customer)
+		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
+	}
+
+	// Step 7: Send reply to platform
 	if err := h.sendReply(ctx, msg, reply); err != nil {
 		h.Logger.Error("❌ Failed to send reply to customer",
 			zap.Error(err),
@@ -132,13 +155,13 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 		return nil
 	}
 
-	// Step 7: Update interaction
+	// Step 8: Update interaction
 	interaction.ResponseType = "auto_reply"
 	interaction.ResponseStatus = "sent"
 	interaction.FinalReply = reply
 	h.DB.Save(&interaction)
 
-	// Step 8: Save to conversation memory
+	// Step 9: Save to conversation memory
 	h.saveToMemory(ctx, msg.TenantID, customer.ID, msg.Content, reply)
 
 	h.Logger.Info("✅ Auto-replied to customer",
