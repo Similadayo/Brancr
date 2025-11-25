@@ -33,7 +33,19 @@ func NewGupshupPartnerClient(baseURL, partnerAPIKey string, logger *zap.Logger) 
 
 // GenerateOnboardingLink generates Partner onboarding redirect link for tenant
 // This is the ONLY correct method for WhatsApp Partner app onboarding
-func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL string) string {
+// Returns the link and any validation errors
+func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL string) (string, error) {
+	// Validate required fields
+	if partnerID == "" {
+		return "", fmt.Errorf("partner ID is required")
+	}
+	if redirectURL == "" {
+		return "", fmt.Errorf("redirect URL is required")
+	}
+	if c.PartnerAPIKey == "" {
+		return "", fmt.Errorf("gupshup Partner API key is not configured")
+	}
+
 	params := url.Values{}
 	params.Set("partnerId", partnerID)
 	params.Set("redirect", redirectURL)
@@ -45,10 +57,11 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL str
 		c.Logger.Info("🔗 Generated Gupshup onboarding link",
 			zap.String("partner_id", partnerID),
 			zap.String("redirect_url", redirectURL),
-			zap.String("link_preview", truncateString(link, 100)))
+			zap.String("link_preview", truncateString(link, 100)),
+			zap.Bool("has_api_key", c.PartnerAPIKey != ""))
 	}
 
-	return link
+	return link, nil
 }
 
 // SetCallback configures webhook callback URL for a Gupshup Partner app

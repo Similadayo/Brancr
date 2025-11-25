@@ -3846,7 +3846,21 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 
 	// Generate onboarding redirect link (VERIFIED: only correct method)
 	redirectURL := fmt.Sprintf("%s/api/tenant/whatsapp/callback?tenant_id=%d", h.Config.PublicURL, tenantID)
-	onboardingLink := h.GupshupPartner.GenerateOnboardingLink(h.Config.GupshupPartnerID, redirectURL)
+	onboardingLink, err := h.GupshupPartner.GenerateOnboardingLink(h.Config.GupshupPartnerID, redirectURL)
+	if err != nil {
+		h.Logger.Error("❌ Failed to generate Gupshup onboarding link",
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err),
+			zap.String("partner_id", h.Config.GupshupPartnerID),
+			zap.String("redirect_url", redirectURL))
+		
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "onboarding_link_generation_failed",
+			"message": fmt.Sprintf("Failed to generate onboarding link: %v", err),
+			"hint":    "Please verify GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correctly configured.",
+		})
+		return
+	}
 
 	// Store pending status (app doesn't exist yet - will be created after onboarding)
 	h.DB.Create(&storage.WhatsAppApp{
@@ -3866,7 +3880,14 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		"status":         "pending_onboarding",
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
 		"redirect_url":   redirectURL,
-		"note":           "If you see 'Unauthorised access', ensure the redirect URL is whitelisted in Gupshup Partner Console at https://partner.gupshup.io",
+		"troubleshooting": map[string]string{
+			"unauthorized_error": "If you see 'Unauthorised access' error, ensure:",
+			"step1":              "1. The redirect URL is whitelisted in Gupshup Partner Console → Settings → Whitelist URLs",
+			"step2":              "2. Your GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correct",
+			"step3":              "3. Your Partner API key has the correct permissions",
+			"console_url":        "https://partner.gupshup.io",
+			"redirect_to_whitelist": redirectURL,
+		},
 	})
 }
 
@@ -4081,11 +4102,49 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 
 // handleWhatsAppGupshupCallback - Handle Gupshup Partner redirect callback after onboarding
 func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.Request) {
+	// Log all query parameters for debugging
+	h.Logger.Info("📥 Gupshup Partner callback received",
+		zap.String("raw_query", r.URL.RawQuery),
+		zap.String("query_params", fmt.Sprintf("%v", r.URL.Query())))
+
 	// Extract tenant_id from query param (passed in redirect URL)
 	tenantIDStr := r.URL.Query().Get("tenant_id")
 	tenantID, err := strconv.ParseUint(tenantIDStr, 10, 32)
 	if err != nil {
+		h.Logger.Error("❌ Invalid tenant_id in Gupshup callback",
+			zap.String("tenant_id_str", tenantIDStr),
+			zap.Error(err),
+			zap.String("raw_query", r.URL.RawQuery))
 		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=invalid_tenant_id", h.Config.FrontendURL)
+		http.Redirect(w, r, errorURL, http.StatusFound)
+		return
+	}
+
+	// Check for error parameters from Gupshup (common for unauthorized errors)
+	if errorMsg := r.URL.Query().Get("error"); errorMsg != "" {
+		errorDescription := r.URL.Query().Get("error_description")
+		h.Logger.Error("❌ Gupshup callback returned error",
+			zap.Uint64("tenant_id", tenantID),
+			zap.String("error", errorMsg),
+			zap.String("error_description", errorDescription),
+			zap.String("raw_query", r.URL.RawQuery))
+		
+		// Map common Gupshup errors to user-friendly messages
+		var userMessage string
+		switch errorMsg {
+		case "unauthorized", "unauthorized_access":
+			userMessage = "Unauthorized access. Please ensure your redirect URL is whitelisted in Gupshup Partner Console and your Partner API key is correct."
+		case "invalid_partner":
+			userMessage = "Invalid partner credentials. Please verify your GUPSHUP_PARTNER_ID and GUPSHUP_PARTNER_API_KEY."
+		default:
+			userMessage = fmt.Sprintf("Error during onboarding: %s", errorMsg)
+			if errorDescription != "" {
+				userMessage += " - " + errorDescription
+			}
+		}
+		
+		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=%s&error_description=%s", 
+			h.Config.FrontendURL, url.QueryEscape(errorMsg), url.QueryEscape(userMessage))
 		http.Redirect(w, r, errorURL, http.StatusFound)
 		return
 	}
@@ -4100,7 +4159,8 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 	if appID == "" {
 		h.Logger.Warn("Gupshup callback missing appId",
 			zap.Uint64("tenant_id", tenantID),
-			zap.String("query", r.URL.RawQuery))
+			zap.String("query", r.URL.RawQuery),
+			zap.String("available_params", fmt.Sprintf("%v", r.URL.Query())))
 		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=missing_app_id", h.Config.FrontendURL)
 		http.Redirect(w, r, errorURL, http.StatusFound)
 		return
