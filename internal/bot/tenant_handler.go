@@ -430,7 +430,14 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// 🧠 Step 6️: Context-Aware AI Assistant flow (tenant + customer aware)
+	// 🧠 Step 6️: Check if this is a customer message instruction (before AI processing)
+	if isOwner {
+		if handled := h.handleCustomerMessageInstruction(ctx, bot, uint(tenantID), chatID, text); handled {
+			return // Instruction was handled, don't continue to AI
+		}
+	}
+	
+	// 🧠 Step 7️: Context-Aware AI Assistant flow (tenant + customer aware)
 	// Send typing indicator
 	bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
 

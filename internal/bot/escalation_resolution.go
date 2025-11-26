@@ -22,8 +22,8 @@ type EscalationResolutionSession struct {
 
 var escalationResolutionSessions = make(map[int64]*EscalationResolutionSession) // chatID → session
 
-// HandleMarkAsFixed processes the "Mark as Fixed" action
-func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint, interactionID uint, chatID int64) error {
+// HandleMarkAsFixed processes the "Mark as Fixed" action and sends the prompt message
+func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint, interactionID uint, chatID int64, bot *tgbotapi.BotAPI) error {
 	// Load interaction
 	var interaction storage.Interaction
 	if err := h.DB.First(&interaction, interactionID).Error; err != nil {
@@ -34,7 +34,24 @@ func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint
 	if interaction.TenantID != tenantID {
 		return fmt.Errorf("interaction does not belong to tenant")
 	}
+	
+	// Check if already resolved
+	if interaction.ResponseStatus == "resolved" {
+		if bot != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ This escalation is already marked as resolved."))
+		}
+		return nil
+	}
 
+	// Check if session already exists (prevent duplicate prompts)
+	if existingSession, exists := escalationResolutionSessions[chatID]; exists {
+		// If it's the same interaction, session already exists - don't send prompt again
+		if existingSession.InteractionID == interactionID {
+			return nil // Session already active, no need to send prompt again
+		}
+		// Different interaction - replace session and send new prompt
+	}
+	
 	// Store session for resolution message
 	session := &EscalationResolutionSession{
 		InteractionID: interactionID,
@@ -56,6 +73,21 @@ func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint
 		if customerName == "" {
 			customerName = fmt.Sprintf("Customer (%s)", customer.PlatformID)
 		}
+	}
+
+	// Send prompt message (only once, when session is created)
+	// Get bot from Manager if not provided
+	if bot == nil && h.Manager != nil {
+		var ok bool
+		bot, ok = h.Manager.GetBot(tenantID)
+		if !ok {
+			bot = nil
+		}
+	}
+	
+	if bot != nil {
+		promptMsg := "✅ Great! Type a message to inform the customer that the issue is resolved.\n\nExample: 'Issue resolved! Your account has been activated.'\n\nOr type 'skip' to mark as fixed without sending a message."
+		bot.Send(tgbotapi.NewMessage(chatID, promptMsg))
 	}
 
 	return nil

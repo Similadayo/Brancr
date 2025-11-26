@@ -127,12 +127,14 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 		// Mark escalation as fixed - prompt for resolution message
 		if h.Manager.EscalationHandler != nil {
 			ctx := context.Background()
-			if err := h.Manager.EscalationHandler.HandleMarkAsFixed(ctx, tenantID, uint(interactionID), chatID); err != nil {
+			
+			// HandleMarkAsFixed will check for existing session and send prompt only once
+			if err := h.Manager.EscalationHandler.HandleMarkAsFixed(ctx, tenantID, uint(interactionID), chatID, bot); err != nil {
 				h.Manager.Logger.Error("failed to start fixed escalation flow", zap.Error(err))
 				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Error: %v", err)))
 				return
 			}
-			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Great! Type a message to inform the customer that the issue is resolved.\n\nExample: 'Issue resolved! Your account has been activated.'\n\nOr type 'skip' to mark as fixed without sending a message.")))
+			// Prompt message is now sent inside HandleMarkAsFixed to prevent duplicates
 		}
 		
 	default:
