@@ -173,12 +173,28 @@ func (h *EscalationHandler) HandleEscalationResponse(ctx context.Context, tenant
 		}
 		
 		if interactionID == 0 {
-			return fmt.Errorf("no pending escalation found")
+			// Try to find most recent escalation from database
+			var interaction storage.Interaction
+			if err := h.DB.Where("tenant_id = ? AND response_type = ? AND response_status = ?", tenantID, "escalated", "pending").
+				Order("created_at DESC").First(&interaction).Error; err != nil {
+				return fmt.Errorf("no pending escalation found")
+			}
+			interactionID = interaction.ID
+			h.Logger.Info("📋 Found escalation from database", zap.Uint("interaction_id", interactionID))
 		}
 		
 		esc, ok := pendingEscalations[interactionID]
 		if !ok {
-			return fmt.Errorf("escalation not found")
+			// Escalation not in memory - rebuild from database
+			h.Logger.Info("📋 Escalation not in memory, loading from database", zap.Uint("interaction_id", interactionID))
+			var err error
+			esc, err = h.loadEscalationFromDB(ctx, interactionID, tenantID, chatID)
+			if err != nil {
+				h.Logger.Error("failed to load escalation from database", zap.Error(err), zap.Uint("interaction_id", interactionID))
+				return fmt.Errorf("escalation not found: %w", err)
+			}
+			// Store in memory for future use
+			pendingEscalations[interactionID] = esc
 		}
 		
 		// Send approved reply
@@ -292,5 +308,46 @@ func (h *EscalationHandler) sendApprovedReply(ctx context.Context, esc *PendingE
 	)
 	
 	return nil
+}
+
+// loadEscalationFromDB rebuilds a PendingEscalation from the database when it's not in memory
+func (h *EscalationHandler) loadEscalationFromDB(ctx context.Context, interactionID, tenantID uint, chatID int64) (*PendingEscalation, error) {
+	// Load interaction
+	var interaction storage.Interaction
+	if err := h.DB.First(&interaction, interactionID).Error; err != nil {
+		return nil, fmt.Errorf("interaction not found: %w", err)
+	}
+	
+	// Verify it belongs to this tenant and is escalated
+	if interaction.TenantID != tenantID {
+		return nil, fmt.Errorf("interaction does not belong to tenant")
+	}
+	
+	if interaction.ResponseType != "escalated" {
+		return nil, fmt.Errorf("interaction is not escalated (type: %s)", interaction.ResponseType)
+	}
+	
+	// Load customer
+	var customer storage.Customer
+	if err := h.DB.First(&customer, interaction.CustomerID).Error; err != nil {
+		return nil, fmt.Errorf("customer not found: %w", err)
+	}
+	
+	// Build escalation object
+	esc := &PendingEscalation{
+		InteractionID:  interaction.ID,
+		TenantID:       tenantID,
+		CustomerID:     customer.ID,
+		Platform:       interaction.Platform,
+		Message:        interaction.Content,
+		SuggestedReply: interaction.SuggestedReply,
+		ChatID:         chatID,
+	}
+	
+	h.Logger.Info("✅ Loaded escalation from database",
+		zap.Uint("interaction_id", interactionID),
+		zap.String("platform", interaction.Platform))
+	
+	return esc, nil
 }
 
