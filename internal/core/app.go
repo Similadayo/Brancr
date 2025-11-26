@@ -202,6 +202,46 @@ func (a *App) Run() error {
 	}()
 	a.Services.Logger.Info("🕓 Scheduler worker started (polling every 10s)")
 
+	// Daily Escalation Reminders
+	go func() {
+		// Calculate time until next 9 AM UTC
+		now := time.Now().UTC()
+		nextRun := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.UTC)
+		if now.After(nextRun) {
+			nextRun = nextRun.Add(24 * time.Hour)
+		}
+		
+		// Wait until 9 AM UTC
+		time.Sleep(time.Until(nextRun))
+		
+		// Then run daily at 9 AM UTC
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		
+		// Run immediately on startup if it's close to 9 AM
+		if time.Until(nextRun) < 1*time.Hour {
+			go func() {
+				ctx := context.Background()
+				if err := a.Services.EscalationHandler.SendDailyReminders(ctx); err != nil {
+					a.Services.Logger.Error("daily reminder failed", zap.Error(err))
+				}
+			}()
+		}
+		
+		for {
+			select {
+			case <-ctxSched.Done():
+				return
+			case <-ticker.C:
+				ctx := context.Background()
+				if err := a.Services.EscalationHandler.SendDailyReminders(ctx); err != nil {
+					a.Services.Logger.Error("daily reminder failed", zap.Error(err))
+				}
+			}
+		}
+	}()
+	a.Services.Logger.Info("📋 Daily escalation reminders scheduled (9 AM UTC)")
+
 	// Recurring Template Processor
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute) // Check every minute

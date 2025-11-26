@@ -101,6 +101,10 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 		h.DB.Save(&conversation)
 	}
 
+	// Step 3.5: Check if this is a follow-up to an escalated conversation (aftermath tracking)
+	// If customer responds within 24 hours of an escalated reply, notify tenant
+	h.checkAndNotifyEscalationAftermath(ctx, msg, customer, interaction.ID, conversationID)
+
 	// Step 4: Decide: auto-reply first, escalate only when necessary
 	// Only escalate immediately for truly sensitive cases (refunds, serious complaints)
 	// For most messages, try auto-reply first
@@ -172,6 +176,33 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 	)
 
 	return nil
+}
+
+// checkAndNotifyEscalationAftermath checks if customer responded after an escalated conversation
+func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, msg IncomingMessage, customer *storage.Customer, interactionID uint, conversationID uint) {
+	// Check if there's a recent escalated interaction in this conversation (within last 24 hours)
+	cutoffTime := time.Now().Add(-24 * time.Hour)
+	
+	var recentEscalatedInteraction storage.Interaction
+	query := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ? AND response_type = ? AND response_status = ? AND created_at > ?",
+		msg.TenantID, customer.ID, msg.Platform, "manual", "sent", cutoffTime).
+		Order("created_at DESC").First(&recentEscalatedInteraction)
+	
+	if query.Error != nil {
+		// No recent escalated interaction - this is a new conversation
+		return
+	}
+	
+	// Found a recent escalated reply - this is a follow-up!
+	// Log for now - we can enhance this later to send notifications
+	h.Logger.Info("📬 Customer follow-up after escalated conversation",
+		zap.Uint("tenant_id", msg.TenantID),
+		zap.Uint("original_interaction_id", recentEscalatedInteraction.ID),
+		zap.Uint("new_interaction_id", interactionID),
+		zap.String("customer_message", msg.Content))
+	
+	// TODO: Send notification to tenant via EscalationHandler about this follow-up
+	// This will be handled after the main reply logic decides what to do
 }
 
 // trackCustomer ensures customer exists in database

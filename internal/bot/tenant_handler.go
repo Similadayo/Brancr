@@ -164,6 +164,20 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// Check for escalation resolution session first
+	if isOwner && h.Manager.EscalationHandler != nil {
+		if session, ok := escalationResolutionSessions[chatID]; ok {
+			if session.TenantID == uint(tenantID) {
+				// Handle resolution message
+				if err := h.Manager.EscalationHandler.HandleResolutionMessage(ctx, uint(tenantID), chatID, text); err != nil {
+					h.Manager.Logger.Error("failed to process resolution message", zap.Error(err))
+					bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Error: %v", err)))
+				}
+				return
+			}
+		}
+	}
+
 	if sess, ok := tenantSessions[chatID]; ok {
 		if isOwner {
 			// Check if this is social connect flow (Step 99) or post flow (Steps 1-5)

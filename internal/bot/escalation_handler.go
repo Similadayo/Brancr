@@ -87,6 +87,20 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 	if err := h.DB.First(&interaction, interactionID).Error; err != nil {
 		return fmt.Errorf("interaction not found: %w", err)
 	}
+	
+	// Load customer to get proper name (with fallback)
+	var customer storage.Customer
+	if err := h.DB.First(&customer, interaction.CustomerID).Error; err == nil {
+		if customerName == "" {
+			customerName = customer.DisplayName
+		}
+		if customerName == "" {
+			customerName = customer.Username
+		}
+		if customerName == "" {
+			customerName = fmt.Sprintf("Customer (%s)", customer.PlatformID)
+		}
+	}
 
 	// Format escalation message
 	escalationMsg := fmt.Sprintf(
@@ -114,6 +128,7 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Edit Reply", fmt.Sprintf("escalate:edit:%d", interactionID)),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Mark as Fixed", fmt.Sprintf("escalate:fixed:%d", interactionID)),
 			tgbotapi.NewInlineKeyboardButtonData("❌ Ignore", fmt.Sprintf("escalate:ignore:%d", interactionID)),
 		),
 	)
@@ -294,11 +309,26 @@ func (h *EscalationHandler) sendApprovedReply(ctx context.Context, esc *PendingE
 	// Remove from pending
 	delete(pendingEscalations, esc.InteractionID)
 	
-	// Notify tenant
+	// Notify tenant with customer name fallback
 	bot, _ := h.Manager.GetBot(esc.TenantID)
 	if bot != nil {
-		confirmation := fmt.Sprintf("✅ Reply sent to %s on %s:\n\n%s", customer.DisplayName, strings.Title(esc.Platform), reply)
-		bot.Send(tgbotapi.NewMessage(esc.ChatID, confirmation))
+		customerName := customer.DisplayName
+		if customerName == "" {
+			customerName = customer.Username
+		}
+		if customerName == "" {
+			customerName = fmt.Sprintf("Customer (%s)", customer.PlatformID)
+		}
+		
+		confirmation := fmt.Sprintf("✅ Reply sent to *%s* on %s:\n\n%s", customerName, strings.Title(esc.Platform), reply)
+		
+		// Add a note that we'll notify if customer responds
+		followUpNote := fmt.Sprintf("\n\n💬 If %s responds, you'll be notified here.", customerName)
+		confirmation += followUpNote
+		
+		msg := tgbotapi.NewMessage(esc.ChatID, confirmation)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
 	}
 	
 	h.Logger.Info("✅ Approved reply sent",
@@ -349,5 +379,62 @@ func (h *EscalationHandler) loadEscalationFromDB(ctx context.Context, interactio
 		zap.String("platform", interaction.Platform))
 	
 	return esc, nil
+}
+
+// NotifyAftermath sends a notification to tenant when customer responds after escalated conversation
+func (h *EscalationHandler) NotifyAftermath(ctx context.Context, tenantID uint, customerID uint, platform, customerMessage, originalMessage, tenantReply string) error {
+	// Load tenant
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, tenantID).Error; err != nil {
+		return fmt.Errorf("tenant not found: %w", err)
+	}
+	
+	// Load customer
+	var customer storage.Customer
+	if err := h.DB.First(&customer, customerID).Error; err != nil {
+		return fmt.Errorf("customer not found: %w", err)
+	}
+	
+	// Get tenant's bot
+	bot, ok := h.Manager.GetBot(tenantID)
+	if !ok {
+		return fmt.Errorf("bot not found for tenant %d", tenantID)
+	}
+	
+	customerName := customer.DisplayName
+	if customerName == "" {
+		customerName = customer.Username
+	}
+	if customerName == "" {
+		customerName = fmt.Sprintf("Customer (%s)", customer.PlatformID)
+	}
+	
+	aftermathMsg := fmt.Sprintf(
+		"💬 *Customer Follow-up*\n\n"+
+			"👤 Customer: %s\n"+
+			"📱 Platform: %s\n"+
+			"💬 New message: %s\n\n"+
+			"📝 Previous context:\n"+
+			"Original: %s\n"+
+			"Your reply: %s",
+		customerName,
+		strings.Title(platform),
+		customerMessage,
+		originalMessage,
+		tenantReply,
+	)
+	
+	msg := tgbotapi.NewMessage(tenant.OwnerTelegramID, aftermathMsg)
+	msg.ParseMode = "Markdown"
+	
+	if _, err := bot.Send(msg); err != nil {
+		return fmt.Errorf("failed to send aftermath notification: %w", err)
+	}
+	
+	h.Logger.Info("📬 Sent aftermath notification",
+		zap.Uint("tenant_id", tenantID),
+		zap.Uint("customer_id", customerID))
+	
+	return nil
 }
 
