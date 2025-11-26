@@ -439,21 +439,23 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type integration struct {
-		ID         uint       `json:"id"`
-		Platform   string     `json:"platform"`
-		Connected  bool       `json:"connected"`
-		Username   string     `json:"username"`
-		ExternalID string     `json:"external_id"`
-		PageID     string     `json:"page_id"`
-		Mode       string     `json:"mode"`
-		ExpiresAt  *time.Time `json:"expires_at"`
-		CreatedAt  time.Time  `json:"created_at"`
-		UpdatedAt  time.Time  `json:"updated_at"`
+		ID          uint       `json:"id"`
+		Platform    string     `json:"platform"`
+		Connected   bool       `json:"connected"`
+		Username    string     `json:"username"`
+		ExternalID  string     `json:"external_id"`
+		PageID      string     `json:"page_id"`
+		PageName    string     `json:"page_name,omitempty"`    // Facebook Page name (for Facebook and Instagram)
+		InstagramHandle string `json:"instagram_handle,omitempty"` // Instagram username/handle (for Instagram)
+		Mode        string     `json:"mode"`
+		ExpiresAt   *time.Time `json:"expires_at"`
+		CreatedAt   time.Time  `json:"created_at"`
+		UpdatedAt   time.Time  `json:"updated_at"`
 	}
 
 	resp := make([]integration, 0, len(accounts))
 	for _, acc := range accounts {
-		resp = append(resp, integration{
+		ig := integration{
 			ID:         acc.ID,
 			Platform:   acc.Platform,
 			Connected:  acc.Connected,
@@ -464,12 +466,64 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:  acc.ExpiresAt,
 			CreatedAt:  acc.CreatedAt,
 			UpdatedAt:  acc.UpdatedAt,
-		})
+		}
+
+		// For Facebook: Username IS the page name
+		if acc.Platform == "facebook" {
+			ig.PageName = acc.Username
+		}
+
+		// For Instagram: Username is Instagram handle, fetch Facebook Page name
+		if acc.Platform == "instagram" {
+			ig.InstagramHandle = acc.Username // Instagram username/handle (@username)
+			// Fetch Facebook Page name if PageID is available
+			if acc.PageID != "" && acc.AccessToken != "" {
+				decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+				if err == nil {
+					if pageName, err := h.fetchFacebookPageName(r.Context(), acc.PageID, decryptedToken); err == nil {
+						ig.PageName = pageName
+					}
+				}
+			}
+		}
+
+		resp = append(resp, ig)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"integrations": resp,
 	})
+}
+
+// fetchFacebookPageName fetches the Facebook Page name from Graph API
+func (h *Handler) fetchFacebookPageName(ctx context.Context, pageID, accessToken string) (string, error) {
+	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=name&access_token=%s", pageID, url.QueryEscape(accessToken))
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		// Don't log error - just return empty string if page fetch fails
+		return "", fmt.Errorf("failed to fetch page name: status %d", resp.StatusCode)
+	}
+
+	var pageData struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pageData); err != nil {
+		return "", err
+	}
+
+	return pageData.Name, nil
 }
 
 func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
