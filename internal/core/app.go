@@ -85,6 +85,11 @@ func NewApp(cfg *config.Config) (*App, error) {
 		logger.Warn("seed admin failed", zap.Error(err))
 	}
 
+	// 🧪 Seed test tenant for Meta App Review
+	if err := storage.SeedTestTenant(db); err != nil {
+		logger.Warn("seed test tenant failed", zap.Error(err))
+	}
+
 	// 🧠 Redis (optional)
 	var rdb *redis.Client
 	if addr := strings.TrimSpace(cfg.RedisAddr); addr != "" {

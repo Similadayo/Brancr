@@ -83,3 +83,57 @@ func SeedAdminUser(db *gorm.DB, email, password string) error {
 	fmt.Println("✅ Seeded admin user:", email)
 	return nil
 }
+
+// SeedTestTenant ensures the Meta App Review test tenant exists
+func SeedTestTenant(db *gorm.DB) error {
+	testEmail := "meta.reviewer@brancr.test"
+	testPassword := "MetaReview2025!"
+	businessName := "Meta App Review Test Account"
+
+	// Check if tenant already exists
+	var existing Tenant
+	if err := db.Where("email = ?", testEmail).First(&existing).Error; err == nil {
+		fmt.Println("✅ Test tenant already exists:", testEmail)
+		return nil
+	}
+
+	// Hash password
+	hash, err := bcrypt.GenerateFromPassword([]byte(testPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("bcrypt error: %w", err)
+	}
+
+	// Create test tenant
+	tenant := Tenant{
+		Name:               businessName,
+		Email:              testEmail,
+		OwnerName:          "Meta Reviewer",
+		PasswordHash:       string(hash),
+		PlanType:           "trial",
+		Status:             "active",
+		OnboardingStep:     "social_connect", // Skip to social connection step
+		OnboardingComplete: false,
+		Timezone:           "UTC",
+	}
+
+	if err := db.Create(&tenant).Error; err != nil {
+		return fmt.Errorf("failed to seed test tenant: %w", err)
+	}
+
+	// Create business profile
+	profile := BusinessProfile{
+		TenantID:    tenant.ID,
+		Name:        businessName,
+		Niche:       "Test Business",
+		Tone:        "friendly",
+		Description: "Test account for Meta App Review",
+	}
+
+	if err := db.Create(&profile).Error; err != nil {
+		// Log warning but don't fail - profile is optional
+		log.Printf("⚠️  Warning: Failed to create business profile for test tenant: %v", err)
+	}
+
+	fmt.Println("✅ Seeded test tenant:", testEmail)
+	return nil
+}
