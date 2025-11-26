@@ -304,19 +304,34 @@ type loginRequest struct {
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Logger.Warn("login: failed to decode request body", zap.Error(err))
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	
+	if req.Email == "" {
+		h.Logger.Warn("login: empty email provided")
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
 
 	var tenant storage.Tenant
 	if err := h.DB.Where("LOWER(email) = ?", req.Email).First(&tenant).Error; err != nil {
+		h.Logger.Warn("login: tenant not found", zap.String("email", req.Email), zap.Error(err))
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if tenant.PasswordHash == "" {
+		h.Logger.Error("login: tenant has no password hash", zap.Uint("tenant_id", tenant.ID), zap.String("email", req.Email))
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(tenant.PasswordHash), []byte(req.Password)); err != nil {
+		h.Logger.Warn("login: password mismatch", zap.Uint("tenant_id", tenant.ID), zap.String("email", req.Email))
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
