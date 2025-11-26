@@ -13,14 +13,16 @@ import (
 // handleEscalationCallback processes escalation action callbacks (approve, edit, ignore)
 func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
 	// Parse callback: "approve:123" or "edit:123" or "ignore:123"
+	// Note: arg is already extracted from "escalate:approve:123" -> "approve:123"
 	parts := strings.Split(arg, ":")
-	if len(parts) < 3 {
+	if len(parts) < 2 {
 		h.Manager.Logger.Warn("invalid escalation callback format", zap.String("arg", arg))
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid callback format. Please try typing 'approve <id>' or 'edit <id>' instead."))
 		return
 	}
 	
-	action := parts[1] // "approve", "edit", "ignore"
-	interactionIDStr := parts[2]
+	action := parts[0] // "approve", "edit", "ignore"
+	interactionIDStr := parts[1]
 	
 	interactionID, err := strconv.ParseUint(interactionIDStr, 10, 32)
 	if err != nil {
@@ -36,12 +38,37 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 		// Approve and send suggested reply
 		// Access EscalationHandler through Manager
 		if h.Manager.EscalationHandler != nil {
-			err := h.Manager.EscalationHandler.HandleEscalationResponse(ctx, tenantID, chatID, fmt.Sprintf("approve %d", interactionID))
-			if err != nil {
-				h.Manager.Logger.Error("failed to approve escalation", zap.Error(err))
-				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Couldn't send reply: %v. Please try typing 'approve %d' instead.", err, interactionID)))
+			// Send processing message
+			processingMsg, err := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Sending reply to customer..."))
+			var processingMsgID int
+			if err == nil && processingMsg.MessageID > 0 {
+				processingMsgID = processingMsg.MessageID
+			}
+			
+			sendErr := h.Manager.EscalationHandler.HandleEscalationResponse(ctx, tenantID, chatID, fmt.Sprintf("approve %d", interactionID))
+			if sendErr != nil {
+				h.Manager.Logger.Error("failed to approve escalation", zap.Error(sendErr), zap.Uint64("interaction_id", interactionID))
+				
+				// Delete processing message
+				if processingMsgID > 0 {
+					bot.Request(tgbotapi.NewDeleteMessage(chatID, processingMsgID))
+				}
+				
+				// Send error message with helpful details
+				errorMsg := fmt.Sprintf("❌ Couldn't send reply: %v\n\n", sendErr)
+				if strings.Contains(sendErr.Error(), "INSTAGRAM MESSAGING CAPABILITY") || strings.Contains(sendErr.Error(), "Error Code 3") {
+					errorMsg += "Instagram messaging requires App Review approval. Please check your Meta Developer Console.\n\n"
+					errorMsg += fmt.Sprintf("You can try typing 'approve %d' again after fixing the issue.", interactionID)
+				} else {
+					errorMsg += fmt.Sprintf("Please try typing 'approve %d' instead, or contact support if the issue persists.", interactionID)
+				}
+				bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
 			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "✅ Reply sent to customer!"))
+				// Delete processing message
+				if processingMsgID > 0 {
+					bot.Request(tgbotapi.NewDeleteMessage(chatID, processingMsgID))
+				}
+				// Success confirmation will be sent by sendApprovedReply
 			}
 		} else {
 			h.Manager.Logger.Warn("escalation handler not configured in bot manager")
