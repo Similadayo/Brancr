@@ -49,9 +49,38 @@ func AutoMigrate(db *gorm.DB) error {
 		&ContentCalendar{},
 	)
 	
-	// Create payment audit logs table for security tracking
+	// Migrate payment audit logs table (from security package)
+	// Import and migrate PaymentAuditLog model
+	if err := migratePaymentAuditLogs(db); err != nil {
+		log.Printf("⚠️ Could not migrate payment_audit_logs table: %v", err)
+	} else {
+		log.Println("✅ Payment audit logs table ready")
+	}
+	
+	return nil
+}
+
+// migratePaymentAuditLogs creates the payment_audit_logs table using GORM-compatible approach
+func migratePaymentAuditLogs(db *gorm.DB) error {
+	// Check if table already exists
+	var exists bool
+	if err := db.Raw(`
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public' 
+			AND table_name = 'payment_audit_logs'
+		);
+	`).Scan(&exists).Error; err != nil {
+		return fmt.Errorf("failed to check if payment_audit_logs table exists: %w", err)
+	}
+	
+	if exists {
+		return nil // Table already exists
+	}
+	
+	// Create the table with proper structure
 	if err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS payment_audit_logs (
+		CREATE TABLE payment_audit_logs (
 			id SERIAL PRIMARY KEY,
 			tenant_id INTEGER NOT NULL,
 			interaction_id INTEGER NOT NULL,
@@ -64,18 +93,44 @@ func AutoMigrate(db *gorm.DB) error {
 			reason TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			CONSTRAINT fk_payment_audit_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
-			CONSTRAINT fk_payment_audit_interaction FOREIGN KEY (interaction_id) REFERENCES interactions(id) ON DELETE CASCADE
+			deleted_at TIMESTAMP NULL
 		);
-		CREATE INDEX IF NOT EXISTS idx_payment_audit_tenant ON payment_audit_logs(tenant_id);
-		CREATE INDEX IF NOT EXISTS idx_payment_audit_interaction ON payment_audit_logs(interaction_id);
-		CREATE INDEX IF NOT EXISTS idx_payment_audit_action ON payment_audit_logs(action);
-		CREATE INDEX IF NOT EXISTS idx_payment_audit_accessed_by ON payment_audit_logs(accessed_by);
-		CREATE INDEX IF NOT EXISTS idx_payment_audit_timestamp ON payment_audit_logs(timestamp);
 	`).Error; err != nil {
-		log.Printf("⚠️ Could not create payment_audit_logs table: %v", err)
-	} else {
-		log.Println("✅ Payment audit logs table ready")
+		return fmt.Errorf("failed to create payment_audit_logs table: %w", err)
+	}
+	
+	// Create indexes
+	indexes := []string{
+		`CREATE INDEX idx_payment_audit_tenant ON payment_audit_logs(tenant_id)`,
+		`CREATE INDEX idx_payment_audit_interaction ON payment_audit_logs(interaction_id)`,
+		`CREATE INDEX idx_payment_audit_action ON payment_audit_logs(action)`,
+		`CREATE INDEX idx_payment_audit_accessed_by ON payment_audit_logs(accessed_by)`,
+		`CREATE INDEX idx_payment_audit_timestamp ON payment_audit_logs(timestamp)`,
+		`CREATE INDEX idx_payment_audit_deleted_at ON payment_audit_logs(deleted_at)`,
+	}
+	
+	for _, idxSQL := range indexes {
+		if err := db.Exec(idxSQL).Error; err != nil {
+			// Log but don't fail - indexes might already exist
+			log.Printf("⚠️ Could not create index (might already exist): %v", err)
+		}
+	}
+	
+	// Add foreign key constraints if interactions table exists
+	if err := db.Exec(`
+		ALTER TABLE payment_audit_logs
+		ADD CONSTRAINT fk_payment_audit_tenant 
+		FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE;
+	`).Error; err != nil {
+		log.Printf("⚠️ Could not add tenant foreign key (might already exist): %v", err)
+	}
+	
+	if err := db.Exec(`
+		ALTER TABLE payment_audit_logs
+		ADD CONSTRAINT fk_payment_audit_interaction 
+		FOREIGN KEY (interaction_id) REFERENCES interactions(id) ON DELETE CASCADE;
+	`).Error; err != nil {
+		log.Printf("⚠️ Could not add interaction foreign key (might already exist): %v", err)
 	}
 	
 	return nil
