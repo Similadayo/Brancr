@@ -18,14 +18,24 @@ func main() {
 		log.Println("⚠️  No .env file found — using system environment variables")
 	}
 
+	// Check for POSTGRES_DSN first, then DATABASE_URL (Railway standard)
 	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if dsn == "" {
+		log.Fatal("POSTGRES_DSN or DATABASE_URL environment variable is required")
+	}
+
 	email := os.Getenv("ADMIN_EMAIL")
 	password := os.Getenv("ADMIN_PASSWORD")
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatal("DB connect:", err)
+		log.Fatalf("DB connect failed: %v\nDSN: %s", err, maskDSN(dsn))
 	}
+
+	log.Printf("✅ Connected to database successfully")
 
 	// Seed admin user
 	if err := storage.SeedAdminUser(db, email, password); err != nil {
@@ -93,4 +103,13 @@ func seedTestTenant(db *gorm.DB) {
 	fmt.Printf("   Business Name: %s\n", businessName)
 	fmt.Printf("   Email: %s\n", testEmail)
 	fmt.Printf("   Password: %s\n", testPassword)
+}
+
+// maskDSN masks sensitive parts of the DSN for logging
+func maskDSN(dsn string) string {
+	if len(dsn) < 20 {
+		return "***"
+	}
+	// Show first 10 and last 10 characters
+	return dsn[:10] + "***" + dsn[len(dsn)-10:]
 }
