@@ -9,6 +9,7 @@ import (
 	"github.com/similadayo/brancr/internal/analytics"
 	"github.com/similadayo/brancr/internal/bot"
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
@@ -124,10 +125,17 @@ func (s *Services) initBotManager() error {
 }
 
 func (s *Services) initEscalationHandler() error {
+	// Initialize Payment Security Handler
+	paymentSecurity := &security.PaymentSecurityHandler{
+		DB:     s.DB,
+		Logger: s.Logger,
+	}
+	
 	escalationHandler := &bot.EscalationHandler{
-		DB:      s.DB,
-		Logger:  s.Logger,
-		Manager: s.BotManager,
+		DB:             s.DB,
+		Logger:         s.Logger,
+		Manager:        s.BotManager,
+		PaymentSecurity: paymentSecurity,
 	}
 	s.EscalationHandler = escalationHandler
 	

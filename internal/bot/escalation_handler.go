@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -20,10 +21,11 @@ type ReplySender interface {
 
 // EscalationHandler manages escalated messages from the MessageHandler
 type EscalationHandler struct {
-	DB            *gorm.DB
-	Logger        *zap.Logger
-	Manager       *TenantBotManager
+	DB             *gorm.DB
+	Logger         *zap.Logger
+	Manager        *TenantBotManager
 	MessageHandler ReplySender // Set after initialization via SetMessageHandler
+	PaymentSecurity *security.PaymentSecurityHandler // Security handler for payment escalations
 }
 
 // SetMessageHandler sets the MessageHandler for sending replies
@@ -97,29 +99,96 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 		if customerName == "" {
 			customerName = customer.Username
 		}
+		// Try to extract name from message content if still empty
 		if customerName == "" {
-			customerName = fmt.Sprintf("Customer (%s)", customer.PlatformID)
+			customerName = extractCustomerNameFromMessage(message)
+		}
+		// Last resort: use a shortened platform ID
+		if customerName == "" {
+			shortID := customer.PlatformID
+			if len(shortID) > 15 {
+				shortID = shortID[:12] + "..."
+			}
+			customerName = fmt.Sprintf("Customer (%s)", shortID)
 		}
 	}
 
-	// Format escalation message
+	// Format escalation alert title based on intent
+	alertTitle := strings.Title(intent)
+	if intent == "payment" {
+		alertTitle = "💰 Payment Alert"
+	} else if intent == "refund" {
+		alertTitle = "💸 Refund Alert"
+	} else if intent == "complaint" {
+		alertTitle = "⚠️ Complaint Alert"
+	} else {
+		alertTitle = "🚨 " + alertTitle + " Alert"
+	}
+	
+	// 🔒 SECURITY: For payment escalations, encrypt message content and add security measures
+	isPaymentIntent := intent == "payment" || intent == "refund"
+	if isPaymentIntent && h.PaymentSecurity != nil {
+		// Validate payment intent
+		if !h.PaymentSecurity.ValidatePaymentIntent(message) {
+			h.Logger.Warn("⚠️ Payment intent flagged but validation failed",
+				zap.Uint("interaction_id", interactionID),
+				zap.String("message_preview", h.PaymentSecurity.MaskForLogging(message)[:min(50, len(message))]))
+		}
+		
+		// Encrypt payment message content for secure storage
+		encryptedMessage, err := h.PaymentSecurity.EncryptPaymentMessage(message)
+		if err != nil {
+			h.Logger.Error("🔒 Failed to encrypt payment message",
+				zap.Uint("interaction_id", interactionID),
+				zap.Error(err))
+		} else {
+			// Store encrypted version in interaction
+			interaction.EncryptedContent = encryptedMessage
+			interaction.IsEncrypted = true
+			interaction.SecurityLevel = "payment"
+			h.DB.Save(&interaction)
+		}
+		
+		// Log masked version for security audit
+		maskedMessage := h.PaymentSecurity.MaskForLogging(message)
+		h.Logger.Info("🔒 Payment escalation created (message encrypted)",
+			zap.Uint("tenant_id", tenantID),
+			zap.Uint("interaction_id", interactionID),
+			zap.String("masked_message", maskedMessage))
+	}
+	
+	// Format escalation message (use masked version for payment in Telegram)
+	displayMessage := message
+	if isPaymentIntent && h.PaymentSecurity != nil {
+		// Show partially masked version in Telegram for security
+		displayMessage = h.PaymentSecurity.MaskForLogging(message)
+	}
+	
 	escalationMsg := fmt.Sprintf(
-		"🚨 *%s Alert*\n\n"+
+		"%s\n\n"+
 			"👤 Customer: %s\n"+
 			"📱 Platform: %s\n"+
 			"💬 Message: %s\n\n"+
 			"🎯 Intent: %s (%.0f%% confidence)\n"+
 			"😊 Tone: %s\n\n"+
 			"💡 Suggested reply:\n%s",
-		strings.Title(intent),
+		alertTitle,
 		customerName,
 		strings.Title(platform),
-		message,
+		displayMessage,
 		intent,
 		confidence*100,
 		tone,
 		suggestedReply,
 	)
+	
+	// Add special security warning for financial matters
+	if isPaymentIntent {
+		escalationMsg += "\n\n🔒 *SECURITY ALERT - Financial Transaction*\n"
+		escalationMsg += "⚠️ *VERIFY ALL DETAILS BEFORE PROCESSING*\n"
+		escalationMsg += "📝 Full message encrypted and stored securely.\n"
+		escalationMsg += "🔐 Access logged for audit compliance."
+	}
 
 	// Create keyboard with quick action buttons
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -139,6 +208,11 @@ func (h *EscalationHandler) SendEscalation(ctx context.Context, tenantID uint, i
 	
 	if _, err := bot.Send(msg); err != nil {
 		return fmt.Errorf("failed to send escalation: %w", err)
+	}
+	
+	// 🔒 SECURITY: Log payment escalation access for audit
+	if isPaymentIntent && h.PaymentSecurity != nil {
+		h.PaymentSecurity.LogPaymentAccess(context.Background(), tenantID, interactionID, "viewed", tenant.OwnerTelegramID, true, "")
 	}
 
 	// Store pending escalation
@@ -379,6 +453,43 @@ func (h *EscalationHandler) loadEscalationFromDB(ctx context.Context, interactio
 		zap.String("platform", interaction.Platform))
 	
 	return esc, nil
+}
+
+// extractCustomerNameFromMessage tries to extract a name from message content
+func extractCustomerNameFromMessage(message string) string {
+	lower := strings.ToLower(message)
+	
+	patterns := []string{
+		"account name is",
+		"account name:",
+		"name is",
+		"name:",
+		"i am",
+		"i'm",
+		"this is",
+	}
+	
+	for _, prefix := range patterns {
+		if idx := strings.Index(lower, prefix); idx >= 0 {
+			start := idx + len(prefix)
+			remaining := strings.TrimSpace(message[start:])
+			
+			nameEnd := len(remaining)
+			for i, char := range remaining {
+				if i >= 50 || char == ',' || char == '.' || char == '\n' {
+					nameEnd = i
+					break
+				}
+			}
+			
+			name := strings.TrimSpace(remaining[:nameEnd])
+			if len(name) > 2 && len(name) < 50 {
+				return name
+			}
+		}
+	}
+	
+	return ""
 }
 
 // NotifyAftermath sends a notification to tenant when customer responds after escalated conversation

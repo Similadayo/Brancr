@@ -106,10 +106,17 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 	h.checkAndNotifyEscalationAftermath(ctx, msg, customer, interaction.ID, conversationID)
 
 	// Step 4: Decide: auto-reply first, escalate only when necessary
-	// Only escalate immediately for truly sensitive cases (refunds, serious complaints)
-	// For most messages, try auto-reply first
-	shouldEscalateImmediately := (intent.Intent == "refund" && intent.Tone == "negative") || 
-		(intent.Intent == "complaint" && intent.Confidence > 0.7)
+	// Escalate immediately for sensitive cases: payments, refunds, complaints, financial matters
+	// Payment messages should ALWAYS be escalated - never auto-reply to financial transactions
+	shouldEscalateImmediately := intent.Intent == "payment" ||
+		(intent.Intent == "refund" && intent.Tone == "negative") || 
+		(intent.Intent == "complaint" && intent.Confidence > 0.7) ||
+		// Also escalate if message contains payment-related keywords (double-check)
+		strings.Contains(strings.ToLower(msg.Content), "paid") ||
+		strings.Contains(strings.ToLower(msg.Content), "payment") ||
+		strings.Contains(strings.ToLower(msg.Content), "naira") ||
+		strings.Contains(strings.ToLower(msg.Content), "dollar") ||
+		strings.Contains(strings.ToLower(msg.Content), "transaction")
 	
 	// Very low confidence (< 0.3) means we can't understand the message - escalate
 	shouldTryAutoReply := intent.Confidence >= 0.3
@@ -214,10 +221,33 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if err == nil {
 		// Update last message time
 		customer.LastMessageAt = msg.Timestamp
+		
+		// Update customer name if we have a better one from the message
+		if customer.DisplayName == "" {
+			// Try to extract name from message content
+			extractedName := extractNameFromMessageContent(msg.Content)
+			if extractedName != "" {
+				customer.DisplayName = extractedName
+			} else if msg.CustomerName != "" {
+				customer.DisplayName = msg.CustomerName
+			}
+		}
+		
+		// Update username if we have a better one
+		if customer.Username == "" && msg.CustomerUsername != "" {
+			customer.Username = msg.CustomerUsername
+		}
+		
 		h.DB.Save(&customer)
 		return &customer, nil
 	}
 
+	// Extract name from message if available (for cases like payment messages)
+	extractedName := extractNameFromMessageContent(msg.Content)
+	if extractedName != "" && msg.CustomerName == "" {
+		msg.CustomerName = extractedName
+	}
+	
 	// Create new customer
 	customer = storage.Customer{
 		TenantID:      msg.TenantID,

@@ -48,6 +48,37 @@ func AutoMigrate(db *gorm.DB) error {
 		// Content calendar
 		&ContentCalendar{},
 	)
+	
+	// Create payment audit logs table for security tracking
+	if err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS payment_audit_logs (
+			id SERIAL PRIMARY KEY,
+			tenant_id INTEGER NOT NULL,
+			interaction_id INTEGER NOT NULL,
+			action VARCHAR(50) NOT NULL,
+			accessed_by BIGINT NOT NULL,
+			ip_address VARCHAR(50),
+			user_agent TEXT,
+			timestamp TIMESTAMP NOT NULL,
+			success BOOLEAN DEFAULT true,
+			reason TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT fk_payment_audit_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+			CONSTRAINT fk_payment_audit_interaction FOREIGN KEY (interaction_id) REFERENCES interactions(id) ON DELETE CASCADE
+		);
+		CREATE INDEX IF NOT EXISTS idx_payment_audit_tenant ON payment_audit_logs(tenant_id);
+		CREATE INDEX IF NOT EXISTS idx_payment_audit_interaction ON payment_audit_logs(interaction_id);
+		CREATE INDEX IF NOT EXISTS idx_payment_audit_action ON payment_audit_logs(action);
+		CREATE INDEX IF NOT EXISTS idx_payment_audit_accessed_by ON payment_audit_logs(accessed_by);
+		CREATE INDEX IF NOT EXISTS idx_payment_audit_timestamp ON payment_audit_logs(timestamp);
+	`).Error; err != nil {
+		log.Printf("⚠️ Could not create payment_audit_logs table: %v", err)
+	} else {
+		log.Println("✅ Payment audit logs table ready")
+	}
+	
+	return nil
 }
 
 // SeedAdminUser ensures at least one admin user exists

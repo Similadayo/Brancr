@@ -45,5 +45,10 @@ type Interaction struct {
 	// Metadata
 	Metadata        string    `gorm:"type:jsonb"` // Additional platform-specific data
 	CreatedAt       time.Time `gorm:"autoCreateTime"`
+	
+	// Security fields (for payment/financial escalations)
+	EncryptedContent string `gorm:"type:text"` // Encrypted message content for sensitive escalations
+	IsEncrypted      bool   `gorm:"default:false"` // Flag to indicate if content is encrypted
+	SecurityLevel    string `gorm:"size:20;default:'standard'"` // standard, sensitive, payment
 }
 
