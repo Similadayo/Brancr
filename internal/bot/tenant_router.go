@@ -119,8 +119,33 @@ func (m *TenantBotManager) InitBots() error {
 
 	for _, t := range tenants {
 		time.Sleep(2 * time.Second)
-		if err := m.startTenantBot(&t); err != nil {
-			log.Printf("❌ Failed to start bot for tenant %s: %v", t.Name, err)
+		
+		// Try initial startup with retry logic
+		ctx := context.Background()
+		err := m.retryBotStartup(ctx, &t, 3) // 3 retries with exponential backoff
+		if err != nil {
+			// Check if it's a permanent error
+			if isRetryableError(err) {
+				// Retryable error - will be picked up by retry worker
+				if m.Logger != nil {
+					m.Logger.Warn("❌ Failed to start bot (will retry)",
+						zap.Uint("tenant_id", t.ID),
+						zap.String("tenant_name", t.Name),
+						zap.Error(err))
+				} else {
+					log.Printf("❌ Failed to start bot for tenant %s (will retry): %v", t.Name, err)
+				}
+			} else {
+				// Permanent error - don't retry
+				if m.Logger != nil {
+					m.Logger.Error("❌ Failed to start bot (permanent error, won't retry)",
+						zap.Uint("tenant_id", t.ID),
+						zap.String("tenant_name", t.Name),
+						zap.Error(err))
+				} else {
+					log.Printf("❌ Failed to start bot for tenant %s (permanent error): %v", t.Name, err)
+				}
+			}
 			continue
 		}
 

@@ -122,24 +122,51 @@ func NewApp(cfg *config.Config) (*App, error) {
 		Handler: router,
 	}
 
-	// ✅ Initialize Admin Bot for onboarding
+	// ✅ Initialize Admin Bot for onboarding (with retry)
 	adminToken := cfg.AdminBotToken
 	if adminToken == "" {
 		logger.Warn("Admin bot token not configured — onboarding disabled")
 	} else {
-		adminBot, err := tgbotapi.NewBotAPI(adminToken)
-		if err != nil {
-			logger.Error("failed to start admin bot", zap.Error(err))
-		} else {
-			// Assign admin bot to the bot manager
-			services.BotManager.AdminBot = adminBot
-
-			logger.Info("🚀 Admin Onboarding Bot started",
-				zap.String("username", adminBot.Self.UserName))
-
-			// ✅ Launch onboarding handler
-			go startOnboardingBot(db, adminBot, services.BotManager, logger)
-		}
+		// Retry admin bot startup with exponential backoff
+		go func() {
+			maxRetries := 5
+			var adminBot *tgbotapi.BotAPI
+			var err error
+			
+			for attempt := 0; attempt < maxRetries; attempt++ {
+				if attempt > 0 {
+					backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+					if backoff > 2*time.Minute {
+						backoff = 2 * time.Minute
+					}
+					logger.Info("🔄 Retrying admin bot startup",
+						zap.Int("attempt", attempt+1),
+						zap.Duration("backoff", backoff))
+					time.Sleep(backoff)
+				}
+				
+				adminBot, err = tgbotapi.NewBotAPI(adminToken)
+				if err == nil {
+					// Success!
+					services.BotManager.AdminBot = adminBot
+					logger.Info("🚀 Admin Onboarding Bot started",
+						zap.String("username", adminBot.Self.UserName))
+					
+					// Launch onboarding handler
+					go startOnboardingBot(db, adminBot, services.BotManager, logger)
+					return
+				}
+				
+				logger.Warn("❌ Failed to start admin bot",
+					zap.Int("attempt", attempt+1),
+					zap.Int("max_retries", maxRetries),
+					zap.Error(err))
+			}
+			
+			logger.Error("❌ Failed to start admin bot after all retries",
+				zap.Int("max_retries", maxRetries),
+				zap.Error(err))
+		}()
 	}
 
 	// ✅ Start tenant bots (after admin bot readiness)
@@ -150,6 +177,10 @@ func NewApp(cfg *config.Config) (*App, error) {
 		} else {
 			logger.Info("✅ Tenant bots initialized successfully")
 		}
+		
+		// Start background retry worker for failed bots
+		go services.BotManager.StartRetryWorker(context.Background())
+		logger.Info("🔄 Bot retry worker started")
 	}()
 
 	return app, nil
