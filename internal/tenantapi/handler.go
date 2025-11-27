@@ -2,6 +2,8 @@ package tenantapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +16,8 @@ import (
 
 	"strconv"
 
+	"github.com/cloudinary/cloudinary-go/v2"
+	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"github.com/go-chi/chi/v5"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/config"
@@ -105,8 +109,11 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/scheduled-posts/{id}", h.getScheduledPost)
 		r.Put("/tenant/scheduled-posts/{id}", h.updateScheduledPost)
 		r.Delete("/tenant/scheduled-posts/{id}", h.deleteScheduledPost)
-		// Calendar range view
+		// Calendar endpoints
 		r.Get("/tenant/calendar", h.getCalendar)
+		r.Get("/tenant/calendar/{date}", h.getCalendarDay)
+		r.Post("/tenant/calendar", h.createCalendarEntry)
+		r.Put("/tenant/calendar/{date}", h.updateCalendarEntry)
 
 		// Overview and stats
 		r.Get("/tenant/overview", h.overview)
@@ -2436,14 +2443,38 @@ func (h *Handler) updateScheduledPost(w http.ResponseWriter, r *http.Request) {
 			post.Platforms = string(b)
 		}
 	}
+	
+	// Store old scheduled_at BEFORE updating
+	oldScheduledAt := post.ScheduledAt
+	var oldDate *time.Time
+	if oldScheduledAt != nil {
+		normalized := time.Date(oldScheduledAt.Year(), oldScheduledAt.Month(), oldScheduledAt.Day(), 0, 0, 0, 0, time.UTC)
+		oldDate = &normalized
+	}
+	
 	if err := h.DB.Save(&post).Error; err != nil {
 		h.Logger.Error("failed to update scheduled post", zap.Error(err))
 		http.Error(w, "failed to update", http.StatusInternalServerError)
 		return
 	}
+
+	// Update calendar: remove from old date, add to new date
+	if post.ScheduledAt != nil {
+		newDate := time.Date(post.ScheduledAt.Year(), post.ScheduledAt.Month(), post.ScheduledAt.Day(), 0, 0, 0, 0, time.UTC)
+		
+		// Remove from old date if date changed
+		if oldDate != nil && !oldDate.Equal(newDate) {
+			h.removePostFromCalendar(claims.TenantID, post.ID, *oldDate)
+		}
+		
+		// Add to new date (or update if same date)
+		h.updateCalendarForPost(claims.TenantID, post.ID, *post.ScheduledAt)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
+// getCalendar returns calendar entries with full ContentCalendar data (themes, notes, posts)
 func (h *Handler) getCalendar(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
@@ -2469,34 +2500,487 @@ func (h *Handler) getCalendar(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid date range", http.StatusBadRequest)
 		return
 	}
-	var posts []storage.ScheduledPost
-	if err := h.DB.Where("tenant_id = ? AND scheduled_at >= ? AND scheduled_at <= ?", claims.TenantID, start, end).
-		Order("scheduled_at ASC").Find(&posts).Error; err != nil {
+	// Normalize dates to start of day for calendar entries
+	startDate := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	endDate := time.Date(end.Year(), end.Month(), end.Day(), 23, 59, 59, 999999999, time.UTC)
+
+	// Fetch calendar entries
+	var entries []storage.ContentCalendar
+	if err := h.DB.Where("tenant_id = ? AND date >= ? AND date <= ?", claims.TenantID, startDate, endDate).
+		Order("date ASC").Find(&entries).Error; err != nil {
+		h.Logger.Error("failed to fetch calendar entries", zap.Error(err))
 		http.Error(w, "failed to fetch calendar", http.StatusInternalServerError)
 		return
 	}
-	type calPost struct {
+
+	// Also fetch posts for dates without calendar entries to auto-create entries
+	var posts []storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ? AND scheduled_at >= ? AND scheduled_at <= ?", claims.TenantID, startDate, endDate).
+		Order("scheduled_at ASC").Find(&posts).Error; err != nil {
+		h.Logger.Warn("failed to fetch posts for calendar", zap.Error(err))
+	}
+
+	// Create map of existing entries by date
+	entryMap := make(map[string]*storage.ContentCalendar)
+	for i := range entries {
+		dateKey := entries[i].Date.Format("2006-01-02")
+		entryMap[dateKey] = &entries[i]
+	}
+
+	// Auto-create calendar entries for posts on dates without entries
+	postsByDate := make(map[string][]uint)
+	for _, post := range posts {
+		if post.ScheduledAt == nil {
+			continue
+		}
+		dateKey := post.ScheduledAt.Format("2006-01-02")
+		if _, exists := entryMap[dateKey]; !exists {
+			// Create entry for this date
+			normalizedDate := time.Date(post.ScheduledAt.Year(), post.ScheduledAt.Month(), post.ScheduledAt.Day(), 0, 0, 0, 0, time.UTC)
+			entry := storage.ContentCalendar{
+				TenantID: claims.TenantID,
+				Date:     normalizedDate,
+				Status:   "scheduled",
+				Posts:    "[]",
+			}
+			if err := h.DB.Create(&entry).Error; err == nil {
+				entryMap[dateKey] = &entry
+				entries = append(entries, entry)
+			}
+		}
+		postsByDate[dateKey] = append(postsByDate[dateKey], post.ID)
+	}
+
+	// Build response with post counts
+	type calendarEntry struct {
+		ID        uint      `json:"id"`
+		Date      time.Time `json:"date"`
+		Theme     string    `json:"theme"`
+		Notes     string    `json:"notes"`
+		Status    string    `json:"status"`
+		PostIDs   []uint    `json:"post_ids"`
+		PostCount int       `json:"post_count"`
+	}
+
+	resp := make([]calendarEntry, 0, len(entries))
+	for _, entry := range entries {
+		dateKey := entry.Date.Format("2006-01-02")
+		
+		// Parse post IDs from entry
+		var postIDs []uint
+		if entry.Posts != "" && entry.Posts != "[]" {
+			if err := json.Unmarshal([]byte(entry.Posts), &postIDs); err != nil {
+				postIDs = []uint{}
+			}
+		}
+
+		// Merge with posts found for this date
+		if datePosts, ok := postsByDate[dateKey]; ok {
+			// Add posts that aren't already in the entry
+			existingMap := make(map[uint]bool)
+			for _, id := range postIDs {
+				existingMap[id] = true
+			}
+			for _, id := range datePosts {
+				if !existingMap[id] {
+					postIDs = append(postIDs, id)
+				}
+			}
+		}
+
+		resp = append(resp, calendarEntry{
+			ID:        entry.ID,
+			Date:      entry.Date,
+			Theme:     entry.Theme,
+			Notes:     entry.Notes,
+			Status:    entry.Status,
+			PostIDs:   postIDs,
+			PostCount: len(postIDs),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"entries": resp})
+}
+
+// getCalendarDay returns a single day's calendar entry with full post details
+func (h *Handler) getCalendarDay(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	dateStr := chi.URLParam(r, "date")
+	if dateStr == "" {
+		http.Error(w, "date required (YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+
+	// Parse date
+	var targetDate time.Time
+	var err error
+	if len(dateStr) == 10 {
+		targetDate, err = time.Parse("2006-01-02", dateStr)
+	} else {
+		targetDate, err = time.Parse(time.RFC3339, dateStr)
+	}
+	if err != nil {
+		http.Error(w, "invalid date format", http.StatusBadRequest)
+		return
+	}
+
+	// Normalize to start of day
+	normalizedDate := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Get or create calendar entry
+	var entry storage.ContentCalendar
+	err = h.DB.Where("tenant_id = ? AND date = ?", claims.TenantID, normalizedDate).First(&entry).Error
+	
+	if err != nil {
+		// Create entry if doesn't exist
+		entry = storage.ContentCalendar{
+			TenantID: claims.TenantID,
+			Date:     normalizedDate,
+			Status:   "planned",
+			Posts:    "[]",
+		}
+		if err := h.DB.Create(&entry).Error; err != nil {
+			h.Logger.Error("failed to create calendar entry", zap.Error(err))
+			http.Error(w, "failed to create calendar entry", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Parse post IDs
+	var postIDs []uint
+	if entry.Posts != "" && entry.Posts != "[]" {
+		if err := json.Unmarshal([]byte(entry.Posts), &postIDs); err != nil {
+			postIDs = []uint{}
+		}
+	}
+
+	// Also fetch posts scheduled for this day that might not be in the entry
+	var dayPosts []storage.ScheduledPost
+	startOfDay := normalizedDate
+	endOfDay := normalizedDate.Add(24 * time.Hour)
+	h.DB.Where("tenant_id = ? AND scheduled_at >= ? AND scheduled_at < ?", claims.TenantID, startOfDay, endOfDay).
+		Order("scheduled_at ASC").Find(&dayPosts)
+
+	// Merge post IDs
+	existingMap := make(map[uint]bool)
+	for _, id := range postIDs {
+		existingMap[id] = true
+	}
+	for _, post := range dayPosts {
+		if !existingMap[post.ID] {
+			postIDs = append(postIDs, post.ID)
+		}
+	}
+
+	// Fetch full post details
+	var posts []storage.ScheduledPost
+	if len(postIDs) > 0 {
+		h.DB.Where("tenant_id = ? AND id IN ?", claims.TenantID, postIDs).
+			Order("scheduled_at ASC").Find(&posts)
+	}
+
+	// Build post details
+	type postDetail struct {
 		ID          uint       `json:"id"`
 		Name        string     `json:"name"`
+		Caption     string     `json:"caption"`
 		Status      string     `json:"status"`
 		ScheduledAt *time.Time `json:"scheduled_at"`
 		Platforms   []string   `json:"platforms"`
+		MediaIDs    []uint     `json:"media_ids"`
 	}
-	resp := make([]calPost, 0, len(posts))
-	for _, p := range posts {
+
+	postDetails := make([]postDetail, 0, len(posts))
+	for _, post := range posts {
 		var plats []string
-		if strings.TrimSpace(p.Platforms) != "" {
-			_ = json.Unmarshal([]byte(p.Platforms), &plats)
+		if strings.TrimSpace(post.Platforms) != "" {
+			_ = json.Unmarshal([]byte(post.Platforms), &plats)
 		}
-		resp = append(resp, calPost{
-			ID:          p.ID,
-			Name:        p.Name,
-			Status:      p.Status,
-			ScheduledAt: p.ScheduledAt,
+		var mediaIDs []uint
+		if strings.TrimSpace(post.MediaAssetIDs) != "" {
+			_ = json.Unmarshal([]byte(post.MediaAssetIDs), &mediaIDs)
+		}
+		postDetails = append(postDetails, postDetail{
+			ID:          post.ID,
+			Name:        post.Name,
+			Caption:     post.Caption,
+			Status:      post.Status,
+			ScheduledAt: post.ScheduledAt,
 			Platforms:   plats,
+			MediaIDs:    mediaIDs,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": resp})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entry": map[string]any{
+			"id":         entry.ID,
+			"date":       entry.Date,
+			"theme":      entry.Theme,
+			"notes":      entry.Notes,
+			"status":     entry.Status,
+			"posts":      postDetails,
+			"post_count": len(postDetails),
+		},
+	})
+}
+
+// createCalendarEntry creates a new calendar entry
+func (h *Handler) createCalendarEntry(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		Date   string `json:"date"`   // YYYY-MM-DD
+		Theme  string `json:"theme"`
+		Notes  string `json:"notes"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Date == "" {
+		http.Error(w, "date required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse date
+	var targetDate time.Time
+	var err error
+	if len(req.Date) == 10 {
+		targetDate, err = time.Parse("2006-01-02", req.Date)
+	} else {
+		targetDate, err = time.Parse(time.RFC3339, req.Date)
+	}
+	if err != nil {
+		http.Error(w, "invalid date format", http.StatusBadRequest)
+		return
+	}
+
+	// Normalize to start of day
+	normalizedDate := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Check if entry already exists
+	var existing storage.ContentCalendar
+	if err := h.DB.Where("tenant_id = ? AND date = ?", claims.TenantID, normalizedDate).First(&existing).Error; err == nil {
+		http.Error(w, "calendar entry already exists for this date", http.StatusConflict)
+		return
+	}
+
+	status := req.Status
+	if status == "" {
+		status = "planned"
+	}
+
+	entry := storage.ContentCalendar{
+		TenantID: claims.TenantID,
+		Date:     normalizedDate,
+		Theme:    req.Theme,
+		Notes:    req.Notes,
+		Status:   status,
+		Posts:    "[]",
+	}
+
+	if err := h.DB.Create(&entry).Error; err != nil {
+		h.Logger.Error("failed to create calendar entry", zap.Error(err))
+		http.Error(w, "failed to create calendar entry", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"success": true,
+		"entry": map[string]any{
+			"id":       entry.ID,
+			"date":     entry.Date,
+			"theme":    entry.Theme,
+			"notes":    entry.Notes,
+			"status":   entry.Status,
+			"post_ids": []uint{},
+		},
+	})
+}
+
+// updateCalendarEntry updates a calendar entry's theme, notes, or status
+func (h *Handler) updateCalendarEntry(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	dateStr := chi.URLParam(r, "date")
+	if dateStr == "" {
+		http.Error(w, "date required (YYYY-MM-DD)", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Theme  *string `json:"theme"`
+		Notes  *string `json:"notes"`
+		Status *string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Parse date
+	var targetDate time.Time
+	var err error
+	if len(dateStr) == 10 {
+		targetDate, err = time.Parse("2006-01-02", dateStr)
+	} else {
+		targetDate, err = time.Parse(time.RFC3339, dateStr)
+	}
+	if err != nil {
+		http.Error(w, "invalid date format", http.StatusBadRequest)
+		return
+	}
+
+	// Normalize to start of day
+	normalizedDate := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Get or create entry
+	var entry storage.ContentCalendar
+	err = h.DB.Where("tenant_id = ? AND date = ?", claims.TenantID, normalizedDate).First(&entry).Error
+	
+	if err != nil {
+		// Create if doesn't exist
+		entry = storage.ContentCalendar{
+			TenantID: claims.TenantID,
+			Date:     normalizedDate,
+			Status:   "planned",
+			Posts:    "[]",
+		}
+	}
+
+	// Update fields
+	if req.Theme != nil {
+		entry.Theme = *req.Theme
+	}
+	if req.Notes != nil {
+		entry.Notes = *req.Notes
+	}
+	if req.Status != nil {
+		entry.Status = *req.Status
+	}
+
+	if err := h.DB.Save(&entry).Error; err != nil {
+		h.Logger.Error("failed to update calendar entry", zap.Error(err))
+		http.Error(w, "failed to update calendar entry", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse post IDs for response
+	var postIDs []uint
+	if entry.Posts != "" && entry.Posts != "[]" {
+		_ = json.Unmarshal([]byte(entry.Posts), &postIDs)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"entry": map[string]any{
+			"id":         entry.ID,
+			"date":       entry.Date,
+			"theme":      entry.Theme,
+			"notes":      entry.Notes,
+			"status":     entry.Status,
+			"post_ids":   postIDs,
+			"post_count": len(postIDs),
+		},
+	})
+}
+
+// removePostFromCalendar removes a post from a calendar entry
+func (h *Handler) removePostFromCalendar(tenantID uint, postID uint, date time.Time) {
+	normalizedDate := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	
+	var entry storage.ContentCalendar
+	if err := h.DB.Where("tenant_id = ? AND date = ?", tenantID, normalizedDate).First(&entry).Error; err != nil {
+		return // Entry doesn't exist, nothing to remove
+	}
+
+	// Parse existing posts
+	var postIDs []uint
+	if entry.Posts != "" && entry.Posts != "[]" {
+		if err := json.Unmarshal([]byte(entry.Posts), &postIDs); err != nil {
+			return
+		}
+	}
+
+	// Remove post ID
+	newPostIDs := make([]uint, 0, len(postIDs))
+	for _, id := range postIDs {
+		if id != postID {
+			newPostIDs = append(newPostIDs, id)
+		}
+	}
+
+	postsJSON, _ := json.Marshal(newPostIDs)
+	entry.Posts = string(postsJSON)
+
+	// Update status if no posts left
+	if len(newPostIDs) == 0 && entry.Theme == "" && entry.Notes == "" {
+		entry.Status = "planned"
+	}
+
+	if err := h.DB.Save(&entry).Error; err != nil {
+		h.Logger.Error("failed to remove post from calendar", zap.Error(err), zap.Uint("tenant_id", tenantID), zap.Uint("post_id", postID))
+	}
+}
+
+// updateCalendarForPost is a helper function that automatically updates the calendar when a post is created/updated
+func (h *Handler) updateCalendarForPost(tenantID uint, postID uint, scheduledAt time.Time) {
+	// Normalize date to start of day
+	normalizedDate := time.Date(scheduledAt.Year(), scheduledAt.Month(), scheduledAt.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Get or create calendar entry
+	var entry storage.ContentCalendar
+	err := h.DB.Where("tenant_id = ? AND date = ?", tenantID, normalizedDate).First(&entry).Error
+
+	if err != nil {
+		// Create entry if it doesn't exist
+		entry = storage.ContentCalendar{
+			TenantID: tenantID,
+			Date:     normalizedDate,
+			Status:   "scheduled",
+			Posts:    "[]",
+		}
+		if err := h.DB.Create(&entry).Error; err != nil {
+			h.Logger.Error("failed to create calendar entry for post", zap.Error(err), zap.Uint("tenant_id", tenantID), zap.Uint("post_id", postID))
+			return
+		}
+	}
+
+	// Parse existing posts
+	var postIDs []uint
+	if entry.Posts != "" && entry.Posts != "[]" {
+		if err := json.Unmarshal([]byte(entry.Posts), &postIDs); err != nil {
+			postIDs = []uint{}
+		}
+	}
+
+	// Check if post already exists
+	for _, id := range postIDs {
+		if id == postID {
+			return // Already added
+		}
+	}
+
+	// Add new post ID
+	postIDs = append(postIDs, postID)
+	postsJSON, _ := json.Marshal(postIDs)
+	entry.Posts = string(postsJSON)
+	entry.Status = "scheduled"
+
+	if err := h.DB.Save(&entry).Error; err != nil {
+		h.Logger.Error("failed to update calendar entry with post", zap.Error(err), zap.Uint("tenant_id", tenantID), zap.Uint("post_id", postID))
+	}
 }
 
 // =======================
@@ -2682,16 +3166,140 @@ func (h *Handler) getMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
-	// Stub: in production, return signed URL for S3/GCS then accept finalize callback
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"message":  "Use pre-signed upload workflow",
-		"tenantId": claims.TenantID,
+
+	// Parse multipart form (max 50MB per file)
+	if err := r.ParseMultipartForm(50 << 20); err != nil {
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	file, fileHeader, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "file is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Get optional metadata
+	name := r.FormValue("name")
+	tags := r.FormValue("tags") // Comma-separated
+	campaign := r.FormValue("campaign")
+
+	// Determine resource type from file
+	mimeType := fileHeader.Header.Get("Content-Type")
+	resourceType := "image"
+	if strings.HasPrefix(mimeType, "video/") {
+		resourceType = "video"
+	}
+
+	// Upload to Cloudinary
+	cloudURL := os.Getenv("CLOUDINARY_URL")
+	if cloudURL == "" {
+		h.Logger.Error("CLOUDINARY_URL not set")
+		http.Error(w, "media storage not configured", http.StatusInternalServerError)
+		return
+	}
+
+	ctx := r.Context()
+	url, err := h.uploadToCloudinary(ctx, cloudURL, claims.TenantID, file, resourceType)
+	if err != nil {
+		h.Logger.Error("failed to upload to cloudinary", zap.Error(err))
+		http.Error(w, fmt.Sprintf("upload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Parse tags
+	var tagsArray []string
+	if tags != "" {
+		tagsArray = strings.Split(tags, ",")
+		for i := range tagsArray {
+			tagsArray[i] = strings.TrimSpace(tagsArray[i])
+		}
+	}
+
+	// Create MediaAsset
+	urlsJSON, _ := json.Marshal([]string{url})
+	tagsJSON, _ := json.Marshal(tagsArray)
+
+	asset := storage.MediaAsset{
+		TenantID: claims.TenantID,
+		Type:     resourceType,
+		Name:     name,
+		URLs:     string(urlsJSON),
+		Status:   "uploaded",
+		Platforms: "[]",
+		Tags:     string(tagsJSON),
+		Campaign: campaign,
+	}
+
+	if err := h.DB.Create(&asset).Error; err != nil {
+		h.Logger.Error("failed to create media asset", zap.Error(err))
+		http.Error(w, "failed to save media", http.StatusInternalServerError)
+		return
+	}
+
+	h.Logger.Info("media uploaded via API",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.Uint("asset_id", asset.ID),
+		zap.String("type", resourceType))
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":   asset.ID,
+		"url":  url,
+		"type": resourceType,
+		"name": asset.Name,
 	})
+}
+
+// uploadToCloudinary uploads a file to Cloudinary and returns the URL
+func (h *Handler) uploadToCloudinary(ctx context.Context, cloudURL string, tenantID uint, file io.Reader, resourceType string) (string, error) {
+	cld, err := cloudinary.NewFromURL(cloudURL)
+	if err != nil {
+		return "", fmt.Errorf("cloudinary init failed: %w", err)
+	}
+
+	// Build folder structure using existing function
+	folder := social.BuildCloudinaryFolder(tenantID, resourceType, "")
+	if folder == "" {
+		folder = fmt.Sprintf("brancr/uploads/tenant_%d/misc", tenantID)
+	}
+
+	// Generate unique publicID
+	randomBytes := make([]byte, 4)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	randomStr := base64.URLEncoding.EncodeToString(randomBytes)[:6]
+	timestamp := time.Now().UnixNano()
+	publicID := fmt.Sprintf("%s_%d_%s", resourceType, timestamp, randomStr)
+
+	// Upload to Cloudinary
+	res, err := cld.Upload.Upload(ctx, file, uploader.UploadParams{
+		PublicID:     publicID,
+		Folder:       folder,
+		ResourceType: resourceType,
+		Timestamp:    time.Now().Unix(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("cloudinary upload failed: %w", err)
+	}
+
+	if res.SecureURL == "" {
+		return "", fmt.Errorf("cloudinary returned empty url")
+	}
+
+	h.Logger.Info("✅ Uploaded to Cloudinary via API",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("url", res.SecureURL),
+		zap.String("folder", folder),
+		zap.String("resource_type", resourceType))
+
+	return res.SecureURL, nil
 }
 
 func (h *Handler) updateMedia(w http.ResponseWriter, r *http.Request) {
@@ -2787,6 +3395,12 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create post", http.StatusInternalServerError)
 		return
 	}
+
+	// Auto-update calendar if post has scheduled_at
+	if post.ScheduledAt != nil {
+		h.updateCalendarForPost(claims.TenantID, post.ID, *post.ScheduledAt)
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"id": post.ID})
 }
 
