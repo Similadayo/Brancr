@@ -21,6 +21,7 @@ import (
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
+	"github.com/similadayo/brancr/internal/workflows"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -32,23 +33,25 @@ const (
 )
 
 type Handler struct {
-	DB             *gorm.DB
-	Logger         *zap.Logger
-	Config         *config.Config
-	Redis          *redis.Client
-	GupshupPartner *social.GupshupPartnerClient
+	DB                  *gorm.DB
+	Logger              *zap.Logger
+	Config              *config.Config
+	Redis               *redis.Client
+	GupshupPartner      *social.GupshupPartnerClient
+	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 
 	signupCache sync.Map
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient) *Handler {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient, orchestrator *workflows.WorkflowOrchestrator) *Handler {
 	return &Handler{
-		DB:             db,
-		Logger:         logger,
-		Config:         cfg,
-		Redis:          redis,
-		GupshupPartner: gupshupPartner,
+		DB:                   db,
+		Logger:               logger,
+		Config:               cfg,
+		Redis:                redis,
+		GupshupPartner:       gupshupPartner,
+		WorkflowOrchestrator: orchestrator,
 	}
 }
 
@@ -146,6 +149,15 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/conversations/{id}/replies", h.sendReply)
 		r.Put("/tenant/conversations/{id}", h.updateConversation)
 		r.Post("/tenant/conversations/{id}/suggest-replies", h.suggestReplies)
+
+		// Escalations API
+		r.Get("/tenant/escalations", h.listEscalations)
+		r.Get("/tenant/escalations/stats", h.getEscalationStats)
+		r.Get("/tenant/escalations/{id}", h.getEscalation)
+		r.Post("/tenant/escalations/{id}/approve", h.approveEscalation)
+		r.Post("/tenant/escalations/{id}/reply", h.replyToEscalation)
+		r.Post("/tenant/escalations/{id}/ignore", h.ignoreEscalation)
+		r.Post("/tenant/escalations/{id}/resolve", h.resolveEscalation)
 
 		// Analytics API
 		r.Get("/tenant/analytics", h.getAnalytics)
@@ -3382,6 +3394,342 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		"message":        "Reply sent successfully",
 		"interaction_id": interaction.ID,
 	})
+}
+
+// =======================
+// ESCALATIONS API
+// =======================
+
+// listEscalations returns list of pending escalations
+func (h *Handler) listEscalations(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.WorkflowOrchestrator == nil {
+		http.Error(w, "workflow orchestrator not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Query parameters
+	priorityStr := r.URL.Query().Get("priority")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 && parsed <= 100 {
+			limit = parsed
+		}
+	}
+
+	var priority workflows.EscalationPriority
+	if priorityStr != "" {
+		priority = workflows.EscalationPriority(priorityStr)
+	}
+
+	ctx := r.Context()
+	interactions, err := h.WorkflowOrchestrator.GetPendingEscalations(ctx, claims.TenantID, priority, limit)
+	if err != nil {
+		h.Logger.Error("failed to get escalations", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Load customer and conversation details for each escalation
+	escalations := make([]map[string]interface{}, 0, len(interactions))
+	for _, interaction := range interactions {
+		var customer storage.Customer
+		h.DB.First(&customer, interaction.CustomerID)
+
+		var conversation storage.Conversation
+		if interaction.ConversationID > 0 {
+			h.DB.First(&conversation, interaction.ConversationID)
+		}
+
+		esc := map[string]interface{}{
+			"id":                interaction.ID,
+			"interaction_id":    interaction.ID,
+			"customer_id":       customer.ID,
+			"customer_name":     customer.DisplayName,
+			"customer_username": customer.Username,
+			"platform":          interaction.Platform,
+			"message":           interaction.Content,
+			"intent":            interaction.DetectedIntent,
+			"tone":              interaction.DetectedTone,
+			"confidence":        interaction.Confidence,
+			"suggested_reply":   interaction.SuggestedReply,
+			"created_at":        interaction.CreatedAt,
+			"conversation_id":   interaction.ConversationID,
+			"priority":          interaction.DetectedTone, // Use tone as priority indicator
+		}
+
+		if conversation.ID > 0 {
+			esc["conversation_status"] = conversation.Status
+		}
+
+		escalations = append(escalations, esc)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"escalations": escalations,
+		"count":       len(escalations),
+	})
+}
+
+// getEscalation returns details of a specific escalation
+func (h *Handler) getEscalation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid escalation id", http.StatusBadRequest)
+		return
+	}
+
+	var interaction storage.Interaction
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&interaction).Error; err != nil {
+		http.Error(w, "escalation not found", http.StatusNotFound)
+		return
+	}
+
+	// Load customer
+	var customer storage.Customer
+	h.DB.First(&customer, interaction.CustomerID)
+
+	// Load conversation and related interactions
+	var conversation storage.Conversation
+	var conversationInteractions []storage.Interaction
+	if interaction.ConversationID > 0 {
+		h.DB.First(&conversation, interaction.ConversationID)
+		h.DB.Where("conversation_id = ?", conversation.ID).
+			Order("created_at ASC").
+			Find(&conversationInteractions)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"escalation": map[string]interface{}{
+			"id":                interaction.ID,
+			"customer":          customer,
+			"platform":          interaction.Platform,
+			"message":           interaction.Content,
+			"intent":            interaction.DetectedIntent,
+			"tone":              interaction.DetectedTone,
+			"confidence":        interaction.Confidence,
+			"suggested_reply":   interaction.SuggestedReply,
+			"created_at":        interaction.CreatedAt,
+			"conversation":      conversation,
+			"conversation_history": conversationInteractions,
+		},
+	})
+}
+
+// approveEscalation approves and sends the suggested reply
+func (h *Handler) approveEscalation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.WorkflowOrchestrator == nil {
+		http.Error(w, "workflow orchestrator not available", http.StatusInternalServerError)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid escalation id", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	err = h.WorkflowOrchestrator.HandleEscalationAction(ctx, claims.TenantID, uint(id), workflows.EscalationActionApprove, nil)
+	if err != nil {
+		h.Logger.Error("failed to approve escalation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Escalation approved and reply sent",
+	})
+}
+
+// replyToEscalation sends a custom reply to escalation
+func (h *Handler) replyToEscalation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.WorkflowOrchestrator == nil {
+		http.Error(w, "workflow orchestrator not available", http.StatusInternalServerError)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid escalation id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Reply string `json:"reply"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Reply == "" {
+		http.Error(w, "reply is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	params := map[string]interface{}{
+		"reply": req.Reply,
+	}
+
+	// Check if editing or custom reply
+	editStr := r.URL.Query().Get("edit")
+	action := workflows.EscalationActionCustom
+	if editStr == "true" {
+		action = workflows.EscalationActionEdit
+	}
+
+	err = h.WorkflowOrchestrator.HandleEscalationAction(ctx, claims.TenantID, uint(id), action, params)
+	if err != nil {
+		h.Logger.Error("failed to reply to escalation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Reply sent successfully",
+	})
+}
+
+// ignoreEscalation ignores an escalation
+func (h *Handler) ignoreEscalation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.WorkflowOrchestrator == nil {
+		http.Error(w, "workflow orchestrator not available", http.StatusInternalServerError)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid escalation id", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	err = h.WorkflowOrchestrator.HandleEscalationAction(ctx, claims.TenantID, uint(id), workflows.EscalationActionIgnore, nil)
+	if err != nil {
+		h.Logger.Error("failed to ignore escalation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Escalation ignored",
+	})
+}
+
+// resolveEscalation marks escalation as resolved
+func (h *Handler) resolveEscalation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.WorkflowOrchestrator == nil {
+		http.Error(w, "workflow orchestrator not available", http.StatusInternalServerError)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid escalation id", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	err = h.WorkflowOrchestrator.HandleEscalationAction(ctx, claims.TenantID, uint(id), workflows.EscalationActionResolve, nil)
+	if err != nil {
+		h.Logger.Error("failed to resolve escalation", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Escalation resolved",
+	})
+}
+
+// getEscalationStats returns escalation statistics
+func (h *Handler) getEscalationStats(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.WorkflowOrchestrator == nil {
+		http.Error(w, "workflow orchestrator not available", http.StatusInternalServerError)
+		return
+	}
+
+	// Parse date range
+	startDateStr := r.URL.Query().Get("start_date")
+	endDateStr := r.URL.Query().Get("end_date")
+
+	startDate := time.Now().AddDate(0, 0, -30) // Default: last 30 days
+	endDate := time.Now()
+
+	if startDateStr != "" {
+		if parsed, err := time.Parse("2006-01-02", startDateStr); err == nil {
+			startDate = parsed
+		}
+	}
+
+	if endDateStr != "" {
+		if parsed, err := time.Parse("2006-01-02", endDateStr); err == nil {
+			endDate = parsed
+		}
+	}
+
+	ctx := r.Context()
+	stats, err := h.WorkflowOrchestrator.GetEscalationStats(ctx, claims.TenantID, startDate, endDate)
+	if err != nil {
+		h.Logger.Error("failed to get escalation stats", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // =======================
