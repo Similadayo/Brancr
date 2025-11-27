@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -230,7 +231,14 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 	periodEnd := time.Now()
 	periodStart := periodEnd.AddDate(0, 0, -30)
 
-	// Fetch analytics
+	// First, check if there are any posted posts (from ScheduledPost table)
+	var postedPosts []storage.ScheduledPost
+	h.Manager.DB.Where("tenant_id = ? AND status = ? AND posted_at >= ? AND posted_at <= ?",
+		tenantID, "posted", periodStart, periodEnd).
+		Order("posted_at DESC").
+		Find(&postedPosts)
+
+	// Fetch analytics (may be empty if not collected yet)
 	var analytics []storage.PostAnalytics
 	err := h.Manager.DB.Where("tenant_id = ? AND posted_at >= ? AND posted_at <= ?",
 		tenantID, periodStart, periodEnd).
@@ -239,14 +247,39 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 
 	if err != nil {
 		h.Manager.Logger.Error("failed to fetch analytics", zap.Error(err))
-		return h.sendBasicStats(ctx, bot, tenantID, chatID)
+		// Continue even if analytics fetch fails - we'll show posts anyway
 	}
 
 	// Build summary message
 	msg := "📊 *Analytics Summary*\n\n"
 	msg += "📅 *Period:* Last 30 days\n\n"
 
-	if len(analytics) > 0 {
+	// If we have posted posts but no analytics yet, show the posts without analytics
+	if len(postedPosts) > 0 && len(analytics) == 0 {
+		msg += fmt.Sprintf("📈 *Posts Published:* %d\n\n", len(postedPosts))
+		msg += "📊 *Analytics Status:*\n"
+		msg += "Analytics are being collected. Check back in a few minutes for detailed insights!\n\n"
+		msg += "_Posts published:\n"
+		for i, post := range postedPosts {
+			if i >= 5 { // Limit to 5 most recent
+				break
+			}
+			var platforms []string
+			json.Unmarshal([]byte(post.Platforms), &platforms)
+			platformStr := "All platforms"
+			if len(platforms) > 0 {
+				platformStr = strings.Join(platforms, ", ")
+			}
+			postedTime := "Unknown"
+			if post.PostedAt != nil {
+				postedTime = post.PostedAt.Format("Jan 2, 3:04PM")
+			}
+			msg += fmt.Sprintf("• %s (%s) - %s\n", post.Name, platformStr, postedTime)
+		}
+		msg += "\n"
+		msg += "💡 _Analytics collection happens automatically after posting. Instagram insights may take 5-10 minutes to appear._"
+		msg += "\n\n"
+	} else if len(analytics) > 0 {
 		totalReach := int64(0)
 		totalLikes := int64(0)
 		totalComments := int64(0)
@@ -318,6 +351,7 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 			msg += "\n"
 		}
 	} else {
+		// No posts at all
 		msg += "No posts in the last 30 days. Start posting to see analytics!\n\n"
 	}
 
