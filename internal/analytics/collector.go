@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -171,20 +172,33 @@ func (c *CollectorService) calculateEngagementRate(metrics *interfaces.PostMetri
 
 // parsePlatforms parses platforms JSON string to slice
 func (c *CollectorService) parsePlatforms(platformsJSON string) []string {
-	// Simplified - would use proper JSON parsing
-	// For now, return empty slice - implement proper parsing
-	return []string{}
+	if platformsJSON == "" {
+		return []string{}
+	}
+	var platforms []string
+	if err := json.Unmarshal([]byte(platformsJSON), &platforms); err != nil {
+		c.Logger.Warn("failed to parse platforms JSON", zap.Error(err))
+		return []string{}
+	}
+	return platforms
 }
 
 // getPlatformPostID retrieves the platform-specific post ID
 func (c *CollectorService) getPlatformPostID(tenantID, scheduledPostID uint, platform string) string {
-	// Check PostLog for platform post ID
+	// Check PostLog for platform post ID in metadata
 	var postLog storage.PostLog
-	if err := c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ?",
-		tenantID, scheduledPostID, platform).First(&postLog).Error; err == nil {
-		// Extract platform post ID from metadata or other fields
-		// For now, return empty - implement proper extraction
-		return ""
+	if err := c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ? AND action = ?",
+		tenantID, scheduledPostID, platform, "posted").
+		Order("created_at DESC").First(&postLog).Error; err == nil {
+		// Extract platform post ID from metadata
+		if postLog.Metadata != "" {
+			var metadata map[string]interface{}
+			if err := json.Unmarshal([]byte(postLog.Metadata), &metadata); err == nil {
+				if platformPostID, ok := metadata["platform_post_id"].(string); ok && platformPostID != "" {
+					return platformPostID
+				}
+			}
+		}
 	}
 	return ""
 }

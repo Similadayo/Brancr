@@ -32,6 +32,11 @@ func NewService(db *gorm.DB, logger *zap.Logger, collector *CollectorService, tr
 	}
 }
 
+// CollectPostMetrics fetches and stores metrics for a specific post
+func (s *Service) CollectPostMetrics(ctx context.Context, tenantID uint, scheduledPostID uint, platform string, platformPostID string) error {
+	return s.Collector.CollectPostMetrics(ctx, tenantID, scheduledPostID, platform, platformPostID)
+}
+
 // GetPostAnalytics retrieves stored analytics for a post
 func (s *Service) GetPostAnalytics(ctx context.Context, tenantID uint, scheduledPostID uint, platform string) (*storage.PostAnalytics, error) {
 	var analytics storage.PostAnalytics

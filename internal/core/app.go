@@ -319,6 +319,64 @@ func (a *App) Run() error {
 	}()
 	a.Services.Logger.Info("📞 WhatsApp phone number sync started (syncing every 15 minutes)")
 
+	// 📊 Periodic analytics refresh (daily at 2 AM UTC)
+	go func() {
+		// Calculate time until next 2 AM UTC
+		now := time.Now().UTC()
+		nextRun := time.Date(now.Year(), now.Month(), now.Day(), 2, 0, 0, 0, time.UTC)
+		if nextRun.Before(now) {
+			nextRun = nextRun.Add(24 * time.Hour)
+		}
+		initialDelay := nextRun.Sub(now)
+		
+		// Wait for initial delay
+		time.Sleep(initialDelay)
+		
+		// Run immediately on first tick
+		ctx := context.Background()
+		if a.Services.AnalyticsService != nil {
+			var tenants []storage.Tenant
+			if err := a.Services.DB.Find(&tenants).Error; err == nil {
+				for _, tenant := range tenants {
+					if err := a.Services.AnalyticsService.CollectMetricsForTenant(ctx, tenant.ID, 7); err != nil {
+						a.Services.Logger.Warn("periodic analytics refresh failed",
+							zap.Uint("tenant_id", tenant.ID),
+							zap.Error(err))
+					} else {
+						a.Services.Logger.Info("✅ Refreshed analytics",
+							zap.Uint("tenant_id", tenant.ID))
+					}
+				}
+			}
+		}
+		
+		// Then run daily at 2 AM UTC
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ctxSched.Done():
+				return
+			case <-ticker.C:
+				ctx := context.Background()
+				if a.Services.AnalyticsService != nil {
+					var tenants []storage.Tenant
+					if err := a.Services.DB.Find(&tenants).Error; err == nil {
+						for _, tenant := range tenants {
+							if err := a.Services.AnalyticsService.CollectMetricsForTenant(ctx, tenant.ID, 7); err != nil {
+								a.Services.Logger.Warn("periodic analytics refresh failed",
+									zap.Uint("tenant_id", tenant.ID),
+									zap.Error(err))
+							}
+						}
+					}
+				}
+			}
+		}
+	}()
+	a.Services.Logger.Info("📊 Analytics refresh scheduled (daily at 2 AM UTC)")
+
 	// Graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

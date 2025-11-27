@@ -7,6 +7,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/analytics"
+	"github.com/similadayo/brancr/internal/analytics/platforms"
 	"github.com/similadayo/brancr/internal/bot"
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/security"
@@ -300,8 +301,10 @@ func (s *Services) initAnalytics() error {
 	collector := analytics.NewCollectorService(s.DB, s.Logger)
 
 	// Register platform analytics clients
-	// Note: Platform clients will be implemented and registered as needed
-	// For now, we'll skip registration until clients are fully implemented
+	// Register Instagram analytics client
+	instagramClient := platforms.NewInstagramAnalyticsClient()
+	collector.RegisterClient(instagramClient)
+	s.Logger.Info("✅ Registered Instagram analytics client")
 
 	// Initialize trend analyzer
 	trendAnalyzer := analytics.NewTrendAnalyzer(s.DB, s.Logger, s.AIClient)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -14,9 +15,92 @@ import (
 
 type InstagramConnector struct{}
 
+// PostResult holds the result of posting media to Instagram
+type PostResult struct {
+	PlatformPostID string // The Instagram media ID after successful posting
+}
+
+// Temporary storage for media IDs (creationID -> mediaID)
+// Used to pass post IDs from connector to scheduler for analytics collection
+var (
+	mediaIDStore   = &sync.Map{}
+	mediaIDStoreMu sync.RWMutex
+)
+
+// storeMediaID stores the media ID temporarily for retrieval by scheduler
+// Uses a composite key: "tenantID:platform:timestamp" to avoid collisions
+func storeMediaIDForTenant(tenantID uint, platform, mediaID string) {
+	key := fmt.Sprintf("%d:%s:%d", tenantID, platform, time.Now().UnixNano())
+	mediaIDStore.Store(key, mediaID)
+	// Clean up after 1 hour
+	go func() {
+		time.Sleep(1 * time.Hour)
+		mediaIDStore.Delete(key)
+	}()
+}
+
+// GetLatestMediaID retrieves the most recent media ID for a tenant/platform
+// This is a best-effort approach - returns the first match found
+func GetLatestMediaID(tenantID uint, platform string) (string, bool) {
+	prefix := fmt.Sprintf("%d:%s:", tenantID, platform)
+	var latestKey string
+	
+	mediaIDStore.Range(func(key, value interface{}) bool {
+		keyStr, ok := key.(string)
+		if !ok {
+			return true
+		}
+		if strings.HasPrefix(keyStr, prefix) {
+			// Extract timestamp from key
+			parts := strings.Split(keyStr, ":")
+			if len(parts) >= 3 {
+				// This is a simplified check - in practice, we'd parse the timestamp
+				latestKey = keyStr
+				return false // Found one, stop
+			}
+		}
+		return true
+	})
+	
+	if latestKey != "" {
+		if val, ok := mediaIDStore.Load(latestKey); ok {
+			if mediaID, ok := val.(string); ok {
+				mediaIDStore.Delete(latestKey) // Remove after retrieval
+				return mediaID, true
+			}
+		}
+	}
+	
+	return "", false
+}
+
+// storeMediaID stores using creationID (for backward compatibility)
+func storeMediaID(creationID, mediaID string) {
+	mediaIDStore.Store(creationID, mediaID)
+	go func() {
+		time.Sleep(1 * time.Hour)
+		mediaIDStore.Delete(creationID)
+	}()
+}
+
+// getMediaID retrieves a stored media ID by creation ID
+func getMediaID(creationID string) (string, bool) {
+	if val, ok := mediaIDStore.Load(creationID); ok {
+		if mediaID, ok := val.(string); ok {
+			return mediaID, true
+		}
+	}
+	return "", false
+}
+
 func (i *InstagramConnector) Name() string { return "instagram" }
 
 func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialAccount, asset *storage.MediaAsset, caption string) error {
+	return i.PostMediaWithResult(ctx, acc, asset, caption, nil)
+}
+
+// PostMediaWithResult posts media and optionally returns the platform post ID
+func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *storage.SocialAccount, asset *storage.MediaAsset, caption string, result *PostResult) error {
 	// Validate access token
 	if acc.AccessToken == "" || strings.TrimSpace(acc.AccessToken) == "" {
 		return fmt.Errorf("Instagram access token is empty or invalid")
@@ -95,9 +179,15 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 	var successResponse struct {
 		ID string `json:"id"`
 	}
+	var mediaID string
 	if err := json.Unmarshal(body, &successResponse); err == nil && successResponse.ID != "" {
 		// Post succeeded - response contains media ID (even if status code was an error)
-		fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s (media_id: %s)\n", igAccountID, successResponse.ID)
+		mediaID = successResponse.ID
+		fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s (media_id: %s)\n", igAccountID, mediaID)
+		// Store result if result pointer provided
+		if result != nil {
+			result.PlatformPostID = mediaID
+		}
 		return nil
 	}
 
@@ -121,6 +211,7 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 				time.Sleep(2 * time.Second) // Brief wait for Instagram to process
 				if verified, err := i.verifyPostPublished(ctx, igAccountID, acc.AccessToken, creationID); err == nil && verified {
 					fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s (verified after rate limit warning)\n", igAccountID)
+					// Note: We can't retrieve the exact media ID here, but post succeeded
 					return nil
 				}
 				return fmt.Errorf("Instagram request limit reached (403): Application request limit reached. This usually happens when posting too frequently. Please wait and try again later. Error: %s", apiError.Error.ErrorUserMsg)
@@ -135,16 +226,9 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 		return fmt.Errorf("Instagram publish error %d: %s", publishResp.StatusCode, string(body))
 	}
 
-	// Success response
-	mediaID := ""
-	if successResponse.ID != "" {
-		mediaID = successResponse.ID
-	}
-	fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s", igAccountID)
-	if mediaID != "" {
-		fmt.Printf(" (media_id: %s)", mediaID)
-	}
-	fmt.Println()
+	// This code path should not be reached if successResponse.ID was set above
+	// But keeping it for safety
+	fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s\n", igAccountID)
 	return nil
 }
 

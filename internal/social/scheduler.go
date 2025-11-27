@@ -29,7 +29,13 @@ type Scheduler struct {
 	Logger           *zap.Logger
 	CaptionOptimizer CaptionOptimizer
 	PostNotifier     PostNotifier
+	AnalyticsService AnalyticsServiceInterface // Optional: for triggering analytics collection
 	// Platform adapters will be injected here as needed
+}
+
+// AnalyticsServiceInterface defines the interface for analytics collection
+type AnalyticsServiceInterface interface {
+	CollectPostMetrics(ctx context.Context, tenantID uint, scheduledPostID uint, platform string, platformPostID string) error
 }
 
 type CaptionOptimizer interface {
@@ -267,7 +273,8 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		// Log posting attempt
 		s.logPostActivity(p.TenantID, p.ID, platform, "posting", originalCaption, optimizedCaption, "in_progress", "")
 
-		if err := s.postToPlatform(ctx, p.TenantID, platform, urls, optimizedCaption, assetType); err != nil {
+		var platformPostID string
+		if err := s.postToPlatform(ctx, p.TenantID, p.ID, platform, urls, optimizedCaption, assetType, &platformPostID); err != nil {
 			s.Logger.Error("post failed",
 				zap.String("platform", platform),
 				zap.Error(err))
@@ -290,8 +297,34 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			succeeded = append(succeeded, platform)
 			s.Logger.Info("✅ Posted successfully", zap.String("platform", platform))
 
-			// Log success
-			s.logPostActivity(p.TenantID, p.ID, platform, "posted", originalCaption, optimizedCaption, "success", "")
+			// Log success with platform post ID in metadata
+			metadata := "{}"
+			if platformPostID != "" {
+				metadataBytes, _ := json.Marshal(map[string]interface{}{
+					"platform_post_id": platformPostID,
+				})
+				metadata = string(metadataBytes)
+			}
+			s.logPostActivityWithMeta(p.TenantID, p.ID, platform, "posted", originalCaption, optimizedCaption, "success", "", metadata, "")
+
+			// Trigger analytics collection for Instagram posts (with delay)
+			if platform == "instagram" && platformPostID != "" && s.AnalyticsService != nil {
+				go func(postID uint, tenantID uint, platform, platformPostID string) {
+					// Wait 5 minutes before collecting analytics (Instagram needs time to process)
+					time.Sleep(5 * time.Minute)
+					ctx := context.Background()
+					if err := s.AnalyticsService.CollectPostMetrics(ctx, tenantID, postID, platform, platformPostID); err != nil {
+						s.Logger.Warn("failed to collect analytics for post",
+							zap.Uint("post_id", postID),
+							zap.String("platform", platform),
+							zap.Error(err))
+					} else {
+						s.Logger.Info("✅ Collected analytics for post",
+							zap.Uint("post_id", postID),
+							zap.String("platform", platform))
+					}
+				}(p.ID, p.TenantID, platform, platformPostID)
+			}
 
 			postLabel := strings.TrimSpace(p.Name)
 			if postLabel == "" {
@@ -372,7 +405,7 @@ func (s *Scheduler) notifyPostResult(ctx context.Context, tenantID uint, platfor
 	s.PostNotifier(ctx, tenantID, platform, success, message)
 }
 
-func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform string, urls []string, caption string, assetType string) error {
+func (s *Scheduler) postToPlatform(ctx context.Context, tenantID, scheduledPostID uint, platform string, urls []string, caption string, assetType string, platformPostID *string) error {
 	// Load tenant's social account for this platform
 	var acc storage.SocialAccount
 	if err := s.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, platform, true).
@@ -435,8 +468,20 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID uint, platform 
 	}
 
 	// Post using platform connector
-	if err := connector.PostMedia(ctx, &acc, asset, caption); err != nil {
-		return fmt.Errorf("%s posting failed: %w", platform, err)
+	// For Instagram, use PostMediaWithResult to get the platform post ID for analytics
+	if instagramConn, ok := connector.(*InstagramConnector); ok && platformKey == "instagram" {
+		var result PostResult
+		if err := instagramConn.PostMediaWithResult(ctx, &acc, asset, caption, &result); err != nil {
+			return fmt.Errorf("%s posting failed: %w", platform, err)
+		}
+		if platformPostID != nil {
+			*platformPostID = result.PlatformPostID
+		}
+	} else {
+		// For other platforms, use standard PostMedia
+		if err := connector.PostMedia(ctx, &acc, asset, caption); err != nil {
+			return fmt.Errorf("%s posting failed: %w", platform, err)
+		}
 	}
 
 	return nil
