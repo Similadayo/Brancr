@@ -7,14 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"strconv"
 
 	"github.com/cloudinary/cloudinary-go/v2"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
@@ -3172,15 +3172,54 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart form (max 50MB per file)
-	if err := r.ParseMultipartForm(50 << 20); err != nil {
-		http.Error(w, "failed to parse form", http.StatusBadRequest)
+	// Check content type
+	contentType := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "multipart/form-data") {
+		h.Logger.Warn("invalid content type for media upload", zap.String("content_type", contentType))
+		http.Error(w, "content-type must be multipart/form-data", http.StatusBadRequest)
 		return
 	}
 
-	file, fileHeader, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "file is required", http.StatusBadRequest)
+	// Parse multipart form (max 50MB per file)
+	if err := r.ParseMultipartForm(50 << 20); err != nil {
+		h.Logger.Error("failed to parse multipart form", zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to parse form: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Try different possible field names
+	var file multipart.File
+	var fileHeader *multipart.FileHeader
+	var err error
+	
+	fileNames := []string{"file", "media", "upload", "image", "video"}
+	for _, fieldName := range fileNames {
+		file, fileHeader, err = r.FormFile(fieldName)
+		if err == nil {
+			break
+		}
+	}
+	
+	if err != nil || file == nil {
+		// Log all form fields for debugging
+		h.Logger.Warn("no file found in form",
+			zap.String("content_type", contentType),
+			zap.String("method", r.Method),
+			zap.String("url", r.URL.String()),
+			zap.Error(err))
+		
+		// List available form fields
+		var availableFields []string
+		if r.MultipartForm != nil {
+			for key := range r.MultipartForm.File {
+				availableFields = append(availableFields, key)
+			}
+		}
+		if len(availableFields) > 0 {
+			h.Logger.Info("available file fields in form", zap.Strings("fields", availableFields))
+		}
+		
+		http.Error(w, fmt.Sprintf("file is required (form field: 'file', 'media', 'upload', 'image', or 'video'). Available fields: %v", availableFields), http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
