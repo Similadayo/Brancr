@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -26,6 +27,7 @@ type PostingWorkflow struct {
 	Logger     *zap.Logger
 	Bot        *tgbotapi.BotAPI
 	BotManager interface{} // TenantBotManager for getting bot instances
+	AIClient   interface{} // AIClient for generating captions
 }
 
 // getBot gets bot instance for a tenant (from BotManager or direct Bot field)
@@ -311,8 +313,9 @@ func (w *PostingWorkflow) handleCaptionStep(ctx context.Context, state *PostingF
 	if inputLower == "skip" || inputLower == "none" {
 		state.Caption = ""
 	} else if inputLower == "ai" || strings.Contains(inputLower, "generate") {
-		// Trigger AI caption generation (would call AI service here)
-		state.Caption = "[AI Caption - To be generated]"
+		// AI caption will be generated later during review step
+		// For now, set empty and mark for AI generation
+		state.Caption = ""
 		state.Context["use_ai_caption"] = true
 	} else {
 		state.Caption = strings.TrimSpace(input)
@@ -569,6 +572,19 @@ func (w *PostingWorkflow) handleScheduleStep(ctx context.Context, state *Posting
 	}
 
 	state.ScheduledAt = scheduledTime
+	
+	// Generate AI caption if requested before showing review
+	if val, ok := state.Context["use_ai_caption"].(bool); ok && val && state.Caption == "" {
+		if err := w.generateAICaption(ctx, state); err != nil {
+			w.Logger.Error("failed to generate AI caption", zap.Error(err))
+			// Continue without caption - user can add manually
+			bot := w.getBot(state.TenantID)
+			if bot != nil {
+				bot.Send(tgbotapi.NewMessage(state.ChatID, "⚠️ AI caption generation failed. You can add a caption manually in the review step."))
+			}
+		}
+	}
+	
 	state.Step = PostingStepCaptionReview
 	state.LastUpdated = time.Now()
 	if err := w.saveState(ctx, state); err != nil {
@@ -576,6 +592,64 @@ func (w *PostingWorkflow) handleScheduleStep(ctx context.Context, state *Posting
 	}
 
 	return w.sendCaptionReviewPrompt(ctx, state)
+}
+
+// generateAICaption generates an AI caption for the post
+func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingFlowState) error {
+	// Create caption optimizer
+	if w.AIClient == nil {
+		return fmt.Errorf("AI client not available")
+	}
+	
+	var aiClient *ai.AIClient
+	switch client := w.AIClient.(type) {
+	case *ai.AIClient:
+		aiClient = client
+	default:
+		return fmt.Errorf("invalid AI client type")
+	}
+	
+	optimizer := &ai.CaptionOptimizer{
+		Client: aiClient,
+		DB:     w.DB,
+	}
+	
+	// Load media asset to determine media type
+	var asset storage.MediaAsset
+	if err := w.DB.First(&asset, state.MediaAssetID).Error; err != nil {
+		return fmt.Errorf("failed to load media asset: %w", err)
+	}
+	
+	// Use first platform or default to instagram for caption generation
+	platform := "instagram"
+	if len(state.Platforms) > 0 {
+		platform = state.Platforms[0]
+	}
+	
+	// Generate caption with empty original (full AI generation)
+	req := ai.OptimizeCaptionRequest{
+		OriginalCaption: "", // Empty means full AI generation
+		Platform:        platform,
+		MediaType:       asset.Type,
+		TenantID:        state.TenantID,
+	}
+	
+	result, err := optimizer.OptimizeCaption(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to optimize caption: %w", err)
+	}
+	
+	// Store generated caption
+	state.Caption = result.OptimizedCaption
+	state.Context["ai_generated"] = true
+	state.Context["caption_hashtags"] = result.Hashtags
+	
+	w.Logger.Info("AI caption generated",
+		zap.Uint("tenant_id", state.TenantID),
+		zap.String("platform", platform),
+		zap.String("media_type", asset.Type))
+	
+	return nil
 }
 
 // sendReviewPrompt shows final review
@@ -642,12 +716,25 @@ func (w *PostingWorkflow) sendCaptionReviewPrompt(ctx context.Context, state *Po
 	captionDisplay.WriteString("Please review your caption before we proceed:\n\n")
 	captionDisplay.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
-	if state.Caption == "" {
-		captionDisplay.WriteString("⚠️ *No caption set*\n\n")
+	// Check if caption is empty or just a placeholder
+	captionText := strings.TrimSpace(state.Caption)
+	aiGenerated := false
+	if val, ok := state.Context["ai_generated"].(bool); ok {
+		aiGenerated = val
+	}
+	
+	if captionText == "" || captionText == "[AI Caption - To be generated]" || strings.HasPrefix(captionText, "[AI Caption") {
+		captionDisplay.WriteString("⚠️ *No Caption*\n\n")
 		captionDisplay.WriteString("This post will be published WITHOUT a caption.\n\n")
+		captionDisplay.WriteString("If you want to add a caption, click '✏️ Edit Caption' below.\n\n")
 	} else {
-		// Show FULL caption - no truncation
-		captionDisplay.WriteString(fmt.Sprintf("*Your Caption:*\n\n%s\n\n", state.Caption))
+		// Show FULL caption - no truncation, indicate if AI-generated
+		if aiGenerated {
+			captionDisplay.WriteString("✨ *AI-Generated Caption:*\n\n")
+		} else {
+			captionDisplay.WriteString("*Your Caption:*\n\n")
+		}
+		captionDisplay.WriteString(fmt.Sprintf("%s\n\n", state.Caption))
 	}
 
 	captionDisplay.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n\n")

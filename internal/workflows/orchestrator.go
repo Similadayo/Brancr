@@ -34,6 +34,7 @@ func NewWorkflowOrchestrator(db *gorm.DB, logger *zap.Logger, aiClient *ai.AICli
 		DB:         db,
 		Logger:     logger,
 		BotManager: botManager,
+		AIClient:   aiClient, // Add AIClient for caption generation
 	}
 
 	// Initialize conversation workflow
