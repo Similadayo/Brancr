@@ -321,7 +321,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 			// Fallback to normal flow
 			if bot != nil {
 				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Bulk upload processing failed. Falling back to normal flow."))
-				m.StartPostFlow(bot, chatID, asset.ID)
+				m.StartPostFlowWithWorkflow(bot, chatID, asset.ID)
 			}
 		}
 		return
@@ -329,7 +329,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 
 	// ✅ Normal flow: Trigger interactive post creation flow
 	if bot != nil {
-	m.StartPostFlow(bot, chatID, asset.ID)
+	m.StartPostFlowWithWorkflow(bot, chatID, asset.ID)
 	} else {
 		m.Logger.Error("bot instance is nil, cannot start post flow",
 			zap.Uint("tenant_id", tenantID),

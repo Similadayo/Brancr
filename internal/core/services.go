@@ -12,6 +12,7 @@ import (
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/social"
+	"github.com/similadayo/brancr/internal/workflows"
 	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -35,6 +36,9 @@ type Services struct {
 	// Bot Services
 	BotManager        *bot.TenantBotManager
 	EscalationHandler *bot.EscalationHandler
+	
+	// Workflow Services
+	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 
 	// Social Services
 	MessageHandler           *social.MessageHandler
@@ -82,6 +86,11 @@ func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *z
 
 	// Initialize Analytics components (depends on AI)
 	if err := services.initAnalytics(); err != nil {
+		return nil, err
+	}
+
+	// Initialize Workflow Orchestrator (depends on AI, BotManager, and EscalationHandler)
+	if err := services.initWorkflows(); err != nil {
 		return nil, err
 	}
 
@@ -323,5 +332,29 @@ func (s *Services) initAnalytics() error {
 	analyticsHandler := bot.NewAnalyticsHandler(s.BotManager, analyticsService, telegramReporter)
 	s.BotManager.AnalyticsHandler = analyticsHandler
 
+	return nil
+}
+
+func (s *Services) initWorkflows() error {
+	// Initialize workflow orchestrator with all required dependencies
+	orchestrator := workflows.NewWorkflowOrchestrator(
+		s.DB,
+		s.Logger,
+		s.AIClient,
+		s.MemoryService,
+		s.BotManager,
+	)
+	
+	s.WorkflowOrchestrator = orchestrator
+	
+	// Set orchestrator on BotManager for easy access
+	if s.BotManager != nil {
+		s.BotManager.WorkflowOrchestrator = orchestrator
+	}
+	
+	// Set bot for posting workflow after orchestrator is created
+	// We'll set it when a bot is available per tenant
+	
+	s.Logger.Info("✅ Workflow orchestrator initialized")
 	return nil
 }

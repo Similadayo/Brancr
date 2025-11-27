@@ -191,7 +191,7 @@ func (r *IntentRouter) handleSchedulePost(bot *tgbotapi.BotAPI, tenantID uint, c
 
 	// If only one asset, start scheduling flow with it
 	if len(recentAssets) == 1 {
-		r.Manager.StartPostFlow(bot, chatID, recentAssets[0].ID)
+			r.Manager.StartPostFlowWithWorkflow(bot, chatID, recentAssets[0].ID)
 		return true, nil
 	}
 
@@ -202,14 +202,14 @@ func (r *IntentRouter) handleSchedulePost(bot *tgbotapi.BotAPI, tenantID uint, c
 		var asset storage.MediaAsset
 		if err := r.Manager.DB.Where("tenant_id = ? AND carousel_name = ?", tenantID, postName).
 			First(&asset).Error; err == nil {
-			r.Manager.StartPostFlow(bot, chatID, asset.ID)
+			r.Manager.StartPostFlowWithWorkflow(bot, chatID, asset.ID)
 			return true, nil
 		}
 	}
 
 	// Use most recent
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("📅 Starting scheduling for your latest media. Or specify which post: \"schedule [post name]\".")))
-	r.Manager.StartPostFlow(bot, chatID, recentAssets[0].ID)
+			r.Manager.StartPostFlowWithWorkflow(bot, chatID, recentAssets[0].ID)
 	return true, nil
 }
 

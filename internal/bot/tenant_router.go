@@ -41,6 +41,42 @@ type TenantBotManager struct {
 	}
 	Config            *config.Config
 	sessionFinalizers sync.Map
+	WorkflowOrchestrator interface{} // Workflow orchestrator for managing workflows
+}
+
+// StartPostFlowWithWorkflow starts post flow using the new workflow orchestrator if available, falls back to old method
+func (m *TenantBotManager) StartPostFlowWithWorkflow(bot *tgbotapi.BotAPI, chatID int64, assetID uint) {
+	if m.WorkflowOrchestrator != nil {
+		// Try to use new workflow orchestrator
+		if orchestrator, ok := m.WorkflowOrchestrator.(interface {
+			StartPostingFlow(ctx context.Context, tenantID uint, chatID int64, mediaAssetID uint) error
+			SetBotForPosting(bot *tgbotapi.BotAPI)
+		}); ok {
+			// Get tenant ID from asset
+			var asset storage.MediaAsset
+			if err := m.DB.First(&asset, assetID).Error; err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "I couldn't find that upload. Mind sending it again?"))
+				return
+			}
+			
+			// Set bot for posting workflow
+			if botSetter, ok := orchestrator.(interface{ SetBotForPosting(*tgbotapi.BotAPI) }); ok {
+				botSetter.SetBotForPosting(bot)
+			}
+			
+			// Start workflow
+			ctx := context.Background()
+			if err := orchestrator.StartPostingFlow(ctx, asset.TenantID, chatID, assetID); err != nil {
+				m.Logger.Error("failed to start posting workflow", zap.Error(err))
+				// Fallback to old method
+				m.StartPostFlow(bot, chatID, assetID)
+			}
+			return
+		}
+	}
+	
+	// Fallback to old post flow
+	m.StartPostFlow(bot, chatID, assetID)
 }
 
 // ✅ Constructor — now initializes AI components too

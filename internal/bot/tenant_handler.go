@@ -178,6 +178,22 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// Check for new workflow orchestrator first (if available)
+	if isOwner && h.Manager.WorkflowOrchestrator != nil {
+		if orchestrator, ok := h.Manager.WorkflowOrchestrator.(interface {
+			HandlePostingInput(ctx context.Context, tenantID uint, chatID int64, input string) error
+		}); ok {
+			// Try to handle as workflow input
+			ctx := context.Background()
+			if err := orchestrator.HandlePostingInput(ctx, uint(tenantID), chatID, text); err == nil {
+				// Workflow handled it, return
+				return
+			}
+			// If workflow didn't handle it (no active workflow), fall through to old session check
+		}
+	}
+
+	// Check old session system (backwards compatibility)
 	if sess, ok := tenantSessions[chatID]; ok {
 		if isOwner {
 			// Check if this is social connect flow (Step 99) or post flow (Steps 1-5)
@@ -596,6 +612,10 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	}
 
 	switch action {
+	case "posting":
+		// Handle new workflow posting callbacks
+		// arg format: "confirm:init", "save:later", "cancel", "carousel:yes", etc.
+		h.handlePostingWorkflowCallback(bot, tenantID, chatID, arg)
 	case "menu":
 		switch arg {
 		case "", "main":
@@ -1507,4 +1527,90 @@ func (h *TenantWebhookHandler) fixInstagramAccountID(bot *tgbotapi.BotAPI, chatI
 	}
 
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Instagram Business Account ID updated!\n\nID: `%s`\n\nWebhook routing should work now. Try sending a message to your Instagram account.", igID)))
+}
+
+// handlePostingWorkflowCallback handles callbacks from the new posting workflow
+func (h *TenantWebhookHandler) handlePostingWorkflowCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	if h.Manager.WorkflowOrchestrator == nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Workflow system not initialized. Please try again."))
+		return
+	}
+
+	ctx := context.Background()
+	
+	// Parse callback action
+	parts := strings.Split(arg, ":")
+	if len(parts) < 1 {
+		return
+	}
+	
+	action := parts[0]
+	var subAction string
+	if len(parts) > 1 {
+		subAction = parts[1]
+	}
+
+	// Convert callback to text input for workflow
+	var input string
+	switch action {
+	case "confirm":
+		if subAction == "init" {
+			input = "yes"
+		} else if subAction == "platforms" {
+			input = "confirm"
+		}
+	case "save":
+		if subAction == "later" {
+			input = "save"
+		}
+	case "cancel":
+		input = "cancel"
+	case "carousel":
+		if subAction == "yes" {
+			input = "yes"
+		} else if subAction == "no" {
+			input = "no"
+		}
+	case "schedule":
+		if subAction == "now" {
+			input = "now"
+		} else if subAction == "later" {
+			input = "schedule later"
+		}
+	case "review":
+		if subAction == "confirm" {
+			input = "confirm"
+		} else if subAction == "edit" && len(parts) > 2 {
+			if parts[2] == "caption" {
+				input = "edit caption"
+			} else if parts[2] == "platforms" {
+				input = "edit platforms"
+			}
+		}
+	case "caption":
+		if subAction == "confirm" {
+			input = "confirm"
+		} else if subAction == "edit" {
+			input = "edit"
+		}
+	default:
+		input = action
+	}
+
+	if input == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Invalid callback action."))
+		return
+	}
+
+	// Handle through workflow orchestrator
+	if orchestrator, ok := h.Manager.WorkflowOrchestrator.(interface {
+		HandlePostingInput(ctx context.Context, tenantID uint, chatID int64, input string) error
+	}); ok {
+		if err := orchestrator.HandlePostingInput(ctx, tenantID, chatID, input); err != nil {
+			h.Manager.Logger.Error("failed to handle posting workflow input", zap.Error(err))
+			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Error processing your action. Please try again."))
+		}
+	} else {
+		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Workflow orchestrator not properly configured."))
+	}
 }
