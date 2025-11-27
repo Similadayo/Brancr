@@ -368,10 +368,12 @@ func (w *PostingWorkflow) sendPlatformPrompt(ctx context.Context, state *Posting
 		})
 	}
 
-	// Add confirm button
-	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
-		tgbotapi.NewInlineKeyboardButtonData("✅ Confirm Selection", "posting:platforms:confirm"),
-	})
+	// Add confirm button (only if at least one platform selected)
+	if len(state.Platforms) > 0 {
+		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("✅ Confirm Selection", "posting:platforms:confirm"),
+		})
+	}
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
 
@@ -433,6 +435,85 @@ func (w *PostingWorkflow) handlePlatformsStep(ctx context.Context, state *Postin
 	}
 
 	state.Platforms = selectedPlatforms
+	state.Step = PostingStepSchedule
+	state.LastUpdated = time.Now()
+	if err := w.saveState(ctx, state); err != nil {
+		return err
+	}
+
+	return w.sendSchedulePrompt(ctx, state)
+}
+
+// TogglePlatform toggles a platform in the current selection
+func (w *PostingWorkflow) TogglePlatform(ctx context.Context, tenantID uint, chatID int64, platform string) error {
+	state, err := w.loadState(ctx, chatID)
+	if err != nil {
+		return fmt.Errorf("workflow state not found: %w", err)
+	}
+
+	if state.TenantID != tenantID {
+		return fmt.Errorf("unauthorized: workflow belongs to different tenant")
+	}
+
+	if state.Step != PostingStepPlatforms {
+		return fmt.Errorf("not in platform selection step")
+	}
+
+	// Check if platform is already selected
+	found := false
+	newPlatforms := []string{}
+	for _, p := range state.Platforms {
+		if p == platform {
+			found = true
+			// Don't add it - toggle off
+		} else {
+			newPlatforms = append(newPlatforms, p)
+		}
+	}
+
+	if !found {
+		// Toggle on - check if platform is connected
+		var account storage.SocialAccount
+		if err := w.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, platform, true).First(&account).Error; err != nil {
+			bot := w.getBot(tenantID)
+			if bot != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ %s is not connected. Please connect it first.", strings.Title(platform))))
+			}
+			return fmt.Errorf("platform %s not connected", platform)
+		}
+		newPlatforms = append(newPlatforms, platform)
+	}
+
+	state.Platforms = newPlatforms
+	state.LastUpdated = time.Now()
+	if err := w.saveState(ctx, state); err != nil {
+		return err
+	}
+
+	// Resend platform prompt with updated selection
+	return w.sendPlatformPrompt(ctx, state)
+}
+
+// ConfirmPlatforms confirms platform selection and moves to next step
+func (w *PostingWorkflow) ConfirmPlatforms(ctx context.Context, tenantID uint, chatID int64) error {
+	state, err := w.loadState(ctx, chatID)
+	if err != nil {
+		return fmt.Errorf("workflow state not found: %w", err)
+	}
+
+	if state.TenantID != tenantID {
+		return fmt.Errorf("unauthorized: workflow belongs to different tenant")
+	}
+
+	if state.Step != PostingStepPlatforms {
+		return fmt.Errorf("not in platform selection step")
+	}
+
+	if len(state.Platforms) == 0 {
+		return w.sendInvalidInputMessage(ctx, state, "Please select at least one platform, or type 'cancel' to abort")
+	}
+
+	// Move to schedule step
 	state.Step = PostingStepSchedule
 	state.LastUpdated = time.Now()
 	if err := w.saveState(ctx, state); err != nil {

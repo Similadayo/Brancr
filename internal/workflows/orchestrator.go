@@ -88,6 +88,22 @@ func (o *WorkflowOrchestrator) HandlePostingInput(ctx context.Context, tenantID 
 	return o.PostingWorkflow.HandleUserInput(ctx, tenantID, chatID, input)
 }
 
+// HandlePostingPlatformToggle toggles a platform in the selection
+func (o *WorkflowOrchestrator) HandlePostingPlatformToggle(ctx context.Context, tenantID uint, chatID int64, platform string) error {
+	if o.PostingWorkflow == nil {
+		return fmt.Errorf("posting workflow not initialized")
+	}
+	return o.PostingWorkflow.TogglePlatform(ctx, tenantID, chatID, platform)
+}
+
+// HandlePostingPlatformConfirm confirms platform selection
+func (o *WorkflowOrchestrator) HandlePostingPlatformConfirm(ctx context.Context, tenantID uint, chatID int64) error {
+	if o.PostingWorkflow == nil {
+		return fmt.Errorf("posting workflow not initialized")
+	}
+	return o.PostingWorkflow.ConfirmPlatforms(ctx, tenantID, chatID)
+}
+
 // ============================================================================
 // CONVERSATION WORKFLOW METHODS
 // ============================================================================

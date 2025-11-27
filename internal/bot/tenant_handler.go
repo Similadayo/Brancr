@@ -1546,8 +1546,38 @@ func (h *TenantWebhookHandler) handlePostingWorkflowCallback(bot *tgbotapi.BotAP
 	
 	action := parts[0]
 	var subAction string
+	var platform string
 	if len(parts) > 1 {
 		subAction = parts[1]
+	}
+	if len(parts) > 2 {
+		platform = parts[2] // For platform:toggle:platform_name
+	}
+
+	// Handle platform toggle directly (requires state modification)
+	if action == "platform" && subAction == "toggle" && platform != "" {
+		if orchestrator, ok := h.Manager.WorkflowOrchestrator.(interface {
+			HandlePostingPlatformToggle(ctx context.Context, tenantID uint, chatID int64, platform string) error
+		}); ok {
+			if err := orchestrator.HandlePostingPlatformToggle(ctx, tenantID, chatID, platform); err != nil {
+				h.Manager.Logger.Error("failed to toggle platform", zap.Error(err))
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Error toggling platform. Please try again."))
+			}
+			return
+		}
+	}
+
+	// Handle platform confirmation directly
+	if action == "platforms" && subAction == "confirm" {
+		if orchestrator, ok := h.Manager.WorkflowOrchestrator.(interface {
+			HandlePostingPlatformConfirm(ctx context.Context, tenantID uint, chatID int64) error
+		}); ok {
+			if err := orchestrator.HandlePostingPlatformConfirm(ctx, tenantID, chatID); err != nil {
+				h.Manager.Logger.Error("failed to confirm platforms", zap.Error(err))
+				bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Error confirming platforms. Please select at least one platform."))
+			}
+			return
+		}
 	}
 
 	// Convert callback to text input for workflow
