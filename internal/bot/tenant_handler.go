@@ -201,7 +201,16 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// Step 4️: AI-Powered Intent Routing (for owners)
+	// Step 4️: Quick Command Checks (handle before intent router)
+	if isOwner {
+		// Handle menu/help commands immediately (before intent routing)
+		if text == "/help" || text == "/menu" || text == "/commands" || textLower == "menu" || textLower == "help" {
+			h.sendOwnerMenu(bot, chatID, uint(tenantID))
+			return
+		}
+	}
+
+	// Step 5: AI-Powered Intent Routing (for owners)
 	if isOwner {
 		// Try AI intent routing first (before hardcoded commands)
 		intentRouter := NewIntentRouter(h.Manager)
@@ -220,9 +229,6 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			return
 		case text == "fix instagram" || text == "update instagram id" || strings.HasPrefix(strings.ToLower(text), "fix instagram"):
 			h.fixInstagramAccountID(bot, chatID, uint(tenantID))
-			return
-		case text == "/help" || text == "/menu" || text == "/commands":
-			h.sendOwnerMenu(bot, chatID, uint(tenantID))
 			return
 		case text == "/start":
 			// Check onboarding status on /start
