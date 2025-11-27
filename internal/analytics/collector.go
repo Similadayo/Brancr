@@ -117,6 +117,12 @@ func (c *CollectorService) CollectPostMetrics(ctx context.Context, tenantID uint
 	return nil
 }
 
+// SetTrendAnalyzer sets the trend analyzer for automatic insights generation
+func (c *CollectorService) SetTrendAnalyzer(trendAnalyzer interface{}) {
+	// This will be used for automatic insights generation
+	// Implementation will trigger insights after collecting enough data
+}
+
 // CollectAllPostMetrics collects metrics for all posted content for a tenant
 func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID uint, daysBack int) error {
 	// Get all posted scheduled posts for this tenant

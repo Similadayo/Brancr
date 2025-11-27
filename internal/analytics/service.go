@@ -167,3 +167,11 @@ func (s *Service) CollectMetricsForTenant(ctx context.Context, tenantID uint, da
 	return s.Collector.CollectAllPostMetrics(ctx, tenantID, daysBack)
 }
 
+// GenerateGrowthSuggestions generates business growth suggestions
+func (s *Service) GenerateGrowthSuggestions(ctx context.Context, tenantID uint, periodStart, periodEnd time.Time) ([]*BusinessGrowthSuggestion, error) {
+	if s.GrowthAdvisor == nil {
+		return nil, fmt.Errorf("growth advisor not initialized")
+	}
+	return s.GrowthAdvisor.GenerateGrowthSuggestions(ctx, tenantID, periodStart, periodEnd)
+}
+

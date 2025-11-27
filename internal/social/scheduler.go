@@ -322,6 +322,25 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 						s.Logger.Info("✅ Collected analytics for post",
 							zap.Uint("post_id", postID),
 							zap.String("platform", platform))
+						
+						// Trigger insights generation after collecting analytics
+						go func() {
+							time.Sleep(2 * time.Minute) // Wait a bit for analytics to settle
+							if svc, ok := s.AnalyticsService.(interface {
+								GenerateInsights(ctx context.Context, tenantID uint, periodStart, periodEnd time.Time) ([]*storage.TrendInsight, error)
+							}); ok {
+								periodEnd := time.Now()
+								periodStart := periodEnd.AddDate(0, 0, -30)
+								if _, err := svc.GenerateInsights(ctx, tenantID, periodStart, periodEnd); err != nil {
+									s.Logger.Warn("failed to auto-generate insights",
+										zap.Uint("tenant_id", tenantID),
+										zap.Error(err))
+								} else {
+									s.Logger.Info("✅ Auto-generated insights",
+										zap.Uint("tenant_id", tenantID))
+								}
+							}
+						}()
 					}
 				}(p.ID, p.TenantID, platform, platformPostID)
 			}

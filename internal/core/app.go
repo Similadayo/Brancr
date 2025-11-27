@@ -368,6 +368,17 @@ func (a *App) Run() error {
 								a.Services.Logger.Warn("periodic analytics refresh failed",
 									zap.Uint("tenant_id", tenant.ID),
 									zap.Error(err))
+							} else {
+								// Trigger insights generation after analytics collection
+								go func(tID uint) {
+									periodEnd := time.Now()
+									periodStart := periodEnd.AddDate(0, 0, -30)
+									if _, err := a.Services.AnalyticsService.GenerateInsights(ctx, tID, periodStart, periodEnd); err != nil {
+										a.Services.Logger.Warn("auto insights generation failed",
+											zap.Uint("tenant_id", tID),
+											zap.Error(err))
+									}
+								}(tenant.ID)
 							}
 						}
 					}
