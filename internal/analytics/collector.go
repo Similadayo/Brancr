@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"github.com/similadayo/brancr/pkg/interfaces"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -147,10 +150,22 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 			// Get platform post ID from PostLog or metadata
 			platformPostID := c.getPlatformPostID(tenantID, post.ID, platform)
 			if platformPostID == "" {
-				c.Logger.Warn("No platform post ID found, skipping",
-					zap.Uint("post_id", post.ID),
-					zap.String("platform", platform))
-				continue
+				// Try to retrieve from Instagram API if it's a recent post (within 24 hours)
+				if platform == "instagram" && post.PostedAt != nil {
+					platformPostID = c.tryRetrieveInstagramPostIDFromAPI(tenantID, post.ID, post.PostedAt)
+					if platformPostID != "" {
+						// Store it for future use
+						c.storePlatformPostIDInPostLog(tenantID, post.ID, platform, platformPostID)
+					}
+				}
+				
+				if platformPostID == "" {
+					c.Logger.Warn("No platform post ID found, skipping",
+						zap.Uint("post_id", post.ID),
+						zap.String("platform", platform),
+						zap.Time("posted_at", *post.PostedAt))
+					continue
+				}
 			}
 
 			// Collect metrics (with error handling to continue on individual failures)
@@ -189,23 +204,227 @@ func (c *CollectorService) parsePlatforms(platformsJSON string) []string {
 	return platforms
 }
 
-// getPlatformPostID retrieves the platform-specific post ID
+// getPlatformPostID retrieves the platform-specific post ID with multiple fallback strategies
 func (c *CollectorService) getPlatformPostID(tenantID, scheduledPostID uint, platform string) string {
-	// Check PostLog for platform post ID in metadata
-	var postLog storage.PostLog
-	if err := c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ? AND action = ?",
-		tenantID, scheduledPostID, platform, "posted").
-		Order("created_at DESC").First(&postLog).Error; err == nil {
-		// Extract platform post ID from metadata
-		if postLog.Metadata != "" {
-			var metadata map[string]interface{}
-			if err := json.Unmarshal([]byte(postLog.Metadata), &metadata); err == nil {
-				if platformPostID, ok := metadata["platform_post_id"].(string); ok && platformPostID != "" {
-					return platformPostID
+	// Strategy 1: Check PostLog for platform post ID in metadata (most recent first)
+	var postLogs []storage.PostLog
+	if err := c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ?",
+		tenantID, scheduledPostID, platform).
+		Order("created_at DESC").
+		Find(&postLogs).Error; err == nil {
+		for _, postLog := range postLogs {
+			// Try to extract from metadata
+			if postLog.Metadata != "" && postLog.Metadata != "{}" {
+				var metadata map[string]interface{}
+				if err := json.Unmarshal([]byte(postLog.Metadata), &metadata); err == nil {
+					if platformPostID, ok := metadata["platform_post_id"].(string); ok && platformPostID != "" {
+						c.Logger.Debug("Found platform post ID in PostLog metadata",
+							zap.Uint("post_id", scheduledPostID),
+							zap.String("platform", platform),
+							zap.String("platform_post_id", platformPostID))
+						return platformPostID
+					}
+				}
+			}
+			// Also check ErrorMessage or other fields (some connectors might log it there)
+			if postLog.ErrorMessage != "" && strings.Contains(postLog.ErrorMessage, "media_id:") {
+				// Extract from error message as fallback
+				if idx := strings.Index(postLog.ErrorMessage, "media_id: "); idx >= 0 {
+					parts := strings.Fields(postLog.ErrorMessage[idx+10:])
+					if len(parts) > 0 {
+						id := strings.Trim(parts[0], "()")
+						if id != "" {
+							c.Logger.Debug("Found platform post ID in PostLog error message",
+								zap.Uint("post_id", scheduledPostID),
+								zap.String("platform", platform),
+								zap.String("platform_post_id", id))
+							return id
+						}
+					}
 				}
 			}
 		}
 	}
+
+	// Strategy 2: Check if there's already a PostAnalytics entry with the platform post ID
+	var existingAnalytics storage.PostAnalytics
+	if err := c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ?",
+		tenantID, scheduledPostID, platform).
+		First(&existingAnalytics).Error; err == nil {
+		if existingAnalytics.PlatformPostID != "" {
+			c.Logger.Debug("Found platform post ID from existing analytics",
+				zap.Uint("post_id", scheduledPostID),
+				zap.String("platform", platform),
+				zap.String("platform_post_id", existingAnalytics.PlatformPostID))
+			return existingAnalytics.PlatformPostID
+		}
+	}
+
+	// Strategy 3: For Instagram, try to retrieve from Instagram API (requires post to be recent)
+	// Note: This strategy requires PostedAt time, so it's handled in CollectAllPostMetrics
+	// where we have access to the ScheduledPost with PostedAt field
+
+	c.Logger.Warn("No platform post ID found for scheduled post",
+		zap.Uint("tenant_id", tenantID),
+		zap.Uint("scheduled_post_id", scheduledPostID),
+		zap.String("platform", platform))
+	
 	return ""
+}
+
+// tryRetrieveInstagramPostIDFromAPI attempts to retrieve the Instagram post ID by querying recent posts from Instagram API
+func (c *CollectorService) tryRetrieveInstagramPostIDFromAPI(tenantID, scheduledPostID uint, postedAt *time.Time) string {
+	if postedAt == nil {
+		return ""
+	}
+
+	// Only try if post is recent (within last 7 days - Instagram API allows fetching recent media)
+	if time.Since(*postedAt) > 7*24*time.Hour {
+		return ""
+	}
+
+	// Get the social account
+	var account storage.SocialAccount
+	if err := c.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, "instagram", true).
+		First(&account).Error; err != nil {
+		c.Logger.Debug("No Instagram account found for tenant", zap.Uint("tenant_id", tenantID))
+		return ""
+	}
+
+	// Decrypt access token if needed
+	accessToken := account.AccessToken
+	if accessToken == "" {
+		return ""
+	}
+	
+	// Try to decrypt token (might be encrypted)
+	if decrypted, err := utils.DecryptToken(accessToken); err == nil {
+		accessToken = decrypted
+	} else {
+		// Token might not be encrypted, use as-is
+		accessToken = account.AccessToken
+	}
+
+	// Get Instagram Business Account ID
+	var instagramAccountID string
+	if account.PageID != "" && !strings.Contains(account.PageID, "_") {
+		instagramAccountID = account.PageID
+	} else if account.ExternalID != "" {
+		instagramAccountID = account.ExternalID
+	} else {
+		c.Logger.Debug("No Instagram account ID found", zap.Uint("tenant_id", tenantID))
+		return ""
+	}
+
+	// Query Instagram API for recent media
+	// Get posts from the last 7 days, match by timestamp (within 5 minute window)
+	ctx := context.Background()
+	client := &http.Client{Timeout: 10 * time.Second}
+	
+	// Fetch recent media from Instagram
+	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media?fields=id,timestamp,caption&limit=25&access_token=%s",
+		instagramAccountID, accessToken)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return ""
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		c.Logger.Debug("Failed to query Instagram API for recent posts", zap.Error(err))
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		c.Logger.Debug("Instagram API returned non-200 status", zap.Int("status", resp.StatusCode))
+		return ""
+	}
+
+	var apiResponse struct {
+		Data []struct {
+			ID        string `json:"id"`
+			Timestamp string `json:"timestamp"`
+			Caption   string `json:"caption"`
+		} `json:"data"`
+		Paging struct {
+			Next string `json:"next"`
+		} `json:"paging"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
+		c.Logger.Debug("Failed to decode Instagram API response", zap.Error(err))
+		return ""
+	}
+
+	// Match posts by timestamp (within 5 minute window)
+	targetTime := postedAt.Unix()
+	for _, media := range apiResponse.Data {
+		if media.Timestamp == "" {
+			continue
+		}
+		
+		// Parse Instagram timestamp (ISO 8601 format)
+		postTime, err := time.Parse(time.RFC3339, media.Timestamp)
+		if err != nil {
+			// Try alternative format
+			postTime, err = time.Parse("2006-01-02T15:04:05+0000", media.Timestamp)
+			if err != nil {
+				continue
+			}
+		}
+		
+		// Check if timestamp matches (within 5 minutes)
+		timeDiff := abs(postTime.Unix() - targetTime)
+		if timeDiff <= 300 { // 5 minutes = 300 seconds
+			c.Logger.Info("Matched Instagram post by timestamp",
+				zap.Uint("scheduled_post_id", scheduledPostID),
+				zap.String("instagram_media_id", media.ID),
+				zap.Int64("time_diff_seconds", timeDiff))
+			return media.ID
+		}
+	}
+
+	c.Logger.Debug("No matching Instagram post found for scheduled post",
+		zap.Uint("scheduled_post_id", scheduledPostID),
+		zap.Time("posted_at", *postedAt))
+	
+	return ""
+}
+
+// abs returns absolute value of an int64
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// storePlatformPostIDInPostLog stores the platform post ID in PostLog metadata for future use
+func (c *CollectorService) storePlatformPostIDInPostLog(tenantID, scheduledPostID uint, platform, platformPostID string) {
+	var postLog storage.PostLog
+	if err := c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ? AND action = ?",
+		tenantID, scheduledPostID, platform, "posted").
+		Order("created_at DESC").
+		First(&postLog).Error; err != nil {
+		// No PostLog found - skip
+		return
+	}
+
+	// Update metadata with platform post ID
+	metadata := map[string]interface{}{}
+	if postLog.Metadata != "" && postLog.Metadata != "{}" {
+		json.Unmarshal([]byte(postLog.Metadata), &metadata)
+	}
+	metadata["platform_post_id"] = platformPostID
+	
+	if metadataJSON, err := json.Marshal(metadata); err == nil {
+		c.DB.Model(&postLog).Update("metadata", string(metadataJSON))
+		c.Logger.Info("Stored platform post ID in PostLog metadata",
+			zap.Uint("post_id", scheduledPostID),
+			zap.String("platform", platform),
+			zap.String("platform_post_id", platformPostID))
+	}
 }
 
