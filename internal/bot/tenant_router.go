@@ -34,13 +34,17 @@ type TenantBotManager struct {
 	Policy            *ai.PolicyEngine
 	Responder         *ai.Responder
 	AdminBot          *tgbotapi.BotAPI
-	AnalyticsHandler  *AnalyticsHandler // Analytics handler for tenant requests
+	AnalyticsHandler  *AnalyticsHandler  // Analytics handler for tenant requests
 	EscalationHandler *EscalationHandler // Escalation handler for managing customer escalations
-	Scheduler         interface { // Interface to avoid circular dependency
+	MessageHandler    interface {        // MessageHandler interface to avoid circular dependency
+		ProcessMessage(ctx context.Context, msg interface{}) error
+		SendReply(ctx context.Context, tenantID uint, platform, threadID, customerID, reply string) error
+	}
+	Scheduler interface { // Interface to avoid circular dependency
 		ExecutePostImmediately(postID uint) error
 	}
-	Config            *config.Config
-	sessionFinalizers sync.Map
+	Config               *config.Config
+	sessionFinalizers    sync.Map
 	WorkflowOrchestrator interface{} // Workflow orchestrator for managing workflows
 }
 
@@ -58,12 +62,12 @@ func (m *TenantBotManager) StartPostFlowWithWorkflow(bot *tgbotapi.BotAPI, chatI
 				bot.Send(tgbotapi.NewMessage(chatID, "I couldn't find that upload. Mind sending it again?"))
 				return
 			}
-			
+
 			// Set bot for posting workflow
 			if botSetter, ok := orchestrator.(interface{ SetBotForPosting(*tgbotapi.BotAPI) }); ok {
 				botSetter.SetBotForPosting(bot)
 			}
-			
+
 			// Start workflow
 			ctx := context.Background()
 			if err := orchestrator.StartPostingFlow(ctx, asset.TenantID, chatID, assetID); err != nil {
@@ -74,7 +78,7 @@ func (m *TenantBotManager) StartPostFlowWithWorkflow(bot *tgbotapi.BotAPI, chatI
 			return
 		}
 	}
-	
+
 	// Fallback to old post flow
 	m.StartPostFlow(bot, chatID, assetID)
 }
@@ -155,7 +159,7 @@ func (m *TenantBotManager) InitBots() error {
 
 	for _, t := range tenants {
 		time.Sleep(2 * time.Second)
-		
+
 		// Try initial startup with retry logic
 		ctx := context.Background()
 		err := m.retryBotStartup(ctx, &t, 3) // 3 retries with exponential backoff

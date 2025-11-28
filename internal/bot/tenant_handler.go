@@ -29,6 +29,61 @@ func NewTenantWebhookHandler(m *TenantBotManager) *TenantWebhookHandler {
 	return &TenantWebhookHandler{Manager: m}
 }
 
+// convertTelegramToIncomingMessage converts a Telegram message to the IncomingMessage format
+func convertTelegramToIncomingMessage(update tgbotapi.Update, tenantID uint, customer *storage.Customer, text string) social.IncomingMessage {
+	msg := update.Message
+	timestamp := time.Now()
+	if msg != nil && !msg.Time().IsZero() {
+		timestamp = msg.Time()
+	}
+
+	messageID := ""
+	if msg != nil {
+		messageID = fmt.Sprintf("%d", msg.MessageID)
+	}
+
+	threadID := ""
+	if msg != nil {
+		threadID = fmt.Sprintf("%d", msg.Chat.ID)
+	}
+
+	customerName := customer.DisplayName
+	if customerName == "" && msg != nil && msg.From != nil {
+		customerName = strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName)
+	}
+	if customerName == "" {
+		customerName = "Customer"
+	}
+
+	customerUsername := customer.Username
+	if customerUsername == "" && msg != nil && msg.From != nil {
+		customerUsername = msg.From.UserName
+	}
+
+	metadata := make(map[string]interface{})
+	if msg != nil {
+		metadata["telegram_chat_id"] = msg.Chat.ID
+		metadata["telegram_message_id"] = msg.MessageID
+		if msg.From != nil {
+			metadata["telegram_user_id"] = msg.From.ID
+		}
+	}
+
+	return social.IncomingMessage{
+		Platform:         "telegram",
+		TenantID:         tenantID,
+		CustomerID:       fmt.Sprintf("%d", customer.ID),
+		CustomerName:     customerName,
+		CustomerUsername: customerUsername,
+		MessageID:        messageID,
+		Content:          text,
+		MessageType:      "text",
+		ThreadID:         threadID,
+		Timestamp:        timestamp,
+		Metadata:         metadata,
+	}
+}
+
 func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Request, idStr string) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -81,9 +136,9 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 	isOwner := senderID == ownerID
 
 	// Check if this is media (photo/video/document/animation) - don't return early for media
-	hasMedia := len(update.Message.Photo) > 0 || 
-		update.Message.Video != nil || 
-		update.Message.Document != nil || 
+	hasMedia := len(update.Message.Photo) > 0 ||
+		update.Message.Video != nil ||
+		update.Message.Document != nil ||
 		update.Message.Animation != nil
 
 	// Only return if no text AND no media
@@ -271,7 +326,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 
 			response := "*📅 Your Scheduled Posts:*\n\n"
 			var keyboardRows [][]tgbotapi.InlineKeyboardButton
-			
+
 			for i, post := range posts {
 				scheduledTime := "not set"
 				if post.ScheduledAt != nil {
@@ -280,12 +335,12 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 					if timezone == "" {
 						timezone = "UTC"
 					}
-					
+
 					loc, err := time.LoadLocation(timezone)
 					if err != nil {
 						loc = time.UTC
 					}
-					
+
 					// Convert UTC time to tenant's timezone for display
 					localTime := post.ScheduledAt.In(loc)
 					scheduledTime = localTime.Format("Jan 2, 3:04PM")
@@ -302,7 +357,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 				response += fmt.Sprintf("   📱 Platforms: %s\n", platformStr)
 				response += fmt.Sprintf("   ⏰ Scheduled: %s\n", scheduledTime)
 				response += fmt.Sprintf("   Status: %s\n\n", post.Status)
-				
+
 				// Add cancel button for each post
 				postNameDisplay := post.Name
 				if len(postNameDisplay) > 25 {
@@ -314,7 +369,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 				)
 				keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelBtn})
 			}
-			
+
 			// Add "Cancel All" button
 			cancelAllBtn := tgbotapi.NewInlineKeyboardButtonData("🚫 Cancel All Posts", "post:cancel_all")
 			keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelAllBtn})
@@ -404,9 +459,9 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			persona := ai.GetPersona(h.Manager.DB, uint(tenantID))
 			var profile storage.BusinessProfile
 			_ = h.Manager.DB.First(&profile, "tenant_id = ?", tenantID).Error
-			
+
 			// Use existing data - no onboarding questions needed
-			// If persona/business profile is missing despite OnboardingComplete flag, 
+			// If persona/business profile is missing despite OnboardingComplete flag,
 			// we'll still continue but log a warning (data should exist from dashboard)
 			if persona.BotName == "" || profile.Niche == "" {
 				h.Manager.Logger.Warn("OnboardingComplete=true but missing persona/business profile data",
@@ -458,7 +513,7 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			return // Instruction was handled, don't continue to AI
 		}
 	}
-	
+
 	// 🧠 Step 7️: Context-Aware AI Assistant flow (tenant + customer aware)
 	// Send typing indicator
 	bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
@@ -472,7 +527,6 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 
 	var reply string
 	var replyErr error
-	var customerID uint
 
 	if isOwner {
 		// Owner gets business management assistance with full context
@@ -492,39 +546,57 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			bot.Send(tgbotapi.NewMessage(chatID, "Something went wrong identifying your account."))
 			return
 		}
-		customerID = customer.ID
-		// Customer gets brand representation with customer context
-		reply, replyErr = contextGen.GenerateWithFullContext(ctx, uint(tenantID), text, false, customerID)
-	}
 
-	if replyErr != nil {
-		h.Manager.Logger.Error("AI responder failed", zap.Error(replyErr))
+		// Route customer message through MessageHandler for full escalation support
+		if h.Manager.MessageHandler != nil {
+			// Convert Telegram message to IncomingMessage format
+			telegramMsg := convertTelegramToIncomingMessage(
+				update,
+				uint(tenantID),
+				customer,
+				text,
+			)
 
-		// Check for specific error types and provide appropriate responses
-		var errorMsg string
-
-		// Check for moderation error
-		if ai.IsModerationError(replyErr) {
-			errorMsg = "I'm having trouble processing that request right now. Could you try rephrasing your message?"
-			h.Manager.Logger.Warn("AI moderation triggered",
-				zap.Uint("tenant_id", uint(tenantID)),
-				zap.Error(replyErr))
-		} else if strings.Contains(replyErr.Error(), "timeout") || strings.Contains(replyErr.Error(), "deadline exceeded") {
-			errorMsg = "Taking a bit longer than usual, try again."
-		} else if strings.Contains(replyErr.Error(), "403") || strings.Contains(replyErr.Error(), "Forbidden") {
-			errorMsg = "Unable to process your request at this time. Please try again in a moment."
-		} else {
-			errorMsg = "I'm having trouble processing that right now. Please try again in a moment."
+			// Process message through MessageHandler (includes escalation, intent detection, etc.)
+			go func() {
+				// Type assert to get the actual MessageHandler
+				if handler, ok := h.Manager.MessageHandler.(interface {
+					ProcessMessage(ctx context.Context, msg interface{}) error
+				}); ok {
+					if err := handler.ProcessMessage(ctx, telegramMsg); err != nil {
+						h.Manager.Logger.Error("failed to process customer message",
+							zap.Uint("tenant_id", uint(tenantID)),
+							zap.Uint("customer_id", customer.ID),
+							zap.Error(err))
+						// Fallback to simple response
+						bot.Send(tgbotapi.NewMessage(chatID, "Thanks for your message! We'll get back to you soon."))
+					}
+				} else {
+					h.Manager.Logger.Warn("MessageHandler does not implement ProcessMessage with IncomingMessage",
+						zap.Uint("tenant_id", uint(tenantID)))
+					// Fallback to simple response
+					bot.Send(tgbotapi.NewMessage(chatID, "Thanks for your message! We'll get back to you soon."))
+				}
+			}()
+			return // MessageHandler handles everything from here
 		}
 
-		bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
-		return
-	}
+		// Fallback: Direct AI response if MessageHandler not available
+		customerID := customer.ID
+		reply, replyErr := contextGen.GenerateWithFullContext(ctx, uint(tenantID), text, false, customerID)
 
-	// Send with markdown formatting for cleaner messages
-	msg := tgbotapi.NewMessage(chatID, reply)
-	msg.ParseMode = "Markdown"
-	bot.Send(msg)
+		if replyErr != nil {
+			h.Manager.Logger.Error("AI responder failed", zap.Error(replyErr))
+			errorMsg := "I'm having trouble processing that right now. Please try again in a moment."
+			bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
+			return
+		}
+
+		// Send with markdown formatting for cleaner messages
+		msg := tgbotapi.NewMessage(chatID, reply)
+		msg.ParseMode = "Markdown"
+		bot.Send(msg)
+	}
 }
 
 func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, platform string) {
@@ -560,10 +632,10 @@ func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantI
 		}
 
 		msg, err := social.VerifySocialConnection(ctx, &acc, h.Manager.DB)
-		
+
 		// Delete loading message
 		bot.Request(tgbotapi.NewDeleteMessage(chatID, loadingSent.MessageID))
-		
+
 		if err != nil {
 			errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ I couldn't verify your %s connection:\n\n%s", strings.Title(platform), err.Error()))
 			bot.Send(errorMsg)
@@ -576,7 +648,7 @@ func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantI
 		// Send success message
 		successMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ %s", msg))
 		bot.Send(successMsg)
-		
+
 		// Show connection status menu after successful verification
 		time.Sleep(1 * time.Second)
 		h.sendConnectionStatus(bot, chatID, tenantID)
@@ -630,7 +702,7 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 			var tenant storage.Tenant
 			h.Manager.DB.First(&tenant, tenantID)
 			persona := ai.GetPersona(h.Manager.DB, tenantID)
-			
+
 			// If onboarding is complete, show current persona info; otherwise start onboarding
 			if tenant.OnboardingComplete && persona.BotName != "" {
 				tone := fallbackValue(persona.StyleNotes, persona.Tone)
@@ -639,11 +711,11 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 				}
 				msg := fmt.Sprintf(
 					"🤖 *AI Persona Configuration*\n\n"+
-					"Current settings:\n"+
-					"• Name: *%s*\n"+
-					"• Tone: *%s*\n\n"+
-					"To update your AI persona, visit the dashboard:\n"+
-					"📱 https://www.brancr.com/dashboard",
+						"Current settings:\n"+
+						"• Name: *%s*\n"+
+						"• Tone: *%s*\n\n"+
+						"To update your AI persona, visit the dashboard:\n"+
+						"📱 https://www.brancr.com/dashboard",
 					persona.BotName, tone)
 				out := tgbotapi.NewMessage(chatID, msg)
 				out.ParseMode = "Markdown"
@@ -716,15 +788,15 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 	var persona storage.Persona
 	var businessProfile storage.BusinessProfile
 	var accounts []storage.SocialAccount
-	
+
 	h.Manager.DB.First(&tenant, tenantID)
 	persona = ai.GetPersona(h.Manager.DB, tenantID)
 	_ = h.Manager.DB.Where("tenant_id = ?", tenantID).First(&businessProfile).Error
 	h.Manager.DB.Where("tenant_id = ?", tenantID).Find(&accounts)
-	
+
 	// Build context-aware menu text
 	text := "🎛️ *Brancr Control Center*"
-	
+
 	if tenant.OnboardingComplete && persona.BotName != "" {
 		tone := persona.Tone
 		if tone == "" {
@@ -732,7 +804,7 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 		}
 		text += fmt.Sprintf("\n\n🤖 AI: *%s* (%s tone)", persona.BotName, tone)
 	}
-	
+
 	// Show platform connection status with visual indicators
 	platformStatus := map[string]bool{
 		"instagram": false,
@@ -741,32 +813,32 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 		"tiktok":    false,
 		"youtube":   false,
 	}
-	
+
 	for _, acc := range accounts {
 		if _, ok := platformStatus[acc.Platform]; ok {
 			platformStatus[acc.Platform] = acc.Connected
 		}
 	}
-	
+
 	// Get today's stats for quick overview
 	today := time.Now()
 	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
-	
+
 	var postsToday int64
 	h.Manager.DB.Model(&storage.ScheduledPost{}).
 		Where("tenant_id = ? AND created_at >= ? AND status = ?", tenantID, todayStart, "posted").
 		Count(&postsToday)
-	
+
 	var messagesToday int64
 	h.Manager.DB.Model(&storage.Interaction{}).
 		Where("tenant_id = ? AND created_at >= ? AND direction = ?", tenantID, todayStart, "incoming").
 		Count(&messagesToday)
-	
+
 	var escalationsToday int64
 	h.Manager.DB.Model(&storage.Interaction{}).
 		Where("tenant_id = ? AND response_type = ? AND response_status = ? AND created_at >= ?", tenantID, "escalated", "pending", todayStart).
 		Count(&escalationsToday)
-	
+
 	// Show quick stats
 	if postsToday > 0 || messagesToday > 0 || escalationsToday > 0 {
 		text += "\n\n📊 *Today:*"
@@ -780,18 +852,18 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 			text += fmt.Sprintf(" %d escalation(s)", escalationsToday)
 		}
 	}
-	
+
 	// Count unread customer messages (escalations pending tenant response)
 	var unreadCount int64
 	h.Manager.DB.Model(&storage.Interaction{}).
 		Where("tenant_id = ? AND response_status = ? AND response_type = ?", tenantID, "pending", "escalated").
 		Count(&unreadCount)
-	
+
 	// Show unread messages indicator
 	if unreadCount > 0 {
 		text += fmt.Sprintf("\n\n🔔 *%d unread message(s)*", unreadCount)
 	}
-	
+
 	text += "\n\n📱 *Platform Status:*"
 	for platform, connected := range platformStatus {
 		statusIcon := "❌"
@@ -800,9 +872,9 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 		}
 		text += fmt.Sprintf("\n%s %s", statusIcon, strings.Title(platform))
 	}
-	
+
 	text += "\n\nWhat would you like to do?"
-	
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📱 Connect Social Accounts", "menu:connect"),
@@ -1537,13 +1609,13 @@ func (h *TenantWebhookHandler) handlePostingWorkflowCallback(bot *tgbotapi.BotAP
 	}
 
 	ctx := context.Background()
-	
+
 	// Parse callback action
 	parts := strings.Split(arg, ":")
 	if len(parts) < 1 {
 		return
 	}
-	
+
 	action := parts[0]
 	var subAction string
 	var platform string

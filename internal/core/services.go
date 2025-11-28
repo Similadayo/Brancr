@@ -36,20 +36,20 @@ type Services struct {
 	// Bot Services
 	BotManager        *bot.TenantBotManager
 	EscalationHandler *bot.EscalationHandler
-	
+
 	// Workflow Services
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 
 	// Social Services
-	MessageHandler           *social.MessageHandler
-	MetaWebhookHandler       *social.MetaWebhookHandler
-	RespondIOWebhookHandler  *social.RespondIOWebhookHandler
-	GupshupWebhookHandler    *social.GupshupWebhookHandler
-	GupshupPartnerClient     *social.GupshupPartnerClient
-	MetaOAuthHandler         *social.MetaOAuthHandler
-	Scheduler                *social.Scheduler
-	EmbeddedSignupHandler    *social.EmbeddedSignupHandler
-	TikTokOAuthHandler       *social.TikTokOAuthHandler
+	MessageHandler          *social.MessageHandler
+	MetaWebhookHandler      *social.MetaWebhookHandler
+	RespondIOWebhookHandler *social.RespondIOWebhookHandler
+	GupshupWebhookHandler   *social.GupshupWebhookHandler
+	GupshupPartnerClient    *social.GupshupPartnerClient
+	MetaOAuthHandler        *social.MetaOAuthHandler
+	Scheduler               *social.Scheduler
+	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
+	TikTokOAuthHandler      *social.TikTokOAuthHandler
 
 	// Analytics Services
 	AnalyticsService *analytics.Service
@@ -140,16 +140,16 @@ func (s *Services) initEscalationHandler() error {
 		DB:     s.DB,
 		Logger: s.Logger,
 	}
-	
+
 	escalationHandler := &bot.EscalationHandler{
-		DB:             s.DB,
-		Logger:         s.Logger,
-		Manager:        s.BotManager,
+		DB:              s.DB,
+		Logger:          s.Logger,
+		Manager:         s.BotManager,
 		PaymentSecurity: paymentSecurity,
 	}
 	s.EscalationHandler = escalationHandler
-	
-	// Note: MessageHandler will be set later in initSocial, 
+
+	// Note: MessageHandler will be set later in initSocial,
 	// so we'll need to link them after both are initialized
 	return nil
 }
@@ -226,9 +226,13 @@ func (s *Services) initSocial() error {
 	// Link MessageHandler to EscalationHandler for sending replies
 	if s.EscalationHandler != nil {
 		s.EscalationHandler.SetMessageHandler(messageHandler)
-		// Also link EscalationHandler to BotManager for easy access
+		// Also link EscalationHandler and MessageHandler to BotManager for easy access
 		if s.BotManager != nil {
 			s.BotManager.EscalationHandler = s.EscalationHandler
+			s.BotManager.MessageHandler = messageHandler
+			// Set BotGetter on MessageHandler so it can send Telegram replies
+			// Create a wrapper that implements BotGetter interface
+			messageHandler.BotGetter = &botGetterWrapper{manager: s.BotManager}
 		}
 	}
 
@@ -268,12 +272,12 @@ func (s *Services) initSocial() error {
 
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
-	
+
 	// Set scheduler on BotManager for immediate post execution
 	if s.BotManager != nil {
 		s.BotManager.Scheduler = scheduler
 	}
-	
+
 	if s.BotManager != nil {
 		scheduler.PostNotifier = func(ctx context.Context, tenantID uint, platform string, success bool, message string) {
 			if s.BotManager == nil {
@@ -283,12 +287,12 @@ func (s *Services) initSocial() error {
 				// Enhanced success message with performance preview
 				preview := fmt.Sprintf(
 					"✅ %s\n\n"+
-					"📊 *Performance Preview*\n"+
-					"Analytics will be available in:\n"+
-					"• Views & Engagement (24hrs)\n"+
-					"• Likes & Comments (real-time)\n"+
-					"• Reach & Impressions (48hrs)\n\n"+
-					"💡 _Check back tomorrow for detailed insights. Use 'analytics' to view your stats._",
+						"📊 *Performance Preview*\n"+
+						"Analytics will be available in:\n"+
+						"• Views & Engagement (24hrs)\n"+
+						"• Likes & Comments (real-time)\n"+
+						"• Reach & Impressions (48hrs)\n\n"+
+						"💡 _Check back tomorrow for detailed insights. Use 'analytics' to view your stats._",
 					message)
 				s.BotManager.NotifyOwnerWithMarkdown(tenantID, preview)
 			} else {
@@ -344,17 +348,30 @@ func (s *Services) initWorkflows() error {
 		s.MemoryService,
 		s.BotManager,
 	)
-	
+
 	s.WorkflowOrchestrator = orchestrator
-	
+
 	// Set orchestrator on BotManager for easy access
 	if s.BotManager != nil {
 		s.BotManager.WorkflowOrchestrator = orchestrator
 	}
-	
+
 	// Set bot for posting workflow after orchestrator is created
 	// We'll set it when a bot is available per tenant
-	
+
 	s.Logger.Info("✅ Workflow orchestrator initialized")
 	return nil
+}
+
+// botGetterWrapper wraps TenantBotManager to implement social.BotGetter interface
+type botGetterWrapper struct {
+	manager *bot.TenantBotManager
+}
+
+func (w *botGetterWrapper) GetBot(tenantID uint) (interface{}, bool) {
+	bot, ok := w.manager.GetBot(tenantID)
+	if !ok {
+		return nil, false
+	}
+	return bot, true
 }

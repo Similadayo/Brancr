@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
@@ -18,17 +20,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// BotGetter interface for getting Telegram bot instances
+type BotGetter interface {
+	GetBot(tenantID uint) (interface{}, bool) // Returns (*tgbotapi.BotAPI, bool) but using interface{} to avoid circular dependency
+}
+
 // MessageHandler processes incoming messages from social platforms
 type MessageHandler struct {
-	DB             *gorm.DB
-	Logger         *zap.Logger
-	IntentDetector *ai.IntentDetector
-	Responder      *ai.CustomerResponder
-	SystemToken    string           // Brancr's system user token for provider-owned WhatsApp model (legacy)
-	RespondIO      *RespondIOClient // Respond.io API client for WhatsApp integration
-	Gupshup        *GupshupClient   // Gupshup API client for WhatsApp integration (legacy)
+	DB               *gorm.DB
+	Logger           *zap.Logger
+	IntentDetector   *ai.IntentDetector
+	Responder        *ai.CustomerResponder
+	SystemToken      string           // Brancr's system user token for provider-owned WhatsApp model (legacy)
+	RespondIO        *RespondIOClient // Respond.io API client for WhatsApp integration
+	Gupshup          *GupshupClient   // Gupshup API client for WhatsApp integration (legacy)
 	WhatsAppProvider WhatsAppProvider // Gupshup Partner API provider for multi-tenant WhatsApp
-	EscalationFunc func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
+	EscalationFunc   func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
+	BotGetter        BotGetter // Optional: for Telegram message sending
 }
 
 // IncomingMessage represents a message from a social platform
@@ -47,7 +55,19 @@ type IncomingMessage struct {
 }
 
 // ProcessMessage handles an incoming message: detects intent, decides auto-reply or escalation
-func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage) error {
+// Accepts interface{} to allow flexible usage, performs type assertion to IncomingMessage
+func (h *MessageHandler) ProcessMessage(ctx context.Context, msg interface{}) error {
+	// Type assert to IncomingMessage
+	incomingMsg, ok := msg.(IncomingMessage)
+	if !ok {
+		return fmt.Errorf("invalid message type: expected IncomingMessage, got %T", msg)
+	}
+
+	return h.processMessageInternal(ctx, incomingMsg)
+}
+
+// processMessageInternal contains the actual message processing logic
+func (h *MessageHandler) processMessageInternal(ctx context.Context, msg IncomingMessage) error {
 	// Step 1: Track or create customer
 	customer, err := h.trackCustomer(ctx, msg)
 	if err != nil {
@@ -109,7 +129,7 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 	// Escalate immediately for sensitive cases: payments, refunds, complaints, financial matters
 	// Payment messages should ALWAYS be escalated - never auto-reply to financial transactions
 	shouldEscalateImmediately := intent.Intent == "payment" ||
-		(intent.Intent == "refund" && intent.Tone == "negative") || 
+		(intent.Intent == "refund" && intent.Tone == "negative") ||
 		(intent.Intent == "complaint" && intent.Confidence > 0.7) ||
 		// Also escalate if message contains payment-related keywords (double-check)
 		strings.Contains(strings.ToLower(msg.Content), "paid") ||
@@ -117,7 +137,7 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 		strings.Contains(strings.ToLower(msg.Content), "naira") ||
 		strings.Contains(strings.ToLower(msg.Content), "dollar") ||
 		strings.Contains(strings.ToLower(msg.Content), "transaction")
-	
+
 	// Very low confidence (< 0.3) means we can't understand the message - escalate
 	shouldTryAutoReply := intent.Confidence >= 0.3
 
@@ -189,17 +209,17 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg IncomingMessage
 func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, msg IncomingMessage, customer *storage.Customer, interactionID uint, conversationID uint) {
 	// Check if there's a recent escalated interaction in this conversation (within last 24 hours)
 	cutoffTime := time.Now().Add(-24 * time.Hour)
-	
+
 	var recentEscalatedInteraction storage.Interaction
 	query := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ? AND response_type = ? AND response_status = ? AND created_at > ?",
 		msg.TenantID, customer.ID, msg.Platform, "manual", "sent", cutoffTime).
 		Order("created_at DESC").First(&recentEscalatedInteraction)
-	
+
 	if query.Error != nil {
 		// No recent escalated interaction - this is a new conversation
 		return
 	}
-	
+
 	// Found a recent escalated reply - this is a follow-up!
 	// Log for now - we can enhance this later to send notifications
 	h.Logger.Info("📬 Customer follow-up after escalated conversation",
@@ -207,7 +227,7 @@ func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, 
 		zap.Uint("original_interaction_id", recentEscalatedInteraction.ID),
 		zap.Uint("new_interaction_id", interactionID),
 		zap.String("customer_message", msg.Content))
-	
+
 	// TODO: Send notification to tenant via EscalationHandler about this follow-up
 	// This will be handled after the main reply logic decides what to do
 }
@@ -221,7 +241,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if err == nil {
 		// Update last message time
 		customer.LastMessageAt = msg.Timestamp
-		
+
 		// Update customer name if we have a better one from the message
 		if customer.DisplayName == "" {
 			// Try to extract name from message content
@@ -232,12 +252,12 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 				customer.DisplayName = msg.CustomerName
 			}
 		}
-		
+
 		// Update username if we have a better one
 		if customer.Username == "" && msg.CustomerUsername != "" {
 			customer.Username = msg.CustomerUsername
 		}
-		
+
 		h.DB.Save(&customer)
 		return &customer, nil
 	}
@@ -247,7 +267,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if extractedName != "" && msg.CustomerName == "" {
 		msg.CustomerName = extractedName
 	}
-	
+
 	// Create new customer
 	customer = storage.Customer{
 		TenantID:      msg.TenantID,
@@ -347,6 +367,11 @@ func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessa
 
 // sendReply sends a reply to the customer on the platform
 func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, reply string) error {
+	// Handle Telegram differently - it doesn't use social accounts
+	if msg.Platform == "telegram" {
+		return h.sendTelegramReply(ctx, msg, reply)
+	}
+
 	// Get social account with all fields (especially ExternalID)
 	var acc storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?",
@@ -373,6 +398,50 @@ func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, rep
 	default:
 		return fmt.Errorf("reply sending not implemented for %s", msg.Platform)
 	}
+}
+
+// sendTelegramReply sends a reply via Telegram bot
+func (h *MessageHandler) sendTelegramReply(ctx context.Context, msg IncomingMessage, reply string) error {
+	if h.BotGetter == nil {
+		return fmt.Errorf("bot getter not configured for Telegram replies")
+	}
+
+	// Get bot instance
+	botInterface, ok := h.BotGetter.GetBot(msg.TenantID)
+	if !ok {
+		return fmt.Errorf("telegram bot not found for tenant %d", msg.TenantID)
+	}
+
+	// Type assert to get the actual bot
+	bot, ok := botInterface.(*tgbotapi.BotAPI)
+	if !ok {
+		return fmt.Errorf("invalid bot type for tenant %d", msg.TenantID)
+	}
+
+	// Parse chat ID from thread ID (which is the Telegram chat ID)
+	chatID, err := strconv.ParseInt(msg.ThreadID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid telegram chat ID: %w", err)
+	}
+
+	// Send message via Telegram bot
+	telegramMsg := tgbotapi.NewMessage(chatID, reply)
+	telegramMsg.ParseMode = "Markdown"
+
+	if _, err := bot.Send(telegramMsg); err != nil {
+		h.Logger.Error("failed to send telegram reply",
+			zap.Uint("tenant_id", msg.TenantID),
+			zap.Int64("chat_id", chatID),
+			zap.Error(err))
+		return fmt.Errorf("failed to send telegram message: %w", err)
+	}
+
+	h.Logger.Info("✅ Telegram message sent successfully",
+		zap.Uint("tenant_id", msg.TenantID),
+		zap.Int64("chat_id", chatID),
+		zap.String("message_preview", truncateString(reply, 50)))
+
+	return nil
 }
 
 // sendInstagramReply sends a reply via Instagram Messaging API
