@@ -4482,9 +4482,24 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 			// Outgoing messages: prefer final_reply, fallback to content
 			if i.FinalReply != "" {
 				displayContent = i.FinalReply
+			} else if i.Content != "" {
+				displayContent = i.Content
 			}
 		}
 		// For incoming messages, displayContent already equals i.Content, which is correct
+
+		// Log each message being added (for debugging)
+		if i.Direction == "outgoing" {
+			h.Logger.Info("including outgoing message in response",
+				zap.Uint("interaction_id", i.ID),
+				zap.String("content_preview", func() string {
+					preview := displayContent
+					if len(preview) > 50 {
+						return preview[:50] + "..."
+					}
+					return preview
+				}()))
+		}
 
 		messages = append(messages, interactionResp{
 			ID:             i.ID,
@@ -4501,6 +4516,29 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Log final message count breakdown
+	outgoingInResponse := 0
+	incomingInResponse := 0
+	for _, msg := range messages {
+		if msg.Direction == "outgoing" {
+			outgoingInResponse++
+		} else if msg.Direction == "incoming" {
+			incomingInResponse++
+		}
+	}
+	h.Logger.Info("conversation response prepared",
+		zap.Uint("conversation_id", conversation.ID),
+		zap.Int("total_messages", len(messages)),
+		zap.Int("incoming_messages", incomingInResponse),
+		zap.Int("outgoing_messages", outgoingInResponse))
+
+	// Ensure we're returning ALL messages - log if any are missing
+	if len(messages) != len(interactions) {
+		h.Logger.Warn("message count mismatch",
+			zap.Int("interactions_fetched", len(interactions)),
+			zap.Int("messages_in_response", len(messages)))
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":              conversation.ID,
 		"customer_id":     conversation.CustomerID,
@@ -4508,7 +4546,7 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		"customer_avatar": customer.ProfilePicURL,
 		"platform":        conversation.Platform,
 		"status":          conversation.Status,
-		"messages":        messages,
+		"messages":        messages, // This includes ALL messages (incoming + outgoing)
 		"created_at":      conversation.CreatedAt,
 		"updated_at":      conversation.UpdatedAt,
 	})
@@ -4644,21 +4682,32 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.DB.Create(&interaction).Error; err != nil {
-		h.Logger.Error("failed to create interaction", zap.Error(err))
+		h.Logger.Error("failed to create interaction",
+			zap.Error(err),
+			zap.Uint("conversation_id", conversation.ID),
+			zap.String("message_preview", func() string {
+				if len(req.Message) > 50 {
+					return req.Message[:50] + "..."
+				}
+				return req.Message
+			}()))
 		http.Error(w, "failed to save interaction", http.StatusInternalServerError)
 		return
 	}
 
-	h.Logger.Info("created outgoing interaction",
+	// Verify the interaction was created with correct values
+	msgPreview := req.Message
+	if len(msgPreview) > 50 {
+		msgPreview = msgPreview[:50] + "..."
+	}
+	h.Logger.Info("✅ created outgoing interaction",
 		zap.Uint("interaction_id", interaction.ID),
 		zap.Uint("conversation_id", conversation.ID),
+		zap.Uint("tenant_id", claims.TenantID),
 		zap.String("direction", interaction.Direction),
-		zap.String("content_preview", func() string {
-			if len(req.Message) > 50 {
-				return req.Message[:50] + "..."
-			}
-			return req.Message
-		}()))
+		zap.String("response_type", interaction.ResponseType),
+		zap.String("response_status", interaction.ResponseStatus),
+		zap.String("content_preview", msgPreview))
 
 	// Reload interaction to get all populated fields (timestamps, etc.)
 	if err := h.DB.First(&interaction, interaction.ID).Error; err != nil {
