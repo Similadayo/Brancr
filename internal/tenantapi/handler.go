@@ -46,12 +46,13 @@ type Handler struct {
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 	Scheduler            *social.Scheduler
 	AIClient             *ai.AIClient
+	MessageHandler       *social.MessageHandler // For sending replies via MessageHandler
 
 	signupCache sync.Map
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient) *Handler {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler) *Handler {
 	return &Handler{
 		DB:                   db,
 		Logger:               logger,
@@ -61,6 +62,7 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 		WorkflowOrchestrator: orchestrator,
 		Scheduler:            scheduler,
 		AIClient:             aiClient,
+		MessageHandler:       messageHandler,
 	}
 }
 
@@ -495,21 +497,21 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := make([]integration, 0, len(accounts)+1) // +1 for Telegram
-	
+
 	// Add Telegram bot integration status
 	var tenant storage.Tenant
 	if err := h.DB.First(&tenant, claims.TenantID).Error; err == nil {
 		// Telegram is considered connected if bot token exists
 		// OwnerTelegramID is optional - can be set later during onboarding
 		telegramConnected := tenant.TelegramBotToken != ""
-		
+
 		// If we have a bot token but no username, try to get it from bot instance
 		botUsername := tenant.BotUsername
 		if botUsername == "" && telegramConnected {
 			// Try to get bot username from token (optional enhancement)
 			// For now, just use what's stored
 		}
-		
+
 		telegramIg := integration{
 			ID:        0, // Telegram doesn't have a SocialAccount ID
 			Platform:  "telegram",
@@ -520,7 +522,7 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 		}
 		resp = append(resp, telegramIg)
 	}
-	
+
 	for _, acc := range accounts {
 		ig := integration{
 			ID:         acc.ID,
@@ -4522,22 +4524,78 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get social account for the platform
-	var account storage.SocialAccount
-	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, conversation.Platform).
-		First(&account).Error; err != nil {
-		http.Error(w, fmt.Sprintf("%s account not connected", conversation.Platform), http.StatusBadRequest)
-		return
-	}
-
-	// Create message handler to send reply
 	ctx := r.Context()
-	// MessageHandler requires specific fields, so we'll call platform-specific functions directly
-	err := h.sendPlatformReply(ctx, conversation.Platform, &account, &customer, req.Message)
-	if err != nil {
-		h.Logger.Error("failed to send reply", zap.Error(err))
-		http.Error(w, fmt.Sprintf("failed to send reply: %v", err), http.StatusInternalServerError)
-		return
+	var err error
+
+	// Handle Telegram differently - it uses bot directly, not SocialAccount
+	if conversation.Platform == "telegram" {
+		// Get customer's Telegram chat ID from conversation or customer metadata
+		var chatID int64
+		threadID := conversation.PlatformThreadID
+		if threadID != "" {
+			// Parse threadID as chat ID
+			if parsed, err := strconv.ParseInt(threadID, 10, 64); err == nil {
+				chatID = parsed
+			}
+		}
+
+		if chatID == 0 {
+			// Try to get from customer metadata in last interaction
+			var lastInteraction storage.Interaction
+			if h.DB.Where("conversation_id = ? AND direction = ?", conversation.ID, "incoming").
+				Order("created_at DESC").First(&lastInteraction).Error == nil {
+				if metadataStr := lastInteraction.Metadata; metadataStr != "" {
+					var metadata map[string]interface{}
+					if json.Unmarshal([]byte(metadataStr), &metadata) == nil {
+						if id, ok := metadata["telegram_chat_id"].(float64); ok {
+							chatID = int64(id)
+						}
+					}
+				}
+			}
+		}
+
+		if chatID == 0 {
+			// Use customer PlatformID as fallback (Telegram user ID stored there)
+			if parsed, err := strconv.ParseInt(customer.PlatformID, 10, 64); err == nil {
+				chatID = parsed
+			}
+		}
+
+		if chatID == 0 {
+			http.Error(w, "could not determine Telegram chat ID for customer", http.StatusBadRequest)
+			return
+		}
+
+		// Use MessageHandler to send Telegram reply (it has access to bot)
+		if h.MessageHandler == nil {
+			http.Error(w, "message handler not available", http.StatusInternalServerError)
+			return
+		}
+
+		// Use MessageHandler's SendReply method (public method with different signature)
+		err = h.MessageHandler.SendReply(ctx, claims.TenantID, conversation.Platform, fmt.Sprintf("%d", chatID), customer.PlatformID, req.Message)
+		if err != nil {
+			h.Logger.Error("failed to send telegram reply", zap.Error(err))
+			http.Error(w, fmt.Sprintf("failed to send reply: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// For other platforms, use SocialAccount
+		var account storage.SocialAccount
+		if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, conversation.Platform, true).
+			First(&account).Error; err != nil {
+			http.Error(w, fmt.Sprintf("%s account not connected", conversation.Platform), http.StatusBadRequest)
+			return
+		}
+
+		// Use platform-specific reply sending
+		err = h.sendPlatformReply(ctx, conversation.Platform, &account, &customer, req.Message)
+		if err != nil {
+			h.Logger.Error("failed to send reply", zap.Error(err))
+			http.Error(w, fmt.Sprintf("failed to send reply: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Create interaction record
