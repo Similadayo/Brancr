@@ -4433,14 +4433,37 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	var customer storage.Customer
 	h.DB.Where("id = ?", conversation.CustomerID).First(&customer)
 
-	// Get all interactions (both incoming and outgoing) - no filtering by direction
+	// Get all interactions (both incoming and outgoing) - explicitly include ALL directions
+	// No filtering - we want both incoming (direction='incoming') and outgoing (direction='outgoing')
 	var interactions []storage.Interaction
 	if err := h.DB.Where("conversation_id = ?", conversation.ID).
 		Order("created_at ASC").
 		Find(&interactions).Error; err != nil {
-		h.Logger.Error("failed to fetch interactions", zap.Error(err))
+		h.Logger.Error("failed to fetch interactions",
+			zap.Error(err),
+			zap.Uint("conversation_id", conversation.ID))
 		// Continue with empty messages array
 		interactions = []storage.Interaction{}
+	}
+
+	// Verify we're getting all interactions - double check with a separate query for outgoing
+	var outgoingCheck []storage.Interaction
+	h.DB.Where("conversation_id = ? AND direction = ?", conversation.ID, "outgoing").
+		Find(&outgoingCheck)
+	if len(outgoingCheck) > 0 && len(interactions) > 0 {
+		// Count outgoing in main query
+		outgoingInMain := 0
+		for _, i := range interactions {
+			if i.Direction == "outgoing" {
+				outgoingInMain++
+			}
+		}
+		if outgoingInMain != len(outgoingCheck) {
+			h.Logger.Warn("outgoing interaction count mismatch",
+				zap.Uint("conversation_id", conversation.ID),
+				zap.Int("outgoing_in_main_query", outgoingInMain),
+				zap.Int("outgoing_in_separate_query", len(outgoingCheck)))
+		}
 	}
 
 	// Log for debugging - count incoming vs outgoing

@@ -371,7 +371,7 @@ func (h *EscalationHandler) sendApprovedReply(ctx context.Context, esc *PendingE
 		return fmt.Errorf("failed to send reply: %w", sendErr)
 	}
 	
-	// Update interaction
+	// Update incoming interaction
 	now := time.Now()
 	interaction.ResponseType = "manual"
 	interaction.ResponseStatus = "sent"
@@ -379,6 +379,26 @@ func (h *EscalationHandler) sendApprovedReply(ctx context.Context, esc *PendingE
 	interaction.EscalatedTo = esc.ChatID
 	interaction.EscalatedAt = &now
 	h.DB.Save(&interaction)
+	
+	// Create outgoing interaction record (so it appears in conversation history)
+	outgoingInteraction := storage.Interaction{
+		TenantID:       esc.TenantID,
+		CustomerID:     esc.CustomerID,
+		ConversationID: interaction.ConversationID,
+		Platform:       esc.Platform,
+		Direction:      "outgoing",
+		MessageType:    "text",
+		Content:        reply,
+		ResponseType:   "manual",
+		ResponseStatus: "sent",
+		FinalReply:     reply,
+		EscalatedTo:    esc.ChatID,
+		EscalatedAt:    &now,
+	}
+	if err := h.DB.Create(&outgoingInteraction).Error; err != nil {
+		h.Logger.Warn("failed to create outgoing interaction for escalation reply", zap.Error(err))
+		// Continue - not critical, but log it
+	}
 	
 	// Remove from pending
 	delete(pendingEscalations, esc.InteractionID)

@@ -186,11 +186,32 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		return nil
 	}
 
-	// Step 8: Update interaction
+	// Step 8: Update incoming interaction
 	interaction.ResponseType = "auto_reply"
 	interaction.ResponseStatus = "sent"
 	interaction.FinalReply = reply
 	h.DB.Save(&interaction)
+
+	// Step 8.5: Create outgoing interaction record (so it appears in conversation history)
+	outgoingInteraction := storage.Interaction{
+		TenantID:       msg.TenantID,
+		CustomerID:     customer.ID,
+		ConversationID: conversationID,
+		Platform:       msg.Platform,
+		Direction:      "outgoing",
+		MessageType:    "text",
+		Content:        reply,
+		ResponseType:   "auto_reply",
+		ResponseStatus: "sent",
+		FinalReply:     reply,
+		DetectedIntent: intent.Intent,
+		DetectedTone:   intent.Tone,
+		Confidence:     intent.Confidence,
+	}
+	if err := h.DB.Create(&outgoingInteraction).Error; err != nil {
+		h.Logger.Warn("failed to create outgoing interaction for auto-reply", zap.Error(err))
+		// Continue - not critical, but log it
+	}
 
 	// Step 9: Save to conversation memory
 	h.saveToMemory(ctx, msg.TenantID, customer.ID, msg.Content, reply)
