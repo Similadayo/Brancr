@@ -38,14 +38,14 @@ const (
 )
 
 type Handler struct {
-	DB                  *gorm.DB
-	Logger              *zap.Logger
-	Config              *config.Config
-	Redis               *redis.Client
-	GupshupPartner      *social.GupshupPartnerClient
+	DB                   *gorm.DB
+	Logger               *zap.Logger
+	Config               *config.Config
+	Redis                *redis.Client
+	GupshupPartner       *social.GupshupPartnerClient
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
-	Scheduler           *social.Scheduler
-	AIClient            *ai.AIClient
+	Scheduler            *social.Scheduler
+	AIClient             *ai.AIClient
 
 	signupCache sync.Map
 	tokenCache  sync.Map
@@ -96,6 +96,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// Post-onboarding settings
 		r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
 		r.Put("/tenant/settings/persona", h.updatePersonaSettings)
+		r.Put("/tenant/settings/business-details", h.updateBusinessDetailsSettings)
 
 		r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 
@@ -138,9 +139,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
 		r.Post("/tenant/whatsapp/check-number", h.checkTenantPhoneNumber) // Check if number is ready to verify
 
-	// New simplified WhatsApp connection (Respond.io/Gupshup Partner)
-	r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
-	r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
+		// New simplified WhatsApp connection (Respond.io/Gupshup Partner)
+		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
+		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
 
 		// Legacy embedded signup (deprecated - keeping for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -335,7 +336,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-	
+
 	if req.Email == "" {
 		h.Logger.Warn("login: empty email provided")
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
@@ -479,18 +480,18 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type integration struct {
-		ID          uint       `json:"id"`
-		Platform    string     `json:"platform"`
-		Connected   bool       `json:"connected"`
-		Username    string     `json:"username"`
-		ExternalID  string     `json:"external_id"`
-		PageID      string     `json:"page_id"`
-		PageName    string     `json:"page_name,omitempty"`    // Facebook Page name (for Facebook and Instagram)
-		InstagramHandle string `json:"instagram_handle,omitempty"` // Instagram username/handle (for Instagram)
-		Mode        string     `json:"mode"`
-		ExpiresAt   *time.Time `json:"expires_at"`
-		CreatedAt   time.Time  `json:"created_at"`
-		UpdatedAt   time.Time  `json:"updated_at"`
+		ID              uint       `json:"id"`
+		Platform        string     `json:"platform"`
+		Connected       bool       `json:"connected"`
+		Username        string     `json:"username"`
+		ExternalID      string     `json:"external_id"`
+		PageID          string     `json:"page_id"`
+		PageName        string     `json:"page_name,omitempty"`        // Facebook Page name (for Facebook and Instagram)
+		InstagramHandle string     `json:"instagram_handle,omitempty"` // Instagram username/handle (for Instagram)
+		Mode            string     `json:"mode"`
+		ExpiresAt       *time.Time `json:"expires_at"`
+		CreatedAt       time.Time  `json:"created_at"`
+		UpdatedAt       time.Time  `json:"updated_at"`
 	}
 
 	resp := make([]integration, 0, len(accounts))
@@ -538,7 +539,7 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 // fetchFacebookPageName fetches the Facebook Page name from Graph API
 func (h *Handler) fetchFacebookPageName(ctx context.Context, pageID, accessToken string) (string, error) {
 	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=name&access_token=%s", pageID, url.QueryEscape(accessToken))
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
 	if err != nil {
 		return "", err
@@ -1300,7 +1301,7 @@ func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) 
 		// Keep phone number and channel ID for potential reconnection
 		// account.PageID = "" // Keep phone number
 		// account.ExternalID = "" // Keep channel ID
-		
+
 		if err := h.DB.Save(&account).Error; err != nil {
 			h.Logger.Error("failed to disconnect social account", zap.Error(err))
 			http.Error(w, "failed to disconnect", http.StatusInternalServerError)
@@ -1313,8 +1314,8 @@ func (h *Handler) disconnectPhoneNumber(w http.ResponseWriter, r *http.Request) 
 			zap.String("phone_number", account.PageID))
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"success": true,
-			"message": "WhatsApp disconnected successfully",
+			"success":  true,
+			"message":  "WhatsApp disconnected successfully",
 			"provider": account.Mode,
 		})
 		return
@@ -1489,7 +1490,7 @@ func (h *Handler) comprehensiveDiagnostics(w http.ResponseWriter, r *http.Reques
 		diagnostics["meta_status_check"] = map[string]any{
 			"success":                  true,
 			"verified_name":            metaStatus["verified_name"],
-			"quality_rating":            metaStatus["quality_rating"],
+			"quality_rating":           metaStatus["quality_rating"],
 			"code_verification_status": metaStatus["code_verification_status"],
 			"status":                   metaStatus["status"],
 		}
@@ -1582,10 +1583,10 @@ func (h *Handler) comprehensiveDiagnostics(w http.ResponseWriter, r *http.Reques
 	warnings := diagnostics["warnings"].([]string)
 
 	diagnostics["health"] = map[string]any{
-		"status":  map[bool]string{true: "healthy", false: "unhealthy"}[len(errors) == 0],
-		"errors":  errors,
+		"status":   map[bool]string{true: "healthy", false: "unhealthy"}[len(errors) == 0],
+		"errors":   errors,
 		"warnings": warnings,
-		"ready":   len(errors) == 0 && phoneSubscribed,
+		"ready":    len(errors) == 0 && phoneSubscribed,
 	}
 
 	writeJSON(w, http.StatusOK, diagnostics)
@@ -1675,7 +1676,7 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 		if locale == "" {
 			locale = "en_US" // Default locale
 		}
-		
+
 		if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNum.PhoneNumberID, codeMethod, locale); err != nil {
 			h.Logger.Error("failed to request verification code", zap.Error(err))
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -1725,7 +1726,7 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 	h.Logger.Info("phone number not in database pool, attempting to add to WABA",
 		zap.String("phone_number", phoneNumber),
 		zap.Uint("tenant_id", claims.TenantID))
-	
+
 	// Step 1: Try to add phone number to WABA via Meta API
 	phoneNumberID, err := social.RequestPhoneNumberFromMeta(h.Logger, h.Config, phoneNumber, req.DisplayName)
 	if err != nil {
@@ -1742,7 +1743,7 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 			h.Logger.Warn("failed to sync after adding number", zap.Error(err))
 		}
 	}
-	
+
 	// Step 2: Sync phone numbers from Meta to ensure DB is up-to-date
 	if err := social.SyncPhoneNumbersFromMeta(h.DB, h.Logger, h.Config); err != nil {
 		h.Logger.Warn("failed to sync phone numbers from Meta, proceeding with fallback", zap.Error(err))
@@ -1781,7 +1782,7 @@ func (h *Handler) requestTenantPhoneNumber(w http.ResponseWriter, r *http.Reques
 			if locale == "" {
 				locale = "en_US" // Default locale
 			}
-			
+
 			if err := social.RequestPhoneNumberVerificationCode(h.Logger, h.Config, phoneNumAfterSync.PhoneNumberID, codeMethod, locale); err != nil {
 				h.Logger.Error("failed to request verification code", zap.Error(err))
 				writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -1965,7 +1966,7 @@ func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":         true,
 			"phone_number_id": phoneNum.PhoneNumberID,
-			"phone_number":     phoneNum.PhoneNumber,
+			"phone_number":    phoneNum.PhoneNumber,
 			"message":         fmt.Sprintf("✅ Success! Your WhatsApp number %s is now connected and ready to receive messages.", phoneNum.PhoneNumber),
 			"automated":       true,
 		})
@@ -1988,8 +1989,8 @@ func (h *Handler) verifyTenantPhoneNumber(w http.ResponseWriter, r *http.Request
 		zap.String("phone_number", phoneRequest.PhoneNumber))
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
-		"message": "Verification code received. Admin will verify it with Meta and complete the setup. You'll be notified once your number is ready.",
+		"success":   true,
+		"message":   "Verification code received. Admin will verify it with Meta and complete the setup. You'll be notified once your number is ready.",
 		"automated": false,
 	})
 }
@@ -2067,20 +2068,90 @@ func (h *Handler) getOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get business profile and persona
+	// Get business profile (or create empty one if doesn't exist)
 	var profile storage.BusinessProfile
-	h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
+	if err := h.DB.Where("tenant_id = ?", tenant.ID).First(&profile).Error; err != nil {
+		// Profile doesn't exist, create empty one
+		profile = storage.BusinessProfile{
+			TenantID: tenant.ID,
+		}
+	}
 
+	// Get persona (or create empty one if doesn't exist)
 	var persona storage.Persona
-	h.DB.Where("tenant_id = ?", tenant.ID).First(&persona)
+	if err := h.DB.Where("tenant_id = ?", tenant.ID).First(&persona).Error; err != nil {
+		// Persona doesn't exist, create empty one
+		persona = storage.Persona{
+			TenantID: tenant.ID,
+		}
+	}
 
+	// Get business menu items
+	var menuItems []storage.BusinessMenuItem
+	h.DB.Where("tenant_id = ?", tenant.ID).Find(&menuItems)
+
+	// Get business FAQs
+	var faqs []storage.BusinessFAQ
+	h.DB.Where("tenant_id = ?", tenant.ID).Find(&faqs)
+
+	// Format menu items for response
+	menuItemsResp := make([]map[string]any, len(menuItems))
+	for i, item := range menuItems {
+		menuItemsResp[i] = map[string]any{
+			"id":          item.ID,
+			"name":        item.Name,
+			"category":    item.Category,
+			"price":       item.Price,
+			"description": item.Description,
+		}
+	}
+
+	// Format FAQs for response
+	faqsResp := make([]map[string]any, len(faqs))
+	for i, faq := range faqs {
+		faqsResp[i] = map[string]any{
+			"id":       faq.ID,
+			"question": faq.Question,
+			"answer":   faq.Answer,
+		}
+	}
+
+	// Format response with all business details
 	writeJSON(w, http.StatusOK, map[string]any{
-		"step":             tenant.OnboardingStep,
-		"complete":         tenant.OnboardingComplete,
-		"business_profile": profile,
-		"persona":          persona,
+		"step":        tenant.OnboardingStep,
+		"complete":    tenant.OnboardingComplete,
+		"tenant_name": tenant.Name,
+		"business_profile": map[string]any{
+			"name":            getStringOrEmpty(profile.Name),
+			"industry":        getStringOrEmpty(profile.Industry),
+			"description":     getStringOrEmpty(profile.Description),
+			"location":        getStringOrEmpty(profile.Location),
+			"website":         getStringOrEmpty(profile.Website),
+			"operating_hours": getStringOrEmpty(profile.OperatingHours),
+		},
+		"persona": map[string]any{
+			"bot_name":    getStringOrEmpty(persona.BotName),
+			"tone":        getStringOrEmpty(persona.Tone),
+			"language":    getStringOrEmpty(persona.Language),
+			"humor":       persona.Humor,
+			"style_notes": getStringOrEmpty(persona.StyleNotes),
+		},
+		"business_details": map[string]any{
+			"menu_items":     menuItemsResp,
+			"faqs":           faqsResp,
+			"keywords":       getStringOrEmpty(profile.Keywords),
+			"knowledge_base": getStringOrEmpty(profile.KnowledgeBase),
+		},
 		"has_telegram_bot": tenant.TelegramBotToken != "",
 	})
+}
+
+// Helper function to return empty string instead of empty value
+func getStringOrEmpty(s string) string {
+	if s == "" {
+		return ""
+	}
+	return s
 }
 
 func (h *Handler) updateBusinessProfile(w http.ResponseWriter, r *http.Request) {
@@ -2405,6 +2476,108 @@ func (h *Handler) updatePersonaSettings(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Persona updated"})
 }
 
+func (h *Handler) updateBusinessDetailsSettings(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		MenuItems []struct {
+			ID          *uint  `json:"id,omitempty"` // nil = new item, provided = update existing
+			Name        string `json:"name"`
+			Category    string `json:"category"`
+			Price       string `json:"price"`
+			Description string `json:"description"`
+		} `json:"menu_items"`
+		FAQs []struct {
+			ID       *uint  `json:"id,omitempty"` // nil = new FAQ, provided = update existing
+			Question string `json:"question"`
+			Answer   string `json:"answer"`
+		} `json:"faqs"`
+		Keywords      *string `json:"keywords"`
+		KnowledgeBase *string `json:"knowledge_base"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Update keywords and knowledge base if provided
+	var profile storage.BusinessProfile
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).First(&profile).Error; err != nil {
+		profile = storage.BusinessProfile{TenantID: claims.TenantID}
+		if err := h.DB.Create(&profile).Error; err != nil {
+			h.Logger.Error("failed to create business profile", zap.Error(err))
+		}
+	}
+
+	if req.Keywords != nil {
+		profile.Keywords = *req.Keywords
+	}
+	if req.KnowledgeBase != nil {
+		profile.KnowledgeBase = *req.KnowledgeBase
+	}
+	if req.Keywords != nil || req.KnowledgeBase != nil {
+		if err := h.DB.Save(&profile).Error; err != nil {
+			h.Logger.Error("failed to update business profile", zap.Error(err))
+		}
+	}
+
+	// Handle menu items: update existing, create new
+	for _, item := range req.MenuItems {
+		if item.ID != nil {
+			// Update existing menu item
+			var menuItem storage.BusinessMenuItem
+			if err := h.DB.Where("id = ? AND tenant_id = ?", *item.ID, claims.TenantID).First(&menuItem).Error; err == nil {
+				menuItem.Name = item.Name
+				menuItem.Category = item.Category
+				menuItem.Price = item.Price
+				menuItem.Description = item.Description
+				h.DB.Save(&menuItem)
+			}
+		} else {
+			// Create new menu item
+			menuItem := storage.BusinessMenuItem{
+				TenantID:    claims.TenantID,
+				Name:        item.Name,
+				Category:    item.Category,
+				Price:       item.Price,
+				Description: item.Description,
+			}
+			h.DB.Create(&menuItem)
+		}
+	}
+
+	// Handle FAQs: update existing, create new
+	for _, faq := range req.FAQs {
+		if faq.ID != nil {
+			// Update existing FAQ
+			var businessFAQ storage.BusinessFAQ
+			if err := h.DB.Where("id = ? AND tenant_id = ?", *faq.ID, claims.TenantID).First(&businessFAQ).Error; err == nil {
+				businessFAQ.Question = faq.Question
+				businessFAQ.Answer = faq.Answer
+				h.DB.Save(&businessFAQ)
+			}
+		} else {
+			// Create new FAQ
+			businessFAQ := storage.BusinessFAQ{
+				TenantID: claims.TenantID,
+				Question: faq.Question,
+				Answer:   faq.Answer,
+			}
+			h.DB.Create(&businessFAQ)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Business details updated",
+	})
+}
+
 // =======================
 // Scheduled posts updates & calendar
 // =======================
@@ -2449,7 +2622,7 @@ func (h *Handler) updateScheduledPost(w http.ResponseWriter, r *http.Request) {
 			post.Platforms = string(b)
 		}
 	}
-	
+
 	// Store old scheduled_at BEFORE updating
 	oldScheduledAt := post.ScheduledAt
 	var oldDate *time.Time
@@ -2457,7 +2630,7 @@ func (h *Handler) updateScheduledPost(w http.ResponseWriter, r *http.Request) {
 		normalized := time.Date(oldScheduledAt.Year(), oldScheduledAt.Month(), oldScheduledAt.Day(), 0, 0, 0, 0, time.UTC)
 		oldDate = &normalized
 	}
-	
+
 	if err := h.DB.Save(&post).Error; err != nil {
 		h.Logger.Error("failed to update scheduled post", zap.Error(err))
 		http.Error(w, "failed to update", http.StatusInternalServerError)
@@ -2467,12 +2640,12 @@ func (h *Handler) updateScheduledPost(w http.ResponseWriter, r *http.Request) {
 	// Update calendar: remove from old date, add to new date
 	if post.ScheduledAt != nil {
 		newDate := time.Date(post.ScheduledAt.Year(), post.ScheduledAt.Month(), post.ScheduledAt.Day(), 0, 0, 0, 0, time.UTC)
-		
+
 		// Remove from old date if date changed
 		if oldDate != nil && !oldDate.Equal(newDate) {
 			h.removePostFromCalendar(claims.TenantID, post.ID, *oldDate)
 		}
-		
+
 		// Add to new date (or update if same date)
 		h.updateCalendarForPost(claims.TenantID, post.ID, *post.ScheduledAt)
 	}
@@ -2571,7 +2744,7 @@ func (h *Handler) getCalendar(w http.ResponseWriter, r *http.Request) {
 	resp := make([]calendarEntry, 0, len(entries))
 	for _, entry := range entries {
 		dateKey := entry.Date.Format("2006-01-02")
-		
+
 		// Parse post IDs from entry
 		var postIDs []uint
 		if entry.Posts != "" && entry.Posts != "[]" {
@@ -2640,7 +2813,7 @@ func (h *Handler) getCalendarDay(w http.ResponseWriter, r *http.Request) {
 	// Get or create calendar entry
 	var entry storage.ContentCalendar
 	err = h.DB.Where("tenant_id = ? AND date = ?", claims.TenantID, normalizedDate).First(&entry).Error
-	
+
 	if err != nil {
 		// Create entry if doesn't exist
 		entry = storage.ContentCalendar{
@@ -2742,7 +2915,7 @@ func (h *Handler) createCalendarEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Date   string `json:"date"`   // YYYY-MM-DD
+		Date   string `json:"date"` // YYYY-MM-DD
 		Theme  string `json:"theme"`
 		Notes  string `json:"notes"`
 		Status string `json:"status"`
@@ -2854,7 +3027,7 @@ func (h *Handler) updateCalendarEntry(w http.ResponseWriter, r *http.Request) {
 	// Get or create entry
 	var entry storage.ContentCalendar
 	err = h.DB.Where("tenant_id = ? AND date = ?", claims.TenantID, normalizedDate).First(&entry).Error
-	
+
 	if err != nil {
 		// Create if doesn't exist
 		entry = storage.ContentCalendar{
@@ -2905,7 +3078,7 @@ func (h *Handler) updateCalendarEntry(w http.ResponseWriter, r *http.Request) {
 // removePostFromCalendar removes a post from a calendar entry
 func (h *Handler) removePostFromCalendar(tenantID uint, postID uint, date time.Time) {
 	normalizedDate := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
-	
+
 	var entry storage.ContentCalendar
 	if err := h.DB.Where("tenant_id = ? AND date = ?", tenantID, normalizedDate).First(&entry).Error; err != nil {
 		return // Entry doesn't exist, nothing to remove
@@ -3152,7 +3325,7 @@ func (h *Handler) listMedia(w http.ResponseWriter, r *http.Request) {
 	if err := query.Order("created_at DESC").Limit(limit).Find(&assets).Error; err != nil {
 		h.Logger.Error("failed to list media", zap.Error(err))
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "failed to list media",
+			"error":   "failed to list media",
 			"message": "An error occurred while fetching media assets",
 		})
 		return
@@ -3235,7 +3408,7 @@ func (h *Handler) getMedia(w http.ResponseWriter, r *http.Request) {
 	var asset storage.MediaAsset
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&asset).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error": "media not found",
+			"error":   "media not found",
 			"message": fmt.Sprintf("Media asset with ID %s not found", id),
 		})
 		return
@@ -3300,7 +3473,7 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 			zap.String("content_type", contentType),
 			zap.String("method", r.Method))
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "failed to parse multipart form",
+			"error":   "failed to parse multipart form",
 			"details": err.Error(),
 		})
 		return
@@ -3310,7 +3483,7 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 	var file multipart.File
 	var fileHeader *multipart.FileHeader
 	var err error
-	
+
 	fileNames := []string{"file", "media", "upload", "image", "video"}
 	for _, fieldName := range fileNames {
 		file, fileHeader, err = r.FormFile(fieldName)
@@ -3318,7 +3491,7 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	
+
 	if err != nil || file == nil {
 		// List available form fields for debugging
 		var availableFileFields []string
@@ -3331,7 +3504,7 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 				availableValueFields = append(availableValueFields, key)
 			}
 		}
-		
+
 		// Log all form fields for debugging
 		h.Logger.Warn("no file found in form",
 			zap.String("content_type", contentType),
@@ -3340,13 +3513,13 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 			zap.Strings("available_file_fields", availableFileFields),
 			zap.Strings("available_value_fields", availableValueFields),
 			zap.Error(err))
-		
+
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "file is required",
-			"message": "Please include a file with form field name: 'file', 'media', 'upload', 'image', or 'video'",
-			"available_file_fields": availableFileFields,
+			"error":                  "file is required",
+			"message":                "Please include a file with form field name: 'file', 'media', 'upload', 'image', or 'video'",
+			"available_file_fields":  availableFileFields,
 			"available_value_fields": availableValueFields,
-			"tried_fields": fileNames,
+			"tried_fields":           fileNames,
 		})
 		return
 	}
@@ -3394,14 +3567,14 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 	tagsJSON, _ := json.Marshal(tagsArray)
 
 	asset := storage.MediaAsset{
-		TenantID: claims.TenantID,
-		Type:     resourceType,
-		Name:     name,
-		URLs:     string(urlsJSON),
-		Status:   "uploaded",
+		TenantID:  claims.TenantID,
+		Type:      resourceType,
+		Name:      name,
+		URLs:      string(urlsJSON),
+		Status:    "uploaded",
 		Platforms: "[]",
-		Tags:     string(tagsJSON),
-		Campaign: campaign,
+		Tags:      string(tagsJSON),
+		Campaign:  campaign,
 	}
 
 	if err := h.DB.Create(&asset).Error; err != nil {
@@ -3551,7 +3724,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 				scheduledAt = &t
 			} else {
 				writeJSON(w, http.StatusBadRequest, map[string]any{
-					"error": "invalid scheduled_at",
+					"error":   "invalid scheduled_at",
 					"message": "scheduled_at must be RFC3339 format or 'now'",
 				})
 				return
@@ -3567,7 +3740,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	// Validate platforms
 	if len(req.Platforms) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "platforms required",
+			"error":   "platforms required",
 			"message": "At least one platform must be selected",
 		})
 		return
@@ -3587,7 +3760,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	if err := h.DB.Create(&post).Error; err != nil {
 		h.Logger.Error("failed to create post", zap.Error(err))
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "failed to create post",
+			"error":   "failed to create post",
 			"message": "An error occurred while creating the post",
 		})
 		return
@@ -3611,8 +3784,8 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": post.ID,
-		"status": post.Status,
+		"id":             post.ID,
+		"status":         post.Status,
 		"publishing_now": publishNow,
 	})
 }
@@ -3653,8 +3826,8 @@ func (h *Handler) publishPost(w http.ResponseWriter, r *http.Request) {
 	// Check if post can be published
 	if post.Status != "scheduled" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "post cannot be published",
-			"message": fmt.Sprintf("Post status is '%s'. Only 'scheduled' posts can be published.", post.Status),
+			"error":          "post cannot be published",
+			"message":        fmt.Sprintf("Post status is '%s'. Only 'scheduled' posts can be published.", post.Status),
 			"current_status": post.Status,
 		})
 		return
@@ -3663,7 +3836,7 @@ func (h *Handler) publishPost(w http.ResponseWriter, r *http.Request) {
 	// Execute post immediately
 	if h.Scheduler == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "scheduler not available",
+			"error":   "scheduler not available",
 			"message": "Post publishing service is not available",
 		})
 		return
@@ -3683,7 +3856,7 @@ func (h *Handler) publishPost(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "Post is being published now",
 		"post_id": postID,
-		"status": "posting",
+		"status":  "posting",
 	})
 }
 
@@ -3696,10 +3869,10 @@ func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		MediaID    *uint  `json:"media_id,omitempty"`    // Optional: to determine media type
-		Platform   string `json:"platform"`              // Required: instagram, facebook, tiktok, youtube, whatsapp
-		MediaType  string `json:"media_type,omitempty"`  // Optional: image, video, carousel (if not provided, inferred from media_id)
-		Context    string `json:"context,omitempty"`     // Optional: description/hint for caption generation
+		MediaID         *uint  `json:"media_id,omitempty"`         // Optional: to determine media type
+		Platform        string `json:"platform"`                   // Required: instagram, facebook, tiktok, youtube, whatsapp
+		MediaType       string `json:"media_type,omitempty"`       // Optional: image, video, carousel (if not provided, inferred from media_id)
+		Context         string `json:"context,omitempty"`          // Optional: description/hint for caption generation
 		OriginalCaption string `json:"original_caption,omitempty"` // Optional: existing caption to optimize
 	}
 
@@ -4474,16 +4647,16 @@ func (h *Handler) getEscalation(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"escalation": map[string]interface{}{
-			"id":                interaction.ID,
-			"customer":          customer,
-			"platform":          interaction.Platform,
-			"message":           interaction.Content,
-			"intent":            interaction.DetectedIntent,
-			"tone":              interaction.DetectedTone,
-			"confidence":        interaction.Confidence,
-			"suggested_reply":   interaction.SuggestedReply,
-			"created_at":        interaction.CreatedAt,
-			"conversation":      conversation,
+			"id":                   interaction.ID,
+			"customer":             customer,
+			"platform":             interaction.Platform,
+			"message":              interaction.Content,
+			"intent":               interaction.DetectedIntent,
+			"tone":                 interaction.DetectedTone,
+			"confidence":           interaction.Confidence,
+			"suggested_reply":      interaction.SuggestedReply,
+			"created_at":           interaction.CreatedAt,
+			"conversation":         conversation,
 			"conversation_history": conversationInteractions,
 		},
 	})
@@ -5150,13 +5323,13 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 
 	// Normalize phone number (optional for Gupshup Partner, required for Respond.io)
 	phoneNumber := strings.TrimSpace(req.PhoneNumber)
-	
+
 	// For Respond.io, phone number is required
 	if provider == "respondio" && phoneNumber == "" {
 		http.Error(w, "phone_number is required for Respond.io provider", http.StatusBadRequest)
 		return
 	}
-	
+
 	// For Gupshup Partner, phone number is optional (will be selected in Gupshup UI)
 	if phoneNumber != "" && !strings.HasPrefix(phoneNumber, "+") {
 		phoneNumber = "+" + phoneNumber
@@ -5169,7 +5342,7 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 			"error":   "already_connected",
 			"message": "You already have WhatsApp connected. Please disconnect first to connect a new number.",
 			"account": map[string]any{
-				"external_id": existingAccount.ExternalID,
+				"external_id":  existingAccount.ExternalID,
 				"phone_number": existingAccount.PageID,
 			},
 		})
@@ -5230,7 +5403,7 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			zap.Error(err),
 			zap.String("partner_id", h.Config.GupshupPartnerID),
 			zap.String("redirect_url", redirectURL))
-		
+
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error":   "onboarding_link_generation_failed",
 			"message": fmt.Sprintf("Failed to generate onboarding link: %v", err),
@@ -5258,11 +5431,11 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
 		"redirect_url":   redirectURL,
 		"troubleshooting": map[string]string{
-			"unauthorized_error": "If you see 'Unauthorised access' error, ensure:",
-			"step1":              "1. The redirect URL is whitelisted in Gupshup Partner Console → Settings → Whitelist URLs",
-			"step2":              "2. Your GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correct",
-			"step3":              "3. Your Partner API key has the correct permissions",
-			"console_url":        "https://partner.gupshup.io",
+			"unauthorized_error":    "If you see 'Unauthorised access' error, ensure:",
+			"step1":                 "1. The redirect URL is whitelisted in Gupshup Partner Console → Settings → Whitelist URLs",
+			"step2":                 "2. Your GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correct",
+			"step3":                 "3. Your Partner API key has the correct permissions",
+			"console_url":           "https://partner.gupshup.io",
 			"redirect_to_whitelist": redirectURL,
 		},
 	})
@@ -5298,7 +5471,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 	for _, channel := range channels {
 		channelType, _ := channel["type"].(string)
 		channelName, _ := channel["name"].(string)
-		
+
 		// Handle channel ID as string or number (e.g., 440617)
 		var channelID string
 		if idStr, ok := channel["id"].(string); ok {
@@ -5308,7 +5481,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		} else if idNum, ok := channel["id"].(int); ok {
 			channelID = fmt.Sprintf("%d", idNum)
 		}
-		
+
 		if status, ok := channel["status"].(string); ok {
 			channelStatus = status
 		} else if status, ok := channel["available"].(bool); ok {
@@ -5318,7 +5491,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 				channelStatus = "unavailable"
 			}
 		}
-		
+
 		h.Logger.Info("Found Respond.io channel",
 			zap.String("type", channelType),
 			zap.String("id", channelID),
@@ -5328,12 +5501,12 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 
 		// Look for WhatsApp channel (accept even if unavailable - we can still send messages)
 		// Match by type OR name contains "whatsapp" OR contains "wa" (abbreviation)
-		isWhatsApp := channelType == "whatsapp" || 
+		isWhatsApp := channelType == "whatsapp" ||
 			channelType == "wa" ||
 			channelType == "whatsapp_business_platform" ||
 			strings.Contains(strings.ToLower(channelName), "whatsapp") ||
 			strings.Contains(strings.ToLower(channelName), "wa business")
-		
+
 		if isWhatsApp && channelID != "" {
 			whatsappChannelID = channelID
 			if channelStatus != "" && channelStatus != "available" {
@@ -5346,7 +5519,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	// If no WhatsApp channel found but we have 0 channels total, 
+	// If no WhatsApp channel found but we have 0 channels total,
 	// the API might not be returning channels properly
 	// Allow fallback: use channel ID directly if provided in request
 	if whatsappChannelID == "" && manualChannelID != "" {
@@ -5361,7 +5534,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		h.Logger.Error("no WhatsApp channel found in Respond.io workspace",
 			zap.Int("total_channels", len(channels)),
 			zap.Any("all_channels", channels))
-		
+
 		// List available channel types and details for debugging
 		channelTypes := []string{}
 		channelDetails := []map[string]interface{}{}
@@ -5384,14 +5557,14 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 			}
 			channelDetails = append(channelDetails, chDetail)
 		}
-		
+
 		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "no_whatsapp_channel",
-			"message": "No WhatsApp channel found in Respond.io API response. The channel exists in dashboard (ID: 440617) but API returned 0 channels.",
-			"total_channels": len(channels),
-			"channel_types": channelTypes,
+			"error":           "no_whatsapp_channel",
+			"message":         "No WhatsApp channel found in Respond.io API response. The channel exists in dashboard (ID: 440617) but API returned 0 channels.",
+			"total_channels":  len(channels),
+			"channel_types":   channelTypes,
 			"channel_details": channelDetails,
-			"workaround": "Since channel ID 440617 exists in your dashboard, you can manually specify it by adding 'channel_id': '440617' to your request body.",
+			"workaround":      "Since channel ID 440617 exists in your dashboard, you can manually specify it by adding 'channel_id': '440617' to your request body.",
 			"troubleshooting": []string{
 				"1. The API returned 0 channels - this might be a permissions or endpoint issue",
 				"2. Your channel (ID: 440617) exists in dashboard but isn't returned by the API",
@@ -5400,8 +5573,8 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 			},
 			"example_request": map[string]any{
 				"phone_number": phoneNumber,
-				"provider": "respondio",
-				"channel_id": "440617", // Manual override
+				"provider":     "respondio",
+				"channel_id":   "440617", // Manual override
 			},
 		})
 		return
@@ -5417,7 +5590,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		"name": phoneNumber, // Use phone number as name initially
 		"channels": []map[string]interface{}{
 			{
-				"type": "whatsapp",
+				"type":  "whatsapp",
 				"value": phoneNumber,
 			},
 		},
@@ -5435,7 +5608,7 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 	if err == nil {
 		// Update existing account
 		account.Connected = true
-		account.PageID = phoneNumber        // Store phone number for reference
+		account.PageID = phoneNumber           // Store phone number for reference
 		account.ExternalID = whatsappChannelID // Store Respond.io WhatsApp channel ID
 		account.Mode = "respondio"
 		if err := h.DB.Save(&account).Error; err != nil {
@@ -5449,8 +5622,8 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 			TenantID:   tenantID,
 			Platform:   "whatsapp",
 			Connected:  true,
-			PageID:     phoneNumber,        // Store phone number for reference
-			ExternalID: whatsappChannelID,  // Store Respond.io WhatsApp channel ID (CRITICAL!)
+			PageID:     phoneNumber,       // Store phone number for reference
+			ExternalID: whatsappChannelID, // Store Respond.io WhatsApp channel ID (CRITICAL!)
 			Mode:       "respondio",
 			Username:   phoneNumber,
 		}
@@ -5467,13 +5640,13 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 		zap.String("channel_id", whatsappChannelID))
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":       true,
-		"provider":      "respondio",
-		"phone_number":  phoneNumber,
-		"channel_id":    whatsappChannelID,
-		"message":       fmt.Sprintf("✅ WhatsApp connected successfully via Respond.io! Your number %s is ready to receive messages.", phoneNumber),
-		"account_id":    account.ID,
-		"note":          "Respond.io uses a shared account. Messages will be sent from the configured Respond.io WhatsApp number to your customers.",
+		"success":      true,
+		"provider":     "respondio",
+		"phone_number": phoneNumber,
+		"channel_id":   whatsappChannelID,
+		"message":      fmt.Sprintf("✅ WhatsApp connected successfully via Respond.io! Your number %s is ready to receive messages.", phoneNumber),
+		"account_id":   account.ID,
+		"note":         "Respond.io uses a shared account. Messages will be sent from the configured Respond.io WhatsApp number to your customers.",
 	})
 }
 
@@ -5505,7 +5678,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			zap.String("error", errorMsg),
 			zap.String("error_description", errorDescription),
 			zap.String("raw_query", r.URL.RawQuery))
-		
+
 		// Map common Gupshup errors to user-friendly messages
 		var userMessage string
 		switch errorMsg {
@@ -5519,8 +5692,8 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 				userMessage += " - " + errorDescription
 			}
 		}
-		
-		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=%s&error_description=%s", 
+
+		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=%s&error_description=%s",
 			h.Config.FrontendURL, url.QueryEscape(errorMsg), url.QueryEscape(userMessage))
 		http.Redirect(w, r, errorURL, http.StatusFound)
 		return
@@ -5601,8 +5774,8 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		TenantID: uint(tenantID),
 		Platform: "whatsapp",
 	})
-	socialAcc.ExternalID = appID       // Gupshup App ID (for webhook routing)
-	socialAcc.PageID = phoneNumber     // Phone number
+	socialAcc.ExternalID = appID   // Gupshup App ID (for webhook routing)
+	socialAcc.PageID = phoneNumber // Phone number
 	socialAcc.Connected = (status == "live")
 	socialAcc.Mode = "gupshup_partner"
 	h.DB.Save(&socialAcc)
