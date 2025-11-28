@@ -4433,7 +4433,7 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	var customer storage.Customer
 	h.DB.Where("id = ?", conversation.CustomerID).First(&customer)
 
-	// Get all interactions (both incoming and outgoing)
+	// Get all interactions (both incoming and outgoing) - no filtering by direction
 	var interactions []storage.Interaction
 	if err := h.DB.Where("conversation_id = ?", conversation.ID).
 		Order("created_at ASC").
@@ -4442,6 +4442,22 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		// Continue with empty messages array
 		interactions = []storage.Interaction{}
 	}
+
+	// Log for debugging - count incoming vs outgoing
+	incomingCount := 0
+	outgoingCount := 0
+	for _, i := range interactions {
+		if i.Direction == "incoming" {
+			incomingCount++
+		} else if i.Direction == "outgoing" {
+			outgoingCount++
+		}
+	}
+	h.Logger.Info("fetched conversation interactions",
+		zap.Uint("conversation_id", conversation.ID),
+		zap.Int("total", len(interactions)),
+		zap.Int("incoming", incomingCount),
+		zap.Int("outgoing", outgoingCount))
 
 	type interactionResp struct {
 		ID             uint      `json:"id"`
@@ -4633,6 +4649,17 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.Logger.Info("created outgoing interaction",
+		zap.Uint("interaction_id", interaction.ID),
+		zap.Uint("conversation_id", conversation.ID),
+		zap.String("direction", interaction.Direction),
+		zap.String("content_preview", func() string {
+			if len(req.Message) > 50 {
+				return req.Message[:50] + "..."
+			}
+			return req.Message
+		}()))
+
 	// Reload interaction to get all populated fields (timestamps, etc.)
 	if err := h.DB.First(&interaction, interaction.ID).Error; err != nil {
 		h.Logger.Error("failed to reload interaction", zap.Error(err))
@@ -4658,6 +4685,12 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		CreatedAt      time.Time `json:"created_at"`
 	}
 
+	// Use same display logic as getConversation - for outgoing, use final_reply
+	displayContent := interaction.Content
+	if interaction.Direction == "outgoing" && interaction.FinalReply != "" {
+		displayContent = interaction.FinalReply
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "Reply sent successfully",
@@ -4665,7 +4698,7 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 			ID:             interaction.ID,
 			Direction:      interaction.Direction,
 			MessageType:    interaction.MessageType,
-			Content:        interaction.Content,
+			Content:        displayContent, // Use final_reply for outgoing messages
 			DetectedIntent: interaction.DetectedIntent,
 			DetectedTone:   interaction.DetectedTone,
 			ResponseType:   interaction.ResponseType,
