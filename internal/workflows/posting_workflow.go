@@ -10,6 +10,7 @@ package workflows
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -614,10 +615,19 @@ func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingF
 		DB:     w.DB,
 	}
 	
-	// Load media asset to determine media type
+	// Load media asset to determine media type and get image URLs
 	var asset storage.MediaAsset
 	if err := w.DB.First(&asset, state.MediaAssetID).Error; err != nil {
 		return fmt.Errorf("failed to load media asset: %w", err)
+	}
+	
+	// Extract image URLs from media asset
+	var imageURLs []string
+	if asset.URLs != "" {
+		var urls []string
+		if err := json.Unmarshal([]byte(asset.URLs), &urls); err == nil {
+			imageURLs = urls
+		}
 	}
 	
 	// Use first platform or default to instagram for caption generation
@@ -626,12 +636,13 @@ func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingF
 		platform = state.Platforms[0]
 	}
 	
-	// Generate caption with empty original (full AI generation)
+	// Generate caption with empty original (full AI generation) + image analysis
 	req := ai.OptimizeCaptionRequest{
 		OriginalCaption: "", // Empty means full AI generation
 		Platform:        platform,
 		MediaType:       asset.Type,
 		TenantID:        state.TenantID,
+		ImageURLs:       imageURLs, // Pass image URLs for analysis
 	}
 	
 	result, err := optimizer.OptimizeCaption(ctx, req)

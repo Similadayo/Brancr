@@ -100,13 +100,28 @@ func (p *ProactiveAssistant) EnhanceResponseWithProactiveSuggestions(
 	// Only add suggestions occasionally (not every message)
 	// Check conversation history to see if we've suggested recently
 	recentHistory := p.Memory.GetRecentTenantConversationHistory(ctx, tenantID, 5)
-	
+
 	// Check if we've suggested in last 3 messages
 	hasRecentSuggestion := false
 	for i := len(recentHistory) - 1; i >= 0 && i >= len(recentHistory)-3; i-- {
 		if recentHistory[i].Role == "assistant" {
 			content := recentHistory[i].Content
-			if strings.Contains(content, "💡") || strings.Contains(content, "suggestion") {
+			// Handle both string and ContentPart array
+			var contentStr string
+			switch v := content.(type) {
+			case string:
+				contentStr = v
+			case []ContentPart:
+				// Extract text from ContentPart array
+				for _, part := range v {
+					if part.Type == "text" {
+						contentStr += part.Text
+					}
+				}
+			default:
+				continue
+			}
+			if strings.Contains(contentStr, "💡") || strings.Contains(contentStr, "suggestion") {
 				hasRecentSuggestion = true
 				break
 			}
@@ -156,4 +171,3 @@ func parseJSONArray(response string, target interface{}) error {
 
 	return json.Unmarshal([]byte(response), target)
 }
-

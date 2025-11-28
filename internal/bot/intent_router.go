@@ -7,18 +7,18 @@ import (
 	"strings"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"go.uber.org/zap"
 )
 
 // IntentRouter uses AI to understand tenant intent and route to appropriate actions
 type IntentRouter struct {
-	Manager       *TenantBotManager
+	Manager        *TenantBotManager
 	IntentDetector *ai.IntentDetector
-	Classifier    *ai.Classifier
-	Emotion       *ai.EmotionAnalyzer
+	Classifier     *ai.Classifier
+	Emotion        *ai.EmotionAnalyzer
 }
 
 // NewIntentRouter creates a new intent-aware router
@@ -33,12 +33,12 @@ func NewIntentRouter(manager *TenantBotManager) *IntentRouter {
 
 // TenantIntent represents what the tenant wants to do
 type TenantIntent struct {
-	Action      string            // "schedule_post", "connect_account", "view_stats", "chat", etc.
-	Entity      string            // "instagram", "facebook", "post", etc.
-	Confidence  float64           // 0-1
-	Parameters  map[string]string // Extracted parameters (platform, post_name, etc.)
-	RawMessage  string
-	RequiresInput bool            // Whether more info is needed
+	Action        string            // "schedule_post", "connect_account", "view_stats", "chat", etc.
+	Entity        string            // "instagram", "facebook", "post", etc.
+	Confidence    float64           // 0-1
+	Parameters    map[string]string // Extracted parameters (platform, post_name, etc.)
+	RawMessage    string
+	RequiresInput bool // Whether more info is needed
 }
 
 // Route determines tenant intent and executes appropriate action
@@ -88,7 +88,18 @@ func (r *IntentRouter) detectTenantIntent(ctx context.Context, tenantID uint, me
 		// Extract last few user messages for context
 		for i := len(recentHistory) - 1; i >= 0 && i >= len(recentHistory)-3; i-- {
 			if recentHistory[i].Role == "user" {
-				historyContext += recentHistory[i].Content + "\n"
+				var contentStr string
+				switch v := recentHistory[i].Content.(type) {
+				case string:
+					contentStr = v
+				case []ai.ContentPart:
+					for _, part := range v {
+						if part.Type == "text" {
+							contentStr += part.Text
+						}
+					}
+				}
+				historyContext += contentStr + "\n"
 			}
 		}
 	}
@@ -191,7 +202,7 @@ func (r *IntentRouter) handleSchedulePost(bot *tgbotapi.BotAPI, tenantID uint, c
 
 	// If only one asset, start scheduling flow with it
 	if len(recentAssets) == 1 {
-			r.Manager.StartPostFlowWithWorkflow(bot, chatID, recentAssets[0].ID)
+		r.Manager.StartPostFlowWithWorkflow(bot, chatID, recentAssets[0].ID)
 		return true, nil
 	}
 
@@ -209,7 +220,7 @@ func (r *IntentRouter) handleSchedulePost(bot *tgbotapi.BotAPI, tenantID uint, c
 
 	// Use most recent
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("📅 Starting scheduling for your latest media. Or specify which post: \"schedule [post name]\".")))
-			r.Manager.StartPostFlowWithWorkflow(bot, chatID, recentAssets[0].ID)
+	r.Manager.StartPostFlowWithWorkflow(bot, chatID, recentAssets[0].ID)
 	return true, nil
 }
 
@@ -287,7 +298,7 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 
 	response := "*📅 Your Scheduled Posts:*\n\n"
 	var keyboardRows [][]tgbotapi.InlineKeyboardButton
-	
+
 	for i, post := range posts {
 		scheduledTime := "not set"
 		if post.ScheduledAt != nil {
@@ -296,12 +307,12 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 			if timezone == "" {
 				timezone = "UTC"
 			}
-			
+
 			loc, err := time.LoadLocation(timezone)
 			if err != nil {
 				loc = time.UTC
 			}
-			
+
 			// Convert UTC time to tenant's timezone for display
 			localTime := post.ScheduledAt.In(loc)
 			scheduledTime = localTime.Format("Jan 2, 3:04PM")
@@ -309,14 +320,14 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 				scheduledTime += fmt.Sprintf(" (%s)", timezone)
 			}
 		}
-		
+
 		var platforms []string
 		json.Unmarshal([]byte(post.Platforms), &platforms)
 		platformStr := strings.Join(platforms, ", ")
-		
-		response += fmt.Sprintf("%d. *%s*\n   📱 %s\n   ⏰ %s\n   Status: %s\n\n", 
+
+		response += fmt.Sprintf("%d. *%s*\n   📱 %s\n   ⏰ %s\n   Status: %s\n\n",
 			i+1, post.Name, platformStr, scheduledTime, post.Status)
-		
+
 		// Add cancel button for each post
 		postNameDisplay := post.Name
 		if len(postNameDisplay) > 25 {
@@ -328,11 +339,11 @@ func (r *IntentRouter) handleViewPosts(bot *tgbotapi.BotAPI, tenantID uint, chat
 		)
 		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelBtn})
 	}
-	
+
 	// Add "Cancel All" button
 	cancelAllBtn := tgbotapi.NewInlineKeyboardButtonData("🚫 Cancel All Posts", "post:cancel_all")
 	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{cancelAllBtn})
-	
+
 	msg := tgbotapi.NewMessage(chatID, response)
 	msg.ParseMode = "Markdown"
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(keyboardRows...)
@@ -392,7 +403,7 @@ func (r *IntentRouter) handleGetHelp(bot *tgbotapi.BotAPI, tenantID uint, chatID
 // fallbackIntentDetection provides keyword-based intent detection
 func (r *IntentRouter) fallbackIntentDetection(text string) *TenantIntent {
 	lower := strings.ToLower(text)
-	
+
 	intent := &TenantIntent{
 		Action:     "chat",
 		Confidence: 0.5,
@@ -481,4 +492,3 @@ func parseJSONResponse(response string, target interface{}) error {
 
 	return json.Unmarshal([]byte(response), target)
 }
-

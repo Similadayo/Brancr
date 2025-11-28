@@ -3888,12 +3888,23 @@ func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Platform = strings.ToLower(req.Platform)
 
-	// Determine media type - either from request, or from media asset
+	// Determine media type and extract image URLs - either from request, or from media asset
 	mediaType := req.MediaType
-	if mediaType == "" && req.MediaID != nil {
+	var imageURLs []string
+
+	if req.MediaID != nil {
 		var asset storage.MediaAsset
 		if err := h.DB.Where("id = ? AND tenant_id = ?", *req.MediaID, claims.TenantID).First(&asset).Error; err == nil {
-			mediaType = asset.Type
+			if mediaType == "" {
+				mediaType = asset.Type
+			}
+			// Extract image URLs from media asset
+			if asset.URLs != "" {
+				var urls []string
+				if err := json.Unmarshal([]byte(asset.URLs), &urls); err == nil {
+					imageURLs = urls
+				}
+			}
 		}
 	}
 	if mediaType == "" {
@@ -3918,12 +3929,13 @@ func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
 		originalCaption = req.Context
 	}
 
-	// Generate caption using AI
+	// Generate caption using AI with image analysis
 	aiReq := ai.OptimizeCaptionRequest{
 		OriginalCaption: originalCaption,
 		Platform:        req.Platform,
 		MediaType:       mediaType,
 		TenantID:        claims.TenantID,
+		ImageURLs:       imageURLs, // Pass image URLs for analysis
 	}
 
 	result, err := optimizer.OptimizeCaption(ctx, aiReq)

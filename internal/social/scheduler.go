@@ -47,6 +47,7 @@ type OptimizeCaptionRequest struct {
 	Platform        string
 	MediaType       string
 	TenantID        uint
+	ImageURLs       []string // Optional: URLs of images to analyze
 }
 
 type OptimizeCaptionResult struct {
@@ -110,7 +111,7 @@ func (s *Scheduler) ExecutePostImmediately(postID uint) error {
 	if err := s.DB.First(&p, postID).Error; err != nil {
 		return fmt.Errorf("post not found: %w", err)
 	}
-	
+
 	// Only execute if still in scheduled status (not already being processed)
 	if p.Status != "scheduled" {
 		s.Logger.Warn("post not in scheduled status, skipping immediate execution",
@@ -118,7 +119,7 @@ func (s *Scheduler) ExecutePostImmediately(postID uint) error {
 			zap.String("status", p.Status))
 		return fmt.Errorf("post status is %s, not scheduled", p.Status)
 	}
-	
+
 	// Claim the post by updating status to "posting"
 	tx := s.DB.Begin()
 	if err := tx.Model(&storage.ScheduledPost{}).Where("id = ? AND status = ?", postID, "scheduled").Update("status", "posting").Error; err != nil {
@@ -126,12 +127,12 @@ func (s *Scheduler) ExecutePostImmediately(postID uint) error {
 		return fmt.Errorf("failed to claim post: %w", err)
 	}
 	tx.Commit()
-	
+
 	// Reload to get updated status
 	if err := s.DB.First(&p, postID).Error; err != nil {
 		return fmt.Errorf("failed to reload post: %w", err)
 	}
-	
+
 	// Execute in background
 	go s.executePost(p)
 	return nil
@@ -239,6 +240,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 				Platform:        platform,
 				MediaType:       mediaTypeForAI,
 				TenantID:        p.TenantID,
+				ImageURLs:       urls, // Pass image URLs for analysis
 			}
 
 			result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
@@ -322,7 +324,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 						s.Logger.Info("✅ Collected analytics for post",
 							zap.Uint("post_id", postID),
 							zap.String("platform", platform))
-						
+
 						// Trigger insights generation after collecting analytics
 						go func() {
 							time.Sleep(2 * time.Minute) // Wait a bit for analytics to settle
@@ -390,10 +392,10 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		if lastError != nil {
 			// Check if error is Instagram rate limit - disable retries to avoid hitting limits
 			errorStr := lastError.Error()
-			isRateLimit := strings.Contains(errorStr, "request limit reached") || 
+			isRateLimit := strings.Contains(errorStr, "request limit reached") ||
 				strings.Contains(errorStr, "rate limit") ||
 				strings.Contains(errorStr, "403")
-			
+
 			// Check if any failed platform was Instagram
 			hasInstagram := false
 			for _, platform := range failed {
@@ -402,7 +404,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 					break
 				}
 			}
-			
+
 			// Disable retries for Instagram rate limit errors to prevent hitting limits
 			allowRetry := !(hasInstagram && isRateLimit)
 			if !allowRetry {
@@ -521,12 +523,12 @@ func (s *Scheduler) markFailed(p storage.ScheduledPost, reason string, allowRetr
 		// Determine max attempts based on error type
 		maxAttempts := 3
 		// Check if this is an Instagram rate limit error - reduce retries
-		if strings.Contains(reason, "request limit reached") || 
+		if strings.Contains(reason, "request limit reached") ||
 			strings.Contains(reason, "rate limit") ||
 			strings.Contains(reason, "403") {
 			maxAttempts = 1 // Only 1 retry for rate limit errors
 		}
-		
+
 		if attempts < maxAttempts {
 			status = "scheduled"
 			// Retry after 5min, 15min, then fail (reduced for rate limits)
