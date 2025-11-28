@@ -4433,11 +4433,15 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	var customer storage.Customer
 	h.DB.Where("id = ?", conversation.CustomerID).First(&customer)
 
-	// Get all interactions
+	// Get all interactions (both incoming and outgoing)
 	var interactions []storage.Interaction
-	h.DB.Where("conversation_id = ?", conversation.ID).
+	if err := h.DB.Where("conversation_id = ?", conversation.ID).
 		Order("created_at ASC").
-		Find(&interactions)
+		Find(&interactions).Error; err != nil {
+		h.Logger.Error("failed to fetch interactions", zap.Error(err))
+		// Continue with empty messages array
+		interactions = []storage.Interaction{}
+	}
 
 	type interactionResp struct {
 		ID             uint      `json:"id"`
@@ -4455,17 +4459,28 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 
 	messages := make([]interactionResp, 0, len(interactions))
 	for _, i := range interactions {
+		// Determine display content: for outgoing messages, use final_reply (what was sent)
+		// For incoming messages, use content (what customer sent)
+		displayContent := i.Content
+		if i.Direction == "outgoing" {
+			// Outgoing messages: prefer final_reply, fallback to content
+			if i.FinalReply != "" {
+				displayContent = i.FinalReply
+			}
+		}
+		// For incoming messages, displayContent already equals i.Content, which is correct
+
 		messages = append(messages, interactionResp{
 			ID:             i.ID,
 			Direction:      i.Direction,
 			MessageType:    i.MessageType,
-			Content:        i.Content,
+			Content:        displayContent, // Display text for the message
 			DetectedIntent: i.DetectedIntent,
 			DetectedTone:   i.DetectedTone,
 			ResponseType:   i.ResponseType,
 			ResponseStatus: i.ResponseStatus,
 			SuggestedReply: i.SuggestedReply,
-			FinalReply:     i.FinalReply,
+			FinalReply:     i.FinalReply, // Always include final_reply for reference
 			CreatedAt:      i.CreatedAt,
 		})
 	}
