@@ -20,6 +20,7 @@ import (
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"github.com/go-chi/chi/v5"
 	redis "github.com/redis/go-redis/v9"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/social"
@@ -43,12 +44,14 @@ type Handler struct {
 	Redis               *redis.Client
 	GupshupPartner      *social.GupshupPartnerClient
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
+	Scheduler           *social.Scheduler
+	AIClient            *ai.AIClient
 
 	signupCache sync.Map
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient, orchestrator *workflows.WorkflowOrchestrator) *Handler {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, gupshupPartner *social.GupshupPartnerClient, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient) *Handler {
 	return &Handler{
 		DB:                   db,
 		Logger:               logger,
@@ -56,6 +59,8 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 		Redis:                redis,
 		GupshupPartner:       gupshupPartner,
 		WorkflowOrchestrator: orchestrator,
+		Scheduler:            scheduler,
+		AIClient:             aiClient,
 	}
 }
 
@@ -179,6 +184,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// Post creation
 		r.Post("/tenant/posts", h.createPost)
 		r.Post("/tenant/posts/generate-caption", h.generateCaption)
+		r.Post("/tenant/posts/{id}/publish", h.publishPost)
 		r.Get("/tenant/posts/optimal-times", h.getOptimalTimes)
 
 		// Bulk uploads
@@ -3144,10 +3150,79 @@ func (h *Handler) listMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	var assets []storage.MediaAsset
 	if err := query.Order("created_at DESC").Limit(limit).Find(&assets).Error; err != nil {
-		http.Error(w, "failed to list media", http.StatusInternalServerError)
+		h.Logger.Error("failed to list media", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to list media",
+			"message": "An error occurred while fetching media assets",
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": assets})
+
+	// Transform assets to frontend-friendly format
+	type MediaAssetResponse struct {
+		ID           uint       `json:"id"`
+		Type         string     `json:"type"`
+		Name         string     `json:"name"`
+		CarouselName string     `json:"carousel_name,omitempty"`
+		Caption      string     `json:"caption,omitempty"`
+		URLs         []string   `json:"urls"`
+		Status       string     `json:"status"`
+		ScheduledAt  *time.Time `json:"scheduled_at,omitempty"`
+		Platforms    []string   `json:"platforms"`
+		Tags         []string   `json:"tags"`
+		Campaign     string     `json:"campaign,omitempty"`
+		CreatedAt    time.Time  `json:"created_at"`
+		UpdatedAt    time.Time  `json:"updated_at"`
+	}
+
+	response := make([]MediaAssetResponse, 0, len(assets))
+	for _, asset := range assets {
+		// Parse JSON strings into arrays
+		var urls []string
+		if asset.URLs != "" && asset.URLs != "[]" {
+			if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil {
+				h.Logger.Warn("failed to parse URLs", zap.Uint("asset_id", asset.ID), zap.Error(err))
+				urls = []string{}
+			}
+		}
+
+		var platforms []string
+		if asset.Platforms != "" && asset.Platforms != "[]" {
+			if err := json.Unmarshal([]byte(asset.Platforms), &platforms); err != nil {
+				h.Logger.Warn("failed to parse platforms", zap.Uint("asset_id", asset.ID), zap.Error(err))
+				platforms = []string{}
+			}
+		}
+
+		var tags []string
+		if asset.Tags != "" && asset.Tags != "[]" {
+			if err := json.Unmarshal([]byte(asset.Tags), &tags); err != nil {
+				h.Logger.Warn("failed to parse tags", zap.Uint("asset_id", asset.ID), zap.Error(err))
+				tags = []string{}
+			}
+		}
+
+		response = append(response, MediaAssetResponse{
+			ID:           asset.ID,
+			Type:         asset.Type,
+			Name:         asset.Name,
+			CarouselName: asset.CarouselName,
+			Caption:      asset.Caption,
+			URLs:         urls,
+			Status:       asset.Status,
+			ScheduledAt:  asset.ScheduledAt,
+			Platforms:    platforms,
+			Tags:         tags,
+			Campaign:     asset.Campaign,
+			CreatedAt:    asset.CreatedAt,
+			UpdatedAt:    asset.UpdatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": response,
+		"count": len(response),
+	})
 }
 
 func (h *Handler) getMedia(w http.ResponseWriter, r *http.Request) {
@@ -3159,10 +3234,44 @@ func (h *Handler) getMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var asset storage.MediaAsset
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, id).First(&asset).Error; err != nil {
-		http.Error(w, "media not found", http.StatusNotFound)
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "media not found",
+			"message": fmt.Sprintf("Media asset with ID %s not found", id),
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, asset)
+
+	// Parse JSON strings into arrays (same format as listMedia)
+	var urls []string
+	if asset.URLs != "" && asset.URLs != "[]" {
+		_ = json.Unmarshal([]byte(asset.URLs), &urls)
+	}
+
+	var platforms []string
+	if asset.Platforms != "" && asset.Platforms != "[]" {
+		_ = json.Unmarshal([]byte(asset.Platforms), &platforms)
+	}
+
+	var tags []string
+	if asset.Tags != "" && asset.Tags != "[]" {
+		_ = json.Unmarshal([]byte(asset.Tags), &tags)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            asset.ID,
+		"type":          asset.Type,
+		"name":          asset.Name,
+		"carousel_name": asset.CarouselName,
+		"caption":       asset.Caption,
+		"urls":          urls,
+		"status":        asset.Status,
+		"scheduled_at":  asset.ScheduledAt,
+		"platforms":     platforms,
+		"tags":          tags,
+		"campaign":      asset.Campaign,
+		"created_at":    asset.CreatedAt,
+		"updated_at":    asset.UpdatedAt,
+	})
 }
 
 func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
@@ -3430,14 +3539,40 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var scheduledAt *time.Time
+	publishNow := false
 	if req.ScheduledAt != "" {
-		if t, err := time.Parse(time.RFC3339, req.ScheduledAt); err == nil {
-			scheduledAt = &t
+		// Check if "now" or empty string means publish immediately
+		if strings.ToLower(req.ScheduledAt) == "now" || req.ScheduledAt == "" {
+			publishNow = true
+			now := time.Now()
+			scheduledAt = &now
 		} else {
-			http.Error(w, "invalid scheduled_at", http.StatusBadRequest)
-			return
+			if t, err := time.Parse(time.RFC3339, req.ScheduledAt); err == nil {
+				scheduledAt = &t
+			} else {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"error": "invalid scheduled_at",
+					"message": "scheduled_at must be RFC3339 format or 'now'",
+				})
+				return
+			}
 		}
+	} else {
+		// No scheduled_at means publish now
+		publishNow = true
+		now := time.Now()
+		scheduledAt = &now
 	}
+
+	// Validate platforms
+	if len(req.Platforms) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "platforms required",
+			"message": "At least one platform must be selected",
+		})
+		return
+	}
+
 	mediaJSON, _ := json.Marshal(req.MediaIDs)
 	platsJSON, _ := json.Marshal(req.Platforms)
 	post := storage.ScheduledPost{
@@ -3450,7 +3585,11 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		Status:        "scheduled",
 	}
 	if err := h.DB.Create(&post).Error; err != nil {
-		http.Error(w, "failed to create post", http.StatusInternalServerError)
+		h.Logger.Error("failed to create post", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to create post",
+			"message": "An error occurred while creating the post",
+		})
 		return
 	}
 
@@ -3459,25 +3598,174 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		h.updateCalendarForPost(claims.TenantID, post.ID, *post.ScheduledAt)
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"id": post.ID})
+	// Publish immediately if requested
+	if publishNow && h.Scheduler != nil {
+		go func() {
+			if err := h.Scheduler.ExecutePostImmediately(post.ID); err != nil {
+				h.Logger.Error("failed to execute post immediately",
+					zap.Uint("post_id", post.ID),
+					zap.Error(err))
+				// Post will be picked up by scheduler on next poll
+			}
+		}()
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": post.ID,
+		"status": post.Status,
+		"publishing_now": publishNow,
+	})
 }
 
-func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
+// publishPost publishes a scheduled post immediately
+func (h *Handler) publishPost(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	var req struct {
-		Context string `json:"context"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Context) == "" {
-		http.Error(w, "context required", http.StatusBadRequest)
+
+	postIDStr := chi.URLParam(r, "id")
+	if postIDStr == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "post id required",
+		})
 		return
 	}
-	// Simple placeholder caption
-	caption := fmt.Sprintf("✨ %s\n\n#brancr #socialmedia", req.Context)
-	writeJSON(w, http.StatusOK, map[string]string{"caption": caption, "tenant_id": fmt.Sprintf("%d", claims.TenantID)})
+
+	postID, err := strconv.ParseUint(postIDStr, 10, 32)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid post id",
+		})
+		return
+	}
+
+	// Verify post belongs to tenant
+	var post storage.ScheduledPost
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, uint(postID)).First(&post).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "post not found",
+		})
+		return
+	}
+
+	// Check if post can be published
+	if post.Status != "scheduled" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "post cannot be published",
+			"message": fmt.Sprintf("Post status is '%s'. Only 'scheduled' posts can be published.", post.Status),
+			"current_status": post.Status,
+		})
+		return
+	}
+
+	// Execute post immediately
+	if h.Scheduler == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "scheduler not available",
+			"message": "Post publishing service is not available",
+		})
+		return
+	}
+
+	// Execute in background
+	go func() {
+		if err := h.Scheduler.ExecutePostImmediately(uint(postID)); err != nil {
+			h.Logger.Error("failed to execute post immediately",
+				zap.Uint("post_id", uint(postID)),
+				zap.Uint("tenant_id", claims.TenantID),
+				zap.Error(err))
+		}
+	}()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Post is being published now",
+		"post_id": postID,
+		"status": "posting",
+	})
+}
+
+func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	claims, ok := middleware.TenantFromContext(ctx)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		MediaID    *uint  `json:"media_id,omitempty"`    // Optional: to determine media type
+		Platform   string `json:"platform"`              // Required: instagram, facebook, tiktok, youtube, whatsapp
+		MediaType  string `json:"media_type,omitempty"`  // Optional: image, video, carousel (if not provided, inferred from media_id)
+		Context    string `json:"context,omitempty"`     // Optional: description/hint for caption generation
+		OriginalCaption string `json:"original_caption,omitempty"` // Optional: existing caption to optimize
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Logger.Error("failed to decode generate caption request", zap.Error(err))
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Set defaults
+	if req.Platform == "" {
+		req.Platform = "instagram"
+	}
+	req.Platform = strings.ToLower(req.Platform)
+
+	// Determine media type - either from request, or from media asset
+	mediaType := req.MediaType
+	if mediaType == "" && req.MediaID != nil {
+		var asset storage.MediaAsset
+		if err := h.DB.Where("id = ? AND tenant_id = ?", *req.MediaID, claims.TenantID).First(&asset).Error; err == nil {
+			mediaType = asset.Type
+		}
+	}
+	if mediaType == "" {
+		mediaType = "image" // Default fallback
+	}
+
+	// Create caption optimizer
+	if h.AIClient == nil {
+		h.Logger.Error("AI client not available for caption generation")
+		http.Error(w, "AI service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.AIClient,
+		DB:     h.DB,
+	}
+
+	// Use context as original caption hint if provided, otherwise use original caption field
+	originalCaption := req.OriginalCaption
+	if originalCaption == "" && req.Context != "" {
+		originalCaption = req.Context
+	}
+
+	// Generate caption using AI
+	aiReq := ai.OptimizeCaptionRequest{
+		OriginalCaption: originalCaption,
+		Platform:        req.Platform,
+		MediaType:       mediaType,
+		TenantID:        claims.TenantID,
+	}
+
+	result, err := optimizer.OptimizeCaption(ctx, aiReq)
+	if err != nil {
+		h.Logger.Error("failed to generate caption", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		http.Error(w, fmt.Sprintf("failed to generate caption: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"caption":    result.OptimizedCaption,
+		"hashtags":   result.Hashtags,
+		"platform":   req.Platform,
+		"media_type": mediaType,
+	})
 }
 
 func (h *Handler) getOptimalTimes(w http.ResponseWriter, r *http.Request) {
