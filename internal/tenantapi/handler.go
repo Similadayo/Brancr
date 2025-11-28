@@ -494,7 +494,33 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt       time.Time  `json:"updated_at"`
 	}
 
-	resp := make([]integration, 0, len(accounts))
+	resp := make([]integration, 0, len(accounts)+1) // +1 for Telegram
+	
+	// Add Telegram bot integration status
+	var tenant storage.Tenant
+	if err := h.DB.First(&tenant, claims.TenantID).Error; err == nil {
+		// Telegram is considered connected if bot token exists
+		// OwnerTelegramID is optional - can be set later during onboarding
+		telegramConnected := tenant.TelegramBotToken != ""
+		
+		// If we have a bot token but no username, try to get it from bot instance
+		botUsername := tenant.BotUsername
+		if botUsername == "" && telegramConnected {
+			// Try to get bot username from token (optional enhancement)
+			// For now, just use what's stored
+		}
+		
+		telegramIg := integration{
+			ID:        0, // Telegram doesn't have a SocialAccount ID
+			Platform:  "telegram",
+			Connected: telegramConnected,
+			Username:  botUsername,
+			CreatedAt: tenant.CreatedAt,
+			UpdatedAt: tenant.UpdatedAt,
+		}
+		resp = append(resp, telegramIg)
+	}
+	
 	for _, acc := range accounts {
 		ig := integration{
 			ID:         acc.ID,
