@@ -4612,16 +4612,53 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		FinalReply:     req.Message,
 	}
 
-	h.DB.Create(&interaction)
+	if err := h.DB.Create(&interaction).Error; err != nil {
+		h.Logger.Error("failed to create interaction", zap.Error(err))
+		http.Error(w, "failed to save interaction", http.StatusInternalServerError)
+		return
+	}
+
+	// Reload interaction to get all populated fields (timestamps, etc.)
+	if err := h.DB.First(&interaction, interaction.ID).Error; err != nil {
+		h.Logger.Error("failed to reload interaction", zap.Error(err))
+		// Continue anyway - we have the basic fields
+	}
 
 	// Update conversation last message time
 	conversation.LastMessageAt = time.Now()
 	h.DB.Save(&conversation)
 
+	// Return the created interaction in the same format as getConversation
+	type interactionResp struct {
+		ID             uint      `json:"id"`
+		Direction      string    `json:"direction"`
+		MessageType    string    `json:"message_type"`
+		Content        string    `json:"content"`
+		DetectedIntent string    `json:"detected_intent"`
+		DetectedTone   string    `json:"detected_tone"`
+		ResponseType   string    `json:"response_type"`
+		ResponseStatus string    `json:"response_status"`
+		SuggestedReply string    `json:"suggested_reply"`
+		FinalReply     string    `json:"final_reply"`
+		CreatedAt      time.Time `json:"created_at"`
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":        true,
-		"message":        "Reply sent successfully",
-		"interaction_id": interaction.ID,
+		"success": true,
+		"message": "Reply sent successfully",
+		"interaction": interactionResp{
+			ID:             interaction.ID,
+			Direction:      interaction.Direction,
+			MessageType:    interaction.MessageType,
+			Content:        interaction.Content,
+			DetectedIntent: interaction.DetectedIntent,
+			DetectedTone:   interaction.DetectedTone,
+			ResponseType:   interaction.ResponseType,
+			ResponseStatus: interaction.ResponseStatus,
+			SuggestedReply: interaction.SuggestedReply,
+			FinalReply:     interaction.FinalReply,
+			CreatedAt:      interaction.CreatedAt,
+		},
 	})
 }
 
