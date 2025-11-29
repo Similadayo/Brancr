@@ -192,7 +192,22 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	interaction.FinalReply = reply
 	h.DB.Save(&interaction)
 
-	// Step 8.5: Create outgoing interaction record (so it appears in conversation history)
+	// Step 8.5: Ensure conversation exists for outgoing interaction (retry if needed)
+	if conversationID == 0 {
+		// Try to get/create conversation again - it might have been created in the meantime
+		conv, convErr := h.createOrGetConversation(ctx, msg, customer.ID)
+		if convErr == nil && conv != nil {
+			conversationID = conv.ID
+			conversation = conv
+		} else {
+			h.Logger.Warn("conversation still missing when creating outgoing interaction - outgoing message will not appear in conversation thread",
+				zap.Uint("tenant_id", msg.TenantID),
+				zap.Uint("customer_id", customer.ID),
+				zap.String("platform", msg.Platform))
+		}
+	}
+
+	// Step 8.6: Create outgoing interaction record (so it appears in conversation history)
 	outgoingInteraction := storage.Interaction{
 		TenantID:       msg.TenantID,
 		CustomerID:     customer.ID,
@@ -211,6 +226,37 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	if err := h.DB.Create(&outgoingInteraction).Error; err != nil {
 		h.Logger.Warn("failed to create outgoing interaction for auto-reply", zap.Error(err))
 		// Continue - not critical, but log it
+	} else {
+		h.Logger.Info("✅ Created outgoing interaction for AI auto-reply",
+			zap.Uint("interaction_id", outgoingInteraction.ID),
+			zap.Uint("conversation_id", conversationID),
+			zap.Uint("tenant_id", msg.TenantID),
+			zap.Uint("customer_id", customer.ID),
+			zap.String("platform", msg.Platform),
+			zap.String("message_preview", truncateString(reply, 50)))
+		
+		// Update conversation's last message time after outgoing message is sent
+		if conversationID > 0 {
+			if conversation == nil || conversation.ID != conversationID {
+				// Reload conversation if needed
+				var conv storage.Conversation
+				if err := h.DB.First(&conv, conversationID).Error; err == nil {
+					conversation = &conv
+				}
+			}
+			if conversation != nil && conversation.ID == conversationID {
+				conversation.LastMessageAt = time.Now()
+				conversation.Status = "active"
+				if err := h.DB.Save(&conversation).Error; err != nil {
+					h.Logger.Warn("failed to update conversation after outgoing message", zap.Error(err))
+				}
+			}
+		} else {
+			h.Logger.Warn("⚠️ Outgoing interaction created but conversationID is 0 - message may not appear in inbox",
+				zap.Uint("interaction_id", outgoingInteraction.ID),
+				zap.Uint("tenant_id", msg.TenantID),
+				zap.Uint("customer_id", customer.ID))
+		}
 	}
 
 	// Step 9: Save to conversation memory
