@@ -46,7 +46,8 @@ type Config struct {
 	GupshupAppName       string // Gupshup app name (legacy)
 	GupshupSourceNumber  string // Gupshup source number (legacy)
 	// Gupshup Partner API Configuration (multi-tenant)
-	GupshupPartnerAPIKey  string // Partner API key from Partner Console
+	GupshupPartnerAPIKey  string // Partner API key (client secret) from Partner Console
+	GupshupPartnerEmail   string // Partner account email for login
 	GupshupPartnerID      string // Partner ID for onboarding link generation
 	GupshupPartnerBaseURL string // Base URL for Partner API
 	FrontendURL           string // Frontend URL for redirects after OAuth
@@ -99,6 +100,7 @@ func Load() *Config {
 		GupshupSourceNumber:  os.Getenv("GUPSHUP_SOURCE_NUMBER"), // Gupshup source number (legacy)
 		// Gupshup Partner API Configuration
 		GupshupPartnerAPIKey:  os.Getenv("GUPSHUP_PARTNER_API_KEY"),
+		GupshupPartnerEmail:   os.Getenv("GUPSHUP_PARTNER_EMAIL"),
 		GupshupPartnerID:      os.Getenv("GUPSHUP_PARTNER_ID"),
 		GupshupPartnerBaseURL: getEnv("GUPSHUP_PARTNER_BASE_URL", "https://partner.gupshup.io"),
 		FrontendURL:           os.Getenv("FRONTEND_URL"),

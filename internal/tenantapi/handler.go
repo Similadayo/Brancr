@@ -5811,10 +5811,23 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 
 // connectWhatsAppGupshupPartner - Connect WhatsApp via Gupshup Partner API (multi-tenant)
 func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.Request, tenantID uint, phoneNumber string) {
-	if h.Config.GupshupPartnerAPIKey == "" || h.Config.GupshupPartnerID == "" {
+	if h.Config.GupshupPartnerAPIKey == "" || h.Config.GupshupPartnerID == "" || h.Config.GupshupPartnerEmail == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "gupshup_partner_not_configured",
 			"message": "Gupshup Partner API is not configured. Please contact support.",
+			"missing_fields": func() []string {
+				var missing []string
+				if h.Config.GupshupPartnerAPIKey == "" {
+					missing = append(missing, "GUPSHUP_PARTNER_API_KEY")
+				}
+				if h.Config.GupshupPartnerID == "" {
+					missing = append(missing, "GUPSHUP_PARTNER_ID")
+				}
+				if h.Config.GupshupPartnerEmail == "" {
+					missing = append(missing, "GUPSHUP_PARTNER_EMAIL")
+				}
+				return missing
+			}(),
 		})
 		return
 	}

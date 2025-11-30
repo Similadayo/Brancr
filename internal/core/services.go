@@ -171,10 +171,11 @@ func (s *Services) initSocial() error {
 	// Initialize Gupshup Partner client (multi-tenant) if configured
 	var gupshupPartnerClient *social.GupshupPartnerClient
 	var whatsappProvider social.WhatsAppProvider
-	if s.Config.GupshupPartnerAPIKey != "" && s.Config.GupshupPartnerID != "" {
+	if s.Config.GupshupPartnerAPIKey != "" && s.Config.GupshupPartnerID != "" && s.Config.GupshupPartnerEmail != "" {
 		gupshupPartnerClient = social.NewGupshupPartnerClient(
 			s.Config.GupshupPartnerBaseURL,
 			s.Config.GupshupPartnerAPIKey,
+			s.Config.GupshupPartnerEmail,
 			s.Logger,
 		)
 		s.GupshupPartnerClient = gupshupPartnerClient
