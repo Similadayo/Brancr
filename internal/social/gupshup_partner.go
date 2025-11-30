@@ -159,9 +159,9 @@ func (c *GupshupPartnerClient) ensureValidToken(ctx context.Context) error {
 }
 
 // GenerateOnboardingLink generates Partner onboarding redirect link for tenant
-// NOTE: This uses clientSecret in query params (which is correct for redirect URL validation)
+// First attempts to generate via authenticated API call, falls back to URL construction
 // Returns the link and any validation errors
-func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL string) (string, error) {
+func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partnerID, redirectURL string) (string, error) {
 	// Validate required fields
 	if partnerID == "" {
 		return "", fmt.Errorf("partner ID is required")
@@ -169,10 +169,76 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL str
 	if redirectURL == "" {
 		return "", fmt.Errorf("redirect URL is required")
 	}
+
+	// Try to generate via authenticated API call first
+	if err := c.ensureValidToken(ctx); err == nil {
+		// Try API endpoint to generate onboarding link
+		endpoint := fmt.Sprintf("%s/partner/app/generate-onboarding-link", c.BaseURL)
+
+		payload := map[string]interface{}{
+			"partnerId": partnerID,
+			"redirect":  redirectURL,
+		}
+
+		jsonData, err := json.Marshal(payload)
+		if err == nil {
+			req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+			if err == nil {
+				c.tokenMutex.RLock()
+				token := c.Token
+				c.tokenMutex.RUnlock()
+
+				req.Header.Set("Authorization", token)
+				req.Header.Set("Content-Type", "application/json")
+
+				client := &http.Client{Timeout: 15 * time.Second}
+				resp, err := client.Do(req)
+				if err == nil {
+					defer resp.Body.Close()
+
+					if resp.StatusCode == 200 || resp.StatusCode == 201 {
+						body, _ := io.ReadAll(resp.Body)
+						var response struct {
+							OnboardingURL  string `json:"onboardingUrl"`
+							OnboardingLink string `json:"onboarding_link"`
+							URL            string `json:"url"`
+							Link           string `json:"link"`
+						}
+						if err := json.Unmarshal(body, &response); err == nil {
+							// Try different possible field names
+							link := response.OnboardingURL
+							if link == "" {
+								link = response.OnboardingLink
+							}
+							if link == "" {
+								link = response.URL
+							}
+							if link == "" {
+								link = response.Link
+							}
+							if link != "" {
+								if c.Logger != nil {
+									c.Logger.Info("✅ Generated Gupshup onboarding link via API",
+										zap.String("partner_id", partnerID),
+										zap.String("redirect_url", redirectURL))
+								}
+								return link, nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: Construct URL with clientSecret in query params (original method)
+	// CRITICAL: This is the standard method for Gupshup Partner onboarding links
+	// The clientSecret is validated server-side when the user opens the link
 	if c.ClientSecret == "" {
 		return "", fmt.Errorf("gupshup Partner API key (client secret) is not configured")
 	}
 
+	// URL encode parameters properly - url.Values handles this automatically
 	params := url.Values{}
 	params.Set("partnerId", partnerID)
 	params.Set("redirect", redirectURL)
@@ -180,8 +246,20 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL str
 
 	link := fmt.Sprintf("%s/partner/app/onboard?%s", c.BaseURL, params.Encode())
 
+	// Log warning about potential issues
 	if c.Logger != nil {
-		c.Logger.Info("🔗 Generated Gupshup onboarding link",
+		// Check for common issues
+		if len(c.ClientSecret) < 20 {
+			c.Logger.Warn("⚠️ Client secret seems short - verify it's the full key from Partner Console",
+				zap.Int("length", len(c.ClientSecret)))
+		}
+		if strings.Contains(c.ClientSecret, " ") {
+			c.Logger.Warn("⚠️ Client secret contains spaces - this might cause issues")
+		}
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("🔗 Generated Gupshup onboarding link (fallback method)",
 			zap.String("partner_id", partnerID),
 			zap.String("redirect_url", redirectURL),
 			zap.String("link_preview", truncateString(link, 100)),

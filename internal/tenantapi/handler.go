@@ -5877,7 +5877,7 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		// Continue anyway - verification is best-effort
 	}
 
-	onboardingLink, err := h.GupshupPartner.GenerateOnboardingLink(h.Config.GupshupPartnerID, redirectURL)
+	onboardingLink, err := h.GupshupPartner.GenerateOnboardingLink(r.Context(), h.Config.GupshupPartnerID, redirectURL)
 	if err != nil {
 		h.Logger.Error("❌ Failed to generate Gupshup onboarding link",
 			zap.Uint("tenant_id", tenantID),
