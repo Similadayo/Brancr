@@ -170,141 +170,164 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 		return "", fmt.Errorf("redirect URL is required")
 	}
 
-	// Try to generate via authenticated API call using PARTNER_TOKEN
-	// This is the recommended method per Gupshup's recent API updates
-	if err := c.ensureValidToken(ctx); err == nil {
-		// Try multiple possible API endpoints for onboarding link generation
-		endpoints := []string{
-			fmt.Sprintf("%s/partner/app/onboard-link", c.BaseURL),
-			fmt.Sprintf("%s/partner/app/generate-onboarding-link", c.BaseURL),
-			fmt.Sprintf("%s/partner/app/onboarding-link", c.BaseURL),
+	// CRITICAL: Generate onboarding link via authenticated API call only
+	// The URL method with clientSecret in query params is DEPRECATED and no longer works
+	// Gupshup now requires Partner Token with Authorization headers
+	if err := c.ensureValidToken(ctx); err != nil {
+		return "", fmt.Errorf("failed to get partner token: %w (required for onboarding link generation)", err)
+	}
+
+	// Try multiple possible API endpoints for onboarding link generation
+	endpoints := []string{
+		fmt.Sprintf("%s/partner/app/onboard-link", c.BaseURL),
+		fmt.Sprintf("%s/partner/app/generate-onboarding-link", c.BaseURL),
+		fmt.Sprintf("%s/partner/app/onboarding-link", c.BaseURL),
+		fmt.Sprintf("%s/partner/app/create-onboarding-link", c.BaseURL),
+	}
+
+	c.tokenMutex.RLock()
+	token := c.Token
+	c.tokenMutex.RUnlock()
+
+	payload := map[string]interface{}{
+		"partnerId": partnerID,
+		"redirect":  redirectURL,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+		if err != nil {
+			continue
 		}
 
-		c.tokenMutex.RLock()
-		token := c.Token
-		c.tokenMutex.RUnlock()
+		// Try Bearer format first (standard OAuth format)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
 
-		payload := map[string]interface{}{
-			"partnerId": partnerID,
-			"redirect":  redirectURL,
-		}
-
-		jsonData, _ := json.Marshal(payload)
-
-		for _, endpoint := range endpoints {
-			req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-			if err != nil {
-				continue
-			}
-
-			// Try Bearer format first (standard OAuth format)
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("Content-Type", "application/json")
-
-			client := &http.Client{Timeout: 15 * time.Second}
-			resp, err := client.Do(req)
-			if err != nil {
-				continue
-			}
-			defer resp.Body.Close()
-
-			body, _ := io.ReadAll(resp.Body)
-
-			// Log response for debugging
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
 			if c.Logger != nil {
-				c.Logger.Debug("Tried onboarding link API endpoint",
+				c.Logger.Debug("Failed to call onboarding link endpoint",
 					zap.String("endpoint", endpoint),
-					zap.Int("status", resp.StatusCode),
-					zap.String("response_preview", truncateString(string(body), 200)))
+					zap.Error(err))
 			}
-
-			if resp.StatusCode == 200 || resp.StatusCode == 201 {
-				var response struct {
-					OnboardingURL  string `json:"onboardingUrl"`
-					OnboardingLink string `json:"onboarding_link"`
-					URL            string `json:"url"`
-					Link           string `json:"link"`
-					OnboardURL     string `json:"onboardUrl"`
-				}
-				if err := json.Unmarshal(body, &response); err == nil {
-					// Try different possible field names
-					link := response.OnboardingURL
-					if link == "" {
-						link = response.OnboardingLink
-					}
-					if link == "" {
-						link = response.URL
-					}
-					if link == "" {
-						link = response.Link
-					}
-					if link == "" {
-						link = response.OnboardURL
-					}
-					if link != "" {
-						if c.Logger != nil {
-							c.Logger.Info("✅ Generated Gupshup onboarding link via API",
-								zap.String("partner_id", partnerID),
-								zap.String("redirect_url", redirectURL),
-								zap.String("endpoint", endpoint))
-						}
-						return link, nil
-					}
-				}
-			}
+			continue
 		}
 
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		// Log response for debugging
 		if c.Logger != nil {
-			c.Logger.Warn("⚠️ Failed to generate onboarding link via API - using fallback method",
-				zap.String("partner_id", partnerID))
+			c.Logger.Debug("Tried onboarding link API endpoint",
+				zap.String("endpoint", endpoint),
+				zap.Int("status", resp.StatusCode),
+				zap.String("response_preview", truncateString(string(body), 200)))
+		}
+
+		// If Bearer format fails with 401, try X-Authorization format
+		if resp.StatusCode == 401 {
+			if c.Logger != nil {
+				c.Logger.Debug("Bearer token format failed with 401, trying X-Authorization",
+					zap.String("endpoint", endpoint))
+			}
+
+			// Create new request with X-Authorization header
+			req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+			if err2 != nil {
+				continue
+			}
+
+			req2.Header.Set("X-Authorization", token)
+			req2.Header.Set("Content-Type", "application/json")
+
+			resp2, err2 := client.Do(req2)
+			if err2 != nil {
+				continue
+			}
+
+			body2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+
+			if c.Logger != nil {
+				c.Logger.Debug("Retried with X-Authorization header",
+					zap.String("endpoint", endpoint),
+					zap.Int("status", resp2.StatusCode),
+					zap.String("response_preview", truncateString(string(body2), 200)))
+			}
+
+			if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
+				body = body2
+				resp.StatusCode = resp2.StatusCode
+			}
+		}
+
+		if resp.StatusCode == 200 || resp.StatusCode == 201 {
+			var response struct {
+				OnboardingURL  string `json:"onboardingUrl"`
+				OnboardingLink string `json:"onboarding_link"`
+				URL            string `json:"url"`
+				Link           string `json:"link"`
+				OnboardURL     string `json:"onboardUrl"`
+				Data           struct {
+					URL string `json:"url"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(body, &response); err == nil {
+				// Try different possible field names
+				link := response.OnboardingURL
+				if link == "" {
+					link = response.OnboardingLink
+				}
+				if link == "" {
+					link = response.URL
+				}
+				if link == "" {
+					link = response.Link
+				}
+				if link == "" {
+					link = response.OnboardURL
+				}
+				if link == "" {
+					link = response.Data.URL
+				}
+				if link != "" {
+					if c.Logger != nil {
+						c.Logger.Info("✅ Generated Gupshup onboarding link via API",
+							zap.String("partner_id", partnerID),
+							zap.String("redirect_url", redirectURL),
+							zap.String("endpoint", endpoint),
+							zap.Int("status_code", resp.StatusCode))
+					}
+					return link, nil
+				}
+			}
+
+			// If JSON parsing failed but status is 200/201, log the raw response
+			if c.Logger != nil {
+				c.Logger.Warn("⚠️ Got 200/201 response but couldn't parse onboarding URL from response",
+					zap.String("endpoint", endpoint),
+					zap.String("response_body", truncateString(string(body), 500)))
+			}
 		}
 	}
 
-	// Fallback: Construct URL with clientSecret in query params
-	// NOTE: This method may fail if Gupshup changed validation - try token-based first
-	// If this fails, the clientSecret might need to match exactly what's in Partner Portal
-	if c.ClientSecret == "" {
-		return "", fmt.Errorf("gupshup Partner API key (client secret) is not configured")
-	}
-
-	// IMPORTANT: Based on Gupshup's recent changes, the onboarding link might need
-	// to be generated via API call using PARTNER_TOKEN, not clientSecret in URL
-	// However, we'll try the URL method as fallback for backward compatibility
-
-	// URL encode parameters properly - url.Values handles this automatically
-	params := url.Values{}
-	params.Set("partnerId", partnerID)
-	params.Set("redirect", redirectURL)
-	params.Set("clientSecret", c.ClientSecret) // This might be rejected by Gupshup
-
-	link := fmt.Sprintf("%s/partner/app/onboard?%s", c.BaseURL, params.Encode())
-
-	// Log warnings about potential issues
+	// If all API endpoints failed, return error with detailed information
+	// DO NOT fall back to deprecated URL method - it no longer works
 	if c.Logger != nil {
-		// Check for common issues
-		if len(c.ClientSecret) < 20 {
-			c.Logger.Warn("⚠️ Client secret seems short - verify it's the full key from Partner Console",
-				zap.Int("length", len(c.ClientSecret)))
-		}
-		if strings.Contains(c.ClientSecret, " ") {
-			c.Logger.Warn("⚠️ Client secret contains spaces - this might cause issues")
-		}
-
-		c.Logger.Warn("⚠️ Using fallback onboarding link method with clientSecret in URL",
-			zap.String("partner_id", partnerID),
-			zap.String("note", "If you get 'Unauthorised access', the clientSecret might be invalid or Gupshup changed their validation"))
-	}
-
-	if c.Logger != nil {
-		c.Logger.Info("🔗 Generated Gupshup onboarding link (fallback method - clientSecret in URL)",
+		c.Logger.Error("❌ Failed to generate onboarding link via API - all endpoints failed",
 			zap.String("partner_id", partnerID),
 			zap.String("redirect_url", redirectURL),
-			zap.String("link_preview", truncateString(link, 100)),
-			zap.Bool("has_client_secret", c.ClientSecret != ""),
-			zap.String("warning", "If link fails, verify clientSecret matches Partner Portal exactly"))
+			zap.String("note", "The URL method with clientSecret in query params is deprecated and no longer works"))
 	}
 
-	return link, nil
+	return "", fmt.Errorf("failed to generate onboarding link via API: all endpoints failed. The URL method with clientSecret is deprecated. Verify Partner credentials (Partner ID: %s, Partner Email: %s) and ensure token generation succeeds", partnerID, c.PartnerEmail)
 }
 
 // VerifyPartnerCredentials attempts to verify Partner credentials are correct
