@@ -362,6 +362,57 @@ type CreateAppResponse struct {
 	Message  string `json:"message"`
 }
 
+// sanitizeAppName removes invalid characters from app name
+// Gupshup allows: alphanumeric, spaces, hyphens, underscores
+// Removes: special characters, emojis, etc.
+func sanitizeAppName(name string) string {
+	if name == "" {
+		return "WhatsAppBusinessApp"
+	}
+
+	// Remove all characters except alphanumeric, hyphens, and underscores
+	// Replace spaces with hyphens (Gupshup may not allow spaces)
+	var sanitized strings.Builder
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '-' ||
+			char == '_' {
+			sanitized.WriteRune(char)
+		} else if char == ' ' {
+			// Replace spaces with hyphens
+			sanitized.WriteRune('-')
+		}
+		// All other characters (special chars, emojis, etc.) are ignored
+	}
+
+	// Clean up: trim hyphens, collapse multiple hyphens
+	result := sanitized.String()
+	result = strings.Trim(result, "-") // Remove leading/trailing hyphens
+
+	// Collapse multiple consecutive hyphens
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+
+	// Ensure minimum length
+	if len(result) < 6 {
+		result = "WhatsAppApp-" + result
+		result = strings.Trim(result, "-") // Remove any leading/trailing hyphens
+		if len(result) < 6 {
+			result = "WhatsAppBusinessApp" // Fallback if still too short
+		}
+	}
+
+	// Truncate if too long
+	if len(result) > 150 {
+		result = result[:147] + "..."
+	}
+
+	return result
+}
+
 // CreateApp creates a new Gupshup App linked to Partner ID
 // Endpoint: POST /partner/app
 // This must be called FIRST before generating onboarding link
@@ -371,8 +422,15 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 		return nil, fmt.Errorf("failed to get partner token: %w", err)
 	}
 
-	if appName == "" {
-		appName = "WhatsApp Business App"
+	// Sanitize app name to remove invalid characters
+	originalName := appName
+	appName = sanitizeAppName(appName)
+
+	// Log if name was sanitized
+	if originalName != appName && c.Logger != nil {
+		c.Logger.Info("🔧 Sanitized app name",
+			zap.String("original", originalName),
+			zap.String("sanitized", appName))
 	}
 
 	endpoint := fmt.Sprintf("%s/partner/app", c.BaseURL)
@@ -389,10 +447,10 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 
 	// Validate app name length (6-150 characters as per Gupshup requirements)
 	if len(appName) < 6 {
-		return nil, fmt.Errorf("app name must be at least 6 characters long")
+		return nil, fmt.Errorf("app name must be at least 6 characters long (after sanitization: %s)", appName)
 	}
 	if len(appName) > 150 {
-		return nil, fmt.Errorf("app name must be at most 150 characters long")
+		return nil, fmt.Errorf("app name must be at most 150 characters long (after sanitization: %s)", appName)
 	}
 
 	c.tokenMutex.RLock()
