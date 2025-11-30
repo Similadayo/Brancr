@@ -60,7 +60,16 @@ func (r *Responder) GenerateTenantAssistantReply(ctx context.Context, tenantID u
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the latest message from the business team. Stay human, warm, and efficient. Use the conversation history above for context.
+Task: Reply to the latest message from the business team. 
+
+CRITICAL: Write like a real human would - natural, conversational, and authentic. 
+- Vary your sentence length (mix short and long sentences)
+- Use contractions and everyday language
+- Match their energy and tone
+- Don't sound robotic or overly polished
+- Write like you're texting a colleague, not composing a formal message
+
+Use the conversation history above for context.
 
 Latest message: %s`, intro, userMsg)
 
@@ -101,7 +110,13 @@ func (r *Responder) GenerateHumanlikeReply(ctx context.Context, tenantID uint, u
 
 	taskBuilder := strings.Builder{}
 	taskBuilder.WriteString(intro)
-	taskBuilder.WriteString("\n\nTask: Reply to the latest message using the intent and emotion cues provided. Stay natural and on-brand.\n")
+	taskBuilder.WriteString("\n\nTask: Reply to the latest message using the intent and emotion cues provided. \n\n")
+	taskBuilder.WriteString("CRITICAL: Write like a real human would - natural, conversational, and authentic.\n")
+	taskBuilder.WriteString("- Vary your sentence structure (mix short punchy sentences with longer ones)\n")
+	taskBuilder.WriteString("- Use contractions and everyday language naturally\n")
+	taskBuilder.WriteString("- Match the detected emotion - show genuine empathy or enthusiasm\n")
+	taskBuilder.WriteString("- Don't sound robotic, overly formal, or too polished\n")
+	taskBuilder.WriteString("- Write like you're having a real conversation\n\n")
 	taskBuilder.WriteString(fmt.Sprintf("Detected intent: %s\n", intent.Intent))
 	taskBuilder.WriteString(fmt.Sprintf("Detected emotion: %s\n", emotion.Label))
 	if strings.TrimSpace(contextText) != "" {
@@ -180,7 +195,14 @@ func (r *Responder) GenerateTenantOwnerReply(ctx context.Context, tenantID uint,
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the business owner. Help them run operations—think connecting accounts, scheduling posts, checking stats, or answering workflow questions. Stay human, candid, and proactive.
+Task: Reply to the business owner. Help them run operations—think connecting accounts, scheduling posts, checking stats, or answering workflow questions.
+
+CRITICAL: Write like a real human would - natural, conversational, and helpful.
+- Vary your sentence length and structure naturally
+- Use contractions and casual language (like texting a colleague)
+- Be candid and proactive, not formal or corporate
+- Match their energy - if they're casual, be casual
+- Don't sound like a robot or overly polished assistant
 
 Owner message: %s`, intro, userMsg)
 
@@ -242,7 +264,17 @@ func (r *Responder) GenerateTenantAssistantReplyForCustomer(
 	platformFormat := getPlatformFormatting(cust.Channel)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to %s on %s. Be human, warm, and helpful. Use the conversation history above to stay consistent.
+Task: Reply to %s on %s.
+
+CRITICAL: Write like a real human customer service rep would - natural, warm, and genuinely helpful.
+- Vary your sentence structure (mix short responses with longer explanations when needed)
+- Use contractions and conversational language naturally
+- Match their energy - if they're frustrated, be empathetic; if they're casual, be casual
+- Show genuine care, not just politeness
+- Don't sound like a script or corporate template
+- Write like you're texting a friend who's a customer
+
+Use the conversation history above to stay consistent.
 
 Formatting notes: %s
 

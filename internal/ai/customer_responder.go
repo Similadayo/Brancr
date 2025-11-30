@@ -58,7 +58,18 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 	formatHint := getPlatformFormatting(platform)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the latest customer message on %s. Keep it natural, empathetic, and on-brand. Use the conversation history above as context.
+Task: Reply to the latest customer message on %s.
+
+CRITICAL: Write like a real human customer service rep would - natural, empathetic, and genuinely helpful.
+- Vary your sentence structure (mix short responses with longer explanations when needed)
+- Use contractions and conversational language naturally
+- Show genuine empathy - match their emotional state authentically
+- Don't sound like a script, template, or corporate bot
+- Write like you're texting a friend who happens to be a customer
+- Match their energy - if they're casual, be casual; if they're serious, be appropriately serious
+- Don't be overly polished or generic - sound like a real person
+
+Use the conversation history above as context.
 
 Detected intent: %s
 Formatting notes: %s

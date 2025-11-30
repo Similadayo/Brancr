@@ -4377,31 +4377,59 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 		var customer storage.Customer
 		h.DB.Where("id = ?", conv.CustomerID).First(&customer)
 
-		// Get last interaction
+		// Get last interaction (from ANY party - customer or tenant)
 		var lastInteraction storage.Interaction
-		h.DB.Where("conversation_id = ?", conv.ID).
+		if err := h.DB.Where("conversation_id = ?", conv.ID).
 			Order("created_at DESC").
-			First(&lastInteraction)
+			First(&lastInteraction).Error; err == nil {
+			// Interaction found - determine display text based on direction
+			lastMessageText := lastInteraction.Content
+			if lastInteraction.Direction == "outgoing" {
+				// For outgoing messages (from tenant/AI), use FinalReply if available
+				if lastInteraction.FinalReply != "" {
+					lastMessageText = lastInteraction.FinalReply
+				} else if lastInteraction.Content != "" {
+					lastMessageText = lastInteraction.Content
+				}
+			}
+			// For incoming messages, Content is already correct
 
-		// Count unread messages (incoming messages not responded to)
-		var unreadCount int64
-		h.DB.Model(&storage.Interaction{}).
-			Where("conversation_id = ? AND direction = ? AND response_status != ?", conv.ID, "incoming", "sent").
-			Count(&unreadCount)
+			// Count unread messages (incoming messages not responded to)
+			var unreadCount int64
+			h.DB.Model(&storage.Interaction{}).
+				Where("conversation_id = ? AND direction = ? AND response_status != ?", conv.ID, "incoming", "sent").
+				Count(&unreadCount)
 
-		resp = append(resp, conversationResp{
-			ID:             conv.ID,
-			CustomerID:     conv.CustomerID,
-			CustomerName:   customer.DisplayName,
-			CustomerAvatar: customer.ProfilePicURL,
-			Platform:       conv.Platform,
-			Status:         conv.Status,
-			LastMessage:    lastInteraction.Content,
-			LastMessageAt:  conv.LastMessageAt,
-			UnreadCount:    int(unreadCount),
-			CreatedAt:      conv.CreatedAt,
-			UpdatedAt:      conv.UpdatedAt,
-		})
+			resp = append(resp, conversationResp{
+				ID:             conv.ID,
+				CustomerID:     conv.CustomerID,
+				CustomerName:   customer.DisplayName,
+				CustomerAvatar: customer.ProfilePicURL,
+				Platform:       conv.Platform,
+				Status:         conv.Status,
+				LastMessage:    lastMessageText, // Show message from any party
+				LastMessageAt:  conv.LastMessageAt,
+				UnreadCount:    int(unreadCount),
+				CreatedAt:      conv.CreatedAt,
+				UpdatedAt:      conv.UpdatedAt,
+			})
+		} else {
+			// No interactions yet - still create conversation entry
+			var unreadCount int64
+			resp = append(resp, conversationResp{
+				ID:             conv.ID,
+				CustomerID:     conv.CustomerID,
+				CustomerName:   customer.DisplayName,
+				CustomerAvatar: customer.ProfilePicURL,
+				Platform:       conv.Platform,
+				Status:         conv.Status,
+				LastMessage:    "",
+				LastMessageAt:  conv.LastMessageAt,
+				UnreadCount:    int(unreadCount),
+				CreatedAt:      conv.CreatedAt,
+				UpdatedAt:      conv.UpdatedAt,
+			})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -4433,8 +4461,11 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	var customer storage.Customer
 	h.DB.Where("id = ?", conversation.CustomerID).First(&customer)
 
-	// Get all interactions (both incoming and outgoing) - explicitly include ALL directions
-	// No filtering - we want both incoming (direction='incoming') and outgoing (direction='outgoing')
+	// Get all interactions from ALL parties in the conversation
+	// This includes:
+	// - Incoming messages from customers (direction='incoming')
+	// - Outgoing messages from tenant/AI (direction='outgoing')
+	// No filtering by direction - we want to show the complete conversation history from all parties
 	var interactions []storage.Interaction
 	if err := h.DB.Where("conversation_id = ?", conversation.ID).
 		Order("created_at ASC").

@@ -74,7 +74,17 @@ func (g *ContextAwareResponseGenerator) GenerateWithFullContext(
 	}
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the latest message from %s. Stay human, emotionally aware, and on-brand. Use the conversation history above for context.
+Task: Reply to the latest message from %s.
+
+CRITICAL: Write like a real human would - natural, conversational, and emotionally aware.
+- Vary your sentence length and structure naturally (mix short and long sentences)
+- Use contractions and everyday language
+- Show genuine emotional awareness - match their energy and emotional state
+- Don't sound robotic, overly formal, or too polished
+- Write like you're having a real conversation with them
+- Be contextually aware - understand nuance and subtext
+
+Use the conversation history above for context.
 
 Latest message: %s`, intro, speaker, userMsg)
 

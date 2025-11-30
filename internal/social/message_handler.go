@@ -129,7 +129,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	// Escalate immediately for sensitive cases: payments, refunds, complaints, financial matters
 	// Payment messages should ALWAYS be escalated - never auto-reply to financial transactions
 	shouldEscalateImmediately := intent.Intent == "payment" ||
-		(intent.Intent == "refund" && intent.Tone == "negative") ||
+		(intent.Intent == "refund" && intent.Tone == "negative") || 
 		(intent.Intent == "complaint" && intent.Confidence > 0.7) ||
 		// Also escalate if message contains payment-related keywords (double-check)
 		strings.Contains(strings.ToLower(msg.Content), "paid") ||
@@ -137,7 +137,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		strings.Contains(strings.ToLower(msg.Content), "naira") ||
 		strings.Contains(strings.ToLower(msg.Content), "dollar") ||
 		strings.Contains(strings.ToLower(msg.Content), "transaction")
-
+	
 	// Very low confidence (< 0.3) means we can't understand the message - escalate
 	shouldTryAutoReply := intent.Confidence >= 0.3
 
@@ -276,17 +276,17 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, msg IncomingMessage, customer *storage.Customer, interactionID uint, conversationID uint) {
 	// Check if there's a recent escalated interaction in this conversation (within last 24 hours)
 	cutoffTime := time.Now().Add(-24 * time.Hour)
-
+	
 	var recentEscalatedInteraction storage.Interaction
 	query := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ? AND response_type = ? AND response_status = ? AND created_at > ?",
 		msg.TenantID, customer.ID, msg.Platform, "manual", "sent", cutoffTime).
 		Order("created_at DESC").First(&recentEscalatedInteraction)
-
+	
 	if query.Error != nil {
 		// No recent escalated interaction - this is a new conversation
 		return
 	}
-
+	
 	// Found a recent escalated reply - this is a follow-up!
 	// Log for now - we can enhance this later to send notifications
 	h.Logger.Info("📬 Customer follow-up after escalated conversation",
@@ -294,7 +294,7 @@ func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, 
 		zap.Uint("original_interaction_id", recentEscalatedInteraction.ID),
 		zap.Uint("new_interaction_id", interactionID),
 		zap.String("customer_message", msg.Content))
-
+	
 	// TODO: Send notification to tenant via EscalationHandler about this follow-up
 	// This will be handled after the main reply logic decides what to do
 }
@@ -308,7 +308,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if err == nil {
 		// Update last message time
 		customer.LastMessageAt = msg.Timestamp
-
+		
 		// Update customer name if we have a better one from the message
 		if customer.DisplayName == "" {
 			// Try to extract name from message content
@@ -319,12 +319,12 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 				customer.DisplayName = msg.CustomerName
 			}
 		}
-
+		
 		// Update username if we have a better one
 		if customer.Username == "" && msg.CustomerUsername != "" {
 			customer.Username = msg.CustomerUsername
 		}
-
+		
 		h.DB.Save(&customer)
 		return &customer, nil
 	}
@@ -334,7 +334,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if extractedName != "" && msg.CustomerName == "" {
 		msg.CustomerName = extractedName
 	}
-
+	
 	// Create new customer
 	customer = storage.Customer{
 		TenantID:      msg.TenantID,
