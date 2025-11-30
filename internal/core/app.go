@@ -184,6 +184,13 @@ func NewApp(cfg *config.Config) (*App, error) {
 		logger.Info("🔄 Bot retry worker started")
 	}()
 
+	// ✅ Start Analytics Scheduler (periodic aggregation jobs)
+	if services.AnalyticsScheduler != nil {
+		ctx := context.Background()
+		go services.AnalyticsScheduler.Run(ctx)
+		logger.Info("📊 Analytics scheduler started")
+	}
+
 	return app, nil
 }
 

@@ -43,6 +43,14 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 		biz.Niche = ""
 	}
 
+	// Load business menu items for product inquiries
+	var menuItems []storage.BusinessMenuItem
+	r.DB.Where("tenant_id = ?", tenantID).Find(&menuItems)
+
+	// Load FAQs for question matching
+	var faqs []storage.BusinessFAQ
+	r.DB.Where("tenant_id = ?", tenantID).Limit(10).Find(&faqs)
+
 	// Load conversation history
 	conversationHistory := r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30) // Last 30 days
 
@@ -52,6 +60,9 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
+
+	// Build business context (menu items and FAQs)
+	businessContext := r.buildBusinessContext(menuItems, faqs, intent)
 
 	// Add current message
 	intro := BuildIntroTone(persona, biz)
@@ -86,12 +97,15 @@ CRITICAL:
 
 Use the conversation history above as context.
 
+%s
+
 Detected intent: %s
 Formatting notes: %s
 
 Customer message: %s`,
 		intro,
 		strings.ToUpper(platform),
+		businessContext,
 		intent,
 		formatHint,
 		message,
@@ -105,5 +119,52 @@ Customer message: %s`,
 	}
 
 	return strings.TrimSpace(reply), nil
+}
+
+// buildBusinessContext creates context string from menu items and FAQs based on intent
+func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, intent string) string {
+	var context strings.Builder
+
+	// For product/service inquiries, include menu items
+	if intent == "inquiry" || intent == "order" {
+		if len(menuItems) > 0 {
+			context.WriteString("\nAVAILABLE PRODUCTS/SERVICES:\n")
+			for i, item := range menuItems {
+				if i >= 10 { // Limit to 10 items to avoid token bloat
+					break
+				}
+				context.WriteString(fmt.Sprintf("- %s", item.Name))
+				if item.Category != "" {
+					context.WriteString(fmt.Sprintf(" (%s)", item.Category))
+				}
+				if item.Price != "" {
+					context.WriteString(fmt.Sprintf(" - %s", item.Price))
+				}
+				if item.Description != "" {
+					context.WriteString(fmt.Sprintf(": %s", item.Description))
+				}
+				context.WriteString("\n")
+			}
+		}
+	}
+
+	// For general inquiries, include relevant FAQs
+	if intent == "inquiry" || intent == "casual" {
+		if len(faqs) > 0 {
+			context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
+			for i, faq := range faqs {
+				if i >= 5 { // Limit to 5 FAQs
+					break
+				}
+				context.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", faq.Question, faq.Answer))
+			}
+		}
+	}
+
+	result := context.String()
+	if result != "" {
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. If they ask about products/services, reference the menu items. If they ask questions similar to the FAQs, use those answers as a guide (but rephrase naturally).", result)
+	}
+	return ""
 }
 

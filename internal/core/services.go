@@ -52,7 +52,8 @@ type Services struct {
 	TikTokOAuthHandler      *social.TikTokOAuthHandler
 
 	// Analytics Services
-	AnalyticsService *analytics.Service
+	AnalyticsService   *analytics.Service
+	AnalyticsScheduler *analytics.AnalyticsScheduler
 }
 
 // NewServices initializes all services with proper dependency injection
@@ -335,6 +336,9 @@ func (s *Services) initAnalytics() error {
 	// Initialize analytics handler for bot and attach to bot manager
 	analyticsHandler := bot.NewAnalyticsHandler(s.BotManager, analyticsService, telegramReporter)
 	s.BotManager.AnalyticsHandler = analyticsHandler
+
+	// Initialize Analytics Scheduler
+	s.AnalyticsScheduler = analytics.NewAnalyticsScheduler(s.DB, s.Logger, analyticsService)
 
 	return nil
 }

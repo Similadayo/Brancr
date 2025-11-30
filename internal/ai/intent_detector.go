@@ -38,11 +38,24 @@ type DetectedIntent struct {
 
 // DetectIntent analyzes a message to determine intent, tone, and whether it needs escalation
 func (d *IntentDetector) DetectIntent(ctx context.Context, tenantID uint, message string, platform string) (*DetectedIntent, error) {
+	// Check tenant's intent catalog first for custom intents
+	var intentCatalog []storage.IntentCatalog
+	d.DB.Where("tenant_id = ?", tenantID).Find(&intentCatalog)
+
 	// Load business context
 	var biz storage.BusinessProfile
 	if err := d.DB.First(&biz, "tenant_id = ?", tenantID).Error; err != nil {
 		biz.Description = ""
 	}
+
+	// Build intent options list
+	intentOptions := []string{"inquiry", "order", "payment", "complaint", "casual", "refund", "delivery_issue"}
+	if len(intentCatalog) > 0 {
+		for _, intent := range intentCatalog {
+			intentOptions = append(intentOptions, intent.Name)
+		}
+	}
+	intentOptionsStr := strings.Join(intentOptions, ", ")
 
 	// Build detection prompt
 	systemPrompt := fmt.Sprintf(`You are an expert at analyzing customer messages for a %s business.
@@ -51,7 +64,7 @@ Business: %s
 Niche: %s
 
 Analyze this customer message and determine:
-1. Intent: inquiry, order, payment, complaint, casual, refund, delivery_issue
+1. Intent: %s
 2. Tone: positive, neutral, negative, urgent
 3. Confidence: 0.0-1.0
 4. Requires escalation: true if refund, complaint, delivery_issue, or uncertain
@@ -67,7 +80,7 @@ Return ONLY a JSON object with this exact structure:
 
 Message: "%s"
 Platform: %s
-`, biz.Niche, biz.Description, biz.Niche, message, strings.ToUpper(platform))
+`, biz.Niche, biz.Description, biz.Niche, intentOptionsStr, message, strings.ToUpper(platform))
 
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},

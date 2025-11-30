@@ -126,6 +126,12 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// Overview and stats
 		r.Get("/tenant/overview", h.overview)
 
+		// Intent catalog management
+		r.Get("/tenant/intent-catalog", h.listIntentCatalog)
+		r.Post("/tenant/intent-catalog", h.createIntentCatalog)
+		r.Put("/tenant/intent-catalog/{id}", h.updateIntentCatalog)
+		r.Delete("/tenant/intent-catalog/{id}", h.deleteIntentCatalog)
+
 		// WhatsApp provider-owned model (new)
 		r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
 		r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
@@ -6130,4 +6136,198 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+// ====================
+// INTENT CATALOG CRUD
+// ====================
+
+// listIntentCatalog lists all intent catalog entries for the tenant
+func (h *Handler) listIntentCatalog(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var intents []storage.IntentCatalog
+	if err := h.DB.Where("tenant_id = ?", claims.TenantID).
+		Order("name ASC").
+		Find(&intents).Error; err != nil {
+		h.Logger.Error("failed to fetch intent catalog", zap.Error(err))
+		http.Error(w, "failed to fetch intent catalog", http.StatusInternalServerError)
+		return
+	}
+
+	type intentResp struct {
+		ID        uint      `json:"id"`
+		Name      string    `json:"name"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+
+	resp := make([]intentResp, len(intents))
+	for i, intent := range intents {
+		resp[i] = intentResp{
+			ID:        intent.ID,
+			Name:      intent.Name,
+			CreatedAt: intent.CreatedAt,
+			UpdatedAt: intent.UpdatedAt,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"intents": resp,
+	})
+}
+
+// createIntentCatalog creates a new intent catalog entry
+func (h *Handler) createIntentCatalog(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if intent with same name already exists for this tenant
+	var existing storage.IntentCatalog
+	if err := h.DB.Where("tenant_id = ? AND name = ?", claims.TenantID, req.Name).
+		First(&existing).Error; err == nil {
+		http.Error(w, "intent with this name already exists", http.StatusConflict)
+		return
+	}
+
+	intent := storage.IntentCatalog{
+		TenantID: claims.TenantID,
+		Name:     req.Name,
+	}
+
+	if err := h.DB.Create(&intent).Error; err != nil {
+		h.Logger.Error("failed to create intent catalog", zap.Error(err))
+		http.Error(w, "failed to create intent", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"success": true,
+		"message": "Intent catalog entry created successfully",
+		"intent": map[string]any{
+			"id":         intent.ID,
+			"name":       intent.Name,
+			"created_at": intent.CreatedAt,
+			"updated_at": intent.UpdatedAt,
+		},
+	})
+}
+
+// updateIntentCatalog updates an existing intent catalog entry
+func (h *Handler) updateIntentCatalog(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	var id uint
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		http.Error(w, "invalid intent id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Find intent and verify ownership
+	var intent storage.IntentCatalog
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, claims.TenantID).First(&intent).Error; err != nil {
+		http.Error(w, "intent catalog entry not found", http.StatusNotFound)
+		return
+	}
+
+	// Check if another intent with same name exists
+	var existing storage.IntentCatalog
+	if err := h.DB.Where("tenant_id = ? AND name = ? AND id != ?", claims.TenantID, req.Name, id).
+		First(&existing).Error; err == nil {
+		http.Error(w, "intent with this name already exists", http.StatusConflict)
+		return
+	}
+
+	intent.Name = req.Name
+	if err := h.DB.Save(&intent).Error; err != nil {
+		h.Logger.Error("failed to update intent catalog", zap.Error(err))
+		http.Error(w, "failed to update intent", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Intent catalog entry updated successfully",
+		"intent": map[string]any{
+			"id":         intent.ID,
+			"name":       intent.Name,
+			"created_at": intent.CreatedAt,
+			"updated_at": intent.UpdatedAt,
+		},
+	})
+}
+
+// deleteIntentCatalog deletes an intent catalog entry
+func (h *Handler) deleteIntentCatalog(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	var id uint
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		http.Error(w, "invalid intent id", http.StatusBadRequest)
+		return
+	}
+
+	// Find intent and verify ownership
+	var intent storage.IntentCatalog
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, claims.TenantID).First(&intent).Error; err != nil {
+		http.Error(w, "intent catalog entry not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.DB.Delete(&intent).Error; err != nil {
+		h.Logger.Error("failed to delete intent catalog", zap.Error(err))
+		http.Error(w, "failed to delete intent", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Intent catalog entry deleted successfully",
+	})
 }

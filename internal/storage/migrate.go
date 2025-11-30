@@ -47,6 +47,12 @@ func AutoMigrate(db *gorm.DB) error {
 		&BulkUploadSession{},
 		// Content calendar
 		&ContentCalendar{},
+		// Analytics models
+		&PostAnalytics{},
+		&CampaignAnalytics{},
+		&TrendInsight{},
+		&PlatformMetricsSnapshot{},
+		&AudienceSegment{},
 	)
 	
 	// Migrate payment audit logs table (from security package)
