@@ -209,7 +209,8 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString("3. Reference what's actually in the image when relevant - be specific, not generic.\n")
 	prompt.WriteString("4. Connect image content to business offerings when appropriate - do it naturally, not forced.\n")
 	prompt.WriteString("5. Use emojis only if they fit the brand personality. Include no more than three relevant hashtags.\n")
-	prompt.WriteString("6. Sound genuinely human and conversational—never robotic, overly promotional, or template-like.\n")
+	prompt.WriteString("6. Sound genuinely human and conversational - never robotic, overly promotional, or template-like.\n")
+	prompt.WriteString("7. Do NOT use em-dashes (—) in captions. Use commas, periods, or regular hyphens instead.\n")
 	prompt.WriteString("7. End with a brand-flavored hook or light invitation to engage - make it feel natural.\n\n")
 	prompt.WriteString("Return only the finished caption with hashtags at the end.")
 

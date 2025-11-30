@@ -21,7 +21,7 @@ func StartAIOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.BotAPI, c
 	session := map[string]string{"step": "ask_business_name"}
 	OnboardingSessions.Store(chatID, session)
 
-	bot.Send(tgbotapi.NewMessage(chatID, "Hey there! I’m Brancr—ready to spin up your business assistant. What’s the name of your business?"))
+	bot.Send(tgbotapi.NewMessage(chatID, "Hey there! I'm Brancr - ready to spin up your business assistant. What's the name of your business?"))
 }
 
 // ContinueAIOnboarding handles next questions dynamically
@@ -70,7 +70,7 @@ func ContinueAIOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.BotAPI
 		business := state["business_name"]
 		token := state["token"]
 
-		bot.Send(tgbotapi.NewMessage(chatID, "✨ Nice! I’m plugging everything in now—hang tight."))
+		bot.Send(tgbotapi.NewMessage(chatID, "✨ Nice! I'm plugging everything in now - hang tight."))
 
 		tenant, err := onboarding.RegisterTenant(db, chatID, business, state["email"], token)
 		if err != nil {

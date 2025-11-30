@@ -59,7 +59,7 @@ func ContinuePersonaOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.B
 		state["step"] = "ask_tone"
 		PersonaSessions.Store(chatID, state)
 
-		reply := fmt.Sprintf("Awesome — %s it is 💁🏽‍♀️\n\nHow would you like me to sound?\n• Friendly & confident\n• Calm & kind\n• Bold & witty\n• Corporate & clear", text)
+		reply := fmt.Sprintf("Awesome - %s it is 💁🏽‍♀️\n\nHow would you like me to sound?\n• Friendly & confident\n• Calm & kind\n• Bold & witty\n• Corporate & clear", text)
 		bot.Send(tgbotapi.NewMessage(chatID, reply))
 		return
 
@@ -81,14 +81,14 @@ func ContinuePersonaOnboarding(ctx context.Context, db *gorm.DB, bot *tgbotapi.B
 	case "ask_humor":
 		humor := strings.TrimSpace(strings.ToLower(text))
 		if humor != "yes" && humor != "no" && humor != "y" && humor != "n" {
-			bot.Send(tgbotapi.NewMessage(chatID, "Just say Yes or No — do you want me to keep things playful?"))
+			bot.Send(tgbotapi.NewMessage(chatID, "Just say Yes or No - do you want me to keep things playful?"))
 			return
 		}
 		state["humor"] = fmt.Sprintf("%v", humor == "yes" || humor == "y")
 		state["step"] = "ask_style"
 		PersonaSessions.Store(chatID, state)
 
-		bot.Send(tgbotapi.NewMessage(chatID, "Last thing — what’s the overall vibe?\n• Luxury\n• Youthful\n• Relaxed\n• Corporate\n• Trendy"))
+		bot.Send(tgbotapi.NewMessage(chatID, "Last thing - what's the overall vibe?\n• Luxury\n• Youthful\n• Relaxed\n• Corporate\n• Trendy"))
 		return
 
 	// --------------------------------------------

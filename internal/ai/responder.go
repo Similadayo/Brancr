@@ -195,7 +195,7 @@ func (r *Responder) GenerateTenantOwnerReply(ctx context.Context, tenantID uint,
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the business owner. Help them run operations—think connecting accounts, scheduling posts, checking stats, or answering workflow questions.
+Task: Reply to the business owner. Help them run operations - think connecting accounts, scheduling posts, checking stats, or answering workflow questions.
 
 CRITICAL: Write like a real human would - natural, conversational, and helpful.
 - Vary your sentence length and structure naturally
