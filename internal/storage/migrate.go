@@ -33,6 +33,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&SocialAccount{},
 		&WhatsAppPhoneNumber{},
 		&WhatsAppPhoneNumberRequest{},
+		&WhatsAppApp{}, // Gupshup Partner multi-tenant WhatsApp apps
 		&Persona{},
 		&MemoryItem{},
 		&IntentCatalog{},

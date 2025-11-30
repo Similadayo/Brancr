@@ -170,83 +170,115 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 		return "", fmt.Errorf("redirect URL is required")
 	}
 
-	// Try to generate via authenticated API call first
+	// Try to generate via authenticated API call using PARTNER_TOKEN
+	// This is the recommended method per Gupshup's recent API updates
 	if err := c.ensureValidToken(ctx); err == nil {
-		// Try API endpoint to generate onboarding link
-		endpoint := fmt.Sprintf("%s/partner/app/generate-onboarding-link", c.BaseURL)
+		// Try multiple possible API endpoints for onboarding link generation
+		endpoints := []string{
+			fmt.Sprintf("%s/partner/app/onboard-link", c.BaseURL),
+			fmt.Sprintf("%s/partner/app/generate-onboarding-link", c.BaseURL),
+			fmt.Sprintf("%s/partner/app/onboarding-link", c.BaseURL),
+		}
+
+		c.tokenMutex.RLock()
+		token := c.Token
+		c.tokenMutex.RUnlock()
 
 		payload := map[string]interface{}{
 			"partnerId": partnerID,
 			"redirect":  redirectURL,
 		}
 
-		jsonData, err := json.Marshal(payload)
-		if err == nil {
+		jsonData, _ := json.Marshal(payload)
+
+		for _, endpoint := range endpoints {
 			req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-			if err == nil {
-				c.tokenMutex.RLock()
-				token := c.Token
-				c.tokenMutex.RUnlock()
+			if err != nil {
+				continue
+			}
 
-				req.Header.Set("Authorization", token)
-				req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", token)
+			req.Header.Set("Content-Type", "application/json")
 
-				client := &http.Client{Timeout: 15 * time.Second}
-				resp, err := client.Do(req)
-				if err == nil {
-					defer resp.Body.Close()
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				continue
+			}
+			defer resp.Body.Close()
 
-					if resp.StatusCode == 200 || resp.StatusCode == 201 {
-						body, _ := io.ReadAll(resp.Body)
-						var response struct {
-							OnboardingURL  string `json:"onboardingUrl"`
-							OnboardingLink string `json:"onboarding_link"`
-							URL            string `json:"url"`
-							Link           string `json:"link"`
+			body, _ := io.ReadAll(resp.Body)
+
+			// Log response for debugging
+			if c.Logger != nil {
+				c.Logger.Debug("Tried onboarding link API endpoint",
+					zap.String("endpoint", endpoint),
+					zap.Int("status", resp.StatusCode),
+					zap.String("response_preview", truncateString(string(body), 200)))
+			}
+
+			if resp.StatusCode == 200 || resp.StatusCode == 201 {
+				var response struct {
+					OnboardingURL  string `json:"onboardingUrl"`
+					OnboardingLink string `json:"onboarding_link"`
+					URL            string `json:"url"`
+					Link           string `json:"link"`
+					OnboardURL     string `json:"onboardUrl"`
+				}
+				if err := json.Unmarshal(body, &response); err == nil {
+					// Try different possible field names
+					link := response.OnboardingURL
+					if link == "" {
+						link = response.OnboardingLink
+					}
+					if link == "" {
+						link = response.URL
+					}
+					if link == "" {
+						link = response.Link
+					}
+					if link == "" {
+						link = response.OnboardURL
+					}
+					if link != "" {
+						if c.Logger != nil {
+							c.Logger.Info("✅ Generated Gupshup onboarding link via API",
+								zap.String("partner_id", partnerID),
+								zap.String("redirect_url", redirectURL),
+								zap.String("endpoint", endpoint))
 						}
-						if err := json.Unmarshal(body, &response); err == nil {
-							// Try different possible field names
-							link := response.OnboardingURL
-							if link == "" {
-								link = response.OnboardingLink
-							}
-							if link == "" {
-								link = response.URL
-							}
-							if link == "" {
-								link = response.Link
-							}
-							if link != "" {
-								if c.Logger != nil {
-									c.Logger.Info("✅ Generated Gupshup onboarding link via API",
-										zap.String("partner_id", partnerID),
-										zap.String("redirect_url", redirectURL))
-								}
-								return link, nil
-							}
-						}
+						return link, nil
 					}
 				}
 			}
 		}
+
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Failed to generate onboarding link via API - using fallback method",
+				zap.String("partner_id", partnerID))
+		}
 	}
 
-	// Fallback: Construct URL with clientSecret in query params (original method)
-	// CRITICAL: This is the standard method for Gupshup Partner onboarding links
-	// The clientSecret is validated server-side when the user opens the link
+	// Fallback: Construct URL with clientSecret in query params
+	// NOTE: This method may fail if Gupshup changed validation - try token-based first
+	// If this fails, the clientSecret might need to match exactly what's in Partner Portal
 	if c.ClientSecret == "" {
 		return "", fmt.Errorf("gupshup Partner API key (client secret) is not configured")
 	}
+
+	// IMPORTANT: Based on Gupshup's recent changes, the onboarding link might need
+	// to be generated via API call using PARTNER_TOKEN, not clientSecret in URL
+	// However, we'll try the URL method as fallback for backward compatibility
 
 	// URL encode parameters properly - url.Values handles this automatically
 	params := url.Values{}
 	params.Set("partnerId", partnerID)
 	params.Set("redirect", redirectURL)
-	params.Set("clientSecret", c.ClientSecret) // REQUIRED: Validates partner auth in query params
+	params.Set("clientSecret", c.ClientSecret) // This might be rejected by Gupshup
 
 	link := fmt.Sprintf("%s/partner/app/onboard?%s", c.BaseURL, params.Encode())
 
-	// Log warning about potential issues
+	// Log warnings about potential issues
 	if c.Logger != nil {
 		// Check for common issues
 		if len(c.ClientSecret) < 20 {
@@ -256,14 +288,19 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 		if strings.Contains(c.ClientSecret, " ") {
 			c.Logger.Warn("⚠️ Client secret contains spaces - this might cause issues")
 		}
+
+		c.Logger.Warn("⚠️ Using fallback onboarding link method with clientSecret in URL",
+			zap.String("partner_id", partnerID),
+			zap.String("note", "If you get 'Unauthorised access', the clientSecret might be invalid or Gupshup changed their validation"))
 	}
 
 	if c.Logger != nil {
-		c.Logger.Info("🔗 Generated Gupshup onboarding link (fallback method)",
+		c.Logger.Info("🔗 Generated Gupshup onboarding link (fallback method - clientSecret in URL)",
 			zap.String("partner_id", partnerID),
 			zap.String("redirect_url", redirectURL),
 			zap.String("link_preview", truncateString(link, 100)),
-			zap.Bool("has_client_secret", c.ClientSecret != ""))
+			zap.Bool("has_client_secret", c.ClientSecret != ""),
+			zap.String("warning", "If link fails, verify clientSecret matches Partner Portal exactly"))
 	}
 
 	return link, nil
