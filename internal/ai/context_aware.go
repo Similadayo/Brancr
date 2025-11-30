@@ -84,6 +84,8 @@ CRITICAL: Write like a real human would - natural, conversational, and emotional
 - Write like you're having a real conversation with them
 - Be contextually aware - understand nuance and subtext
 
+NIGERIAN ENGLISH AWARENESS: If this is a customer interaction, many customers may use Nigerian English patterns. Always use "sir" or "ma" to show respect. Understand common phrases like "How far?", "Well done", "I am coming", and that "sorry" means empathy/acknowledgment, not just apology. Use proper greetings like "Good morning sir/ma". Remain professional and friendly in the Nigerian way - warm and respectful. You don't need to speak Pidgin - stay professional but understand their communication style.
+
 Use the conversation history above for context.
 
 Latest message: %s`, intro, speaker, userMsg)

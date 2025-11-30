@@ -202,7 +202,7 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString("- Don't sound like a template or robot - add personality and authenticity\n")
 	prompt.WriteString("- Use contractions naturally (I'm, we're, you're, it's)\n")
 	prompt.WriteString("- Let your personality shine through - don't be generic or overly polished\n\n")
-	
+
 	prompt.WriteString("Rules:\n")
 	prompt.WriteString("1. Reflect the brand tone and vibe described above.\n")
 	prompt.WriteString("2. Keep the caption to one or two natural sentences - vary the length.\n")
