@@ -223,12 +223,21 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// Log response for debugging
+		// Log response for debugging - use Info level for better visibility
 		if c.Logger != nil {
-			c.Logger.Debug("Tried onboarding link API endpoint",
-				zap.String("endpoint", endpoint),
-				zap.Int("status", resp.StatusCode),
-				zap.String("response_preview", truncateString(string(body), 200)))
+			if resp.StatusCode >= 400 {
+				c.Logger.Error("❌ Onboarding link API endpoint failed",
+					zap.String("endpoint", endpoint),
+					zap.Int("status", resp.StatusCode),
+					zap.String("response_body", string(body)), // Log full response for debugging
+					zap.String("response_headers", fmt.Sprintf("%+v", resp.Header)),
+					zap.String("request_headers", fmt.Sprintf("Authorization: Bearer %s...", truncateString(token, 20))))
+			} else {
+				c.Logger.Info("🔍 Tried onboarding link API endpoint",
+					zap.String("endpoint", endpoint),
+					zap.Int("status", resp.StatusCode),
+					zap.String("response_body", string(body)))
+			}
 		}
 
 		// If Bearer format fails with 401, try X-Authorization format
@@ -256,10 +265,18 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 			resp2.Body.Close()
 
 			if c.Logger != nil {
-				c.Logger.Debug("Retried with X-Authorization header",
-					zap.String("endpoint", endpoint),
-					zap.Int("status", resp2.StatusCode),
-					zap.String("response_preview", truncateString(string(body2), 200)))
+				if resp2.StatusCode >= 400 {
+					c.Logger.Error("❌ X-Authorization retry also failed",
+						zap.String("endpoint", endpoint),
+						zap.Int("status", resp2.StatusCode),
+						zap.String("response_body", string(body2)),
+						zap.String("response_status", resp2.Status))
+				} else {
+					c.Logger.Info("🔍 Retried with X-Authorization header",
+						zap.String("endpoint", endpoint),
+						zap.Int("status", resp2.StatusCode),
+						zap.String("response_body", truncateString(string(body2), 500)))
+				}
 			}
 
 			if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
@@ -318,16 +335,287 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 		}
 	}
 
-	// If all API endpoints failed, return error with detailed information
-	// DO NOT fall back to deprecated URL method - it no longer works
+	// If all API endpoints failed, log all error responses for debugging
 	if c.Logger != nil {
 		c.Logger.Error("❌ Failed to generate onboarding link via API - all endpoints failed",
 			zap.String("partner_id", partnerID),
 			zap.String("redirect_url", redirectURL),
-			zap.String("note", "The URL method with clientSecret in query params is deprecated and no longer works"))
+			zap.String("note", "Check logs above for individual endpoint error responses to identify the correct endpoint"))
 	}
 
-	return "", fmt.Errorf("failed to generate onboarding link via API: all endpoints failed. The URL method with clientSecret is deprecated. Verify Partner credentials (Partner ID: %s, Partner Email: %s) and ensure token generation succeeds", partnerID, c.PartnerEmail)
+	// CRITICAL: Log what error responses we got from each endpoint to help identify the correct one
+	// The full error responses should be in the logs above - check them to see:
+	// 1. What status codes were returned (404 = endpoint doesn't exist, 401 = auth issue, etc.)
+	// 2. What error messages Gupshup returned
+	// 3. Which endpoint (if any) returned a different response that might give us a clue
+
+	return "", fmt.Errorf("failed to generate onboarding link via API: all endpoints returned errors. Check logs for detailed error responses from each endpoint attempt. Partner ID: %s, Partner Email: %s. Possible causes: 1) Endpoints don't exist (check Gupshup docs for correct endpoint), 2) Authentication token not accepted, 3) Wrong request format/payload", partnerID, c.PartnerEmail)
+}
+
+// CreateAppResponse represents the response from CreateApp API
+type CreateAppResponse struct {
+	AppID    string `json:"appId"`
+	AppToken string `json:"appToken"`
+	APIKey   string `json:"apiKey"`
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+}
+
+// CreateApp creates a new Gupshup App linked to Partner ID
+// Endpoint: POST /partner/app
+// This must be called FIRST before generating onboarding link
+func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*CreateAppResponse, error) {
+	// Ensure we have a valid token
+	if err := c.ensureValidToken(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get partner token: %w", err)
+	}
+
+	if appName == "" {
+		appName = "WhatsApp Business App"
+	}
+
+	endpoint := fmt.Sprintf("%s/partner/app", c.BaseURL)
+
+	payload := map[string]interface{}{
+		"name": appName,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	c.tokenMutex.RLock()
+	token := c.Token
+	c.tokenMutex.RUnlock()
+
+	// Try with Bearer token first
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// If Bearer fails with 401, try X-Authorization
+	if resp.StatusCode == 401 {
+		if c.Logger != nil {
+			c.Logger.Debug("Bearer token failed for CreateApp, retrying with X-Authorization")
+		}
+
+		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+		if err2 != nil {
+			return nil, fmt.Errorf("failed to create retry request: %w", err2)
+		}
+
+		req2.Header.Set("X-Authorization", token)
+		req2.Header.Set("Content-Type", "application/json")
+
+		resp2, err2 := client.Do(req2)
+		if err2 != nil {
+			return nil, fmt.Errorf("API request failed on retry: %w", err2)
+		}
+		defer resp2.Body.Close()
+
+		body, _ = io.ReadAll(resp2.Body)
+		resp = resp2
+	}
+
+	if resp.StatusCode >= 400 {
+		if c.Logger != nil {
+			c.Logger.Error("❌ Failed to create Gupshup app",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", string(body)),
+				zap.String("app_name", appName))
+		}
+
+		var apiErr struct {
+			Status  string `json:"status"`
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(body, &apiErr); err == nil {
+			if apiErr.Error != "" {
+				return nil, fmt.Errorf("gupshup Partner API error %d: %s", resp.StatusCode, apiErr.Error)
+			}
+			if apiErr.Message != "" {
+				return nil, fmt.Errorf("gupshup Partner API error %d: %s", resp.StatusCode, apiErr.Message)
+			}
+		}
+
+		return nil, fmt.Errorf("gupshup Partner API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response CreateAppResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w, body: %s", err, string(body))
+	}
+
+	if response.AppID == "" {
+		return nil, fmt.Errorf("app ID not found in response: %s", string(body))
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("✅ Created Gupshup app",
+			zap.String("app_id", response.AppID),
+			zap.String("app_name", appName),
+			zap.Bool("has_app_token", response.AppToken != ""),
+			zap.Bool("has_api_key", response.APIKey != ""))
+	}
+
+	return &response, nil
+}
+
+// GenerateEmbedSignedLinkResponse represents the response from GenerateEmbedSignedLink API
+type GenerateEmbedSignedLinkResponse struct {
+	EmbedSignedLink string `json:"embedSignedLink"`
+	SignedURL       string `json:"signedUrl"`
+	URL             string `json:"url"`
+	Link            string `json:"link"`
+	Status          string `json:"status"`
+	Message         string `json:"message"`
+}
+
+// GenerateEmbedSignedLink generates an embed signed link (onboarding URL) for an existing app
+// Endpoint: POST /partner/app/{appId}/generate-embed-signed-link
+// This is the CORRECT way to get the onboarding link - requires an existing app
+func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appID, redirectURL string) (string, error) {
+	// Ensure we have a valid token
+	if err := c.ensureValidToken(ctx); err != nil {
+		return "", fmt.Errorf("failed to get partner token: %w", err)
+	}
+
+	if appID == "" {
+		return "", fmt.Errorf("app ID is required")
+	}
+	if redirectURL == "" {
+		return "", fmt.Errorf("redirect URL is required")
+	}
+
+	// Try multiple possible endpoint variations
+	endpoints := []string{
+		fmt.Sprintf("%s/partner/app/%s/generate-embed-signed-link", c.BaseURL, appID),
+		fmt.Sprintf("%s/partner/app/%s/embed-signed-link", c.BaseURL, appID),
+		fmt.Sprintf("%s/partner/app/%s/generate-embed-link", c.BaseURL, appID),
+		fmt.Sprintf("%s/partner/app/%s/embed-link", c.BaseURL, appID),
+	}
+
+	c.tokenMutex.RLock()
+	token := c.Token
+	c.tokenMutex.RUnlock()
+
+	payload := map[string]interface{}{
+		"redirectUrl": redirectURL,
+		"redirect":    redirectURL, // Some APIs use different field names
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+		if err != nil {
+			continue
+		}
+
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			if c.Logger != nil {
+				c.Logger.Debug("Failed to call embed signed link endpoint",
+					zap.String("endpoint", endpoint),
+					zap.Error(err))
+			}
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if c.Logger != nil {
+			if resp.StatusCode >= 400 {
+				c.Logger.Error("❌ Embed signed link endpoint failed",
+					zap.String("endpoint", endpoint),
+					zap.Int("status", resp.StatusCode),
+					zap.String("response", string(body)))
+			}
+		}
+
+		// If Bearer fails with 401, try X-Authorization
+		if resp.StatusCode == 401 {
+			req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+			if err2 != nil {
+				continue
+			}
+
+			req2.Header.Set("X-Authorization", token)
+			req2.Header.Set("Content-Type", "application/json")
+
+			resp2, err2 := client.Do(req2)
+			if err2 != nil {
+				continue
+			}
+
+			body2, _ := io.ReadAll(resp2.Body)
+			resp2.Body.Close()
+
+			if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
+				body = body2
+				resp.StatusCode = resp2.StatusCode
+			}
+		}
+
+		if resp.StatusCode == 200 || resp.StatusCode == 201 {
+			var response GenerateEmbedSignedLinkResponse
+			if err := json.Unmarshal(body, &response); err == nil {
+				// Try different possible field names
+				link := response.EmbedSignedLink
+				if link == "" {
+					link = response.SignedURL
+				}
+				if link == "" {
+					link = response.URL
+				}
+				if link == "" {
+					link = response.Link
+				}
+
+				if link != "" {
+					if c.Logger != nil {
+						c.Logger.Info("✅ Generated embed signed link",
+							zap.String("app_id", appID),
+							zap.String("endpoint", endpoint),
+							zap.String("redirect_url", redirectURL))
+					}
+					return link, nil
+				}
+			}
+
+			// If JSON parsing failed but status is 200/201, log the raw response
+			if c.Logger != nil {
+				c.Logger.Warn("⚠️ Got 200/201 response but couldn't parse embed signed link from response",
+					zap.String("endpoint", endpoint),
+					zap.String("response_body", truncateString(string(body), 500)))
+			}
+		}
+	}
+
+	return "", fmt.Errorf("failed to generate embed signed link: all endpoints failed for app ID %s", appID)
 }
 
 // VerifyPartnerCredentials attempts to verify Partner credentials are correct

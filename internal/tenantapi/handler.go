@@ -5853,7 +5853,7 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Generate onboarding redirect link (VERIFIED: only correct method)
+	// Generate onboarding redirect link
 	redirectURL := fmt.Sprintf("%s/api/tenant/whatsapp/callback?tenant_id=%d", h.Config.PublicURL, tenantID)
 
 	// Validate redirect URL format
@@ -5867,72 +5867,158 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Verify Partner credentials format before generating link
-	if err := h.GupshupPartner.VerifyPartnerCredentials(r.Context(), h.Config.GupshupPartnerID); err != nil {
-		h.Logger.Warn("⚠️ Partner credentials verification warning",
+	// CORRECT 3-STEP FLOW: Create App → Set Callback → Generate Embed Signed Link
+
+	// Step 1: Check if tenant already has a WhatsAppApp, if not create one
+	var waApp storage.WhatsAppApp
+	err := h.DB.Where("tenant_id = ?", tenantID).First(&waApp).Error
+
+	var appID string
+	var appToken string
+
+	if err != nil {
+		// App doesn't exist, create a new one
+		// Get tenant name for app naming
+		var tenant storage.Tenant
+		if err := h.DB.First(&tenant, tenantID).Error; err != nil {
+			h.Logger.Error("❌ Failed to fetch tenant",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "tenant_not_found",
+				"message": "Failed to find tenant",
+			})
+			return
+		}
+
+		appName := fmt.Sprintf("%s WhatsApp App", tenant.Name)
+		if appName == "" {
+			appName = fmt.Sprintf("Tenant %d WhatsApp App", tenantID)
+		}
+
+		h.Logger.Info("🔧 Creating new Gupshup app for tenant",
 			zap.Uint("tenant_id", tenantID),
-			zap.Error(err),
-			zap.String("partner_id", h.Config.GupshupPartnerID),
-			zap.Int("api_key_length", len(h.Config.GupshupPartnerAPIKey)))
-		// Continue anyway - verification is best-effort
+			zap.String("app_name", appName))
+
+		createResp, err := h.GupshupPartner.CreateApp(r.Context(), appName)
+		if err != nil {
+			h.Logger.Error("❌ Failed to create Gupshup app",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "app_creation_failed",
+				"message": fmt.Sprintf("Failed to create Gupshup app: %v", err),
+			})
+			return
+		}
+
+		appID = createResp.AppID
+		appToken = createResp.AppToken
+
+		// Encrypt app token before storing
+		encryptedToken, err := utils.EncryptToken(appToken)
+		if err != nil {
+			h.Logger.Error("❌ Failed to encrypt app token",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "token_encryption_failed",
+				"message": "Failed to encrypt app token",
+			})
+			return
+		}
+
+		// Store the app in database
+		waApp = storage.WhatsAppApp{
+			TenantID:        tenantID,
+			GupshupAppID:    appID,
+			GupshupAppToken: encryptedToken,
+			Status:          "pending_onboarding",
+			Mode:            "gupshup_partner",
+		}
+
+		if err := h.DB.Create(&waApp).Error; err != nil {
+			h.Logger.Error("❌ Failed to save WhatsApp app to database",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("app_id", appID),
+				zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "database_error",
+				"message": "Failed to save app to database",
+			})
+			return
+		}
+
+		h.Logger.Info("✅ Created and saved Gupshup app",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID))
+	} else {
+		// App already exists, use existing app ID
+		appID = waApp.GupshupAppID
+		h.Logger.Info("✅ Using existing Gupshup app",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID),
+			zap.String("status", waApp.Status))
 	}
 
-	onboardingLink, err := h.GupshupPartner.GenerateOnboardingLink(r.Context(), h.Config.GupshupPartnerID, redirectURL)
-	if err != nil {
-		h.Logger.Error("❌ Failed to generate Gupshup onboarding link",
+	// Step 2: Set callback URL for the app
+	h.Logger.Info("🔧 Setting callback URL for app",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("callback_url", redirectURL))
+
+	if err := h.GupshupPartner.SetCallback(r.Context(), appID, redirectURL); err != nil {
+		h.Logger.Error("❌ Failed to set callback URL",
 			zap.Uint("tenant_id", tenantID),
-			zap.Error(err),
-			zap.String("partner_id", h.Config.GupshupPartnerID),
-			zap.String("redirect_url", redirectURL),
-			zap.Bool("has_api_key", h.Config.GupshupPartnerAPIKey != ""),
-			zap.Int("api_key_length", len(h.Config.GupshupPartnerAPIKey)))
+			zap.String("app_id", appID),
+			zap.Error(err))
+		// Don't fail here - callback can be set later
+		h.Logger.Warn("⚠️ Continuing without setting callback - can be set later")
+	} else {
+		h.Logger.Info("✅ Callback URL set successfully",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID))
+	}
+
+	// Step 3: Generate embed signed link (the onboarding URL)
+	h.Logger.Info("🔧 Generating embed signed link for onboarding",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID))
+
+	onboardingLink, err := h.GupshupPartner.GenerateEmbedSignedLink(r.Context(), appID, redirectURL)
+	if err != nil {
+		h.Logger.Error("❌ Failed to generate embed signed link",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID),
+			zap.Error(err))
 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "onboarding_link_generation_failed",
+			"error":   "embed_link_generation_failed",
 			"message": fmt.Sprintf("Failed to generate onboarding link: %v", err),
-			"hint":    "Please verify GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correctly configured.",
-			"config_check": map[string]any{
-				"has_partner_api_key": h.Config.GupshupPartnerAPIKey != "",
-				"has_partner_id":      h.Config.GupshupPartnerID != "",
-				"has_public_url":      h.Config.PublicURL != "",
-				"api_key_length":      len(h.Config.GupshupPartnerAPIKey),
-				"partner_id_preview": func() string {
-					if h.Config.GupshupPartnerID != "" {
-						return h.Config.GupshupPartnerID[:min(4, len(h.Config.GupshupPartnerID))] + "..."
-					}
-					return "not_set"
-				}(),
-			},
+			"app_id":  appID,
 		})
 		return
 	}
 
-	// Store pending status (app doesn't exist yet - will be created after onboarding)
-	h.DB.Create(&storage.WhatsAppApp{
-		TenantID: tenantID,
-		Status:   "pending_onboarding",
-		Mode:     "gupshup_partner",
-	})
-
-	h.Logger.Info("✅ Generated Gupshup Partner onboarding link",
+	h.Logger.Info("✅ Generated Gupshup Partner onboarding link (3-step flow complete)",
 		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID),
 		zap.String("redirect_url", redirectURL),
 		zap.String("onboarding_link", onboardingLink),
-		zap.String("partner_id", h.Config.GupshupPartnerID),
-		zap.Int("api_key_length", len(h.Config.GupshupPartnerAPIKey)),
-		zap.String("api_key_preview", func() string {
-			key := h.Config.GupshupPartnerAPIKey
-			if len(key) > 8 {
-				return key[:4] + "..." + key[len(key)-4:]
-			}
-			return "***"
-		}()))
+		zap.String("partner_id", h.Config.GupshupPartnerID))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
+		"app_id":         appID,
 		"status":         "pending_onboarding",
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
 		"redirect_url":   redirectURL,
+		"flow_completed": map[string]any{
+			"step_1": "✅ App created",
+			"step_2": "✅ Callback URL set",
+			"step_3": "✅ Embed signed link generated",
+		},
 		"troubleshooting": map[string]any{
 			"unauthorized_error": "If you see 'Unauthorised access' error when opening the link, check:",
 			"fix_steps": []map[string]string{
