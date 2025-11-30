@@ -64,6 +64,34 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(partnerID, redirectURL str
 	return link, nil
 }
 
+// VerifyPartnerCredentials attempts to verify Partner API Key and Partner ID are correct
+// This is a best-effort verification - there's no dedicated endpoint, so we try a simple API call
+func (c *GupshupPartnerClient) VerifyPartnerCredentials(ctx context.Context, partnerID string) error {
+	if c.PartnerAPIKey == "" {
+		return fmt.Errorf("Partner API key is not configured")
+	}
+	if partnerID == "" {
+		return fmt.Errorf("Partner ID is required")
+	}
+
+	// Try to get partner info or list apps (if such endpoint exists)
+	// Since there's no direct verification endpoint, we'll validate the link format
+	// and check if we can make a basic authenticated request
+	
+	// For now, just validate the credentials are non-empty and have expected format
+	if len(c.PartnerAPIKey) < 10 {
+		return fmt.Errorf("Partner API key appears too short - verify it's correct")
+	}
+	
+	if c.Logger != nil {
+		c.Logger.Info("⚠️ Partner credential verification is limited - credentials will be validated when used",
+			zap.String("partner_id", partnerID),
+			zap.Int("api_key_length", len(c.PartnerAPIKey)))
+	}
+
+	return nil
+}
+
 // SetCallback configures webhook callback URL for a Gupshup Partner app
 // Endpoint: POST /partner/app/set-callback
 func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackURL string) error {

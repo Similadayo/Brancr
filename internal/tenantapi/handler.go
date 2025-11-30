@@ -5819,20 +5819,77 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Validate configuration before generating link
+	if h.Config.GupshupPartnerAPIKey == "" {
+		h.Logger.Error("❌ GUPSHUP_PARTNER_API_KEY is empty",
+			zap.Uint("tenant_id", tenantID))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "missing_partner_api_key",
+			"message": "Gupshup Partner API key is not configured. Please set GUPSHUP_PARTNER_API_KEY environment variable.",
+		})
+		return
+	}
+
+	if h.Config.GupshupPartnerID == "" {
+		h.Logger.Error("❌ GUPSHUP_PARTNER_ID is empty",
+			zap.Uint("tenant_id", tenantID))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "missing_partner_id",
+			"message": "Gupshup Partner ID is not configured. Please set GUPSHUP_PARTNER_ID environment variable.",
+		})
+		return
+	}
+
 	// Generate onboarding redirect link (VERIFIED: only correct method)
 	redirectURL := fmt.Sprintf("%s/api/tenant/whatsapp/callback?tenant_id=%d", h.Config.PublicURL, tenantID)
+
+	// Validate redirect URL format
+	if h.Config.PublicURL == "" {
+		h.Logger.Error("❌ BRANCR_PUBLIC_URL is empty - cannot generate redirect URL",
+			zap.Uint("tenant_id", tenantID))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "missing_public_url",
+			"message": "Public URL is not configured. Please set BRANCR_PUBLIC_URL environment variable.",
+		})
+		return
+	}
+
+	// Verify Partner credentials format before generating link
+	if err := h.GupshupPartner.VerifyPartnerCredentials(r.Context(), h.Config.GupshupPartnerID); err != nil {
+		h.Logger.Warn("⚠️ Partner credentials verification warning",
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err),
+			zap.String("partner_id", h.Config.GupshupPartnerID),
+			zap.Int("api_key_length", len(h.Config.GupshupPartnerAPIKey)))
+		// Continue anyway - verification is best-effort
+	}
+
 	onboardingLink, err := h.GupshupPartner.GenerateOnboardingLink(h.Config.GupshupPartnerID, redirectURL)
 	if err != nil {
 		h.Logger.Error("❌ Failed to generate Gupshup onboarding link",
 			zap.Uint("tenant_id", tenantID),
 			zap.Error(err),
 			zap.String("partner_id", h.Config.GupshupPartnerID),
-			zap.String("redirect_url", redirectURL))
+			zap.String("redirect_url", redirectURL),
+			zap.Bool("has_api_key", h.Config.GupshupPartnerAPIKey != ""),
+			zap.Int("api_key_length", len(h.Config.GupshupPartnerAPIKey)))
 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error":   "onboarding_link_generation_failed",
 			"message": fmt.Sprintf("Failed to generate onboarding link: %v", err),
 			"hint":    "Please verify GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correctly configured.",
+			"config_check": map[string]any{
+				"has_partner_api_key": h.Config.GupshupPartnerAPIKey != "",
+				"has_partner_id":      h.Config.GupshupPartnerID != "",
+				"has_public_url":      h.Config.PublicURL != "",
+				"api_key_length":      len(h.Config.GupshupPartnerAPIKey),
+				"partner_id_preview": func() string {
+					if h.Config.GupshupPartnerID != "" {
+						return h.Config.GupshupPartnerID[:min(4, len(h.Config.GupshupPartnerID))] + "..."
+					}
+					return "not_set"
+				}(),
+			},
 		})
 		return
 	}
@@ -5848,20 +5905,67 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.Uint("tenant_id", tenantID),
 		zap.String("redirect_url", redirectURL),
 		zap.String("onboarding_link", onboardingLink),
-		zap.String("partner_id", h.Config.GupshupPartnerID))
+		zap.String("partner_id", h.Config.GupshupPartnerID),
+		zap.Int("api_key_length", len(h.Config.GupshupPartnerAPIKey)),
+		zap.String("api_key_preview", func() string {
+			key := h.Config.GupshupPartnerAPIKey
+			if len(key) > 8 {
+				return key[:4] + "..." + key[len(key)-4:]
+			}
+			return "***"
+		}()))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
 		"status":         "pending_onboarding",
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
 		"redirect_url":   redirectURL,
-		"troubleshooting": map[string]string{
-			"unauthorized_error":    "If you see 'Unauthorised access' error, ensure:",
-			"step1":                 "1. The redirect URL is whitelisted in Gupshup Partner Console → Settings → Whitelist URLs",
-			"step2":                 "2. Your GUPSHUP_PARTNER_API_KEY and GUPSHUP_PARTNER_ID are correct",
-			"step3":                 "3. Your Partner API key has the correct permissions",
-			"console_url":           "https://partner.gupshup.io",
-			"redirect_to_whitelist": redirectURL,
+		"troubleshooting": map[string]any{
+			"unauthorized_error": "If you see 'Unauthorised access' error when opening the link, check:",
+			"fix_steps": []map[string]string{
+				{
+					"step":  "1",
+					"title": "Verify Partner API Key",
+					"action": "1. Go to https://partner.gupshup.io\n" +
+						"2. Navigate to Settings → API Keys (or Partner Settings)\n" +
+						"3. Copy your Partner API Key\n" +
+						"4. Verify it matches GUPSHUP_PARTNER_API_KEY exactly\n" +
+						"5. Ensure it's the Partner-level key, NOT an app-level token",
+					"note": "The Partner API Key should be a long string (typically 30+ characters)",
+				},
+				{
+					"step":  "2",
+					"title": "Verify Partner ID",
+					"action": "1. In Gupshup Partner Portal (https://partner.gupshup.io)\n" +
+						"2. Check your Partner ID (usually visible in dashboard or Settings)\n" +
+						"3. Verify it matches GUPSHUP_PARTNER_ID exactly\n" +
+						"4. Partner ID is usually a numeric value (e.g., 4023)",
+					"note": "This is your Partner account ID, NOT an app ID or Solution ID",
+				},
+				{
+					"step":  "3",
+					"title": "Check Solution ID Status",
+					"action": "1. Go to https://partner.gupshup.io → Settings\n" +
+						"2. Find 'Solution ID' or 'Joint Solutions' section\n" +
+						"3. Verify your Solution ID is listed and marked as 'Approved'\n" +
+						"4. If pending, wait for Gupshup approval",
+					"note": "Solution ID must be approved by Gupshup before onboarding works",
+				},
+				{
+					"step":  "4",
+					"title": "Verify Redirect URL in Meta App",
+					"action": "1. Go to https://developers.facebook.com\n" +
+						"2. Select your Meta App (used for Solution ID)\n" +
+						"3. Navigate to Facebook Login → Settings\n" +
+						"4. Under 'Valid OAuth Redirect URIs', ensure this URL is listed:\n" +
+						"   " + redirectURL + "\n" +
+						"5. Save changes and wait 2-5 minutes",
+					"note": "Redirect URL must be in Meta App OAuth settings, NOT Gupshup",
+				},
+			},
+			"redirect_url_meta": redirectURL,
+			"partner_console":   "https://partner.gupshup.io",
+			"meta_portal":       "https://developers.facebook.com",
 		},
 	})
 }
@@ -6108,13 +6212,24 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		var userMessage string
 		switch errorMsg {
 		case "unauthorized", "unauthorized_access":
-			userMessage = "Unauthorized access. Please ensure your redirect URL is whitelisted in Gupshup Partner Console and your Partner API key is correct."
+			userMessage = fmt.Sprintf(
+				"Unauthorized access detected. This usually means:\n\n"+
+					"1. Your redirect URL is not whitelisted in Gupshup Partner Console\n"+
+					"   → Go to https://partner.gupshup.io → Settings → Whitelist URLs\n"+
+					"   → Add this URL: %s\n\n"+
+					"2. Your Partner API Key or Partner ID is incorrect\n"+
+					"   → Verify GUPSHUP_PARTNER_API_KEY matches your Partner API Key\n"+
+					"   → Verify GUPSHUP_PARTNER_ID matches your Partner ID\n\n"+
+					"Once fixed, try connecting again.",
+				fmt.Sprintf("%s/api/tenant/whatsapp/callback", h.Config.PublicURL))
 		case "invalid_partner":
-			userMessage = "Invalid partner credentials. Please verify your GUPSHUP_PARTNER_ID and GUPSHUP_PARTNER_API_KEY."
+			userMessage = "Invalid partner credentials. Please verify:\n" +
+				"- GUPSHUP_PARTNER_ID matches your Partner ID from https://partner.gupshup.io\n" +
+				"- GUPSHUP_PARTNER_API_KEY matches your Partner API Key (not app-level key)"
 		default:
 			userMessage = fmt.Sprintf("Error during onboarding: %s", errorMsg)
 			if errorDescription != "" {
-				userMessage += " - " + errorDescription
+				userMessage += "\n\nDetails: " + errorDescription
 			}
 		}
 
