@@ -377,41 +377,45 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 
 	endpoint := fmt.Sprintf("%s/partner/app", c.BaseURL)
 
-	// Build payload - try different field combinations based on Gupshup requirements
-	payload := map[string]interface{}{
-		"name": appName,
-	}
+	// CRITICAL: Gupshup Create App API requires form-encoded data, not JSON!
+	// Content-Type: application/x-www-form-urlencoded
+	// Header: token: YOUR_PARTNER_TOKEN (not Authorization: Bearer)
+	formData := url.Values{}
+	formData.Set("name", appName)
 
-	// Add partnerId if available (some APIs require it)
-	if c.PartnerID != "" {
-		payload["partnerId"] = c.PartnerID
-	}
+	// Optional fields with defaults
+	formData.Set("templateMessaging", "false")
+	formData.Set("disableOptinPrefUrl", "false")
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	// Validate app name length (6-150 characters as per Gupshup requirements)
+	if len(appName) < 6 {
+		return nil, fmt.Errorf("app name must be at least 6 characters long")
 	}
-
-	// Log payload for debugging (without sensitive data)
-	if c.Logger != nil {
-		c.Logger.Debug("Creating Gupshup app with payload",
-			zap.String("app_name", appName),
-			zap.String("partner_id", c.PartnerID),
-			zap.String("payload_preview", truncateString(string(jsonData), 200)))
+	if len(appName) > 150 {
+		return nil, fmt.Errorf("app name must be at most 150 characters long")
 	}
 
 	c.tokenMutex.RLock()
 	token := c.Token
 	c.tokenMutex.RUnlock()
 
-	// Try with Bearer token first
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+	// Log payload for debugging
+	if c.Logger != nil {
+		c.Logger.Debug("Creating Gupshup app with form data",
+			zap.String("app_name", appName),
+			zap.String("partner_id", c.PartnerID),
+			zap.Int("app_name_length", len(appName)))
+	}
+
+	// Create request with form-encoded body
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
+	// Use 'token' header (not Authorization: Bearer) as per Gupshup docs
+	req.Header.Set("token", token)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
@@ -422,19 +426,19 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 
 	body, _ := io.ReadAll(resp.Body)
 
-	// If Bearer fails with 401, try X-Authorization
+	// If token header fails with 401, try Authorization: Bearer as fallback
 	if resp.StatusCode == 401 {
 		if c.Logger != nil {
-			c.Logger.Debug("Bearer token failed for CreateApp, retrying with X-Authorization")
+			c.Logger.Debug("Token header failed for CreateApp, retrying with Authorization: Bearer")
 		}
 
-		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
 		if err2 != nil {
 			return nil, fmt.Errorf("failed to create retry request: %w", err2)
 		}
 
-		req2.Header.Set("X-Authorization", token)
-		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Authorization", "Bearer "+token)
+		req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 		resp2, err2 := client.Do(req2)
 		if err2 != nil {
@@ -455,7 +459,7 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 				zap.String("app_name", appName),
 				zap.String("partner_id", c.PartnerID),
 				zap.String("endpoint", endpoint),
-				zap.String("payload_sent", truncateString(string(jsonData), 300)))
+				zap.String("form_data_sent", formData.Encode()))
 		}
 
 		var apiErr struct {
@@ -479,7 +483,7 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 			}
 		}
 
-		return nil, fmt.Errorf("gupshup Partner API error %d: %s. Sent payload: %s", resp.StatusCode, string(body), truncateString(string(jsonData), 300))
+		return nil, fmt.Errorf("gupshup Partner API error %d: %s. Sent form data: %s", resp.StatusCode, string(body), formData.Encode())
 	}
 
 	var response CreateAppResponse
