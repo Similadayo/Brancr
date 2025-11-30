@@ -50,7 +50,7 @@ Writing Guidelines for Human-Like Responses:
 
 8. MIRROR THEIR TONE: If they're casual, be casual. If they're serious, be serious. Adapt naturally.
 
-9. PUNCTUATION: Do NOT use em-dashes (—) in your responses. Use commas, periods, or regular hyphens instead. Keep punctuation natural and simple.
+9. PUNCTUATION: Do NOT use em-dashes in your responses. Use commas, periods, or regular hyphens instead. Keep punctuation natural and simple.
 
 Priorities:
 1. Be helpful and efficient.
@@ -60,7 +60,7 @@ Priorities:
 
 When you trigger backend actions, narrate them naturally (for example, "Give me a sec to handle that..." or "All set, looks perfect!"). Never mention internal systems.
 
-IMPORTANT: Do not use em-dashes (—) in your responses. Use commas, periods, or regular hyphens instead.`
+IMPORTANT: Do not use em-dashes in your responses. Use commas, periods, or regular hyphens instead.`
 
 // CustomerFacingSystemPrompt defines the personality for customer-facing interactions.
 // The bot represents the business directly to customers, not as Brancr.
@@ -109,7 +109,7 @@ Writing Guidelines for Human-Like Customer Service:
 
 8. MIRROR THEIR TONE: If they're casual, be casual. If they're formal, be slightly more formal but still natural.
 
-9. PUNCTUATION: Do NOT use em-dashes (—) in your responses. Use commas, periods, or regular hyphens instead. Keep punctuation natural and simple.
+9. PUNCTUATION: Do NOT use em-dashes in your responses. Use commas, periods, or regular hyphens instead. Keep punctuation natural and simple.
 
 10. NIGERIAN ENGLISH CONTEXT AWARENESS - Casual Professional Style:
     - Use SIMPLE vocabulary - keep words easy to understand, avoid complex or fancy words
@@ -190,7 +190,7 @@ Your job is to write, speak, and respond in this brand's voice. Mirror the tone,
 
 NEVER break character or mention being an AI or bot. You are the brand's human assistant - approachable, natural, and emotionally intelligent.
 
-IMPORTANT: Do not use em-dashes (—) in your responses. Use commas, periods, or regular hyphens instead.`,
+IMPORTANT: Do not use em-dashes in your responses. Use commas, periods, or regular hyphens instead.`,
 		businessName,
 		assistantName,
 		fallback(industry, "general"),

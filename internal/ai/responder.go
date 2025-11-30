@@ -32,7 +32,7 @@ func getPlatformFormatting(channel string) string {
 	}
 }
 
-// 🧠 GenerateTenantAssistantReply — Human-like, Contextual, Brand-Aware
+// 🧠 GenerateTenantAssistantReply - Human-like, Contextual, Brand-Aware
 func (r *Responder) GenerateTenantAssistantReply(ctx context.Context, tenantID uint, userMsg string) (string, error) {
 	if r == nil || r.Client == nil || r.Memory == nil {
 		return "", fmt.Errorf("AI responder improperly initialized")
@@ -168,7 +168,7 @@ func (r *Responder) persistEscalation(tenantID uint, userMsg string, intent *Int
 	r.Memory.DB.Create(&esc)
 }
 
-// 🔧 GenerateTenantOwnerReply — For business owner interactions (management, help, insights)
+// 🔧 GenerateTenantOwnerReply - For business owner interactions (management, help, insights)
 func (r *Responder) GenerateTenantOwnerReply(ctx context.Context, tenantID uint, userMsg string) (string, error) {
 	if r == nil || r.Client == nil || r.Memory == nil {
 		return "", fmt.Errorf("AI responder improperly initialized")
@@ -222,7 +222,7 @@ Owner message: %s`, intro, userMsg)
 	return reply, nil
 }
 
-// 👥 GenerateTenantAssistantReplyForCustomer — For customer interactions (brand representation)
+// 👥 GenerateTenantAssistantReplyForCustomer - For customer interactions (brand representation)
 func (r *Responder) GenerateTenantAssistantReplyForCustomer(
 	ctx context.Context,
 	tenantID uint,

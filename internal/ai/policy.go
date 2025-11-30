@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// PolicyDecision — outcome of policy evaluation
+// PolicyDecision - outcome of policy evaluation
 type PolicyDecision struct {
 	Action      string  // "auto_reply", "ask_clarify", "escalate"
 	Confidence  float64 // aggregated confidence
