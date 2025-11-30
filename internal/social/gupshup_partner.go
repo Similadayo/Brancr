@@ -197,7 +197,8 @@ func (c *GupshupPartnerClient) GenerateOnboardingLink(ctx context.Context, partn
 				continue
 			}
 
-			req.Header.Set("Authorization", token)
+			// Try Bearer format first (standard OAuth format)
+			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("Content-Type", "application/json")
 
 			client := &http.Client{Timeout: 15 * time.Second}
@@ -369,11 +370,12 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 	}
 
 	// Use Authorization header with generated PARTNER_TOKEN
+	// Try Bearer format first (standard OAuth format)
 	c.tokenMutex.RLock()
 	token := c.Token
 	c.tokenMutex.RUnlock()
 
-	req.Header.Set("Authorization", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	if c.Logger != nil {
@@ -390,6 +392,49 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	// If Bearer format fails with 401, try X-Authorization format
+	if resp.StatusCode == 401 {
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Bearer token format failed with 401, trying X-Authorization header format",
+				zap.String("app_id", appID))
+		}
+
+		// Create a new request with X-Authorization header
+		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+		if err2 != nil {
+			return fmt.Errorf("failed to create retry request: %w", err2)
+		}
+
+		req2.Header.Set("X-Authorization", token)
+		req2.Header.Set("Content-Type", "application/json")
+
+		resp2, err2 := client.Do(req2)
+		if err2 != nil {
+			return fmt.Errorf("API request failed on retry: %w", err2)
+		}
+		defer resp2.Body.Close()
+
+		body2, _ := io.ReadAll(resp2.Body)
+
+		if resp2.StatusCode >= 400 {
+			if c.Logger != nil {
+				c.Logger.Error("❌ Failed to set Gupshup webhook callback (tried both header formats)",
+					zap.Int("status", resp2.StatusCode),
+					zap.String("response", string(body2)),
+					zap.String("app_id", appID))
+			}
+			return fmt.Errorf("set callback failed: status %d, body: %s", resp2.StatusCode, string(body2))
+		}
+
+		// Success with X-Authorization format
+		if c.Logger != nil {
+			c.Logger.Info("✅ Gupshup webhook callback configured (using X-Authorization header)",
+				zap.String("app_id", appID),
+				zap.String("callback_url", callbackURL))
+		}
+		return nil
+	}
 
 	if resp.StatusCode >= 400 {
 		if c.Logger != nil {
@@ -457,11 +502,12 @@ func (c *GupshupPartnerClient) SendMessage(ctx context.Context, appID, sourcePho
 	}
 
 	// Use Authorization header with generated PARTNER_TOKEN
+	// Try Bearer format first (standard OAuth format)
 	c.tokenMutex.RLock()
 	token := c.Token
 	c.tokenMutex.RUnlock()
 
-	req.Header.Set("Authorization", token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	if c.Logger != nil {
@@ -480,6 +526,60 @@ func (c *GupshupPartnerClient) SendMessage(ctx context.Context, appID, sourcePho
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	// If Bearer format fails with 401, try X-Authorization format
+	if resp.StatusCode == 401 {
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Bearer token format failed with 401, trying X-Authorization header format",
+				zap.String("app_id", appID))
+		}
+
+		// Create a new request with X-Authorization header
+		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+		if err2 != nil {
+			return fmt.Errorf("failed to create retry request: %w", err2)
+		}
+
+		req2.Header.Set("X-Authorization", token)
+		req2.Header.Set("Content-Type", "application/json")
+
+		resp2, err2 := client.Do(req2)
+		if err2 != nil {
+			return fmt.Errorf("API request failed on retry: %w", err2)
+		}
+		defer resp2.Body.Close()
+
+		body2, _ := io.ReadAll(resp2.Body)
+
+		if resp2.StatusCode >= 400 {
+			if c.Logger != nil {
+				c.Logger.Error("❌ Gupshup Partner API send message failed (tried both header formats)",
+					zap.Int("status", resp2.StatusCode),
+					zap.String("response", string(body2)),
+					zap.String("app_id", appID),
+					zap.String("destination", destination))
+			}
+
+			// Try to parse error response
+			var apiErr struct {
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			}
+			if err := json.Unmarshal(body2, &apiErr); err == nil && apiErr.Error != "" {
+				return fmt.Errorf("gupshup Partner API error %d: %s", resp2.StatusCode, apiErr.Error)
+			}
+
+			return fmt.Errorf("gupshup Partner API error %d: %s", resp2.StatusCode, string(body2))
+		}
+
+		// Success with X-Authorization format
+		if c.Logger != nil {
+			c.Logger.Info("✅ WhatsApp message sent via Gupshup Partner API (using X-Authorization header)",
+				zap.String("app_id", appID),
+				zap.String("destination", destination))
+		}
+		return nil
+	}
 
 	if resp.StatusCode >= 400 {
 		if c.Logger != nil {
