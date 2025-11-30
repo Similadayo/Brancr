@@ -30,11 +30,12 @@ type GupshupPartnerClient struct {
 }
 
 // NewGupshupPartnerClient creates a new Gupshup Partner API client
-func NewGupshupPartnerClient(baseURL, clientSecret, partnerEmail string, logger *zap.Logger) *GupshupPartnerClient {
+func NewGupshupPartnerClient(baseURL, clientSecret, partnerEmail, partnerID string, logger *zap.Logger) *GupshupPartnerClient {
 	return &GupshupPartnerClient{
 		BaseURL:      baseURL,
 		ClientSecret: clientSecret,
 		PartnerEmail: partnerEmail,
+		PartnerID:    partnerID,
 		Logger:       logger,
 	}
 }
@@ -376,13 +377,27 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 
 	endpoint := fmt.Sprintf("%s/partner/app", c.BaseURL)
 
+	// Build payload - try different field combinations based on Gupshup requirements
 	payload := map[string]interface{}{
 		"name": appName,
+	}
+
+	// Add partnerId if available (some APIs require it)
+	if c.PartnerID != "" {
+		payload["partnerId"] = c.PartnerID
 	}
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Log payload for debugging (without sensitive data)
+	if c.Logger != nil {
+		c.Logger.Debug("Creating Gupshup app with payload",
+			zap.String("app_name", appName),
+			zap.String("partner_id", c.PartnerID),
+			zap.String("payload_preview", truncateString(string(jsonData), 200)))
 	}
 
 	c.tokenMutex.RLock()
@@ -432,28 +447,39 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 	}
 
 	if resp.StatusCode >= 400 {
+		// Log full error details for debugging
 		if c.Logger != nil {
 			c.Logger.Error("❌ Failed to create Gupshup app",
 				zap.Int("status", resp.StatusCode),
-				zap.String("response", string(body)),
-				zap.String("app_name", appName))
+				zap.String("response_body", string(body)),
+				zap.String("app_name", appName),
+				zap.String("partner_id", c.PartnerID),
+				zap.String("endpoint", endpoint),
+				zap.String("payload_sent", truncateString(string(jsonData), 300)))
 		}
 
 		var apiErr struct {
-			Status  string `json:"status"`
-			Error   string `json:"error"`
-			Message string `json:"message"`
+			Status  string                 `json:"status"`
+			Error   string                 `json:"error"`
+			Message string                 `json:"message"`
+			Data    map[string]interface{} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &apiErr); err == nil {
-			if apiErr.Error != "" {
-				return nil, fmt.Errorf("gupshup Partner API error %d: %s", resp.StatusCode, apiErr.Error)
+			// Try to extract detailed error message
+			errorMsg := apiErr.Message
+			if errorMsg == "" {
+				errorMsg = apiErr.Error
 			}
-			if apiErr.Message != "" {
-				return nil, fmt.Errorf("gupshup Partner API error %d: %s", resp.StatusCode, apiErr.Message)
+			if errorMsg == "" && apiErr.Status != "" {
+				errorMsg = apiErr.Status
+			}
+
+			if errorMsg != "" {
+				return nil, fmt.Errorf("gupshup Partner API error %d: %s. Full response: %s", resp.StatusCode, errorMsg, string(body))
 			}
 		}
 
-		return nil, fmt.Errorf("gupshup Partner API error %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("gupshup Partner API error %d: %s. Sent payload: %s", resp.StatusCode, string(body), truncateString(string(jsonData), 300))
 	}
 
 	var response CreateAppResponse

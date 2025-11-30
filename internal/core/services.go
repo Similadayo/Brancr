@@ -176,6 +176,7 @@ func (s *Services) initSocial() error {
 			s.Config.GupshupPartnerBaseURL,
 			s.Config.GupshupPartnerAPIKey,
 			s.Config.GupshupPartnerEmail,
+			s.Config.GupshupPartnerID,
 			s.Logger,
 		)
 		s.GupshupPartnerClient = gupshupPartnerClient
