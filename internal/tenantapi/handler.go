@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -4473,14 +4474,76 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	// - Outgoing messages from tenant/AI (direction='outgoing')
 	// No filtering by direction - we want to show the complete conversation history from all parties
 	var interactions []storage.Interaction
-	if err := h.DB.Where("conversation_id = ?", conversation.ID).
-		Order("created_at ASC").
-		Find(&interactions).Error; err != nil {
+
+	// Use explicit query to ensure we get ALL interactions
+	query := h.DB.Model(&storage.Interaction{}).Where("conversation_id = ?", conversation.ID)
+	if err := query.Order("created_at ASC").Find(&interactions).Error; err != nil {
 		h.Logger.Error("failed to fetch interactions",
 			zap.Error(err),
 			zap.Uint("conversation_id", conversation.ID))
 		// Continue with empty messages array
 		interactions = []storage.Interaction{}
+	}
+
+	// DEBUG: Also query separately for outgoing to verify they exist
+	var outgoingInteractions []storage.Interaction
+	h.DB.Where("conversation_id = ? AND direction = ?", conversation.ID, "outgoing").
+		Order("created_at ASC").
+		Find(&outgoingInteractions)
+
+	if len(outgoingInteractions) > 0 {
+		h.Logger.Info("🔍 DEBUG: Found outgoing interactions separately",
+			zap.Uint("conversation_id", conversation.ID),
+			zap.Int("outgoing_count", len(outgoingInteractions)),
+			zap.Int("total_in_main_query", len(interactions)))
+
+		// Check if outgoing interactions are in main query
+		outgoingIDs := make(map[uint]bool)
+		for _, out := range outgoingInteractions {
+			outgoingIDs[out.ID] = true
+		}
+
+		inMainQueryCount := 0
+		for _, inter := range interactions {
+			if outgoingIDs[inter.ID] {
+				inMainQueryCount++
+			}
+		}
+
+		if inMainQueryCount != len(outgoingInteractions) {
+			h.Logger.Warn("⚠️ Some outgoing interactions are missing from main query - adding them manually",
+				zap.Int("expected_outgoing", len(outgoingInteractions)),
+				zap.Int("found_in_main", inMainQueryCount))
+
+			// Add missing outgoing interactions to the list
+			existingIDs := make(map[uint]bool)
+			for _, inter := range interactions {
+				existingIDs[inter.ID] = true
+			}
+
+			for _, out := range outgoingInteractions {
+				if !existingIDs[out.ID] {
+					interactions = append(interactions, out)
+					h.Logger.Info("➕ Added missing outgoing interaction to response",
+						zap.Uint("interaction_id", out.ID),
+						zap.String("content_preview", func() string {
+							preview := out.FinalReply
+							if preview == "" {
+								preview = out.Content
+							}
+							if len(preview) > 50 {
+								return preview[:50] + "..."
+							}
+							return preview
+						}()))
+				}
+			}
+
+			// Re-sort by created_at after adding
+			sort.Slice(interactions, func(i, j int) bool {
+				return interactions[i].CreatedAt.Before(interactions[j].CreatedAt)
+			})
+		}
 	}
 
 	// Verify we're getting all interactions - double check with a separate query for outgoing
@@ -4727,11 +4790,35 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create interaction record
+	// Reload conversation to ensure we have the latest data (conversation might have been updated)
+	// This is critical to ensure conversation_id is correct
+	var refreshedConversation storage.Conversation
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversation.ID).
+		First(&refreshedConversation).Error; err != nil {
+		h.Logger.Error("conversation disappeared after sending message - this should not happen",
+			zap.Uint("conversation_id", conversation.ID),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.Error(err))
+		http.Error(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+	conversation = refreshedConversation
+
+	// Verify conversation ID is valid (non-zero)
+	if conversation.ID == 0 {
+		h.Logger.Error("⚠️ CRITICAL: Conversation ID is 0 after reload",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.Uint("customer_id", conversation.CustomerID),
+			zap.String("platform", conversation.Platform))
+		http.Error(w, "invalid conversation state", http.StatusInternalServerError)
+		return
+	}
+
+	// Create interaction record - CRITICAL: Must have valid conversation_id
 	interaction := storage.Interaction{
 		TenantID:       claims.TenantID,
 		CustomerID:     conversation.CustomerID,
-		ConversationID: conversation.ID,
+		ConversationID: conversation.ID, // MUST be non-zero for message to appear in conversation
 		Platform:       conversation.Platform,
 		Direction:      "outgoing",
 		MessageType:    "text",
@@ -4745,6 +4832,8 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Error("failed to create interaction",
 			zap.Error(err),
 			zap.Uint("conversation_id", conversation.ID),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.Uint("customer_id", conversation.CustomerID),
 			zap.String("message_preview", func() string {
 				if len(req.Message) > 50 {
 					return req.Message[:50] + "..."
@@ -4754,6 +4843,52 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to save interaction", http.StatusInternalServerError)
 		return
 	}
+
+	// CRITICAL: Verify interaction was created with correct conversation_id
+	// Reload interaction to ensure we have the database-generated ID and all fields
+	var reloadedInteraction storage.Interaction
+	if err := h.DB.First(&reloadedInteraction, interaction.ID).Error; err != nil {
+		h.Logger.Error("failed to reload interaction after creation", zap.Error(err))
+		// Continue with original interaction
+		reloadedInteraction = interaction
+	} else {
+		interaction = reloadedInteraction
+	}
+
+	// Double-check conversation_id is correct
+	if interaction.ConversationID == 0 || interaction.ConversationID != conversation.ID {
+		h.Logger.Error("⚠️ CRITICAL: Interaction has wrong conversation_id, fixing now",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("current_conversation_id", interaction.ConversationID),
+			zap.Uint("expected_conversation_id", conversation.ID))
+
+		// Fix it immediately
+		interaction.ConversationID = conversation.ID
+		if err := h.DB.Model(&storage.Interaction{}).Where("id = ?", interaction.ID).
+			Update("conversation_id", conversation.ID).Error; err != nil {
+			h.Logger.Error("failed to fix interaction conversation_id", zap.Error(err))
+		} else {
+			h.Logger.Info("✅ Fixed interaction conversation_id",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("conversation_id", conversation.ID))
+			// Reload to get fixed version
+			h.DB.First(&interaction, interaction.ID)
+		}
+	}
+
+	// Log final state for debugging
+	h.Logger.Info("✅ Outgoing interaction created and verified",
+		zap.Uint("interaction_id", interaction.ID),
+		zap.Uint("conversation_id", interaction.ConversationID),
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("direction", interaction.Direction),
+		zap.String("content_preview", func() string {
+			preview := req.Message
+			if len(preview) > 50 {
+				return preview[:50] + "..."
+			}
+			return preview
+		}()))
 
 	// Verify the interaction was created with correct values
 	msgPreview := req.Message
