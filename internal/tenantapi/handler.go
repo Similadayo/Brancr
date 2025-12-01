@@ -5983,22 +5983,29 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.String("webhook_callback_url", webhookCallbackURL),
 		zap.String("redirect_url", redirectURL))
 
-	// NOTE: SetCallback API is deprecated by Gupshup (deprecated April 30, 2025)
-	// If it fails, users can configure webhook manually via Gupshup Console
-	// App > Integration > Webhooks > Create Webhook
-	if err := h.GupshupPartner.SetCallback(r.Context(), appID, webhookCallbackURL); err != nil {
-		h.Logger.Warn("⚠️ SetCallback API failed (API is deprecated - this is expected)",
+	// Step 2: Create webhook subscription using Subscription API (replaces deprecated SetCallback)
+	// Multi-tenant: We use ONE static webhook URL for all tenants, route by appId in payload
+	// Subscribe to common WhatsApp events: MESSAGE (incoming), TEMPLATE (status), ACCOUNT (updates)
+	subscriptionModes := []string{"MESSAGE", "TEMPLATE", "ACCOUNT"}
+	if err := h.GupshupPartner.CreateSubscription(r.Context(), appID, webhookCallbackURL, subscriptionModes); err != nil {
+		h.Logger.Warn("⚠️ Failed to create webhook subscription (Subscription API)",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", appID),
 			zap.Error(err),
 			zap.String("webhook_url", webhookCallbackURL),
-			zap.String("note", "Users can configure webhook manually via Gupshup Console: App > Integration > Webhooks"))
-		// Don't fail here - callback can be set manually via Gupshup Console
-		// The deprecated SetCallback API is expected to fail
+			zap.Strings("modes", subscriptionModes),
+			zap.String("note", "Subscription API failed - webhook may need manual configuration"))
+		// Try deprecated SetCallback as fallback (will likely fail but worth trying)
+		if fallbackErr := h.GupshupPartner.SetCallback(r.Context(), appID, webhookCallbackURL); fallbackErr != nil {
+			h.Logger.Warn("⚠️ SetCallback fallback also failed (API is deprecated)",
+				zap.Error(fallbackErr))
+		}
+		// Don't fail here - continue with onboarding, webhook can be configured later
 	} else {
-		h.Logger.Info("✅ Callback URL set successfully via API",
+		h.Logger.Info("✅ Webhook subscription created successfully via Subscription API",
 			zap.Uint("tenant_id", tenantID),
-			zap.String("app_id", appID))
+			zap.String("app_id", appID),
+			zap.Strings("modes", subscriptionModes))
 	}
 
 	// Step 3: Generate embed signed link (the onboarding URL)

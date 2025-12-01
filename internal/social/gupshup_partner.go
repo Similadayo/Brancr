@@ -983,7 +983,8 @@ func (c *GupshupPartnerClient) VerifyPartnerCredentials(ctx context.Context, par
 
 // SetCallback configures webhook callback URL for a Gupshup Partner app
 // Endpoint: POST /partner/app/set-callback
-// Uses JSON payload with Authorization: Bearer header
+// NOTE: This API is DEPRECATED as of July 31, 2025. Gupshup recommends using Subscription API instead.
+// We try multiple formats: form-encoded (like CreateApp), then JSON with Bearer token
 func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackURL string) error {
 	// Ensure we have a valid token
 	if err := c.ensureValidToken(ctx); err != nil {
@@ -998,10 +999,124 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// Define the JSON payload structure
-	jsonPayload := map[string]string{
-		"appId":       appID,
-		"callbackUrl": callbackURL,
+	// TRY 1: Form-encoded format (like CreateApp which works)
+	formData := url.Values{}
+	formData.Set("appId", appID)
+	formData.Set("callbackUrl", callbackURL)
+
+	if c.Logger != nil {
+		c.Logger.Info("📤 Setting Gupshup webhook callback (trying form-encoded with token header, like CreateApp)",
+			zap.String("app_id", appID),
+			zap.String("callback_url", callbackURL))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Use 'token' header (like CreateApp) - not Authorization: Bearer
+	req.Header.Set("token", token)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// If form-encoded fails, try JSON with Bearer token as fallback
+	if resp.StatusCode >= 400 {
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Form-encoded format failed, trying JSON with Bearer token",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", string(body)),
+				zap.String("app_id", appID))
+		}
+
+		// TRY 2: JSON format with Authorization: Bearer header
+		jsonPayload := map[string]string{
+			"appId":       appID,
+			"callbackUrl": callbackURL,
+		}
+		jsonData, err2 := json.Marshal(jsonPayload)
+		if err2 == nil {
+			req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+			if err2 == nil {
+				req2.Header.Set("Authorization", "Bearer "+token)
+				req2.Header.Set("Content-Type", "application/json")
+
+				resp2, err2 := client.Do(req2)
+				if err2 == nil {
+					defer resp2.Body.Close()
+					body2, _ := io.ReadAll(resp2.Body)
+
+					if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
+						if c.Logger != nil {
+							c.Logger.Info("✅ Gupshup webhook callback configured (using JSON + Bearer)",
+								zap.String("app_id", appID),
+								zap.String("callback_url", callbackURL))
+						}
+						return nil
+					}
+					// Update body and status for error handling below
+					body = body2
+					resp.StatusCode = resp2.StatusCode
+				}
+			}
+		}
+	}
+
+	if resp.StatusCode >= 400 {
+		// Log the detailed error message from Gupshup
+		if c.Logger != nil {
+			c.Logger.Error("❌ Failed to set Gupshup webhook callback (API is deprecated - try manual configuration)",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", string(body)),
+				zap.String("app_id", appID),
+				zap.String("note", "SetCallback API deprecated July 31, 2025. Configure webhook manually via Gupshup Console: App > Integration > Webhooks"))
+		}
+		return fmt.Errorf("set callback failed: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("✅ Gupshup webhook callback configured successfully",
+			zap.String("app_id", appID),
+			zap.String("callback_url", callbackURL))
+	}
+
+	return nil
+}
+
+// CreateSubscription creates a webhook subscription for a Gupshup Partner app
+// Endpoint: POST /partner/app/{appId}/subscription
+// This replaces the deprecated SetCallback API
+// Multi-tenant: Use the same static webhook URL for all tenants, route by appId in payload
+func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, callbackURL string, modes []string) error {
+	// Ensure we have a valid token
+	if err := c.ensureValidToken(ctx); err != nil {
+		return fmt.Errorf("failed to get partner token: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/partner/app/%s/subscription", c.BaseURL, appID)
+
+	c.tokenMutex.RLock()
+	token := c.Token
+	c.tokenMutex.RUnlock()
+
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	// Default modes if not provided - subscribe to common WhatsApp events
+	if len(modes) == 0 {
+		modes = []string{"MESSAGE", "TEMPLATE", "ACCOUNT"}
+	}
+
+	// JSON payload structure for Subscription API
+	jsonPayload := map[string]interface{}{
+		"url":   callbackURL,
+		"modes": modes,
 	}
 	jsonData, err := json.Marshal(jsonPayload)
 	if err != nil {
@@ -1009,9 +1124,10 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 	}
 
 	if c.Logger != nil {
-		c.Logger.Info("📤 Setting Gupshup webhook callback using JSON + Bearer token",
+		c.Logger.Info("📤 Creating Gupshup webhook subscription (Subscription API)",
 			zap.String("app_id", appID),
-			zap.String("callback_url", callbackURL))
+			zap.String("callback_url", callbackURL),
+			zap.Strings("modes", modes))
 	}
 
 	// Create the request with a JSON body
@@ -1020,9 +1136,9 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use Authorization: Bearer header for partner APIs
+	// Use Authorization: Bearer header for Subscription API
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json") // Explicitly set content type
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1035,18 +1151,20 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 	if resp.StatusCode >= 400 {
 		// Log the detailed error message from Gupshup
 		if c.Logger != nil {
-			c.Logger.Error("❌ Failed to set Gupshup webhook callback",
+			c.Logger.Error("❌ Failed to create Gupshup webhook subscription",
 				zap.Int("status", resp.StatusCode),
 				zap.String("response", string(body)),
-				zap.String("app_id", appID))
+				zap.String("app_id", appID),
+				zap.Strings("modes", modes))
 		}
-		return fmt.Errorf("set callback failed: status %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("create subscription failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
 	if c.Logger != nil {
-		c.Logger.Info("✅ Gupshup webhook callback configured successfully",
+		c.Logger.Info("✅ Gupshup webhook subscription created successfully",
 			zap.String("app_id", appID),
-			zap.String("callback_url", callbackURL))
+			zap.String("callback_url", callbackURL),
+			zap.Strings("modes", modes))
 	}
 
 	return nil
