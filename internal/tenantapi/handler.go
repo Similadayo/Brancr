@@ -5971,44 +5971,14 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			zap.String("status", waApp.Status))
 	}
 
-	// Step 2: Create webhook subscription (RIGHT AFTER app creation, before onboarding)
-	// According to Gupshup docs: Create App → Set Subscription → Generate Embed Link
-	// This ensures subscription is active when Go-Live event fires after onboarding
-	h.Logger.Info("🔧 Creating webhook subscription (after app creation, before onboarding)",
+	// Step 2: SKIP webhook subscription creation here - it will fail with 403 because app isn't live yet
+	// ✅ CORRECT FLOW: Create App → Generate Embed Link → Wait for Go-Live Event → THEN Configure Callbacks
+	// Subscription will be created automatically when we receive the "go-live" account-event webhook
+	// This prevents 403 Forbidden errors from trying to subscribe before app is ready
+	h.Logger.Info("⏭️ Skipping webhook subscription creation (will configure after go-live event)",
 		zap.Uint("tenant_id", tenantID),
-		zap.String("app_id", appID))
-
-	var subscriptionInfo *social.SubscriptionInfo
-	var subscriptionErr error
-	subscriptionInfo, subscriptionErr = h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID)
-	if subscriptionErr != nil {
-		h.Logger.Warn("⚠️ Failed to create webhook subscription (will retry after onboarding)",
-			zap.Uint("tenant_id", tenantID),
-			zap.String("app_id", appID),
-			zap.Error(subscriptionErr),
-			zap.String("note", "Subscription may be created after onboarding if app not ready yet"))
-		// Don't fail - continue to generate onboarding link, subscription can be retried
-	} else {
-		// Update database with subscription information
-		if subscriptionInfo != nil {
-			waApp.SubscriptionID = subscriptionInfo.ID
-			waApp.SubscriptionActive = subscriptionInfo.Active
-			waApp.WebhookURL = subscriptionInfo.URL
-
-			if err := h.DB.Save(&waApp).Error; err != nil {
-				h.Logger.Error("Failed to update WhatsAppApp with subscription info",
-					zap.Uint("tenant_id", tenantID),
-					zap.String("app_id", appID),
-					zap.Error(err))
-			} else {
-				h.Logger.Info("✅✅✅ Webhook subscription created and saved (before onboarding)",
-					zap.Uint("tenant_id", tenantID),
-					zap.String("app_id", appID),
-					zap.String("subscription_id", subscriptionInfo.ID),
-					zap.Bool("active", subscriptionInfo.Active))
-			}
-		}
-	}
+		zap.String("app_id", appID),
+		zap.String("note", "Subscription will be created automatically when app goes live via account-event webhook"))
 
 	// Step 3: Generate embed signed link (the onboarding URL)
 	h.Logger.Info("🔧 Generating embed signed link for onboarding",
@@ -6069,12 +6039,7 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		"webhook_url":    webhookCallbackURL,
 		"flow_completed": map[string]any{
 			"step_1": "✅ App created",
-			"step_2": func() string {
-				if subscriptionInfo != nil && subscriptionErr == nil {
-					return "✅ Webhook subscription created"
-				}
-				return "⚠️ Webhook subscription pending (will retry)"
-			}(),
+			"step_2": "⏭️ Webhook subscription will be configured after onboarding completes (go-live event)",
 			"step_3": "✅ Embed signed link generated",
 		},
 		"troubleshooting": map[string]any{
@@ -7018,8 +6983,8 @@ func (h *Handler) refreshWhatsAppAppDetails(w http.ResponseWriter, r *http.Reque
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", waApp.GupshupAppID))
 
-	// Fetch app details from Gupshup API
-	appDetails, err := h.GupshupPartner.GetAppDetails(r.Context(), waApp.GupshupAppID)
+	// ✅ Fetch app details with retry logic (app may not be ready immediately after creation)
+	appDetails, err := h.getAppDetailsWithRetry(r.Context(), waApp.GupshupAppID, 3, 10*time.Second)
 	if err != nil || appDetails == nil {
 		h.Logger.Error("❌ Failed to fetch app details from Gupshup API - returning current status",
 			zap.Uint("tenant_id", tenantID),
@@ -7141,6 +7106,47 @@ func (h *Handler) refreshWhatsAppAppDetails(w http.ResponseWriter, r *http.Reque
 			"status":          waApp.Status,
 		},
 	})
+}
+
+// getAppDetailsWithRetry fetches app details with retry logic for apps that may not be ready yet
+// This handles the case where GetAppDetails fails because the app is too new or not fully onboarded
+func (h *Handler) getAppDetailsWithRetry(ctx context.Context, appID string, maxRetries int, retryDelay time.Duration) (*social.GetAppDetailsResponse, error) {
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		h.Logger.Debug("🔄 Fetching app details from Gupshup API",
+			zap.String("app_id", appID),
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries))
+
+		appDetails, err := h.GupshupPartner.GetAppDetails(ctx, appID)
+		if err == nil && appDetails != nil {
+			// Check if we got valid data
+			if appDetails.AppID != "" || appDetails.WABAID != "" || appDetails.PhoneNumber != "" {
+				if attempt > 1 {
+					h.Logger.Info("✅ Successfully fetched app details after retry",
+						zap.String("app_id", appID),
+						zap.Int("attempt", attempt))
+				}
+				return appDetails, nil
+			}
+		}
+
+		lastErr = err
+		if err != nil {
+			h.Logger.Debug("⚠️ App details not ready yet, will retry",
+				zap.String("app_id", appID),
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+		}
+
+		// Don't sleep after the last attempt
+		if attempt < maxRetries {
+			time.Sleep(retryDelay)
+		}
+	}
+
+	return nil, fmt.Errorf("failed to fetch app details after %d attempts: %w", maxRetries, lastErr)
 }
 
 // returnCurrentWhatsAppStatus is a helper to return current database status

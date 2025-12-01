@@ -20,6 +20,7 @@ type GupshupWebhookHandler struct {
 	DB             *gorm.DB
 	Logger         *zap.Logger
 	MessageHandler *MessageHandler
+	GupshupPartner *GupshupPartnerClient // For configuring callbacks after go-live
 }
 
 // GupshupCallbackPayload represents the main structure of Gupshup webhook events
@@ -59,11 +60,12 @@ type GupshupEventPayload struct {
 }
 
 // NewGupshupWebhookHandler creates a new Gupshup webhook handler
-func NewGupshupWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *MessageHandler) *GupshupWebhookHandler {
+func NewGupshupWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *MessageHandler, gupshupPartner *GupshupPartnerClient) *GupshupWebhookHandler {
 	return &GupshupWebhookHandler{
 		DB:             db,
 		Logger:         logger,
 		MessageHandler: msgHandler,
+		GupshupPartner: gupshupPartner,
 	}
 }
 
@@ -489,6 +491,12 @@ func (h *GupshupWebhookHandler) processAccountEvent(ctx context.Context, tenantI
 				zap.String("waba_id", waApp.WABAID),
 				zap.String("phone_number", waApp.PhoneNumber),
 				zap.String("business_id", waApp.BusinessID))
+
+			// ✅ CRITICAL: Configure webhook callbacks NOW that app is live
+			// This is the correct timing - app must be live before subscription works
+			if waApp.Status == "live" && (waApp.SubscriptionID == "" || !waApp.SubscriptionActive) {
+				h.configureWebhookCallbacksAfterGoLive(ctx, appID, tenantID, &waApp)
+			}
 		}
 	} else {
 		h.Logger.Debug("No updates needed for account event",
@@ -496,6 +504,53 @@ func (h *GupshupWebhookHandler) processAccountEvent(ctx context.Context, tenantI
 			zap.String("current_status", waApp.Status),
 			zap.String("current_waba_id", waApp.WABAID),
 			zap.String("current_phone", waApp.PhoneNumber))
+
+		// Even if not updated, check if we need to configure callbacks
+		if waApp.Status == "live" && (waApp.SubscriptionID == "" || !waApp.SubscriptionActive) {
+			h.configureWebhookCallbacksAfterGoLive(ctx, appID, tenantID, &waApp)
+		}
+	}
+}
+
+// configureWebhookCallbacksAfterGoLive configures webhook callbacks after app goes live
+// This is called automatically when we detect go-live event (app must be live for subscription to work)
+func (h *GupshupWebhookHandler) configureWebhookCallbacksAfterGoLive(ctx context.Context, appID string, tenantID uint, waApp *storage.WhatsAppApp) {
+	if h.GupshupPartner == nil {
+		h.Logger.Warn("⚠️ Cannot configure callbacks: GupshupPartner client not available",
+			zap.String("app_id", appID))
+		return
+	}
+
+	h.Logger.Info("🔧 Configuring webhook callbacks after go-live event",
+		zap.String("app_id", appID),
+		zap.Uint("tenant_id", tenantID),
+		zap.String("status", waApp.Status))
+
+	subscriptionInfo, err := h.GupshupPartner.ConfigureAppCallbacks(ctx, appID)
+	if err != nil {
+		h.Logger.Error("❌ Failed to configure webhook callbacks after go-live",
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err),
+			zap.String("note", "Will retry on next go-live event or manual refresh"))
+		return
+	}
+
+	if subscriptionInfo != nil {
+		waApp.SubscriptionID = subscriptionInfo.ID
+		waApp.SubscriptionActive = subscriptionInfo.Active
+		waApp.WebhookURL = subscriptionInfo.URL
+
+		if err := h.DB.Save(waApp).Error; err != nil {
+			h.Logger.Error("❌ Failed to save subscription info after go-live",
+				zap.String("app_id", appID),
+				zap.Error(err))
+		} else {
+			h.Logger.Info("✅✅✅ Webhook callbacks configured successfully after go-live",
+				zap.String("app_id", appID),
+				zap.String("subscription_id", subscriptionInfo.ID),
+				zap.Bool("active", subscriptionInfo.Active))
+		}
 	}
 }
 

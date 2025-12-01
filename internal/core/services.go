@@ -141,7 +141,7 @@ func (s *Services) initEscalationHandler() error {
 		DB:     s.DB,
 		Logger: s.Logger,
 	}
-	
+
 	escalationHandler := &bot.EscalationHandler{
 		DB:              s.DB,
 		Logger:          s.Logger,
@@ -149,8 +149,8 @@ func (s *Services) initEscalationHandler() error {
 		PaymentSecurity: paymentSecurity,
 	}
 	s.EscalationHandler = escalationHandler
-	
-	// Note: MessageHandler will be set later in initSocial, 
+
+	// Note: MessageHandler will be set later in initSocial,
 	// so we'll need to link them after both are initialized
 	return nil
 }
@@ -254,7 +254,7 @@ func (s *Services) initSocial() error {
 	// Initialize Gupshup Webhook Handler (works for both Partner and legacy)
 	if (s.Config.GupshupPartnerAPIKey != "" && s.Config.GupshupPartnerID != "") ||
 		(s.Config.GupshupAPIKey != "" && s.Config.GupshupAppName != "") {
-		gupshupWebhookHandler := social.NewGupshupWebhookHandler(s.DB, s.Logger, messageHandler)
+		gupshupWebhookHandler := social.NewGupshupWebhookHandler(s.DB, s.Logger, messageHandler, s.GupshupPartnerClient)
 		s.GupshupWebhookHandler = gupshupWebhookHandler
 		s.Logger.Info("✅ Gupshup webhook handler initialized")
 	}
@@ -275,12 +275,12 @@ func (s *Services) initSocial() error {
 
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
-	
+
 	// Set scheduler on BotManager for immediate post execution
 	if s.BotManager != nil {
 		s.BotManager.Scheduler = scheduler
 	}
-	
+
 	if s.BotManager != nil {
 		scheduler.PostNotifier = func(ctx context.Context, tenantID uint, platform string, success bool, message string) {
 			if s.BotManager == nil {
@@ -290,12 +290,12 @@ func (s *Services) initSocial() error {
 				// Enhanced success message with performance preview
 				preview := fmt.Sprintf(
 					"✅ %s\n\n"+
-					"📊 *Performance Preview*\n"+
-					"Analytics will be available in:\n"+
-					"• Views & Engagement (24hrs)\n"+
-					"• Likes & Comments (real-time)\n"+
-					"• Reach & Impressions (48hrs)\n\n"+
-					"💡 _Check back tomorrow for detailed insights. Use 'analytics' to view your stats._",
+						"📊 *Performance Preview*\n"+
+						"Analytics will be available in:\n"+
+						"• Views & Engagement (24hrs)\n"+
+						"• Likes & Comments (real-time)\n"+
+						"• Reach & Impressions (48hrs)\n\n"+
+						"💡 _Check back tomorrow for detailed insights. Use 'analytics' to view your stats._",
 					message)
 				s.BotManager.NotifyOwnerWithMarkdown(tenantID, preview)
 			} else {
