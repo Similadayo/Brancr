@@ -152,7 +152,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// New simplified WhatsApp connection (Respond.io/Gupshup Partner)
 		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
 		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
-	r.Post("/tenant/whatsapp/refresh", h.refreshWhatsAppAppDetails) // Manual refresh to fetch missing data from Gupshup API
+		r.Post("/tenant/whatsapp/refresh", h.refreshWhatsAppAppDetails) // Manual refresh to fetch missing data from Gupshup API
 
 		// Legacy embedded signup (deprecated - keeping for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -6022,7 +6022,7 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 
 	// Webhook URL will be configured after onboarding completes
 	webhookCallbackURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
-	
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
 		"app_id":         appID,
@@ -6304,7 +6304,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		zap.String("query_params", fmt.Sprintf("%v", r.URL.Query())),
 		zap.String("content_type", r.Header.Get("Content-Type")),
 		zap.Any("headers", r.Header))
-	
+
 	// Log raw body if it's a POST request (for debugging)
 	if r.Method == "POST" {
 		if body, err := io.ReadAll(r.Body); err == nil {
@@ -6377,7 +6377,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 	// Also check POST body if request is POST
 	queryParams := r.URL.Query()
 	var bodyParams map[string]interface{}
-	
+
 	// Try to parse POST body if it's a POST request
 	if r.Method == "POST" {
 		if r.Header.Get("Content-Type") == "application/json" {
@@ -6398,7 +6398,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			}
 		}
 	}
-	
+
 	// Helper function to get param from query string or POST body
 	getParam := func(keys ...string) string {
 		// First try query params
@@ -6419,7 +6419,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		}
 		return ""
 	}
-	
+
 	appID := getParam("appId", "app_id", "appid", "app")
 	token := getParam("token", "access_token", "apiToken", "api_token")
 	wabaID := getParam("wabaId", "waba_id", "wabaid", "wabaID", "waba")
@@ -6445,7 +6445,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 	// Fetch existing WhatsAppApp record if it exists
 	var existingApp storage.WhatsAppApp
 	dbErr := h.DB.Where("tenant_id = ?", uint(tenantID)).First(&existingApp).Error
-	
+
 	// If appID is missing from callback, try to get it from existing record
 	if appID == "" {
 		if dbErr == nil && existingApp.GupshupAppID != "" {
@@ -6462,13 +6462,13 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	
+
 	// If we have an appID from callback but no token, try to use existing token
 	if token == "" && dbErr == nil && existingApp.GupshupAppID == appID {
 		h.Logger.Info("⚠️ No token in callback, will use existing token from database",
 			zap.String("app_id", appID))
 	}
-	
+
 	// If missing critical data from callback, use existing data
 	if wabaID == "" && dbErr == nil {
 		wabaID = existingApp.WABAID
@@ -6519,7 +6519,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		encryptedToken = existingApp.GupshupAppToken
 		h.Logger.Info("⚠️ No token in callback, keeping existing encrypted token")
 	}
-	
+
 	// Update or create WhatsAppApp record
 	var waApp storage.WhatsAppApp
 	if dbErr != nil {
@@ -6565,7 +6565,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			waApp.Status = status
 		}
 		waApp.Mode = "gupshup_partner"
-		
+
 		if err := h.DB.Save(&waApp).Error; err != nil {
 			h.Logger.Error("Failed to update WhatsAppApp", zap.Error(err))
 			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=database_error", h.Config.FrontendURL)
@@ -6574,12 +6574,12 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		}
 		h.Logger.Info("✅ Updated existing WhatsAppApp record", zap.String("app_id", appID))
 	}
-	
+
 	// If critical data is missing, try to fetch from Gupshup API
 	if (waApp.WABAID == "" || waApp.PhoneNumber == "") && h.GupshupPartner != nil {
 		h.Logger.Info("⚠️ Missing WABA ID or phone number in callback, attempting to fetch from Gupshup API",
 			zap.String("app_id", appID))
-		
+
 		// Fetch app details from Gupshup API
 		appDetails, err := h.GupshupPartner.GetAppDetails(r.Context(), appID)
 		if err != nil {
@@ -6609,13 +6609,13 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 				waApp.Status = appDetails.Status
 				updated = true
 			}
-			
+
 			// Update status to "live" if we have complete data
 			if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
 				waApp.Status = "live"
 				updated = true
 			}
-			
+
 			if updated {
 				if err := h.DB.Save(&waApp).Error; err != nil {
 					h.Logger.Error("Failed to update WhatsAppApp with API data", zap.Error(err))
@@ -6628,7 +6628,7 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			}
 		}
 	}
-	
+
 	// Log all saved fields for verification
 	h.Logger.Info("📝 WhatsAppApp record saved with data",
 		zap.String("app_id", waApp.GupshupAppID),
@@ -6641,24 +6641,63 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 	// CRITICAL: Create webhook subscription AFTER onboarding completes
 	// Gupshup requires app to be fully onboarded (live status, WABA ID, phone number) before subscription
 	// Subscription API will fail with 401/403 if app is not in "live" or "ready" state
+	h.Logger.Info("🔍 Checking subscription eligibility",
+		zap.Uint64("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("status", status),
+		zap.String("waba_id", waApp.WABAID),
+		zap.String("phone_number", waApp.PhoneNumber),
+		zap.Bool("status_is_live", status == "live"),
+		zap.Bool("has_waba_id", waApp.WABAID != ""),
+		zap.Bool("has_phone_number", waApp.PhoneNumber != ""))
+
 	if status == "live" && waApp.WABAID != "" && waApp.PhoneNumber != "" {
-		if err := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID); err != nil {
-			h.Logger.Warn("⚠️ Failed to create webhook subscription after onboarding",
+		h.Logger.Info("✅ App is fully onboarded - creating webhook subscription now",
+			zap.Uint64("tenant_id", tenantID),
+			zap.String("app_id", appID))
+
+		subscriptionInfo, err := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID)
+		if err != nil {
+			h.Logger.Error("❌ Failed to create webhook subscription after onboarding",
 				zap.Uint64("tenant_id", tenantID),
 				zap.String("app_id", appID),
 				zap.Error(err),
 				zap.String("note", "Subscription can be configured later via refresh endpoint"))
 			// Don't fail - subscription can be retried later
 		} else {
-			h.Logger.Info("✅ Webhook subscription created successfully after onboarding",
+			// Update database with subscription information
+			if subscriptionInfo != nil {
+				waApp.SubscriptionID = subscriptionInfo.ID
+				waApp.SubscriptionActive = subscriptionInfo.Active
+				waApp.WebhookURL = subscriptionInfo.URL
+
+				if err := h.DB.Save(&waApp).Error; err != nil {
+					h.Logger.Error("Failed to update WhatsAppApp with subscription info",
+						zap.Uint64("tenant_id", tenantID),
+						zap.String("app_id", appID),
+						zap.Error(err))
+				} else {
+					h.Logger.Info("✅ Database updated with subscription info",
+						zap.Uint64("tenant_id", tenantID),
+						zap.String("app_id", appID),
+						zap.String("subscription_id", subscriptionInfo.ID),
+						zap.Bool("active", subscriptionInfo.Active))
+				}
+			}
+
+			h.Logger.Info("✅✅✅ Webhook subscription created successfully after onboarding",
 				zap.Uint64("tenant_id", tenantID),
-				zap.String("app_id", appID))
+				zap.String("app_id", appID),
+				zap.String("subscription_id", subscriptionInfo.ID))
 		}
 	} else {
-		h.Logger.Info("⏭️ Skipping webhook subscription - app not fully onboarded yet",
+		h.Logger.Warn("⏭️ Skipping webhook subscription - app not fully onboarded yet",
 			zap.String("status", status),
 			zap.String("waba_id", waApp.WABAID),
-			zap.String("phone_number", waApp.PhoneNumber))
+			zap.String("phone_number", waApp.PhoneNumber),
+			zap.Bool("status_check", status == "live"),
+			zap.Bool("waba_check", waApp.WABAID != ""),
+			zap.Bool("phone_check", waApp.PhoneNumber != ""))
 	}
 
 	// Sync to SocialAccount for compatibility with existing code
@@ -6789,7 +6828,7 @@ func (h *Handler) refreshWhatsAppAppDetails(w http.ResponseWriter, r *http.Reque
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", waApp.GupshupAppID),
 			zap.Error(err))
-		
+
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error":   "fetch_failed",
 			"message": fmt.Sprintf("Failed to fetch app details from Gupshup API: %v", err),
@@ -6860,12 +6899,12 @@ func (h *Handler) refreshWhatsAppAppDetails(w http.ResponseWriter, r *http.Reque
 		"success": true,
 		"message": "App details refreshed successfully",
 		"data": map[string]any{
-			"app_id":         waApp.GupshupAppID,
-			"waba_id":        waApp.WABAID,
-			"phone_number":   waApp.PhoneNumber,
-			"business_id":    waApp.BusinessID,
+			"app_id":          waApp.GupshupAppID,
+			"waba_id":         waApp.WABAID,
+			"phone_number":    waApp.PhoneNumber,
+			"business_id":     waApp.BusinessID,
 			"phone_number_id": waApp.PhoneNumberID,
-			"status":         waApp.Status,
+			"status":          waApp.Status,
 		},
 	})
 }

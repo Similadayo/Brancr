@@ -991,23 +991,52 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 // ConfigureAppCallbacks configures webhook subscriptions for a Gupshup Partner app
 // This is the full replacement for the deprecated SetCallback API
 // Multi-tenant: Uses ONE static webhook URL for all tenants, routes by appId in payload
-func (c *GupshupPartnerClient) ConfigureAppCallbacks(ctx context.Context, appID string) error {
-	return c.CreateSubscription(
+func (c *GupshupPartnerClient) ConfigureAppCallbacks(ctx context.Context, appID string) (*SubscriptionInfo, error) {
+	if c.Logger != nil {
+		c.Logger.Info("🚀 ConfigureAppCallbacks CALLED",
+			zap.String("app_id", appID),
+			zap.String("webhook_url", "https://api.brancr.com/webhooks/gupshup"))
+	}
+
+	subscriptionInfo, err := c.CreateSubscription(
 		ctx,
 		appID,
-		"https://api.brancr.com/webhooks/gupshup",  // Static webhook URL - routes by appId for multi-tenant
-		[]string{"MESSAGE", "TEMPLATE", "ACCOUNT"}, // Subscribe to common WhatsApp events
+		"https://api.brancr.com/webhooks/gupshup",                  // Static webhook URL - routes by appId for multi-tenant
+		[]string{"MESSAGE", "READ", "DELIVERED", "SENT", "OTHERS"}, // Version 3: TEMPLATE/ACCOUNT not supported
 	)
+
+	if c.Logger != nil {
+		if err != nil {
+			c.Logger.Error("❌ ConfigureAppCallbacks FAILED",
+				zap.String("app_id", appID),
+				zap.Error(err))
+		} else {
+			c.Logger.Info("✅✅✅ ConfigureAppCallbacks SUCCESS",
+				zap.String("app_id", appID),
+				zap.String("subscription_id", subscriptionInfo.ID))
+		}
+	}
+
+	return subscriptionInfo, err
 }
 
 // CreateSubscription creates a webhook subscription for a Gupshup Partner app
 // Endpoint: POST /partner/app/{appId}/subscription
-// This is the correct, modern way to configure webhooks
+// Docs: https://partner-docs.gupshup.io/reference/setsubscription-api-v3
 // Multi-tenant: Use the same static webhook URL for all tenants, route by appId in payload
-func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, callbackURL string, modes []string) error {
+// SubscriptionInfo contains subscription details returned from the API
+type SubscriptionInfo struct {
+	ID     string
+	AppID  string
+	URL    string
+	Active bool
+	Tag    string
+}
+
+func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, callbackURL string, modes []string) (*SubscriptionInfo, error) {
 	// Ensure we have a valid token
 	if err := c.ensureValidToken(ctx); err != nil {
-		return fmt.Errorf("failed to get partner token: %w", err)
+		return nil, fmt.Errorf("failed to get partner token: %w", err)
 	}
 
 	endpoint := fmt.Sprintf("%s/partner/app/%s/subscription", c.BaseURL, appID)
@@ -1019,47 +1048,79 @@ func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, ca
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	// Default modes if not provided - subscribe to common WhatsApp events
+	// For version 3: TEMPLATE, ACCOUNT, COPY are NOT supported
+	// Valid v3 modes: NONE, READ, DELIVERED, SENT, DELETED, FLOWS_MESSAGE, PAYMENTS, ALL, OTHERS
 	if len(modes) == 0 {
-		modes = []string{"MESSAGE", "TEMPLATE", "ACCOUNT"}
+		modes = []string{"MESSAGE", "READ", "DELIVERED", "SENT", "OTHERS"}
 	}
 
-	// JSON payload structure for Subscription API
-	// CRITICAL: Some accounts require "category": "whatsapp" in the payload
-	jsonPayload := map[string]interface{}{
-		"url":      callbackURL,
-		"modes":    modes,
-		"category": "whatsapp", // Required for some Gupshup deployments
+	// Build form-encoded payload as per docs
+	// Required: modes, tag, url, version
+	// Optional: showOnUI (default false), meta
+	formData := url.Values{}
+	formData.Set("modes", strings.Join(modes, ","))
+	// Generate unique tag for each app (mandatory parameter)
+	tag := fmt.Sprintf("Subscription-%s", appID)
+	if len(tag) > 50 {
+		tag = tag[:50] // Truncate if too long
 	}
-	jsonData, err := json.Marshal(jsonPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal JSON payload: %w", err)
-	}
+	formData.Set("tag", tag)
+	formData.Set("url", callbackURL)
+	formData.Set("version", "3") // Use version 3 for latest features
+	formData.Set("showOnUI", "false")
 
 	if c.Logger != nil {
-		c.Logger.Info("📤 Creating Gupshup webhook subscription (Subscription API)",
+		c.Logger.Info("📤 Creating Gupshup webhook subscription (Subscription API v3)",
 			zap.String("app_id", appID),
 			zap.String("callback_url", callbackURL),
-			zap.Strings("modes", modes))
+			zap.Strings("modes", modes),
+			zap.String("version", "3"))
 	}
 
-	// Create the request with a JSON body
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
+	// Create the request with form-encoded body
+	formBody := formData.Encode()
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formBody))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// CRITICAL: Gupshup Subscription API REQUIRES "token" header, NOT "Authorization: Bearer"
-	// Bearer token ALWAYS FAILS with 401/403. Only "token" header works.
-	req.Header.Set("token", token)
-	req.Header.Set("Content-Type", "application/json")
+	// Use Authorization: Bearer header as per official docs
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Log full request details for debugging
+	if c.Logger != nil {
+		c.Logger.Info("🔍 Subscription API Request Details",
+			zap.String("endpoint", endpoint),
+			zap.String("method", "POST"),
+			zap.String("content_type", "application/x-www-form-urlencoded"),
+			zap.String("form_body", formBody),
+			zap.String("token_preview", fmt.Sprintf("%.20s...", token)))
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("API request failed: %w", err)
+		if c.Logger != nil {
+			c.Logger.Error("❌ Subscription API request failed (network error)",
+				zap.String("endpoint", endpoint),
+				zap.Error(err))
+		}
+		return nil, fmt.Errorf("API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	// Log response details for debugging
+	if c.Logger != nil {
+		bodyPreview := string(body)
+		if len(bodyPreview) > 500 {
+			bodyPreview = bodyPreview[:500] + "..."
+		}
+		c.Logger.Info("📥 Subscription API Response",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response_body", bodyPreview))
+	}
 
 	if resp.StatusCode >= 400 {
 		// Log the detailed error message from Gupshup
@@ -1070,17 +1131,56 @@ func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, ca
 				zap.String("app_id", appID),
 				zap.Strings("modes", modes))
 		}
-		return fmt.Errorf("create subscription failed: status %d, body: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("create subscription failed: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse subscription response to extract subscription ID
+	var subscriptionResponse struct {
+		Status       string `json:"status"`
+		Subscription struct {
+			ID     string `json:"id"`
+			AppID  string `json:"appId"`
+			URL    string `json:"url"`
+			Active bool   `json:"active"`
+			Tag    string `json:"tag"`
+		} `json:"subscription"`
+	}
+
+	subscriptionInfo := &SubscriptionInfo{
+		AppID: appID,
+		URL:   callbackURL,
+	}
+
+	if err := json.Unmarshal(body, &subscriptionResponse); err != nil {
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Failed to parse subscription response (subscription may still be created)",
+				zap.Error(err),
+				zap.String("response", string(body)))
+		}
+		// Return partial info - subscription might still be created even if response parsing fails
+		return subscriptionInfo, nil
+	}
+
+	// Extract subscription details from response
+	if subscriptionResponse.Subscription.ID != "" {
+		subscriptionInfo.ID = subscriptionResponse.Subscription.ID
+		subscriptionInfo.Active = subscriptionResponse.Subscription.Active
+		subscriptionInfo.Tag = subscriptionResponse.Subscription.Tag
+		if subscriptionResponse.Subscription.URL != "" {
+			subscriptionInfo.URL = subscriptionResponse.Subscription.URL
+		}
 	}
 
 	if c.Logger != nil {
 		c.Logger.Info("✅ Gupshup webhook subscription created successfully",
 			zap.String("app_id", appID),
+			zap.String("subscription_id", subscriptionInfo.ID),
 			zap.String("callback_url", callbackURL),
+			zap.Bool("active", subscriptionInfo.Active),
 			zap.Strings("modes", modes))
 	}
 
-	return nil
+	return subscriptionInfo, nil
 }
 
 // SendMessage sends a WhatsApp message via Gupshup Partner API
