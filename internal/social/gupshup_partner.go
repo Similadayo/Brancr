@@ -601,7 +601,8 @@ func extractLinkFromResponse(body string) string {
 // Endpoint: GET /partner/app/{appId}/onboarding/embed/link
 // According to Gupshup Partner API docs: https://partner-docs.gupshup.io/reference/get_partner-app-appid-onboarding-embed-link
 // This is the CORRECT way to get the onboarding link - requires an existing app
-func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appID, redirectURL string) (string, error) {
+// REQUIRED query parameters: user (username) and lang (language code)
+func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appID, redirectURL, username, lang string) (string, error) {
 	// Ensure we have a valid token
 	if err := c.ensureValidToken(ctx); err != nil {
 		return "", fmt.Errorf("failed to get partner token: %w", err)
@@ -619,14 +620,31 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 
 	// According to Gupshup Partner API documentation:
 	// GET /partner/app/{appId}/onboarding/embed/link
-	// Query parameters: regenerate (optional boolean), user (optional), lang (optional)
+	// REQUIRED query parameters: user (username), lang (language code)
+	// Optional query parameters: regenerate (boolean)
 	// Headers: token (Partner JWT Token)
 	// NOTE: redirectUrl is configured separately via SetCallback or in Meta App OAuth settings
 	endpoint := fmt.Sprintf("%s/partner/app/%s/onboarding/embed/link", c.BaseURL, appID)
 
-	// Use endpoint without query parameters (simplest approach per Gupshup docs)
-	// The redirect URL should already be configured when SetCallback was called
-	fullURL := endpoint
+	// Build query parameters - user and lang are REQUIRED per Gupshup docs
+	queryParams := url.Values{}
+
+	// Use provided username or default to "admin" if empty
+	if username == "" {
+		username = "admin"
+	}
+	queryParams.Set("user", username)
+
+	// Use provided language or default to "en" (English)
+	if lang == "" {
+		lang = "en"
+	}
+	queryParams.Set("lang", lang)
+
+	// Optional: regenerate (defaults to false, so we can omit it)
+	// queryParams.Set("regenerate", "false")
+
+	fullURL := fmt.Sprintf("%s?%s", endpoint, queryParams.Encode())
 
 	// Make GET request with token header (as per Gupshup Partner API documentation)
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -639,19 +657,19 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 
 	req.Header.Set("token", token)
 
-	// Log the exact request we're making for debugging
+	// Log the EXACT request details for debugging (as per user's request)
 	if c.Logger != nil {
-		c.Logger.Debug("Making embed signed link request",
+		c.Logger.Info("🔍 Making embed signed link request - FULL DETAILS",
 			zap.String("method", "GET"),
-			zap.String("url", fullURL),
-			zap.String("header_token_length", fmt.Sprintf("%d", len(token))))
-	}
-
-	if c.Logger != nil {
-		c.Logger.Info("🔍 Attempting to generate embed signed link",
-			zap.String("app_id", appID),
-			zap.String("endpoint", fullURL),
-			zap.String("redirect_url", redirectURL))
+			zap.String("full_url", fullURL),
+			zap.String("endpoint_base", endpoint),
+			zap.String("query_params", queryParams.Encode()),
+			zap.String("username_param", username),
+			zap.String("lang_param", lang),
+			zap.String("header_name", "token"),
+			zap.Int("token_length", len(token)),
+			zap.Bool("has_token", token != ""),
+			zap.String("app_id", appID))
 	}
 
 	resp, err := client.Do(req)

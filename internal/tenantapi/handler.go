@@ -5875,22 +5875,22 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 
 	var appID string
 	var appToken string
+	var tenant storage.Tenant
+
+	// Fetch tenant info (needed for app naming and username generation)
+	if err := h.DB.First(&tenant, tenantID).Error; err != nil {
+		h.Logger.Error("❌ Failed to fetch tenant",
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "tenant_not_found",
+			"message": "Failed to find tenant",
+		})
+		return
+	}
 
 	if err != nil {
 		// App doesn't exist, create a new one
-		// Get tenant name for app naming
-		var tenant storage.Tenant
-		if err := h.DB.First(&tenant, tenantID).Error; err != nil {
-			h.Logger.Error("❌ Failed to fetch tenant",
-				zap.Uint("tenant_id", tenantID),
-				zap.Error(err))
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error":   "tenant_not_found",
-				"message": "Failed to find tenant",
-			})
-			return
-		}
-
 		// Generate app name with random component to ensure absolute uniqueness
 		// Format: {TenantName}{TenantID}{RandomString}WhatsAppApp (e.g., "Brancr123A7b9K2WhatsAppApp")
 		// This prevents any possibility of collision, even if tenants have same name
@@ -5993,7 +5993,27 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", appID))
 
-	onboardingLink, err := h.GupshupPartner.GenerateEmbedSignedLink(r.Context(), appID, redirectURL)
+	// Extract username from tenant email (or use tenant name/ID as fallback)
+	username := tenant.Email
+	if username == "" {
+		// Fallback: use tenant name or ID
+		if tenant.Name != "" {
+			username = strings.ToLower(strings.ReplaceAll(tenant.Name, " ", ""))
+		} else {
+			username = fmt.Sprintf("tenant%d", tenantID)
+		}
+	} else {
+		// Extract username part from email (before @)
+		parts := strings.Split(username, "@")
+		if len(parts) > 0 && parts[0] != "" {
+			username = parts[0]
+		}
+	}
+
+	// Determine language (default to English, could be enhanced to use tenant's locale)
+	lang := "en"
+
+	onboardingLink, err := h.GupshupPartner.GenerateEmbedSignedLink(r.Context(), appID, redirectURL, username, lang)
 	if err != nil {
 		h.Logger.Error("❌ Failed to generate embed signed link",
 			zap.Uint("tenant_id", tenantID),
