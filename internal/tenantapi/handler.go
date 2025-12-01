@@ -5891,15 +5891,16 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		// Generate app name in format like "Brancr123WhatsAppApp" - no spaces, just letters and numbers
-		// Format: {TenantName}{TenantID}WhatsAppApp (e.g., "Brancr123WhatsAppApp")
-		// IMPORTANT: Include tenant ID to ensure uniqueness in multi-tenant setup
-		// Without tenant ID, two tenants with same name would conflict (e.g., both "Brancr" → "BrancrWhatsAppApp")
+		// Generate app name with random component to ensure absolute uniqueness
+		// Format: {TenantName}{TenantID}{RandomString}WhatsAppApp (e.g., "Brancr123A7b9K2WhatsAppApp")
+		// This prevents any possibility of collision, even if tenants have same name
+		// Random string is 8 alphanumeric characters for maximum uniqueness
+		randomStr := generateRandomString(8)
 		var appName string
 		if strings.TrimSpace(tenant.Name) != "" {
-			appName = tenant.Name + fmt.Sprintf("%d", tenantID) + "WhatsAppApp"
+			appName = tenant.Name + fmt.Sprintf("%d", tenantID) + randomStr + "WhatsAppApp"
 		} else {
-			appName = fmt.Sprintf("Tenant%dWhatsAppApp", tenantID)
+			appName = fmt.Sprintf("Tenant%d%sWhatsAppApp", tenantID, randomStr)
 		}
 
 		h.Logger.Info("🔧 Creating new Gupshup app for tenant",
@@ -6685,4 +6686,25 @@ func (h *Handler) deleteIntentCatalog(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "Intent catalog entry deleted successfully",
 	})
+}
+
+// generateRandomString generates a cryptographically secure random alphanumeric string
+// Used to ensure app names are unique and never collide, even across different tenants
+// Length should be 6-12 characters for good uniqueness without making names too long
+func generateRandomString(length int) string {
+	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to timestamp-based if crypto/rand fails (extremely rare)
+		// Use nanosecond timestamp as hex string
+		fallback := fmt.Sprintf("%x", time.Now().UnixNano())
+		if len(fallback) > length {
+			return fallback[:length]
+		}
+		return fallback + strings.Repeat("0", length-len(fallback))
+	}
+	for i, b := range bytes {
+		bytes[i] = charset[b%byte(len(charset))]
+	}
+	return string(bytes)
 }
