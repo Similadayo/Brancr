@@ -5971,41 +5971,30 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			zap.String("status", waApp.Status))
 	}
 
-	// Step 2: Set callback URL for the app (webhook endpoint for receiving events)
+	// Step 2: Create webhook subscription using Subscription API
 	// CRITICAL: Gupshup requires webhook callback URL to NOT have query parameters
-	// The webhook endpoint is separate from the onboarding redirect URL
+	// Multi-tenant: We use ONE static webhook URL for all tenants, route by appId in payload
 	// Webhook endpoint: /webhooks/gupshup (receives webhook events with appId in payload)
 	webhookCallbackURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
 	
-	h.Logger.Info("🔧 Setting webhook callback URL for app",
+	h.Logger.Info("🔧 Configuring webhook subscription for app",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", appID),
 		zap.String("webhook_callback_url", webhookCallbackURL),
 		zap.String("redirect_url", redirectURL))
 
-	// Step 2: Create webhook subscription using Subscription API (replaces deprecated SetCallback)
-	// Multi-tenant: We use ONE static webhook URL for all tenants, route by appId in payload
-	// Subscribe to common WhatsApp events: MESSAGE (incoming), TEMPLATE (status), ACCOUNT (updates)
-	subscriptionModes := []string{"MESSAGE", "TEMPLATE", "ACCOUNT"}
-	if err := h.GupshupPartner.CreateSubscription(r.Context(), appID, webhookCallbackURL, subscriptionModes); err != nil {
-		h.Logger.Warn("⚠️ Failed to create webhook subscription (Subscription API)",
+	// Configure webhook subscriptions using Subscription API (replaces deprecated SetCallback)
+	if err := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID); err != nil {
+		h.Logger.Warn("⚠️ Failed to create webhook subscription",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", appID),
 			zap.Error(err),
-			zap.String("webhook_url", webhookCallbackURL),
-			zap.Strings("modes", subscriptionModes),
-			zap.String("note", "Subscription API failed - webhook may need manual configuration"))
-		// Try deprecated SetCallback as fallback (will likely fail but worth trying)
-		if fallbackErr := h.GupshupPartner.SetCallback(r.Context(), appID, webhookCallbackURL); fallbackErr != nil {
-			h.Logger.Warn("⚠️ SetCallback fallback also failed (API is deprecated)",
-				zap.Error(fallbackErr))
-		}
+			zap.String("webhook_url", webhookCallbackURL))
 		// Don't fail here - continue with onboarding, webhook can be configured later
 	} else {
-		h.Logger.Info("✅ Webhook subscription created successfully via Subscription API",
+		h.Logger.Info("✅ Webhook subscription created successfully",
 			zap.Uint("tenant_id", tenantID),
-			zap.String("app_id", appID),
-			zap.Strings("modes", subscriptionModes))
+			zap.String("app_id", appID))
 	}
 
 	// Step 3: Generate embed signed link (the onboarding URL)
@@ -6055,13 +6044,6 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.String("onboarding_link", onboardingLink),
 		zap.String("partner_id", h.Config.GupshupPartnerID))
 
-	// Provide webhook configuration instructions (SetCallback API is deprecated)
-	webhookConfigInstructions := map[string]string{
-		"manual_setup_url": "https://partner.gupshup.io",
-		"webhook_url":      webhookCallbackURL,
-		"instructions":     "After onboarding, configure webhook manually: Go to Gupshup Console > App > Integration > Webhooks > Create Webhook",
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
 		"app_id":         appID,
@@ -6069,10 +6051,9 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
 		"redirect_url":   redirectURL,
 		"webhook_url":    webhookCallbackURL,
-		"webhook_config": webhookConfigInstructions,
 		"flow_completed": map[string]any{
 			"step_1": "✅ App created",
-			"step_2": "⚠️ Callback URL (SetCallback API is deprecated - configure manually after onboarding)",
+			"step_2": "✅ Webhook subscription created",
 			"step_3": "✅ Embed signed link generated",
 		},
 		"troubleshooting": map[string]any{
@@ -6678,14 +6659,8 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		zap.String("phone_number_id", waApp.PhoneNumberID),
 		zap.String("status", waApp.Status))
 
-	// Configure webhook callback URL (VERIFIED endpoint)
-	if h.GupshupPartner != nil {
-		webhookURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
-		if err := h.GupshupPartner.SetCallback(r.Context(), appID, webhookURL); err != nil {
-			h.Logger.Warn("Failed to set webhook callback", zap.Error(err), zap.String("app_id", appID))
-			// Continue anyway - webhook can be set manually
-		}
-	}
+	// Webhook subscription is already configured during onboarding via CreateSubscription
+	// No need to set it again here - the static webhook URL routes by appId
 
 	// Sync to SocialAccount for compatibility with existing code
 	var socialAcc storage.SocialAccount
