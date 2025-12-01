@@ -362,52 +362,39 @@ type CreateAppResponse struct {
 	Message  string `json:"message"`
 }
 
-// sanitizeAppName removes invalid characters from app name
-// Gupshup allows: alphanumeric, spaces, hyphens, underscores
-// Removes: special characters, emojis, etc.
+// sanitizeAppName removes ALL invalid characters from app name
+// Gupshup requires: ONLY letters and numbers, NO spaces, hyphens, underscores, or special characters
+// Format like: "BrancrTech" - just concatenated letters/numbers
 func sanitizeAppName(name string) string {
 	if name == "" {
 		return "WhatsAppBusinessApp"
 	}
 
-	// Remove all characters except alphanumeric, hyphens, and underscores
-	// Replace spaces with hyphens (Gupshup may not allow spaces)
+	// Keep ONLY alphanumeric characters (letters and numbers)
+	// Remove ALL spaces, hyphens, underscores, and special characters
 	var sanitized strings.Builder
 	for _, char := range name {
 		if (char >= 'a' && char <= 'z') ||
 			(char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') ||
-			char == '-' ||
-			char == '_' {
+			(char >= '0' && char <= '9') {
 			sanitized.WriteRune(char)
-		} else if char == ' ' {
-			// Replace spaces with hyphens
-			sanitized.WriteRune('-')
 		}
-		// All other characters (special chars, emojis, etc.) are ignored
+		// All other characters (spaces, hyphens, underscores, special chars, emojis, etc.) are removed
 	}
 
-	// Clean up: trim hyphens, collapse multiple hyphens
 	result := sanitized.String()
-	result = strings.Trim(result, "-") // Remove leading/trailing hyphens
-
-	// Collapse multiple consecutive hyphens
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
 
 	// Ensure minimum length
 	if len(result) < 6 {
-		result = "WhatsAppApp-" + result
-		result = strings.Trim(result, "-") // Remove any leading/trailing hyphens
+		result = "WhatsAppApp" + result
 		if len(result) < 6 {
 			result = "WhatsAppBusinessApp" // Fallback if still too short
 		}
 	}
 
-	// Truncate if too long
+	// Truncate if too long (max 150 chars)
 	if len(result) > 150 {
-		result = result[:147] + "..."
+		result = result[:150]
 	}
 
 	return result

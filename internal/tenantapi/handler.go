@@ -5891,9 +5891,11 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		appName := fmt.Sprintf("%s WhatsApp App", tenant.Name)
-		if appName == "" {
-			appName = fmt.Sprintf("Tenant %d WhatsApp App", tenantID)
+		// Generate app name in format like "BrancrTech" or "BrancrWhatsAppApp" - no spaces, just letters
+		// Format: {TenantName}WhatsAppApp (e.g., "BrancrWhatsAppApp")
+		appName := tenant.Name + "WhatsAppApp"
+		if strings.TrimSpace(tenant.Name) == "" {
+			appName = fmt.Sprintf("Tenant%dWhatsAppApp", tenantID)
 		}
 
 		h.Logger.Info("🔧 Creating new Gupshup app for tenant",
