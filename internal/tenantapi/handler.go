@@ -5971,13 +5971,19 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			zap.String("status", waApp.Status))
 	}
 
-	// Step 2: Set callback URL for the app
-	h.Logger.Info("🔧 Setting callback URL for app",
+	// Step 2: Set callback URL for the app (webhook endpoint for receiving events)
+	// CRITICAL: Gupshup requires webhook callback URL to NOT have query parameters
+	// The webhook endpoint is separate from the onboarding redirect URL
+	// Webhook endpoint: /webhooks/gupshup (receives webhook events with appId in payload)
+	webhookCallbackURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
+	
+	h.Logger.Info("🔧 Setting webhook callback URL for app",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", appID),
-		zap.String("callback_url", redirectURL))
+		zap.String("webhook_callback_url", webhookCallbackURL),
+		zap.String("redirect_url", redirectURL))
 
-	if err := h.GupshupPartner.SetCallback(r.Context(), appID, redirectURL); err != nil {
+	if err := h.GupshupPartner.SetCallback(r.Context(), appID, webhookCallbackURL); err != nil {
 		h.Logger.Error("❌ Failed to set callback URL",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", appID),
