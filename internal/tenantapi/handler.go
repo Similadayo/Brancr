@@ -6337,7 +6337,25 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 }
 
 // handleWhatsAppGupshupCallback - Handle Gupshup Partner redirect callback after onboarding
+// CRITICAL: This function MUST always redirect to frontend, even if errors occur
 func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.Request) {
+	// Ensure we always redirect at the end, even if errors occur
+	defer func() {
+		if rec := recover(); rec != nil {
+			h.Logger.Error("❌ Panic in callback handler - redirecting to error page",
+				zap.Any("panic", rec))
+			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=callback_error", h.Config.FrontendURL)
+			http.Redirect(w, r, errorURL, http.StatusFound)
+		}
+	}()
+	// ⭐ CRITICAL: This callback redirect means onboarding is COMPLETE
+	// Gupshup redirects here after user finishes onboarding in their UI
+	// We do NOT wait for webhook events - this redirect IS the confirmation
+	h.Logger.Info("🎉🎉🎉 ONBOARDING CALLBACK RECEIVED - User completed onboarding in Gupshup!",
+		zap.String("note", "This redirect confirms onboarding finished - fetching data from API immediately"),
+		zap.String("method", r.Method),
+		zap.String("url", r.URL.String()))
+
 	// Log ALL request details for debugging
 	h.Logger.Info("📥 Gupshup Partner callback received - FULL REQUEST DETAILS",
 		zap.String("method", r.Method),
@@ -6746,12 +6764,14 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			}
 
 			// Update status to "live" if we have complete data (WABA ID + Phone Number)
+			// This means onboarding is COMPLETE - don't wait for webhook events
 			if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
 				waApp.Status = "live"
 				updated = true
-				h.Logger.Info("✅✅✅ Setting status to 'live' - onboarding complete with WABA ID and phone number",
+				h.Logger.Info("✅✅✅ ONBOARDING COMPLETE - Setting status to 'live' (WABA ID + Phone Number confirmed)",
 					zap.String("waba_id", waApp.WABAID),
-					zap.String("phone_number", waApp.PhoneNumber))
+					zap.String("phone_number", waApp.PhoneNumber),
+					zap.String("note", "Not waiting for webhook - API data confirms completion"))
 			}
 
 			if updated {
@@ -6785,18 +6805,41 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		zap.String("phone_number_id", waApp.PhoneNumberID),
 		zap.String("status", waApp.Status))
 
-	// Note: Webhook subscription was already created right after app creation (before onboarding)
-	// This follows Gupshup docs sequence: Create App → Set Subscription → Generate Embed Link
-	// The subscription is now active and will receive Go-Live events after onboarding completes
-	if waApp.SubscriptionID == "" {
-		h.Logger.Info("ℹ️ Subscription was not created earlier, will be available after app is live",
+	// ⭐ CRITICAL: The callback redirect means onboarding is COMPLETE
+	// Don't wait for webhooks - this redirect IS the confirmation
+	h.Logger.Info("🎉🎉🎉 ONBOARDING COMPLETE - Callback redirect received!",
+		zap.String("app_id", appID),
+		zap.String("waba_id", waApp.WABAID),
+		zap.String("phone_number", waApp.PhoneNumber),
+		zap.String("status", waApp.Status),
+		zap.String("note", "This redirect confirms onboarding finished - updating database immediately"))
+
+	// Force create/update webhook subscription immediately after onboarding
+	// App is now live, so subscription should work
+	h.Logger.Info("🔧 Creating/updating webhook subscription immediately (app is now live)",
+		zap.String("app_id", appID),
+		zap.String("current_subscription_id", waApp.SubscriptionID),
+		zap.String("status", waApp.Status))
+
+	subscriptionInfo, subscriptionErr := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID)
+	if subscriptionErr != nil {
+		h.Logger.Error("❌ Failed to create webhook subscription after onboarding - will retry via refresh endpoint",
 			zap.String("app_id", appID),
-			zap.String("note", "Subscription will be created via refresh endpoint if needed"))
-	} else {
-		h.Logger.Info("✅ Webhook subscription already active (created before onboarding)",
-			zap.String("app_id", appID),
-			zap.String("subscription_id", waApp.SubscriptionID),
-			zap.Bool("active", waApp.SubscriptionActive))
+			zap.Error(subscriptionErr),
+			zap.String("note", "Onboarding is complete - subscription can be fixed later"))
+	} else if subscriptionInfo != nil {
+		waApp.SubscriptionID = subscriptionInfo.ID
+		waApp.SubscriptionActive = subscriptionInfo.Active
+		waApp.WebhookURL = subscriptionInfo.URL
+
+		if err := h.DB.Save(&waApp).Error; err != nil {
+			h.Logger.Error("Failed to save subscription info after onboarding", zap.Error(err))
+		} else {
+			h.Logger.Info("✅✅✅ Webhook subscription created/updated after onboarding",
+				zap.String("app_id", appID),
+				zap.String("subscription_id", subscriptionInfo.ID),
+				zap.Bool("active", subscriptionInfo.Active))
+		}
 	}
 
 	// Sync to SocialAccount for compatibility with existing code
@@ -6811,21 +6854,41 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 	socialAcc.Mode = "gupshup_partner"
 	h.DB.Save(&socialAcc)
 
-	h.Logger.Info("✅ Gupshup Partner app onboarding completed",
+	// Final status check: If we have WABA ID + Phone Number, onboarding is definitely complete
+	// Don't rely on webhook events - the callback redirect + API data is our confirmation
+	if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
+		waApp.Status = "live"
+		if err := h.DB.Save(&waApp).Error; err == nil {
+			h.Logger.Info("✅✅✅ Final status update: Onboarding complete - status set to 'live'",
+				zap.String("app_id", appID),
+				zap.String("waba_id", waApp.WABAID),
+				zap.String("phone_number", waApp.PhoneNumber))
+		}
+	}
+
+	h.Logger.Info("🎉🎉🎉 ONBOARDING FLOW COMPLETE - All data saved, redirecting to frontend",
 		zap.Uint64("tenant_id", tenantID),
 		zap.String("app_id", appID),
-		zap.String("phone_number", phoneNumber),
-		zap.String("status", status))
+		zap.String("phone_number", waApp.PhoneNumber),
+		zap.String("waba_id", waApp.WABAID),
+		zap.String("status", waApp.Status),
+		zap.String("subscription_id", waApp.SubscriptionID),
+		zap.Bool("subscription_active", waApp.SubscriptionActive),
+		zap.String("note", "Onboarding confirmed by callback redirect + API data - not waiting for webhooks"))
 
-	// Redirect to frontend success page
+	// Redirect to frontend success page - CRITICAL: Always redirect, even if errors occurred
 	successURL := fmt.Sprintf("%s/integrations/whatsapp?status=%s&app_id=%s", h.Config.FrontendURL, waApp.Status, appID)
-	h.Logger.Info("✅✅✅ Onboarding callback processing complete - redirecting to frontend",
+
+	h.Logger.Info("🎯 REDIRECTING TO FRONTEND - Onboarding callback processing complete",
 		zap.Uint64("tenant_id", tenantID),
 		zap.String("app_id", appID),
 		zap.String("status", waApp.Status),
 		zap.String("waba_id", waApp.WABAID),
 		zap.String("phone_number", waApp.PhoneNumber),
-		zap.String("redirect_url", successURL))
+		zap.String("redirect_url", successURL),
+		zap.String("note", "User will be redirected to frontend - onboarding is complete"))
+
+	// Perform the redirect
 	http.Redirect(w, r, successURL, http.StatusFound)
 }
 

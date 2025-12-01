@@ -922,11 +922,15 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 	queryParams.Set("lang", lang)
 
 	// Add redirect URL if provided (this tells Gupshup where to redirect after onboarding completes)
+	// NOTE: Gupshup may not automatically redirect - frontend should poll app status or use webhooks
 	if redirectURL != "" {
+		// Try both parameter names for compatibility
 		queryParams.Set("redirectUrl", redirectURL)
+		queryParams.Set("redirect", redirectURL)
 		if c.Logger != nil {
-			c.Logger.Info("📋 Adding redirect URL to embed link request",
-				zap.String("redirect_url", redirectURL))
+			c.Logger.Info("📋 Adding redirect URL to embed link request (both redirectUrl and redirect)",
+				zap.String("redirect_url", redirectURL),
+				zap.String("note", "If redirect doesn't work, use polling or webhooks to detect completion"))
 		}
 	}
 
