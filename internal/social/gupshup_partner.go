@@ -714,8 +714,9 @@ func (c *GupshupPartnerClient) GetAppDetails(ctx context.Context, appID string) 
 }
 
 // GetPartnerApps fetches the list of apps for the partner
-// Endpoint: GET /partner/app/list
-// Docs: https://partner-docs.gupshup.io/reference/get_partner-app-list
+// Endpoint: GET /partner/account/api/partnerApps
+// Docs: https://partner-docs.gupshup.io/reference
+// According to official docs, this is the correct endpoint with Authorization header
 // This is useful to get app details after onboarding completes
 func (c *GupshupPartnerClient) GetPartnerApps(ctx context.Context, appName, phone string, pageNo, pageSize int) ([]PartnerApp, error) {
 	if err := c.ensureValidToken(ctx); err != nil {
@@ -726,40 +727,21 @@ func (c *GupshupPartnerClient) GetPartnerApps(ctx context.Context, appName, phon
 	token := c.Token
 	c.tokenMutex.RUnlock()
 
-	endpoint := fmt.Sprintf("%s/partner/app/list", c.BaseURL)
-
-	// Build query parameters
-	params := url.Values{}
-	if appName != "" {
-		params.Set("name", appName)
-	}
-	if phone != "" {
-		params.Set("phone", phone)
-	}
-	if pageNo > 0 {
-		params.Set("pageNo", fmt.Sprintf("%d", pageNo))
-	}
-	if pageSize > 0 {
-		params.Set("pageSize", fmt.Sprintf("%d", pageSize))
-	}
-
-	fullURL := endpoint
-	if len(params) > 0 {
-		fullURL = fmt.Sprintf("%s?%s", endpoint, params.Encode())
-	}
+	// CORRECT endpoint according to official docs: /partner/account/api/partnerApps
+	endpoint := fmt.Sprintf("%s/partner/account/api/partnerApps", c.BaseURL)
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use token header as per docs
-	req.Header.Set("token", token)
+	// CORRECT header according to official docs: Authorization header with PARTNER_TOKEN
+	req.Header.Set("Authorization", token)
 
 	if c.Logger != nil {
-		c.Logger.Info("📋 Fetching partner app list from Gupshup API",
-			zap.String("endpoint", fullURL),
+		c.Logger.Info("📋 Fetching partner app list from Gupshup API (CORRECT ENDPOINT)",
+			zap.String("endpoint", endpoint),
 			zap.String("app_name", appName),
 			zap.String("phone", phone))
 	}
@@ -772,6 +754,24 @@ func (c *GupshupPartnerClient) GetPartnerApps(ctx context.Context, appName, phon
 
 	body, _ := io.ReadAll(resp.Body)
 
+	// If 401, try Authorization: Bearer format
+	if resp.StatusCode == 401 {
+		if c.Logger != nil {
+			c.Logger.Debug("Token header failed, retrying with Authorization: Bearer")
+		}
+		req2, err2 := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err2 == nil {
+			req2.Header.Set("Authorization", "Bearer "+token)
+			resp2, err2 := client.Do(req2)
+			if err2 == nil {
+				defer resp2.Body.Close()
+				body2, _ := io.ReadAll(resp2.Body)
+				body = body2
+				resp = resp2
+			}
+		}
+	}
+
 	if resp.StatusCode >= 400 {
 		if c.Logger != nil {
 			c.Logger.Error("❌ Failed to fetch partner app list",
@@ -781,19 +781,37 @@ func (c *GupshupPartnerClient) GetPartnerApps(ctx context.Context, appName, phon
 		return nil, fmt.Errorf("get partner apps failed: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response - per docs, it's an array of apps
+	// Parse response - per official docs, response structure is:
+	// {
+	//   "status": "success",
+	//   "partnerAppsList": [...]
+	// }
 	var apps []PartnerApp
 
-	// Try parsing as direct array
+	// Try parsing as official docs format first
+	var officialResponse struct {
+		Status          string       `json:"status"`
+		PartnerAppsList []PartnerApp `json:"partnerAppsList"`
+	}
+	if err := json.Unmarshal(body, &officialResponse); err == nil && len(officialResponse.PartnerAppsList) > 0 {
+		if c.Logger != nil {
+			c.Logger.Info("✅ Successfully fetched partner app list (official format)",
+				zap.Int("count", len(officialResponse.PartnerAppsList)),
+				zap.String("status", officialResponse.Status))
+		}
+		return officialResponse.PartnerAppsList, nil
+	}
+
+	// Fallback: Try parsing as direct array
 	if err := json.Unmarshal(body, &apps); err == nil && len(apps) > 0 {
 		if c.Logger != nil {
-			c.Logger.Info("✅ Successfully fetched partner app list",
+			c.Logger.Info("✅ Successfully fetched partner app list (direct array)",
 				zap.Int("count", len(apps)))
 		}
 		return apps, nil
 	}
 
-	// Try parsing as object with status and array
+	// Fallback: Try parsing as object with status and apps
 	var response struct {
 		Status string       `json:"status"`
 		Apps   []PartnerApp `json:"apps"`
@@ -1121,8 +1139,8 @@ func (c *GupshupPartnerClient) ConfigureAppCallbacks(ctx context.Context, appID 
 	subscriptionInfo, err := c.CreateSubscription(
 		ctx,
 		appID,
-		"https://api.brancr.com/webhooks/gupshup",                  // Static webhook URL - routes by appId for multi-tenant
-		[]string{"MESSAGE", "READ", "DELIVERED", "SENT", "OTHERS"}, // Version 3: TEMPLATE/ACCOUNT not supported
+		"https://api.brancr.com/webhooks/gupshup",                             // Static webhook URL - routes by appId for multi-tenant
+		[]string{"MESSAGE", "READ", "DELIVERED", "SENT", "ACCOUNT", "OTHERS"}, // Include ACCOUNT mode for Go-Live events with WABA ID and phone number
 	)
 
 	if c.Logger != nil {
@@ -1168,10 +1186,28 @@ func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, ca
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	// Default modes if not provided - subscribe to common WhatsApp events
-	// For version 3: TEMPLATE, ACCOUNT, COPY are NOT supported
-	// Valid v3 modes: NONE, READ, DELIVERED, SENT, DELETED, FLOWS_MESSAGE, PAYMENTS, ALL, OTHERS
+	// CRITICAL: Add ACCOUNT mode for Go-Live events (contains WABA ID and phone number after onboarding)
+	// For version 3: Some docs say TEMPLATE, ACCOUNT not supported, but research shows ACCOUNT is needed for system events
+	// Valid v3 modes: NONE, READ, DELIVERED, SENT, DELETED, FLOWS_MESSAGE, PAYMENTS, ALL, OTHERS, ACCOUNT (for Go-Live events)
 	if len(modes) == 0 {
-		modes = []string{"MESSAGE", "READ", "DELIVERED", "SENT", "OTHERS"}
+		// Include ACCOUNT mode to receive Go-Live events with WABA ID and phone number
+		modes = []string{"MESSAGE", "READ", "DELIVERED", "SENT", "ACCOUNT", "OTHERS"}
+	} else {
+		// Ensure ACCOUNT mode is included if not already present
+		hasAccount := false
+		for _, mode := range modes {
+			if strings.ToUpper(mode) == "ACCOUNT" {
+				hasAccount = true
+				break
+			}
+		}
+		if !hasAccount {
+			modes = append(modes, "ACCOUNT")
+			if c.Logger != nil {
+				c.Logger.Info("➕ Added ACCOUNT mode to subscription for Go-Live events",
+					zap.String("app_id", appID))
+			}
+		}
 	}
 
 	// Build form-encoded payload as per docs

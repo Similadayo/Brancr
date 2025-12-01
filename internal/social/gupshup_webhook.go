@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -25,11 +26,11 @@ type GupshupWebhookHandler struct {
 type GupshupCallbackPayload struct {
 	Type    string                 `json:"type"`
 	Event   string                 `json:"event"`
-	App     string                 `json:"app"`      // App ID for Partner API
-	AppID   string                 `json:"appId"`    // Alternative field name
-	AppID2  string                 `json:"app_id"`   // Alternative field name
-	Payload GupshupEventPayload    `json:"payload"`  // Nested payload for structured events
-	RawData map[string]interface{} `json:"-"`        // Raw payload for backward compatibility
+	App     string                 `json:"app"`     // App ID for Partner API
+	AppID   string                 `json:"appId"`   // Alternative field name
+	AppID2  string                 `json:"app_id"`  // Alternative field name
+	Payload GupshupEventPayload    `json:"payload"` // Nested payload for structured events
+	RawData map[string]interface{} `json:"-"`       // Raw payload for backward compatibility
 }
 
 // GupshupEventPayload contains the actual event data
@@ -40,19 +41,19 @@ type GupshupEventPayload struct {
 	Channel     string `json:"channel"`
 	Event       string `json:"event"` // Event type: message, delivered, read, etc.
 	Cause       string `json:"cause,omitempty"`
-	
+
 	// Message fields
 	Text      string `json:"text,omitempty"`
-	Message   string `json:"message,omitempty"`   // Alternative field name
+	Message   string `json:"message,omitempty"` // Alternative field name
 	MessageID string `json:"messageId,omitempty"`
 	ReplyID   string `json:"replyId,omitempty"`
-	
+
 	// Alternative field names (for flexibility)
-	Mobile    string `json:"mobile,omitempty"`
-	Sender    string `json:"sender,omitempty"`
-	WaNumber  string `json:"waNumber,omitempty"`
-	To        string `json:"to,omitempty"`
-	
+	Mobile   string `json:"mobile,omitempty"`
+	Sender   string `json:"sender,omitempty"`
+	WaNumber string `json:"waNumber,omitempty"`
+	To       string `json:"to,omitempty"`
+
 	// Timestamp
 	Timestamp interface{} `json:"timestamp,omitempty"` // Can be string or number
 }
@@ -108,7 +109,7 @@ func (h *GupshupWebhookHandler) handleWebhookValidation(w http.ResponseWriter, r
 	// For HEAD requests, don't write body (only headers)
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	
+
 	// Only write body for GET requests (HEAD requests don't expect a body)
 	if r.Method == http.MethodGet {
 		w.Write([]byte("OK")) // Simple "OK" response to confirm URL is valid
@@ -144,7 +145,7 @@ func (h *GupshupWebhookHandler) processWebhookAsync(ctx context.Context, r *http
 		// Fallback to generic map for backward compatibility
 		h.Logger.Warn("⚠️ Failed to parse as structured payload, trying generic map",
 			zap.Error(err))
-		
+
 		var rawPayload map[string]interface{}
 		if err := json.Unmarshal(body, &rawPayload); err != nil {
 			// Try form-encoded as last resort
@@ -234,6 +235,9 @@ func (h *GupshupWebhookHandler) processWebhookAsync(ctx context.Context, r *http
 		h.processGupshupEvent(ctx, tenantID, appID, callbackPayload)
 	case "report-event", "delivered", "read", "failed":
 		h.processReportEvent(ctx, tenantID, appID, callbackPayload)
+	case "account-event", "system-event", "status-event":
+		// Handle system events like APP_LIVE status updates after onboarding
+		h.processAccountEvent(ctx, tenantID, appID, callbackPayload)
 	default:
 		// Check if it's a message based on payload content
 		if callbackPayload.Payload.Text != "" || callbackPayload.Payload.Message != "" ||
@@ -266,9 +270,233 @@ func (h *GupshupWebhookHandler) processReportEvent(ctx context.Context, tenantID
 		zap.String("event_type", payload.Event),
 		zap.String("message_id", payload.Payload.MessageID),
 		zap.String("status", payload.Payload.Event))
-	
-	// TODO: Update message status in database if needed
-	// This could update delivery status, read receipts, etc.
+
+	// Update message delivery status in database
+	messageID := payload.Payload.MessageID
+	if messageID == "" {
+		// Try alternative field names
+		if payload.RawData != nil {
+			if id, ok := payload.RawData["messageId"].(string); ok && id != "" {
+				messageID = id
+			} else if id, ok := payload.RawData["message_id"].(string); ok && id != "" {
+				messageID = id
+			}
+		}
+	}
+
+	if messageID == "" {
+		h.Logger.Warn("⚠️ Report event missing message ID, cannot update status",
+			zap.String("event_type", payload.Payload.Event))
+		return
+	}
+
+	deliveryStatus := payload.Payload.Event
+	if deliveryStatus == "" {
+		deliveryStatus = payload.Event
+	}
+	if deliveryStatus == "" {
+		deliveryStatus = "unknown"
+	}
+
+	// Find interaction by platform message ID and update metadata
+	var interaction storage.Interaction
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ?",
+		tenantID, "whatsapp", messageID).First(&interaction).Error; err != nil {
+		h.Logger.Debug("Interaction not found for delivery status update",
+			zap.String("message_id", messageID),
+			zap.String("status", deliveryStatus),
+			zap.Error(err))
+		return
+	}
+
+	// Update metadata with delivery status
+	var metadata map[string]interface{}
+	if interaction.Metadata != "" {
+		if err := json.Unmarshal([]byte(interaction.Metadata), &metadata); err != nil {
+			metadata = make(map[string]interface{})
+		}
+	} else {
+		metadata = make(map[string]interface{})
+	}
+
+	metadata["delivery_status"] = strings.ToLower(deliveryStatus)
+	metadata["delivery_status_updated_at"] = time.Now().UTC().Format(time.RFC3339)
+	if payload.Payload.Cause != "" {
+		metadata["delivery_failure_cause"] = payload.Payload.Cause
+	}
+
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		h.Logger.Error("Failed to marshal metadata", zap.Error(err))
+		return
+	}
+
+	interaction.Metadata = string(metadataJSON)
+	if err := h.DB.Save(&interaction).Error; err != nil {
+		h.Logger.Error("Failed to update interaction delivery status",
+			zap.String("message_id", messageID),
+			zap.String("status", deliveryStatus),
+			zap.Error(err))
+		return
+	}
+
+	h.Logger.Info("✅ Updated message delivery status",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("message_id", messageID),
+		zap.String("status", deliveryStatus),
+		zap.Uint("interaction_id", interaction.ID))
+}
+
+// processAccountEvent handles account/system events from Gupshup (e.g., Go-Live events with WABA ID and phone number)
+// According to Gupshup docs, subscribing to ACCOUNT mode triggers Go-Live Event after onboarding
+// Go-Live Event payload contains: app name, app ID, phone number, and WABA ID
+func (h *GupshupWebhookHandler) processAccountEvent(ctx context.Context, tenantID uint, appID string, payload GupshupCallbackPayload) {
+	h.Logger.Info("🏢 Processing Gupshup account/system event (Go-Live Event)",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("event_type", payload.Type),
+		zap.String("event", payload.Event))
+
+	// Handle APP_LIVE status event (app becomes live after onboarding)
+	var waApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", tenantID, appID).First(&waApp).Error; err != nil {
+		h.Logger.Warn("⚠️ WhatsAppApp not found for account event",
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err))
+		return
+	}
+
+	updated := false
+
+	// Extract all possible data sources for Go-Live Event
+	// According to docs, Go-Live Event contains: app name, app ID, phone number, WABA ID
+
+	// First, try RawData (if payload was parsed as map)
+	if payload.RawData != nil {
+		h.Logger.Info("📦 Processing account event from RawData",
+			zap.Any("raw_data_keys", getMapKeys(payload.RawData)))
+
+		// Extract WABA ID (try multiple field name variations)
+		if wabaID, ok := payload.RawData["wabaId"].(string); ok && wabaID != "" {
+			if waApp.WABAID == "" || waApp.WABAID != wabaID {
+				waApp.WABAID = wabaID
+				updated = true
+				h.Logger.Info("✅✅✅ WABA ID extracted from Go-Live event (wabaId)",
+					zap.String("waba_id", wabaID))
+			}
+		}
+		if waApp.WABAID == "" {
+			if wabaID, ok := payload.RawData["waba_id"].(string); ok && wabaID != "" {
+				waApp.WABAID = wabaID
+				updated = true
+				h.Logger.Info("✅✅✅ WABA ID extracted from Go-Live event (waba_id)",
+					zap.String("waba_id", wabaID))
+			}
+		}
+		if waApp.WABAID == "" {
+			if wabaID, ok := payload.RawData["wabaID"].(string); ok && wabaID != "" {
+				waApp.WABAID = wabaID
+				updated = true
+				h.Logger.Info("✅✅✅ WABA ID extracted from Go-Live event (wabaID)",
+					zap.String("waba_id", wabaID))
+			}
+		}
+
+		// Extract Phone Number (try multiple field name variations)
+		if phone, ok := payload.RawData["phoneNumber"].(string); ok && phone != "" {
+			if waApp.PhoneNumber == "" || waApp.PhoneNumber != phone {
+				waApp.PhoneNumber = phone
+				updated = true
+				h.Logger.Info("✅✅✅ Phone number extracted from Go-Live event (phoneNumber)",
+					zap.String("phone_number", phone))
+			}
+		}
+		if waApp.PhoneNumber == "" {
+			if phone, ok := payload.RawData["phone_number"].(string); ok && phone != "" {
+				waApp.PhoneNumber = phone
+				updated = true
+				h.Logger.Info("✅✅✅ Phone number extracted from Go-Live event (phone_number)",
+					zap.String("phone_number", phone))
+			}
+		}
+		if waApp.PhoneNumber == "" {
+			if phone, ok := payload.RawData["phone"].(string); ok && phone != "" {
+				waApp.PhoneNumber = phone
+				updated = true
+				h.Logger.Info("✅✅✅ Phone number extracted from Go-Live event (phone)",
+					zap.String("phone_number", phone))
+			}
+		}
+
+		// Extract Business ID
+		if businessID, ok := payload.RawData["businessId"].(string); ok && businessID != "" {
+			if waApp.BusinessID == "" || waApp.BusinessID != businessID {
+				waApp.BusinessID = businessID
+				updated = true
+			}
+		}
+		if waApp.BusinessID == "" {
+			if businessID, ok := payload.RawData["business_id"].(string); ok && businessID != "" {
+				waApp.BusinessID = businessID
+				updated = true
+			}
+		}
+
+		// Extract Status
+		if status, ok := payload.RawData["status"].(string); ok && status != "" {
+			if strings.ToLower(status) == "live" || strings.ToLower(status) == "active" || strings.ToLower(status) == "go_live" {
+				if waApp.Status != "live" {
+					waApp.Status = "live"
+					updated = true
+					h.Logger.Info("✅ App status updated to live from Go-Live event",
+						zap.String("status", status))
+				}
+			}
+		}
+	}
+
+	// Also check payload.Payload structure for nested data
+	if payload.Payload.Event != "" {
+		eventLower := strings.ToLower(payload.Payload.Event)
+		if eventLower == "app_live" || eventLower == "live" || eventLower == "active" || eventLower == "go_live" {
+			if waApp.Status != "live" {
+				waApp.Status = "live"
+				updated = true
+				h.Logger.Info("✅ App status updated to live from payload event",
+					zap.String("event", payload.Payload.Event))
+			}
+		}
+	}
+
+	// Set status to "live" if we have both WABA ID and phone number (Go-Live complete)
+	if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
+		waApp.Status = "live"
+		updated = true
+		h.Logger.Info("✅✅✅ Go-Live complete! Setting status to 'live' (has WABA ID and phone number)")
+	}
+
+	if updated {
+		if err := h.DB.Save(&waApp).Error; err != nil {
+			h.Logger.Error("❌ Failed to update WhatsAppApp from Go-Live event",
+				zap.String("app_id", appID),
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		} else {
+			h.Logger.Info("✅✅✅ WhatsAppApp updated successfully from Go-Live event",
+				zap.String("app_id", appID),
+				zap.String("status", waApp.Status),
+				zap.String("waba_id", waApp.WABAID),
+				zap.String("phone_number", waApp.PhoneNumber),
+				zap.String("business_id", waApp.BusinessID))
+		}
+	} else {
+		h.Logger.Debug("No updates needed for account event",
+			zap.String("app_id", appID),
+			zap.String("current_status", waApp.Status),
+			zap.String("current_waba_id", waApp.WABAID),
+			zap.String("current_phone", waApp.PhoneNumber))
+	}
 }
 
 // handleIncomingMessage processes incoming WhatsApp messages from Gupshup Partner
@@ -277,7 +505,7 @@ func (h *GupshupWebhookHandler) processReportEvent(ctx context.Context, tenantID
 func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenantID uint, appID string, payload interface{}) {
 	// Convert payload to map for extraction
 	var payloadMap map[string]interface{}
-	
+
 	switch p := payload.(type) {
 	case GupshupCallbackPayload:
 		// Use structured payload
@@ -292,7 +520,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			payloadMap["message"] = p.Payload.Message
 			payloadMap["messageId"] = p.Payload.MessageID
 			payloadMap["timestamp"] = p.Payload.Timestamp
-			
+
 			// Add alternative field names
 			if p.Payload.Mobile != "" {
 				payloadMap["mobile"] = p.Payload.Mobile
@@ -434,4 +662,3 @@ func getMapKeys(m map[string]interface{}) []string {
 	}
 	return keys
 }
-

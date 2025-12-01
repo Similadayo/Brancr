@@ -6649,51 +6649,87 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			}
 		}
 
-		// Also try GetAppDetails as fallback
+		// Also try GetAppDetails as fallback (CRITICAL for getting WABA ID and phone number)
+		// This API should return complete app details including WABA ID and phone number
 		appDetails, err := h.GupshupPartner.GetAppDetails(r.Context(), appID)
 		if err != nil {
 			h.Logger.Warn("⚠️ Failed to fetch app details from API, will try again later",
 				zap.String("app_id", appID),
-				zap.Error(err))
+				zap.Error(err),
+				zap.String("note", "Data may be available after a short delay. Check logs for account-event webhook."))
 		} else {
-			// Update missing fields from API response
+			h.Logger.Info("📋 GetAppDetails API response received",
+				zap.String("app_id", appID),
+				zap.String("returned_waba_id", appDetails.WABAID),
+				zap.String("returned_phone_number", appDetails.PhoneNumber),
+				zap.String("returned_status", appDetails.Status),
+				zap.String("current_db_waba_id", waApp.WABAID),
+				zap.String("current_db_phone", waApp.PhoneNumber))
+
+			// Update missing fields from API response (ALWAYS update if API has better data)
 			updated := false
-			if waApp.WABAID == "" && appDetails.WABAID != "" {
+
+			// WABA ID - prefer API value if it's available
+			if appDetails.WABAID != "" && (waApp.WABAID == "" || waApp.WABAID != appDetails.WABAID) {
 				waApp.WABAID = appDetails.WABAID
 				updated = true
+				h.Logger.Info("✅ Updating WABA ID from GetAppDetails API",
+					zap.String("waba_id", appDetails.WABAID))
 			}
-			if waApp.PhoneNumber == "" && appDetails.PhoneNumber != "" {
+
+			// Phone Number - prefer API value if it's available
+			if appDetails.PhoneNumber != "" && (waApp.PhoneNumber == "" || waApp.PhoneNumber != appDetails.PhoneNumber) {
 				waApp.PhoneNumber = appDetails.PhoneNumber
 				updated = true
+				h.Logger.Info("✅ Updating phone number from GetAppDetails API",
+					zap.String("phone_number", appDetails.PhoneNumber))
 			}
-			if waApp.BusinessID == "" && appDetails.BusinessID != "" {
+
+			// Business ID
+			if appDetails.BusinessID != "" && (waApp.BusinessID == "" || waApp.BusinessID != appDetails.BusinessID) {
 				waApp.BusinessID = appDetails.BusinessID
 				updated = true
 			}
-			if waApp.PhoneNumberID == "" && appDetails.PhoneNumberID != "" {
+
+			// Phone Number ID
+			if appDetails.PhoneNumberID != "" && (waApp.PhoneNumberID == "" || waApp.PhoneNumberID != appDetails.PhoneNumberID) {
 				waApp.PhoneNumberID = appDetails.PhoneNumberID
 				updated = true
 			}
-			if appDetails.Status != "" && (waApp.Status == "pending_onboarding" || waApp.Status == "") {
+
+			// Status
+			if appDetails.Status != "" && (waApp.Status == "pending_onboarding" || waApp.Status == "" || appDetails.Status == "live") {
 				waApp.Status = appDetails.Status
 				updated = true
 			}
 
-			// Update status to "live" if we have complete data
+			// Update status to "live" if we have complete data (WABA ID + Phone Number)
 			if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
 				waApp.Status = "live"
 				updated = true
+				h.Logger.Info("✅✅✅ Setting status to 'live' - onboarding complete with WABA ID and phone number",
+					zap.String("waba_id", waApp.WABAID),
+					zap.String("phone_number", waApp.PhoneNumber))
 			}
 
 			if updated {
 				if err := h.DB.Save(&waApp).Error; err != nil {
 					h.Logger.Error("Failed to update WhatsAppApp with API data", zap.Error(err))
 				} else {
-					h.Logger.Info("✅ Updated WhatsAppApp with data fetched from Gupshup API",
+					h.Logger.Info("✅✅✅ Updated WhatsAppApp with data fetched from Gupshup GetAppDetails API",
 						zap.String("app_id", appID),
 						zap.String("waba_id", waApp.WABAID),
-						zap.String("phone_number", waApp.PhoneNumber))
+						zap.String("phone_number", waApp.PhoneNumber),
+						zap.String("business_id", waApp.BusinessID),
+						zap.String("phone_number_id", waApp.PhoneNumberID),
+						zap.String("status", waApp.Status))
 				}
+			} else {
+				h.Logger.Info("ℹ️ No updates needed - database already has complete data",
+					zap.String("app_id", appID),
+					zap.String("waba_id", waApp.WABAID),
+					zap.String("phone_number", waApp.PhoneNumber),
+					zap.String("status", waApp.Status))
 			}
 		}
 	}

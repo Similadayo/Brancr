@@ -181,7 +181,58 @@ func (h *RespondIOWebhookHandler) handleDeliveryStatus(ctx context.Context, data
 		zap.String("message_id", status.MessageID),
 		zap.String("status", status.Status))
 
-	// TODO: Update message delivery status in database if needed
+	// Update message delivery status in database
+	if status.MessageID == "" {
+		h.Logger.Warn("⚠️ Delivery status update missing message ID")
+		return
+	}
+	
+	// Find interaction by platform message ID and update metadata
+	var interaction storage.Interaction
+	if err := h.DB.Where("platform = ? AND platform_message_id = ?", "whatsapp", status.MessageID).First(&interaction).Error; err != nil {
+		h.Logger.Debug("Interaction not found for Respond.io delivery status update",
+			zap.String("message_id", status.MessageID),
+			zap.String("status", status.Status),
+			zap.Error(err))
+		return
+	}
+	
+	// Update metadata with delivery status
+	var metadata map[string]interface{}
+	if interaction.Metadata != "" {
+		if err := json.Unmarshal([]byte(interaction.Metadata), &metadata); err != nil {
+			metadata = make(map[string]interface{})
+		}
+	} else {
+		metadata = make(map[string]interface{})
+	}
+	
+	metadata["delivery_status"] = strings.ToLower(status.Status)
+	metadata["delivery_status_updated_at"] = time.Now().UTC().Format(time.RFC3339)
+	if status.Error != "" {
+		metadata["delivery_error"] = status.Error
+	}
+	
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		h.Logger.Error("Failed to marshal metadata for Respond.io status update", zap.Error(err))
+		return
+	}
+	
+	interaction.Metadata = string(metadataJSON)
+	if err := h.DB.Save(&interaction).Error; err != nil {
+		h.Logger.Error("Failed to update interaction delivery status for Respond.io",
+			zap.String("message_id", status.MessageID),
+			zap.String("status", status.Status),
+			zap.Error(err))
+		return
+	}
+	
+	h.Logger.Info("✅ Updated Respond.io message delivery status",
+		zap.String("message_id", status.MessageID),
+		zap.String("status", status.Status),
+		zap.Uint("interaction_id", interaction.ID),
+		zap.Uint("tenant_id", interaction.TenantID))
 }
 
 // resolveTenantFromRespondIOChannel resolves tenant ID from Respond.io channel or contact
