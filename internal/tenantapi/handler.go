@@ -152,6 +152,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// New simplified WhatsApp connection (Respond.io/Gupshup Partner)
 		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
 		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
+	r.Post("/tenant/whatsapp/refresh", h.refreshWhatsAppAppDetails) // Manual refresh to fetch missing data from Gupshup API
 
 		// Legacy embedded signup (deprecated - keeping for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -6587,6 +6588,60 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		h.Logger.Info("✅ Updated existing WhatsAppApp record", zap.String("app_id", appID))
 	}
 	
+	// If critical data is missing, try to fetch from Gupshup API
+	if (waApp.WABAID == "" || waApp.PhoneNumber == "") && h.GupshupPartner != nil {
+		h.Logger.Info("⚠️ Missing WABA ID or phone number in callback, attempting to fetch from Gupshup API",
+			zap.String("app_id", appID))
+		
+		// Fetch app details from Gupshup API
+		appDetails, err := h.GupshupPartner.GetAppDetails(r.Context(), appID)
+		if err != nil {
+			h.Logger.Warn("⚠️ Failed to fetch app details from API, will try again later",
+				zap.String("app_id", appID),
+				zap.Error(err))
+		} else {
+			// Update missing fields from API response
+			updated := false
+			if waApp.WABAID == "" && appDetails.WABAID != "" {
+				waApp.WABAID = appDetails.WABAID
+				updated = true
+			}
+			if waApp.PhoneNumber == "" && appDetails.PhoneNumber != "" {
+				waApp.PhoneNumber = appDetails.PhoneNumber
+				updated = true
+			}
+			if waApp.BusinessID == "" && appDetails.BusinessID != "" {
+				waApp.BusinessID = appDetails.BusinessID
+				updated = true
+			}
+			if waApp.PhoneNumberID == "" && appDetails.PhoneNumberID != "" {
+				waApp.PhoneNumberID = appDetails.PhoneNumberID
+				updated = true
+			}
+			if appDetails.Status != "" && (waApp.Status == "pending_onboarding" || waApp.Status == "") {
+				waApp.Status = appDetails.Status
+				updated = true
+			}
+			
+			// Update status to "live" if we have complete data
+			if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
+				waApp.Status = "live"
+				updated = true
+			}
+			
+			if updated {
+				if err := h.DB.Save(&waApp).Error; err != nil {
+					h.Logger.Error("Failed to update WhatsAppApp with API data", zap.Error(err))
+				} else {
+					h.Logger.Info("✅ Updated WhatsAppApp with data fetched from Gupshup API",
+						zap.String("app_id", appID),
+						zap.String("waba_id", waApp.WABAID),
+						zap.String("phone_number", waApp.PhoneNumber))
+				}
+			}
+		}
+	}
+	
 	// Log all saved fields for verification
 	h.Logger.Info("📝 WhatsAppApp record saved with data",
 		zap.String("app_id", waApp.GupshupAppID),
@@ -6683,6 +6738,135 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusOK, status)
+}
+
+// refreshWhatsAppAppDetails - Manually refresh/fetch app details from Gupshup API
+// This is useful when callback didn't capture all the data
+func (h *Handler) refreshWhatsAppAppDetails(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	tenantID := claims.TenantID
+
+	// Find existing WhatsAppApp record
+	var waApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ?", tenantID).First(&waApp).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":   "no_whatsapp_app",
+			"message": "No WhatsApp app found. Please connect WhatsApp first.",
+		})
+		return
+	}
+
+	if waApp.GupshupAppID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "no_app_id",
+			"message": "App ID is missing. Cannot fetch details.",
+		})
+		return
+	}
+
+	if h.GupshupPartner == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "gupshup_not_configured",
+			"message": "Gupshup Partner API is not configured.",
+		})
+		return
+	}
+
+	h.Logger.Info("🔄 Manual refresh: Fetching app details from Gupshup API",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", waApp.GupshupAppID))
+
+	// Fetch app details from Gupshup API
+	appDetails, err := h.GupshupPartner.GetAppDetails(r.Context(), waApp.GupshupAppID)
+	if err != nil {
+		h.Logger.Error("❌ Failed to fetch app details from Gupshup API",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", waApp.GupshupAppID),
+			zap.Error(err))
+		
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "fetch_failed",
+			"message": fmt.Sprintf("Failed to fetch app details from Gupshup API: %v", err),
+		})
+		return
+	}
+
+	// Update missing fields from API response
+	updated := false
+	if appDetails.WABAID != "" && waApp.WABAID != appDetails.WABAID {
+		waApp.WABAID = appDetails.WABAID
+		updated = true
+	}
+	if appDetails.PhoneNumber != "" && waApp.PhoneNumber != appDetails.PhoneNumber {
+		waApp.PhoneNumber = appDetails.PhoneNumber
+		updated = true
+	}
+	if appDetails.BusinessID != "" && waApp.BusinessID != appDetails.BusinessID {
+		waApp.BusinessID = appDetails.BusinessID
+		updated = true
+	}
+	if appDetails.PhoneNumberID != "" && waApp.PhoneNumberID != appDetails.PhoneNumberID {
+		waApp.PhoneNumberID = appDetails.PhoneNumberID
+		updated = true
+	}
+	if appDetails.Status != "" && waApp.Status != appDetails.Status {
+		waApp.Status = appDetails.Status
+		updated = true
+	}
+
+	// Update status to "live" if we have complete data
+	if waApp.WABAID != "" && waApp.PhoneNumber != "" && waApp.Status != "live" {
+		waApp.Status = "live"
+		updated = true
+	}
+
+	if updated {
+		if err := h.DB.Save(&waApp).Error; err != nil {
+			h.Logger.Error("Failed to update WhatsAppApp after refresh", zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "update_failed",
+				"message": "Failed to update database",
+			})
+			return
+		}
+
+		// Also update SocialAccount
+		var socialAcc storage.SocialAccount
+		h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").FirstOrCreate(&socialAcc, storage.SocialAccount{
+			TenantID: tenantID,
+			Platform: "whatsapp",
+		})
+		socialAcc.ExternalID = waApp.GupshupAppID
+		socialAcc.PageID = waApp.PhoneNumber
+		socialAcc.Connected = (waApp.Status == "live")
+		socialAcc.Mode = "gupshup_partner"
+		h.DB.Save(&socialAcc)
+
+		h.Logger.Info("✅ Successfully refreshed WhatsAppApp details",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", waApp.GupshupAppID),
+			zap.String("waba_id", waApp.WABAID),
+			zap.String("phone_number", waApp.PhoneNumber),
+			zap.String("status", waApp.Status))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "App details refreshed successfully",
+		"data": map[string]any{
+			"app_id":         waApp.GupshupAppID,
+			"waba_id":        waApp.WABAID,
+			"phone_number":   waApp.PhoneNumber,
+			"business_id":    waApp.BusinessID,
+			"phone_number_id": waApp.PhoneNumberID,
+			"status":         waApp.Status,
+		},
+	})
 }
 
 // ====================

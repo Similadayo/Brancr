@@ -551,6 +551,149 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 	return &response, nil
 }
 
+// GetAppDetailsResponse represents app details from Gupshup API
+type GetAppDetailsResponse struct {
+	AppID         string `json:"appId"`
+	WABAID        string `json:"wabaId"`
+	PhoneNumber   string `json:"phoneNumber"`
+	BusinessID    string `json:"businessId"`
+	PhoneNumberID string `json:"phoneNumberId"`
+	Status        string `json:"status"`
+	Name          string `json:"name"`
+}
+
+// GetAppDetails fetches app details including WABA ID and phone number from Gupshup API
+// This is useful when the callback redirect doesn't include all the data
+func (c *GupshupPartnerClient) GetAppDetails(ctx context.Context, appID string) (*GetAppDetailsResponse, error) {
+	// Ensure we have a valid token
+	if err := c.ensureValidToken(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get partner token: %w", err)
+	}
+
+	if appID == "" {
+		return nil, fmt.Errorf("app ID is required")
+	}
+
+	c.tokenMutex.RLock()
+	token := c.Token
+	c.tokenMutex.RUnlock()
+
+	// Try multiple possible endpoints for getting app details
+	endpoints := []string{
+		fmt.Sprintf("%s/partner/app/%s", c.BaseURL, appID),
+		fmt.Sprintf("%s/partner/apps/%s", c.BaseURL, appID),
+		fmt.Sprintf("%s/partner/app/%s/details", c.BaseURL, appID),
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	for _, endpoint := range endpoints {
+		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err != nil {
+			continue
+		}
+
+		// Try token header first
+		req.Header.Set("token", token)
+
+		if c.Logger != nil {
+			c.Logger.Info("🔍 Fetching app details from Gupshup API",
+				zap.String("endpoint", endpoint),
+				zap.String("app_id", appID))
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if c.Logger != nil {
+				c.Logger.Debug("Failed to call app details endpoint",
+					zap.String("endpoint", endpoint),
+					zap.Error(err))
+			}
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+
+		// If 401, try Authorization: Bearer
+		if resp.StatusCode == 401 {
+			if c.Logger != nil {
+				c.Logger.Debug("Token header failed, retrying with Authorization: Bearer")
+			}
+			req2, err2 := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+			if err2 != nil {
+				continue
+			}
+			req2.Header.Set("Authorization", "Bearer "+token)
+			resp2, err2 := client.Do(req2)
+			if err2 != nil {
+				continue
+			}
+			defer resp2.Body.Close()
+			body, _ = io.ReadAll(resp2.Body)
+			resp = resp2
+		}
+
+		if resp.StatusCode == 200 || resp.StatusCode == 201 {
+			var response GetAppDetailsResponse
+			var responseWrapper struct {
+				Data GetAppDetailsResponse `json:"data"`
+				GetAppDetailsResponse
+			}
+
+			// Try parsing as direct response first
+			if err := json.Unmarshal(body, &response); err == nil {
+				// Check if we got valid data
+				if response.AppID != "" || response.WABAID != "" || response.PhoneNumber != "" {
+					if c.Logger != nil {
+						c.Logger.Info("✅ Successfully fetched app details",
+							zap.String("app_id", response.AppID),
+							zap.String("waba_id", response.WABAID),
+							zap.String("phone_number", response.PhoneNumber))
+					}
+					return &response, nil
+				}
+			}
+
+			// Try parsing as wrapped response
+			if err := json.Unmarshal(body, &responseWrapper); err == nil {
+				if responseWrapper.Data.AppID != "" || responseWrapper.Data.WABAID != "" {
+					if c.Logger != nil {
+						c.Logger.Info("✅ Successfully fetched app details (wrapped)",
+							zap.String("app_id", responseWrapper.Data.AppID),
+							zap.String("waba_id", responseWrapper.Data.WABAID))
+					}
+					return &responseWrapper.Data, nil
+				}
+			}
+
+			// Log raw response for debugging
+			bodyStr := string(body)
+			if len(bodyStr) > 500 {
+				bodyStr = bodyStr[:500] + "..."
+			}
+			if c.Logger != nil {
+				c.Logger.Warn("⚠️ Got 200 response but couldn't parse app details",
+					zap.String("endpoint", endpoint),
+					zap.String("response", bodyStr))
+			}
+		} else {
+			bodyStr := string(body)
+			if len(bodyStr) > 200 {
+				bodyStr = bodyStr[:200] + "..."
+			}
+			if c.Logger != nil {
+				c.Logger.Debug("App details endpoint returned error",
+					zap.String("endpoint", endpoint),
+					zap.Int("status", resp.StatusCode),
+					zap.String("response", bodyStr))
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to fetch app details: all endpoints returned errors or invalid responses")
+}
+
 // GenerateEmbedSignedLinkResponse represents the response from GenerateEmbedSignedLink API
 type GenerateEmbedSignedLinkResponse struct {
 	EmbedSignedLink string `json:"embedSignedLink"`
