@@ -133,7 +133,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 			maxRetries := 5
 			var adminBot *tgbotapi.BotAPI
 			var err error
-
+			
 			for attempt := 0; attempt < maxRetries; attempt++ {
 				if attempt > 0 {
 					backoff := time.Duration(1<<uint(attempt-1)) * time.Second
@@ -145,25 +145,25 @@ func NewApp(cfg *config.Config) (*App, error) {
 						zap.Duration("backoff", backoff))
 					time.Sleep(backoff)
 				}
-
+				
 				adminBot, err = tgbotapi.NewBotAPI(adminToken)
 				if err == nil {
 					// Success!
 					services.BotManager.AdminBot = adminBot
 					logger.Info("🚀 Admin Onboarding Bot started",
 						zap.String("username", adminBot.Self.UserName))
-
+					
 					// Launch onboarding handler
 					go startOnboardingBot(db, adminBot, services.BotManager, logger)
 					return
 				}
-
+				
 				logger.Warn("❌ Failed to start admin bot",
 					zap.Int("attempt", attempt+1),
 					zap.Int("max_retries", maxRetries),
 					zap.Error(err))
 			}
-
+			
 			logger.Error("❌ Failed to start admin bot after all retries",
 				zap.Int("max_retries", maxRetries),
 				zap.Error(err))
@@ -178,7 +178,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 		} else {
 			logger.Info("✅ Tenant bots initialized successfully")
 		}
-
+		
 		// Start background retry worker for failed bots
 		go services.BotManager.StartRetryWorker(context.Background())
 		logger.Info("🔄 Bot retry worker started")
@@ -249,14 +249,14 @@ func (a *App) Run() error {
 		if now.After(nextRun) {
 			nextRun = nextRun.Add(24 * time.Hour)
 		}
-
+		
 		// Wait until 9 AM UTC
 		time.Sleep(time.Until(nextRun))
-
+		
 		// Then run daily at 9 AM UTC
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
-
+		
 		// Run immediately on startup if it's close to 9 AM
 		if time.Until(nextRun) < 1*time.Hour {
 			go func() {
@@ -266,7 +266,7 @@ func (a *App) Run() error {
 				}
 			}()
 		}
-
+		
 		for {
 			select {
 			case <-ctxSched.Done():
@@ -336,10 +336,10 @@ func (a *App) Run() error {
 			nextRun = nextRun.Add(24 * time.Hour)
 		}
 		initialDelay := nextRun.Sub(now)
-
+		
 		// Wait for initial delay
 		time.Sleep(initialDelay)
-
+		
 		// Run immediately on first tick
 		ctx := context.Background()
 		if a.Services.AnalyticsService != nil {
@@ -357,11 +357,11 @@ func (a *App) Run() error {
 				}
 			}
 		}
-
+		
 		// Then run daily at 2 AM UTC
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
-
+		
 		for {
 			select {
 			case <-ctxSched.Done():

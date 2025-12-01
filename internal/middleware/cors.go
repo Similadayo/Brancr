@@ -27,7 +27,7 @@ func CORSMiddleware(allowedOrigins string) func(next http.Handler) http.Handler 
 					log.Printf("⚠️ CORS: OPTIONS request from disallowed origin: %s (allowed: %v)", origin, origins)
 				} else {
 					log.Printf("✅ CORS: OPTIONS request from allowed origin: %s", origin)
-				}
+			}
 			}
 
 			// Handle preflight OPTIONS requests

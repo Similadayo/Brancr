@@ -1,6 +1,7 @@
 package tenantapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -75,7 +76,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	})
 
 	// Public Gupshup Partner callback (no auth required - Gupshup redirects here)
-	r.Get("/tenant/whatsapp/callback", h.handleWhatsAppGupshupCallback)
+	r.HandleFunc("/tenant/whatsapp/callback", h.handleWhatsAppGupshupCallback) // Accept both GET and POST
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/signup", h.signup)
@@ -6307,10 +6308,29 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 
 // handleWhatsAppGupshupCallback - Handle Gupshup Partner redirect callback after onboarding
 func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.Request) {
-	// Log all query parameters for debugging
-	h.Logger.Info("📥 Gupshup Partner callback received",
+	// Log ALL request details for debugging
+	h.Logger.Info("📥 Gupshup Partner callback received - FULL REQUEST DETAILS",
+		zap.String("method", r.Method),
+		zap.String("url", r.URL.String()),
 		zap.String("raw_query", r.URL.RawQuery),
-		zap.String("query_params", fmt.Sprintf("%v", r.URL.Query())))
+		zap.String("query_params", fmt.Sprintf("%v", r.URL.Query())),
+		zap.String("content_type", r.Header.Get("Content-Type")),
+		zap.Any("headers", r.Header))
+	
+	// Log raw body if it's a POST request (for debugging)
+	if r.Method == "POST" {
+		if body, err := io.ReadAll(r.Body); err == nil {
+			bodyStr := string(body)
+			if len(bodyStr) > 500 {
+				bodyStr = bodyStr[:500] + "..."
+			}
+			h.Logger.Info("📥 POST body received",
+				zap.Int("body_size", len(body)),
+				zap.String("body", bodyStr))
+			// Restore body for further processing
+			r.Body = io.NopCloser(bytes.NewBuffer(body))
+		}
+	}
 
 	// Extract tenant_id from query param (passed in redirect URL)
 	tenantIDStr := r.URL.Query().Get("tenant_id")
@@ -6365,35 +6385,156 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// VERIFIED: Gupshup redirects with these params after onboarding
-	appID := r.URL.Query().Get("appId")
-	token := r.URL.Query().Get("token")
-	wabaID := r.URL.Query().Get("wabaId")
-	phoneNumber := r.URL.Query().Get("phoneNumber")
-	status := r.URL.Query().Get("status") // "live" or "pending_verification"
+	// Gupshup may redirect with different parameter name variations
+	// Also check POST body if request is POST
+	queryParams := r.URL.Query()
+	var bodyParams map[string]interface{}
+	
+	// Try to parse POST body if it's a POST request
+	if r.Method == "POST" {
+		if r.Header.Get("Content-Type") == "application/json" {
+			if err := json.NewDecoder(r.Body).Decode(&bodyParams); err == nil {
+				h.Logger.Info("📥 Parsed POST body as JSON", zap.Any("body", bodyParams))
+			}
+		} else if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
+			if err := r.ParseForm(); err == nil {
+				for k, v := range r.PostForm {
+					if len(v) > 0 {
+						if bodyParams == nil {
+							bodyParams = make(map[string]interface{})
+						}
+						bodyParams[k] = v[0]
+					}
+				}
+				h.Logger.Info("📥 Parsed POST body as form data", zap.Any("body", bodyParams))
+			}
+		}
+	}
+	
+	// Helper function to get param from query string or POST body
+	getParam := func(keys ...string) string {
+		// First try query params
+		for _, key := range keys {
+			if val := queryParams.Get(key); val != "" {
+				return val
+			}
+		}
+		// Then try body params if available
+		if bodyParams != nil {
+			for _, key := range keys {
+				if val, ok := bodyParams[key]; ok {
+					if str, ok := val.(string); ok && str != "" {
+						return str
+					}
+				}
+			}
+		}
+		return ""
+	}
+	
+	appID := getParam("appId", "app_id", "appid", "app")
+	token := getParam("token", "access_token", "apiToken", "api_token")
+	wabaID := getParam("wabaId", "waba_id", "wabaid", "wabaID", "waba")
+	phoneNumber := getParam("phoneNumber", "phone_number", "phonenumber", "phone")
+	businessID := getParam("businessId", "business_id", "businessid", "businessID", "business")
+	phoneNumberID := getParam("phoneNumberId", "phone_number_id", "phonenumberid", "phoneNumberID")
+	status := getParam("status", "account_status", "state") // "live" or "pending_verification"
 
+	// Log all received parameters for debugging
+	h.Logger.Info("📋 Extracted callback parameters",
+		zap.String("method", r.Method),
+		zap.Uint64("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("waba_id", wabaID),
+		zap.String("phone_number", phoneNumber),
+		zap.String("business_id", businessID),
+		zap.String("phone_number_id", phoneNumberID),
+		zap.String("status", status),
+		zap.Bool("has_token", token != ""),
+		zap.String("raw_query", r.URL.RawQuery),
+		zap.Any("body_params", bodyParams))
+
+	// Fetch existing WhatsAppApp record if it exists
+	var existingApp storage.WhatsAppApp
+	dbErr := h.DB.Where("tenant_id = ?", uint(tenantID)).First(&existingApp).Error
+	
+	// If appID is missing from callback, try to get it from existing record
 	if appID == "" {
-		h.Logger.Warn("Gupshup callback missing appId",
-			zap.Uint64("tenant_id", tenantID),
-			zap.String("query", r.URL.RawQuery),
-			zap.String("available_params", fmt.Sprintf("%v", r.URL.Query())))
-		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=missing_app_id", h.Config.FrontendURL)
-		http.Redirect(w, r, errorURL, http.StatusFound)
-		return
+		if dbErr == nil && existingApp.GupshupAppID != "" {
+			appID = existingApp.GupshupAppID
+			h.Logger.Info("⚠️ No appID in callback, using existing appID from database",
+				zap.String("app_id", appID))
+		} else {
+			h.Logger.Error("❌ Gupshup callback missing appId and no existing record found - cannot proceed",
+				zap.Uint64("tenant_id", tenantID),
+				zap.String("raw_query", r.URL.RawQuery),
+				zap.String("available_params", fmt.Sprintf("%v", r.URL.Query())))
+			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=missing_app_id", h.Config.FrontendURL)
+			http.Redirect(w, r, errorURL, http.StatusFound)
+			return
+		}
+	}
+	
+	// If we have an appID from callback but no token, try to use existing token
+	if token == "" && dbErr == nil && existingApp.GupshupAppID == appID {
+		h.Logger.Info("⚠️ No token in callback, will use existing token from database",
+			zap.String("app_id", appID))
+	}
+	
+	// If missing critical data from callback, use existing data
+	if wabaID == "" && dbErr == nil {
+		wabaID = existingApp.WABAID
+	}
+	if phoneNumber == "" && dbErr == nil {
+		phoneNumber = existingApp.PhoneNumber
+	}
+	if businessID == "" && dbErr == nil {
+		businessID = existingApp.BusinessID
+	}
+	if phoneNumberID == "" && dbErr == nil {
+		phoneNumberID = existingApp.PhoneNumberID
+	}
+	// Determine status: After successful onboarding, if we have WABA ID and phone number, set to "live"
+	if status == "" {
+		// If we have both WABA ID and phone number, onboarding is complete - set to "live"
+		if wabaID != "" && phoneNumber != "" {
+			status = "live"
+			h.Logger.Info("✅ Setting status to 'live' - onboarding complete with WABA ID and phone number")
+		} else if dbErr == nil && existingApp.Status != "" && existingApp.Status != "pending_onboarding" {
+			status = existingApp.Status
+		} else {
+			status = "pending_verification" // Default after onboarding until verified
+		}
+	} else if wabaID != "" && phoneNumber != "" && status != "live" {
+		// Override status to "live" if we have complete onboarding data
+		h.Logger.Info("✅ Overriding status to 'live' - have complete onboarding data",
+			zap.String("old_status", status),
+			zap.String("waba_id", wabaID),
+			zap.String("phone_number", phoneNumber))
+		status = "live"
 	}
 
-	// Encrypt token before storing
-	encryptedToken, err := utils.EncryptToken(token)
-	if err != nil {
-		h.Logger.Error("Failed to encrypt Gupshup token", zap.Error(err))
-		errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=encryption_failed", h.Config.FrontendURL)
-		http.Redirect(w, r, errorURL, http.StatusFound)
-		return
+	// Encrypt token if provided, otherwise keep existing
+	encryptedToken := ""
+	if token != "" {
+		// Encrypt new token before storing
+		var err error
+		encryptedToken, err = utils.EncryptToken(token)
+		if err != nil {
+			h.Logger.Error("Failed to encrypt Gupshup token", zap.Error(err))
+			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=encryption_failed", h.Config.FrontendURL)
+			http.Redirect(w, r, errorURL, http.StatusFound)
+			return
+		}
+	} else if dbErr == nil {
+		// Keep existing encrypted token if callback didn't provide new one
+		encryptedToken = existingApp.GupshupAppToken
+		h.Logger.Info("⚠️ No token in callback, keeping existing encrypted token")
 	}
-
+	
 	// Update or create WhatsAppApp record
 	var waApp storage.WhatsAppApp
-	if err := h.DB.Where("tenant_id = ?", uint(tenantID)).First(&waApp).Error; err != nil {
+	if dbErr != nil {
 		// Create new record
 		waApp = storage.WhatsAppApp{
 			TenantID:        uint(tenantID),
@@ -6401,6 +6542,8 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			GupshupAppToken: encryptedToken,
 			WABAID:          wabaID,
 			PhoneNumber:     phoneNumber,
+			BusinessID:      businessID,
+			PhoneNumberID:   phoneNumberID,
 			Status:          status,
 			Mode:            "gupshup_partner",
 		}
@@ -6410,20 +6553,48 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 			http.Redirect(w, r, errorURL, http.StatusFound)
 			return
 		}
+		h.Logger.Info("✅ Created new WhatsAppApp record", zap.String("app_id", appID))
 	} else {
-		// Update existing record
+		// Update existing record - only update fields that have values
+		waApp = existingApp // Start with existing record
 		waApp.GupshupAppID = appID
-		waApp.GupshupAppToken = encryptedToken
-		waApp.WABAID = wabaID
-		waApp.PhoneNumber = phoneNumber
-		waApp.Status = status
+		if encryptedToken != "" {
+			waApp.GupshupAppToken = encryptedToken
+		}
+		if wabaID != "" {
+			waApp.WABAID = wabaID
+		}
+		if phoneNumber != "" {
+			waApp.PhoneNumber = phoneNumber
+		}
+		if businessID != "" {
+			waApp.BusinessID = businessID
+		}
+		if phoneNumberID != "" {
+			waApp.PhoneNumberID = phoneNumberID
+		}
+		if status != "" {
+			waApp.Status = status
+		}
+		waApp.Mode = "gupshup_partner"
+		
 		if err := h.DB.Save(&waApp).Error; err != nil {
 			h.Logger.Error("Failed to update WhatsAppApp", zap.Error(err))
 			errorURL := fmt.Sprintf("%s/integrations/whatsapp?error=database_error", h.Config.FrontendURL)
 			http.Redirect(w, r, errorURL, http.StatusFound)
 			return
 		}
+		h.Logger.Info("✅ Updated existing WhatsAppApp record", zap.String("app_id", appID))
 	}
+	
+	// Log all saved fields for verification
+	h.Logger.Info("📝 WhatsAppApp record saved with data",
+		zap.String("app_id", waApp.GupshupAppID),
+		zap.String("waba_id", waApp.WABAID),
+		zap.String("phone_number", waApp.PhoneNumber),
+		zap.String("business_id", waApp.BusinessID),
+		zap.String("phone_number_id", waApp.PhoneNumberID),
+		zap.String("status", waApp.Status))
 
 	// Configure webhook callback URL (VERIFIED endpoint)
 	if h.GupshupPartner != nil {
