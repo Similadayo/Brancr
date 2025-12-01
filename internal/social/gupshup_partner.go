@@ -983,6 +983,7 @@ func (c *GupshupPartnerClient) VerifyPartnerCredentials(ctx context.Context, par
 
 // SetCallback configures webhook callback URL for a Gupshup Partner app
 // Endpoint: POST /partner/app/set-callback
+// Based on CreateApp pattern - should use form-encoded data with 'token' header
 func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackURL string) error {
 	// Ensure we have a valid token
 	if err := c.ensureValidToken(ctx); err != nil {
@@ -991,37 +992,32 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 
 	endpoint := fmt.Sprintf("%s/partner/app/set-callback", c.BaseURL)
 
-	payload := map[string]interface{}{
-		"appId":    appID,
-		"callback": callbackURL,
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Use Authorization header with generated PARTNER_TOKEN
-	// Try Bearer format first (standard OAuth format)
 	c.tokenMutex.RLock()
 	token := c.Token
 	c.tokenMutex.RUnlock()
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 15 * time.Second}
+
+	// Try form-encoded format first (like CreateApp)
+	formData := url.Values{}
+	formData.Set("appId", appID)
+	formData.Set("callback", callbackURL)
 
 	if c.Logger != nil {
-		c.Logger.Info("📤 Setting Gupshup webhook callback",
+		c.Logger.Info("📤 Setting Gupshup webhook callback (trying form-encoded with token header)",
 			zap.String("app_id", appID),
 			zap.String("callback_url", callbackURL))
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Use 'token' header (like CreateApp) - not Authorization: Bearer
+	req.Header.Set("token", token)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("API request failed: %w", err)
@@ -1030,47 +1026,45 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 
 	body, _ := io.ReadAll(resp.Body)
 
-	// If Bearer format fails with 401, try X-Authorization format
-	if resp.StatusCode == 401 {
+	// If form-encoded fails, try JSON with Bearer token as fallback
+	if resp.StatusCode == 400 || resp.StatusCode == 401 {
 		if c.Logger != nil {
-			c.Logger.Warn("⚠️ Bearer token format failed with 401, trying X-Authorization header format",
+			c.Logger.Warn("⚠️ Form-encoded format failed, trying JSON with Bearer token",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", string(body)),
 				zap.String("app_id", appID))
 		}
 
-		// Create a new request with X-Authorization header
-		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-		if err2 != nil {
-			return fmt.Errorf("failed to create retry request: %w", err2)
+		jsonPayload := map[string]interface{}{
+			"appId":    appID,
+			"callback": callbackURL,
 		}
+		jsonData, err2 := json.Marshal(jsonPayload)
+		if err2 == nil {
+			req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
+			if err2 == nil {
+				req2.Header.Set("Authorization", "Bearer "+token)
+				req2.Header.Set("Content-Type", "application/json")
 
-		req2.Header.Set("X-Authorization", token)
-		req2.Header.Set("Content-Type", "application/json")
+				resp2, err2 := client.Do(req2)
+				if err2 == nil {
+					defer resp2.Body.Close()
+					body2, _ := io.ReadAll(resp2.Body)
 
-		resp2, err2 := client.Do(req2)
-		if err2 != nil {
-			return fmt.Errorf("API request failed on retry: %w", err2)
-		}
-		defer resp2.Body.Close()
-
-		body2, _ := io.ReadAll(resp2.Body)
-
-		if resp2.StatusCode >= 400 {
-			if c.Logger != nil {
-				c.Logger.Error("❌ Failed to set Gupshup webhook callback (tried both header formats)",
-					zap.Int("status", resp2.StatusCode),
-					zap.String("response", string(body2)),
-					zap.String("app_id", appID))
+					if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
+						if c.Logger != nil {
+							c.Logger.Info("✅ Gupshup webhook callback configured (using JSON + Bearer)",
+								zap.String("app_id", appID),
+								zap.String("callback_url", callbackURL))
+						}
+						return nil
+					}
+					// Update body and status for error handling below
+					body = body2
+					resp.StatusCode = resp2.StatusCode
+				}
 			}
-			return fmt.Errorf("set callback failed: status %d, body: %s", resp2.StatusCode, string(body2))
 		}
-
-		// Success with X-Authorization format
-		if c.Logger != nil {
-			c.Logger.Info("✅ Gupshup webhook callback configured (using X-Authorization header)",
-				zap.String("app_id", appID),
-				zap.String("callback_url", callbackURL))
-		}
-		return nil
 	}
 
 	if resp.StatusCode >= 400 {
