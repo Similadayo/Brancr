@@ -659,8 +659,28 @@ func (c *GupshupPartnerClient) GetAppDetails(ctx context.Context, appID string) 
 				Data GetAppDetailsResponse `json:"data"`
 				GetAppDetailsResponse
 			}
+			// ✅ Handle {"status":"success","appDetails":{...}} format
+			var statusWrapper struct {
+				Status     string                `json:"status"`
+				AppDetails GetAppDetailsResponse `json:"appDetails"`
+			}
 
-			// Try parsing as direct response first
+			// Try parsing as {"status":"success","appDetails":{...}} format FIRST
+			if err := json.Unmarshal(body, &statusWrapper); err == nil {
+				if statusWrapper.Status == "success" {
+					if statusWrapper.AppDetails.AppID != "" || statusWrapper.AppDetails.WABAID != "" || statusWrapper.AppDetails.PhoneNumber != "" {
+						if c.Logger != nil {
+							c.Logger.Info("✅ Successfully fetched app details (status wrapper format)",
+								zap.String("app_id", statusWrapper.AppDetails.AppID),
+								zap.String("waba_id", statusWrapper.AppDetails.WABAID),
+								zap.String("phone_number", statusWrapper.AppDetails.PhoneNumber))
+						}
+						return &statusWrapper.AppDetails, nil
+					}
+				}
+			}
+
+			// Try parsing as direct response
 			if err := json.Unmarshal(body, &response); err == nil {
 				// Check if we got valid data
 				if response.AppID != "" || response.WABAID != "" || response.PhoneNumber != "" {
@@ -674,7 +694,7 @@ func (c *GupshupPartnerClient) GetAppDetails(ctx context.Context, appID string) 
 				}
 			}
 
-			// Try parsing as wrapped response
+			// Try parsing as wrapped response {"data":{...}}
 			if err := json.Unmarshal(body, &responseWrapper); err == nil {
 				if responseWrapper.Data.AppID != "" || responseWrapper.Data.WABAID != "" {
 					if c.Logger != nil {
