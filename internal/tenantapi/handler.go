@@ -5971,9 +5971,46 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			zap.String("status", waApp.Status))
 	}
 
-	// Step 2: Generate embed signed link (the onboarding URL)
-	// NOTE: Webhook subscription will be created AFTER onboarding completes
-	// Gupshup requires app to be fully onboarded (live status, WABA ID, phone number) before subscription
+	// Step 2: Create webhook subscription (RIGHT AFTER app creation, before onboarding)
+	// According to Gupshup docs: Create App → Set Subscription → Generate Embed Link
+	// This ensures subscription is active when Go-Live event fires after onboarding
+	h.Logger.Info("🔧 Creating webhook subscription (after app creation, before onboarding)",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID))
+
+	var subscriptionInfo *social.SubscriptionInfo
+	var subscriptionErr error
+	subscriptionInfo, subscriptionErr = h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID)
+	if subscriptionErr != nil {
+		h.Logger.Warn("⚠️ Failed to create webhook subscription (will retry after onboarding)",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID),
+			zap.Error(subscriptionErr),
+			zap.String("note", "Subscription may be created after onboarding if app not ready yet"))
+		// Don't fail - continue to generate onboarding link, subscription can be retried
+	} else {
+		// Update database with subscription information
+		if subscriptionInfo != nil {
+			waApp.SubscriptionID = subscriptionInfo.ID
+			waApp.SubscriptionActive = subscriptionInfo.Active
+			waApp.WebhookURL = subscriptionInfo.URL
+
+			if err := h.DB.Save(&waApp).Error; err != nil {
+				h.Logger.Error("Failed to update WhatsAppApp with subscription info",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("app_id", appID),
+					zap.Error(err))
+			} else {
+				h.Logger.Info("✅✅✅ Webhook subscription created and saved (before onboarding)",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("app_id", appID),
+					zap.String("subscription_id", subscriptionInfo.ID),
+					zap.Bool("active", subscriptionInfo.Active))
+			}
+		}
+	}
+
+	// Step 3: Generate embed signed link (the onboarding URL)
 	h.Logger.Info("🔧 Generating embed signed link for onboarding",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", appID))
@@ -6032,7 +6069,12 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		"webhook_url":    webhookCallbackURL,
 		"flow_completed": map[string]any{
 			"step_1": "✅ App created",
-			"step_2": "⏳ Webhook subscription will be created after onboarding",
+			"step_2": func() string {
+				if subscriptionInfo != nil && subscriptionErr == nil {
+					return "✅ Webhook subscription created"
+				}
+				return "⚠️ Webhook subscription pending (will retry)"
+			}(),
 			"step_3": "✅ Embed signed link generated",
 		},
 		"troubleshooting": map[string]any{
@@ -6743,66 +6785,18 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		zap.String("phone_number_id", waApp.PhoneNumberID),
 		zap.String("status", waApp.Status))
 
-	// CRITICAL: Create webhook subscription AFTER onboarding completes
-	// Gupshup requires app to be fully onboarded (live status, WABA ID, phone number) before subscription
-	// Subscription API will fail with 401/403 if app is not in "live" or "ready" state
-	h.Logger.Info("🔍 Checking subscription eligibility",
-		zap.Uint64("tenant_id", tenantID),
-		zap.String("app_id", appID),
-		zap.String("status", status),
-		zap.String("waba_id", waApp.WABAID),
-		zap.String("phone_number", waApp.PhoneNumber),
-		zap.Bool("status_is_live", status == "live"),
-		zap.Bool("has_waba_id", waApp.WABAID != ""),
-		zap.Bool("has_phone_number", waApp.PhoneNumber != ""))
-
-	if status == "live" && waApp.WABAID != "" && waApp.PhoneNumber != "" {
-		h.Logger.Info("✅ App is fully onboarded - creating webhook subscription now",
-			zap.Uint64("tenant_id", tenantID),
-			zap.String("app_id", appID))
-
-		subscriptionInfo, err := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID)
-		if err != nil {
-			h.Logger.Error("❌ Failed to create webhook subscription after onboarding",
-				zap.Uint64("tenant_id", tenantID),
-				zap.String("app_id", appID),
-				zap.Error(err),
-				zap.String("note", "Subscription can be configured later via refresh endpoint"))
-			// Don't fail - subscription can be retried later
-		} else {
-			// Update database with subscription information
-			if subscriptionInfo != nil {
-				waApp.SubscriptionID = subscriptionInfo.ID
-				waApp.SubscriptionActive = subscriptionInfo.Active
-				waApp.WebhookURL = subscriptionInfo.URL
-
-				if err := h.DB.Save(&waApp).Error; err != nil {
-					h.Logger.Error("Failed to update WhatsAppApp with subscription info",
-						zap.Uint64("tenant_id", tenantID),
-						zap.String("app_id", appID),
-						zap.Error(err))
-				} else {
-					h.Logger.Info("✅ Database updated with subscription info",
-						zap.Uint64("tenant_id", tenantID),
-						zap.String("app_id", appID),
-						zap.String("subscription_id", subscriptionInfo.ID),
-						zap.Bool("active", subscriptionInfo.Active))
-				}
-			}
-
-			h.Logger.Info("✅✅✅ Webhook subscription created successfully after onboarding",
-				zap.Uint64("tenant_id", tenantID),
-				zap.String("app_id", appID),
-				zap.String("subscription_id", subscriptionInfo.ID))
-		}
+	// Note: Webhook subscription was already created right after app creation (before onboarding)
+	// This follows Gupshup docs sequence: Create App → Set Subscription → Generate Embed Link
+	// The subscription is now active and will receive Go-Live events after onboarding completes
+	if waApp.SubscriptionID == "" {
+		h.Logger.Info("ℹ️ Subscription was not created earlier, will be available after app is live",
+			zap.String("app_id", appID),
+			zap.String("note", "Subscription will be created via refresh endpoint if needed"))
 	} else {
-		h.Logger.Warn("⏭️ Skipping webhook subscription - app not fully onboarded yet",
-			zap.String("status", status),
-			zap.String("waba_id", waApp.WABAID),
-			zap.String("phone_number", waApp.PhoneNumber),
-			zap.Bool("status_check", status == "live"),
-			zap.Bool("waba_check", waApp.WABAID != ""),
-			zap.Bool("phone_check", waApp.PhoneNumber != ""))
+		h.Logger.Info("✅ Webhook subscription already active (created before onboarding)",
+			zap.String("app_id", appID),
+			zap.String("subscription_id", waApp.SubscriptionID),
+			zap.Bool("active", waApp.SubscriptionActive))
 	}
 
 	// Sync to SocialAccount for compatibility with existing code
