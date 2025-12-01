@@ -33,10 +33,10 @@ func NewGupshupWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *Messa
 // CRITICAL: Must handle GET requests for URL validation (Gupshup validates callback URLs with GET)
 // VERIFIED: Must acknowledge POST requests immediately (< 10 seconds, ideally < 1 second)
 func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *http.Request) {
-	// Handle GET requests for URL validation
-	// Gupshup validates callback URLs by making a GET request
+	// Handle GET/HEAD requests for URL validation
+	// Gupshup validates callback URLs by making GET or HEAD requests
 	// We MUST return 200 OK (no redirects, no errors) or Gupshup will reject the URL
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		h.handleWebhookValidation(w, r)
 		return
 	}
@@ -56,20 +56,26 @@ func (h *GupshupWebhookHandler) HandleGupshupWebhook(w http.ResponseWriter, r *h
 	go h.processWebhookAsync(r.Context(), r)
 }
 
-// handleWebhookValidation handles GET requests from Gupshup for callback URL validation
+// handleWebhookValidation handles GET/HEAD requests from Gupshup for callback URL validation
 // CRITICAL: Must return 200 OK with no redirects - any other status will cause Gupshup to reject the URL
 func (h *GupshupWebhookHandler) handleWebhookValidation(w http.ResponseWriter, r *http.Request) {
-	h.Logger.Info("🔍 Gupshup callback URL validation request (GET)",
+	h.Logger.Info("🔍 Gupshup callback URL validation request",
 		zap.String("method", r.Method),
 		zap.String("url", r.URL.String()),
 		zap.String("remote_addr", r.RemoteAddr),
-		zap.String("user_agent", r.Header.Get("User-Agent")))
+		zap.String("user_agent", r.Header.Get("User-Agent")),
+		zap.String("origin", r.Header.Get("Origin")))
 
 	// Return 200 OK immediately - this validates the callback URL for Gupshup
 	// Must be 200 OK (not 301, 302, 403, 404, 500) or Gupshup will reject it
+	// For HEAD requests, don't write body (only headers)
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK")) // Simple "OK" response to confirm URL is valid
+	
+	// Only write body for GET requests (HEAD requests don't expect a body)
+	if r.Method == http.MethodGet {
+		w.Write([]byte("OK")) // Simple "OK" response to confirm URL is valid
+	}
 }
 
 // processWebhookAsync processes webhook events asynchronously

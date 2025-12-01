@@ -76,6 +76,8 @@ func SetupRouter(app *App) http.Handler {
 	}
 
 	// Gupshup webhook endpoint for incoming WhatsApp messages
+	// CRITICAL: Must support GET/HEAD (validation) and POST (events) for Gupshup Partner API
+	// HandleFunc in chi accepts all HTTP methods by default, including HEAD
 	if app.Services.GupshupWebhookHandler != nil {
 		r.HandleFunc("/webhooks/gupshup", app.Services.GupshupWebhookHandler.HandleGupshupWebhook)
 		r.Get("/api/webhooks/gupshup/test", func(w http.ResponseWriter, r *http.Request) {

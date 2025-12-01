@@ -983,7 +983,7 @@ func (c *GupshupPartnerClient) VerifyPartnerCredentials(ctx context.Context, par
 
 // SetCallback configures webhook callback URL for a Gupshup Partner app
 // Endpoint: POST /partner/app/set-callback
-// Based on CreateApp pattern - should use form-encoded data with 'token' header
+// Uses JSON payload with Authorization: Bearer header
 func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackURL string) error {
 	// Ensure we have a valid token
 	if err := c.ensureValidToken(ctx); err != nil {
@@ -998,25 +998,31 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// Try form-encoded format first (like CreateApp)
-	formData := url.Values{}
-	formData.Set("appId", appID)
-	formData.Set("callbackUrl", callbackURL)
+	// Define the JSON payload structure
+	jsonPayload := map[string]string{
+		"appId":       appID,
+		"callbackUrl": callbackURL,
+	}
+	jsonData, err := json.Marshal(jsonPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON payload: %w", err)
+	}
 
 	if c.Logger != nil {
-		c.Logger.Info("📤 Setting Gupshup webhook callback (trying form-encoded with token header)",
+		c.Logger.Info("📤 Setting Gupshup webhook callback using JSON + Bearer token",
 			zap.String("app_id", appID),
 			zap.String("callback_url", callbackURL))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
+	// Create the request with a JSON body
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use 'token' header (like CreateApp) - not Authorization: Bearer
-	req.Header.Set("token", token)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Use Authorization: Bearer header for partner APIs
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json") // Explicitly set content type
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1026,48 +1032,8 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 
 	body, _ := io.ReadAll(resp.Body)
 
-	// If form-encoded fails, try JSON with Bearer token as fallback
-	if resp.StatusCode == 400 || resp.StatusCode == 401 {
-		if c.Logger != nil {
-			c.Logger.Warn("⚠️ Form-encoded format failed, trying JSON with Bearer token",
-				zap.Int("status", resp.StatusCode),
-				zap.String("response", string(body)),
-				zap.String("app_id", appID))
-		}
-
-		jsonPayload := map[string]interface{}{
-			"appId":       appID,
-			"callbackUrl": callbackURL,
-		}
-		jsonData, err2 := json.Marshal(jsonPayload)
-		if err2 == nil {
-			req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-			if err2 == nil {
-				req2.Header.Set("Authorization", "Bearer "+token)
-				req2.Header.Set("Content-Type", "application/json")
-
-				resp2, err2 := client.Do(req2)
-				if err2 == nil {
-					defer resp2.Body.Close()
-					body2, _ := io.ReadAll(resp2.Body)
-
-					if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
-						if c.Logger != nil {
-							c.Logger.Info("✅ Gupshup webhook callback configured (using JSON + Bearer)",
-								zap.String("app_id", appID),
-								zap.String("callback_url", callbackURL))
-						}
-						return nil
-					}
-					// Update body and status for error handling below
-					body = body2
-					resp.StatusCode = resp2.StatusCode
-				}
-			}
-		}
-	}
-
 	if resp.StatusCode >= 400 {
+		// Log the detailed error message from Gupshup
 		if c.Logger != nil {
 			c.Logger.Error("❌ Failed to set Gupshup webhook callback",
 				zap.Int("status", resp.StatusCode),
@@ -1078,7 +1044,7 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 	}
 
 	if c.Logger != nil {
-		c.Logger.Info("✅ Gupshup webhook callback configured",
+		c.Logger.Info("✅ Gupshup webhook callback configured successfully",
 			zap.String("app_id", appID),
 			zap.String("callback_url", callbackURL))
 	}
