@@ -754,8 +754,8 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 	if appID == "" {
 		return "", fmt.Errorf("app ID is required")
 	}
-	// Note: redirectURL is not used as a query parameter - it's configured via SetCallback or Meta App settings
-	// Keeping it in the function signature for compatibility, but not using it in the request
+	// redirectURL is used as a query parameter to tell Gupshup where to redirect after onboarding completes
+	// This is in addition to SetCallback which sets the webhook URL for receiving events
 
 	c.tokenMutex.RLock()
 	token := c.Token
@@ -764,9 +764,8 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 	// According to Gupshup Partner API documentation:
 	// GET /partner/app/{appId}/onboarding/embed/link
 	// REQUIRED query parameters: user (username), lang (language code)
-	// Optional query parameters: regenerate (boolean)
+	// Optional query parameters: regenerate (boolean), redirectUrl (redirect URL after onboarding)
 	// Headers: token (Partner JWT Token)
-	// NOTE: redirectUrl is configured separately via SetCallback or in Meta App OAuth settings
 	endpoint := fmt.Sprintf("%s/partner/app/%s/onboarding/embed/link", c.BaseURL, appID)
 
 	// Build query parameters - user and lang are REQUIRED per Gupshup docs
@@ -783,6 +782,15 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 		lang = "en"
 	}
 	queryParams.Set("lang", lang)
+
+	// Add redirect URL if provided (this tells Gupshup where to redirect after onboarding completes)
+	if redirectURL != "" {
+		queryParams.Set("redirectUrl", redirectURL)
+		if c.Logger != nil {
+			c.Logger.Info("📋 Adding redirect URL to embed link request",
+				zap.String("redirect_url", redirectURL))
+		}
+	}
 
 	// Optional: regenerate (defaults to false, so we can omit it)
 	// queryParams.Set("regenerate", "false")
