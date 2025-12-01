@@ -610,9 +610,8 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 	if appID == "" {
 		return "", fmt.Errorf("app ID is required")
 	}
-	if redirectURL == "" {
-		return "", fmt.Errorf("redirect URL is required")
-	}
+	// Note: redirectURL is not used as a query parameter - it's configured via SetCallback or Meta App settings
+	// Keeping it in the function signature for compatibility, but not using it in the request
 
 	c.tokenMutex.RLock()
 	token := c.Token
@@ -622,26 +621,31 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 	// GET /partner/app/{appId}/onboarding/embed/link
 	// Query parameters: regenerate (optional boolean), user (optional), lang (optional)
 	// Headers: token (Partner JWT Token)
+	// NOTE: redirectUrl is configured separately via SetCallback or in Meta App OAuth settings
 	endpoint := fmt.Sprintf("%s/partner/app/%s/onboarding/embed/link", c.BaseURL, appID)
 
-	// Build query parameters
-	queryParams := url.Values{}
-	queryParams.Set("regenerate", "false")
-	if redirectURL != "" {
-		// Some implementations might need redirectUrl as query param, try both
-		queryParams.Set("redirectUrl", redirectURL)
-	}
-
-	fullURL := fmt.Sprintf("%s?%s", endpoint, queryParams.Encode())
+	// Use endpoint without query parameters (simplest approach per Gupshup docs)
+	// The redirect URL should already be configured when SetCallback was called
+	fullURL := endpoint
 
 	// Make GET request with token header (as per Gupshup Partner API documentation)
 	client := &http.Client{Timeout: 15 * time.Second}
+
+	// Try with 'token' header first (as per CreateApp pattern)
 	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("token", token)
+
+	// Log the exact request we're making for debugging
+	if c.Logger != nil {
+		c.Logger.Debug("Making embed signed link request",
+			zap.String("method", "GET"),
+			zap.String("url", fullURL),
+			zap.String("header_token_length", fmt.Sprintf("%d", len(token))))
+	}
 
 	if c.Logger != nil {
 		c.Logger.Info("🔍 Attempting to generate embed signed link",
@@ -677,8 +681,46 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 		}
 	}
 
+	// If 401, try Authorization: Bearer as fallback
+	if resp.StatusCode == 401 {
+		if c.Logger != nil {
+			c.Logger.Debug("Token header returned 401, retrying with Authorization: Bearer")
+		}
+
+		req2, err2 := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+		if err2 == nil {
+			req2.Header.Set("Authorization", "Bearer "+token)
+
+			resp2, err2 := client.Do(req2)
+			if err2 == nil {
+				body2, _ := io.ReadAll(resp2.Body)
+				resp2.Body.Close()
+
+				if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
+					body = body2
+					resp.StatusCode = resp2.StatusCode
+				} else if c.Logger != nil {
+					c.Logger.Error("Authorization: Bearer also failed",
+						zap.Int("status", resp2.StatusCode),
+						zap.String("response", truncateString(string(body2), 300)))
+				}
+			}
+		}
+	}
+
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return "", fmt.Errorf("gupshup Partner API error %d: %s. Response: %s", resp.StatusCode, resp.Status, truncateString(string(body), 300))
+		// Enhanced error logging for 400 errors to understand what's wrong
+		if c.Logger != nil {
+			c.Logger.Error("❌ Embed signed link API error - detailed diagnostics",
+				zap.Int("status", resp.StatusCode),
+				zap.String("status_text", resp.Status),
+				zap.String("app_id", appID),
+				zap.String("endpoint", fullURL),
+				zap.String("full_response_body", truncateString(string(body), 1000)),
+				zap.Bool("has_token", token != ""),
+				zap.Int("token_length", len(token)))
+		}
+		return "", fmt.Errorf("gupshup Partner API error %d: %s. Response: %s", resp.StatusCode, resp.Status, truncateString(string(body), 500))
 	}
 
 	// Parse response - expected format: {"status": "success", "link": "https://..."}
