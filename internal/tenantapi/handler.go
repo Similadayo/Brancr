@@ -5983,15 +5983,20 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.String("webhook_callback_url", webhookCallbackURL),
 		zap.String("redirect_url", redirectURL))
 
+	// NOTE: SetCallback API is deprecated by Gupshup (deprecated April 30, 2025)
+	// If it fails, users can configure webhook manually via Gupshup Console
+	// App > Integration > Webhooks > Create Webhook
 	if err := h.GupshupPartner.SetCallback(r.Context(), appID, webhookCallbackURL); err != nil {
-		h.Logger.Error("❌ Failed to set callback URL",
+		h.Logger.Warn("⚠️ SetCallback API failed (API is deprecated - this is expected)",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", appID),
-			zap.Error(err))
-		// Don't fail here - callback can be set later
-		h.Logger.Warn("⚠️ Continuing without setting callback - can be set later")
+			zap.Error(err),
+			zap.String("webhook_url", webhookCallbackURL),
+			zap.String("note", "Users can configure webhook manually via Gupshup Console: App > Integration > Webhooks"))
+		// Don't fail here - callback can be set manually via Gupshup Console
+		// The deprecated SetCallback API is expected to fail
 	} else {
-		h.Logger.Info("✅ Callback URL set successfully",
+		h.Logger.Info("✅ Callback URL set successfully via API",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", appID))
 	}
@@ -6043,15 +6048,24 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.String("onboarding_link", onboardingLink),
 		zap.String("partner_id", h.Config.GupshupPartnerID))
 
+	// Provide webhook configuration instructions (SetCallback API is deprecated)
+	webhookConfigInstructions := map[string]string{
+		"manual_setup_url": "https://partner.gupshup.io",
+		"webhook_url":      webhookCallbackURL,
+		"instructions":     "After onboarding, configure webhook manually: Go to Gupshup Console > App > Integration > Webhooks > Create Webhook",
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
 		"app_id":         appID,
 		"status":         "pending_onboarding",
 		"message":        "Complete WhatsApp setup in Gupshup. Click the onboarding URL to proceed.",
 		"redirect_url":   redirectURL,
+		"webhook_url":    webhookCallbackURL,
+		"webhook_config": webhookConfigInstructions,
 		"flow_completed": map[string]any{
 			"step_1": "✅ App created",
-			"step_2": "✅ Callback URL set",
+			"step_2": "⚠️ Callback URL (SetCallback API is deprecated - configure manually after onboarding)",
 			"step_3": "✅ Embed signed link generated",
 		},
 		"troubleshooting": map[string]any{
