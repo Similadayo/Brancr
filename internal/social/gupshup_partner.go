@@ -1001,7 +1001,7 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 	// Try form-encoded format first (like CreateApp)
 	formData := url.Values{}
 	formData.Set("appId", appID)
-	formData.Set("callback", callbackURL)
+	formData.Set("callbackUrl", callbackURL)
 
 	if c.Logger != nil {
 		c.Logger.Info("📤 Setting Gupshup webhook callback (trying form-encoded with token header)",
@@ -1036,8 +1036,8 @@ func (c *GupshupPartnerClient) SetCallback(ctx context.Context, appID, callbackU
 		}
 
 		jsonPayload := map[string]interface{}{
-			"appId":    appID,
-			"callback": callbackURL,
+			"appId":       appID,
+			"callbackUrl": callbackURL,
 		}
 		jsonData, err2 := json.Marshal(jsonPayload)
 		if err2 == nil {
