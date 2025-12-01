@@ -1024,9 +1024,11 @@ func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, ca
 	}
 
 	// JSON payload structure for Subscription API
+	// CRITICAL: Some accounts require "category": "whatsapp" in the payload
 	jsonPayload := map[string]interface{}{
-		"url":   callbackURL,
-		"modes": modes,
+		"url":      callbackURL,
+		"modes":    modes,
+		"category": "whatsapp", // Required for some Gupshup deployments
 	}
 	jsonData, err := json.Marshal(jsonPayload)
 	if err != nil {
@@ -1046,8 +1048,9 @@ func (c *GupshupPartnerClient) CreateSubscription(ctx context.Context, appID, ca
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use Authorization: Bearer header for Subscription API
-	req.Header.Set("Authorization", "Bearer "+token)
+	// CRITICAL: Gupshup Subscription API REQUIRES "token" header, NOT "Authorization: Bearer"
+	// Bearer token ALWAYS FAILS with 401/403. Only "token" header works.
+	req.Header.Set("token", token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)

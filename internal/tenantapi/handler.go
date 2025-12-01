@@ -5971,33 +5971,9 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			zap.String("status", waApp.Status))
 	}
 
-	// Step 2: Create webhook subscription using Subscription API
-	// CRITICAL: Gupshup requires webhook callback URL to NOT have query parameters
-	// Multi-tenant: We use ONE static webhook URL for all tenants, route by appId in payload
-	// Webhook endpoint: /webhooks/gupshup (receives webhook events with appId in payload)
-	webhookCallbackURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
-	
-	h.Logger.Info("🔧 Configuring webhook subscription for app",
-		zap.Uint("tenant_id", tenantID),
-		zap.String("app_id", appID),
-		zap.String("webhook_callback_url", webhookCallbackURL),
-		zap.String("redirect_url", redirectURL))
-
-	// Configure webhook subscriptions using Subscription API (replaces deprecated SetCallback)
-	if err := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID); err != nil {
-		h.Logger.Warn("⚠️ Failed to create webhook subscription",
-			zap.Uint("tenant_id", tenantID),
-			zap.String("app_id", appID),
-			zap.Error(err),
-			zap.String("webhook_url", webhookCallbackURL))
-		// Don't fail here - continue with onboarding, webhook can be configured later
-	} else {
-		h.Logger.Info("✅ Webhook subscription created successfully",
-			zap.Uint("tenant_id", tenantID),
-			zap.String("app_id", appID))
-	}
-
-	// Step 3: Generate embed signed link (the onboarding URL)
+	// Step 2: Generate embed signed link (the onboarding URL)
+	// NOTE: Webhook subscription will be created AFTER onboarding completes
+	// Gupshup requires app to be fully onboarded (live status, WABA ID, phone number) before subscription
 	h.Logger.Info("🔧 Generating embed signed link for onboarding",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", appID))
@@ -6044,6 +6020,9 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		zap.String("onboarding_link", onboardingLink),
 		zap.String("partner_id", h.Config.GupshupPartnerID))
 
+	// Webhook URL will be configured after onboarding completes
+	webhookCallbackURL := fmt.Sprintf("%s/webhooks/gupshup", h.Config.PublicURL)
+	
 	writeJSON(w, http.StatusOK, map[string]any{
 		"onboarding_url": onboardingLink,
 		"app_id":         appID,
@@ -6053,7 +6032,7 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 		"webhook_url":    webhookCallbackURL,
 		"flow_completed": map[string]any{
 			"step_1": "✅ App created",
-			"step_2": "✅ Webhook subscription created",
+			"step_2": "⏳ Webhook subscription will be created after onboarding",
 			"step_3": "✅ Embed signed link generated",
 		},
 		"troubleshooting": map[string]any{
@@ -6659,8 +6638,28 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		zap.String("phone_number_id", waApp.PhoneNumberID),
 		zap.String("status", waApp.Status))
 
-	// Webhook subscription is already configured during onboarding via CreateSubscription
-	// No need to set it again here - the static webhook URL routes by appId
+	// CRITICAL: Create webhook subscription AFTER onboarding completes
+	// Gupshup requires app to be fully onboarded (live status, WABA ID, phone number) before subscription
+	// Subscription API will fail with 401/403 if app is not in "live" or "ready" state
+	if status == "live" && waApp.WABAID != "" && waApp.PhoneNumber != "" {
+		if err := h.GupshupPartner.ConfigureAppCallbacks(r.Context(), appID); err != nil {
+			h.Logger.Warn("⚠️ Failed to create webhook subscription after onboarding",
+				zap.Uint64("tenant_id", tenantID),
+				zap.String("app_id", appID),
+				zap.Error(err),
+				zap.String("note", "Subscription can be configured later via refresh endpoint"))
+			// Don't fail - subscription can be retried later
+		} else {
+			h.Logger.Info("✅ Webhook subscription created successfully after onboarding",
+				zap.Uint64("tenant_id", tenantID),
+				zap.String("app_id", appID))
+		}
+	} else {
+		h.Logger.Info("⏭️ Skipping webhook subscription - app not fully onboarded yet",
+			zap.String("status", status),
+			zap.String("waba_id", waApp.WABAID),
+			zap.String("phone_number", waApp.PhoneNumber))
+	}
 
 	// Sync to SocialAccount for compatibility with existing code
 	var socialAcc storage.SocialAccount
