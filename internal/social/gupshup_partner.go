@@ -551,6 +551,25 @@ func (c *GupshupPartnerClient) CreateApp(ctx context.Context, appName string) (*
 	return &response, nil
 }
 
+// PartnerApp represents an app in the partner app list
+type PartnerApp struct {
+	ID                         string   `json:"id"`
+	Name                       string   `json:"name"`
+	Type                       string   `json:"type"`
+	Live                       bool     `json:"live"`
+	Phone                      string   `json:"phone"`
+	Stopped                    bool     `json:"stopped"`
+	StorageRegion              string   `json:"storageRegion"`
+	UIFormStage                string   `json:"uiFormStage"`
+	PipelineStage              string   `json:"pipelineStage"`
+	CreationStage              string   `json:"creationStage"`
+	WhatsappVerificationStatus string   `json:"whatsappVerificationStatus"`
+	Version                    int      `json:"version"`
+	Products                   []string `json:"products"`
+	CreatedOn                  int64    `json:"createdOn"`
+	ModifiedOn                 int64    `json:"modifiedOn"`
+}
+
 // GetAppDetailsResponse represents app details from Gupshup API
 type GetAppDetailsResponse struct {
 	AppID         string `json:"appId"`
@@ -692,6 +711,107 @@ func (c *GupshupPartnerClient) GetAppDetails(ctx context.Context, appID string) 
 	}
 
 	return nil, fmt.Errorf("failed to fetch app details: all endpoints returned errors or invalid responses")
+}
+
+// GetPartnerApps fetches the list of apps for the partner
+// Endpoint: GET /partner/app/list
+// Docs: https://partner-docs.gupshup.io/reference/get_partner-app-list
+// This is useful to get app details after onboarding completes
+func (c *GupshupPartnerClient) GetPartnerApps(ctx context.Context, appName, phone string, pageNo, pageSize int) ([]PartnerApp, error) {
+	if err := c.ensureValidToken(ctx); err != nil {
+		return nil, fmt.Errorf("failed to get partner token: %w", err)
+	}
+
+	c.tokenMutex.RLock()
+	token := c.Token
+	c.tokenMutex.RUnlock()
+
+	endpoint := fmt.Sprintf("%s/partner/app/list", c.BaseURL)
+
+	// Build query parameters
+	params := url.Values{}
+	if appName != "" {
+		params.Set("name", appName)
+	}
+	if phone != "" {
+		params.Set("phone", phone)
+	}
+	if pageNo > 0 {
+		params.Set("pageNo", fmt.Sprintf("%d", pageNo))
+	}
+	if pageSize > 0 {
+		params.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	}
+
+	fullURL := endpoint
+	if len(params) > 0 {
+		fullURL = fmt.Sprintf("%s?%s", endpoint, params.Encode())
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Use token header as per docs
+	req.Header.Set("token", token)
+
+	if c.Logger != nil {
+		c.Logger.Info("📋 Fetching partner app list from Gupshup API",
+			zap.String("endpoint", fullURL),
+			zap.String("app_name", appName),
+			zap.String("phone", phone))
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode >= 400 {
+		if c.Logger != nil {
+			c.Logger.Error("❌ Failed to fetch partner app list",
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", string(body)))
+		}
+		return nil, fmt.Errorf("get partner apps failed: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response - per docs, it's an array of apps
+	var apps []PartnerApp
+
+	// Try parsing as direct array
+	if err := json.Unmarshal(body, &apps); err == nil && len(apps) > 0 {
+		if c.Logger != nil {
+			c.Logger.Info("✅ Successfully fetched partner app list",
+				zap.Int("count", len(apps)))
+		}
+		return apps, nil
+	}
+
+	// Try parsing as object with status and array
+	var response struct {
+		Status string       `json:"status"`
+		Apps   []PartnerApp `json:"apps"`
+	}
+	if err := json.Unmarshal(body, &response); err == nil && len(response.Apps) > 0 {
+		if c.Logger != nil {
+			c.Logger.Info("✅ Successfully fetched partner app list (with status)",
+				zap.Int("count", len(response.Apps)),
+				zap.String("status", response.Status))
+		}
+		return response.Apps, nil
+	}
+
+	if c.Logger != nil {
+		c.Logger.Error("❌ Failed to parse partner app list response",
+			zap.String("response", string(body)))
+	}
+	return nil, fmt.Errorf("failed to parse app list response: %s", string(body))
 }
 
 // GenerateEmbedSignedLinkResponse represents the response from GenerateEmbedSignedLink API

@@ -6575,12 +6575,81 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		h.Logger.Info("✅ Updated existing WhatsAppApp record", zap.String("app_id", appID))
 	}
 
-	// If critical data is missing, try to fetch from Gupshup API
-	if (waApp.WABAID == "" || waApp.PhoneNumber == "") && h.GupshupPartner != nil {
-		h.Logger.Info("⚠️ Missing WABA ID or phone number in callback, attempting to fetch from Gupshup API",
-			zap.String("app_id", appID))
+	// ALWAYS fetch from app list API after onboarding to ensure we have complete data
+	// The callback redirect may not include all fields, so we proactively fetch
+	// This ensures we get the latest status even if callback data is incomplete
+	// CRITICAL: This is the primary way to get app data after onboarding completes
+	if h.GupshupPartner != nil {
+		h.Logger.Info("🔄🔄🔄 ALWAYS fetching complete app details from Gupshup App List API after onboarding",
+			zap.String("app_id", appID),
+			zap.String("current_waba_id", waApp.WABAID),
+			zap.String("current_phone", waApp.PhoneNumber),
+			zap.String("current_status", waApp.Status),
+			zap.String("note", "This ensures we get complete data even if callback is incomplete"))
 
-		// Fetch app details from Gupshup API
+		// First, try getting from app list API (more reliable after onboarding)
+		apps, err := h.GupshupPartner.GetPartnerApps(r.Context(), "", "", 1, 100)
+		if err != nil {
+			h.Logger.Error("❌ Failed to fetch app list from Gupshup API",
+				zap.String("app_id", appID),
+				zap.Error(err))
+		} else if len(apps) == 0 {
+			h.Logger.Warn("⚠️ App list is empty - app may not be created yet",
+				zap.String("app_id", appID))
+		} else {
+			h.Logger.Info("📋 Fetched app list from Gupshup",
+				zap.String("app_id", appID),
+				zap.Int("total_apps", len(apps)))
+
+			// Find our app by ID
+			found := false
+			for _, app := range apps {
+				if app.ID == appID {
+					found = true
+					h.Logger.Info("✅ Found app in app list, updating database",
+						zap.String("app_id", appID),
+						zap.String("app_name", app.Name),
+						zap.String("phone", app.Phone),
+						zap.Bool("live", app.Live),
+						zap.String("status", app.WhatsappVerificationStatus))
+
+					updated := false
+					if app.Phone != "" {
+						waApp.PhoneNumber = app.Phone
+						updated = true
+					}
+					if app.Live {
+						waApp.Status = "live"
+						updated = true
+					} else if waApp.Status == "" || waApp.Status == "pending_onboarding" {
+						// Update status based on verification status
+						if app.WhatsappVerificationStatus != "" {
+							waApp.Status = strings.ToLower(app.WhatsappVerificationStatus)
+							updated = true
+						}
+					}
+					if updated {
+						if err := h.DB.Save(&waApp).Error; err != nil {
+							h.Logger.Error("❌ Failed to update WhatsAppApp from app list", zap.Error(err))
+						} else {
+							h.Logger.Info("✅✅✅ Successfully updated WhatsAppApp from app list",
+								zap.String("app_id", appID),
+								zap.String("phone", waApp.PhoneNumber),
+								zap.String("status", waApp.Status))
+						}
+					}
+					break
+				}
+			}
+			if !found {
+				h.Logger.Warn("⚠️ App not found in app list",
+					zap.String("app_id", appID),
+					zap.Int("total_apps", len(apps)),
+					zap.String("note", "App may still be processing, will try GetAppDetails"))
+			}
+		}
+
+		// Also try GetAppDetails as fallback
 		appDetails, err := h.GupshupPartner.GetAppDetails(r.Context(), appID)
 		if err != nil {
 			h.Logger.Warn("⚠️ Failed to fetch app details from API, will try again later",
@@ -6719,7 +6788,14 @@ func (h *Handler) handleWhatsAppGupshupCallback(w http.ResponseWriter, r *http.R
 		zap.String("status", status))
 
 	// Redirect to frontend success page
-	successURL := fmt.Sprintf("%s/integrations/whatsapp?status=%s", h.Config.FrontendURL, status)
+	successURL := fmt.Sprintf("%s/integrations/whatsapp?status=%s&app_id=%s", h.Config.FrontendURL, waApp.Status, appID)
+	h.Logger.Info("✅✅✅ Onboarding callback processing complete - redirecting to frontend",
+		zap.Uint64("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("status", waApp.Status),
+		zap.String("waba_id", waApp.WABAID),
+		zap.String("phone_number", waApp.PhoneNumber),
+		zap.String("redirect_url", successURL))
 	http.Redirect(w, r, successURL, http.StatusFound)
 }
 
