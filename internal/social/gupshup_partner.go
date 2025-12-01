@@ -598,7 +598,8 @@ func extractLinkFromResponse(body string) string {
 }
 
 // GenerateEmbedSignedLink generates an embed signed link (onboarding URL) for an existing app
-// Endpoint: POST /partner/app/{appId}/generate-embed-signed-link
+// Endpoint: GET /partner/app/{appId}/onboarding/embed/link
+// According to Gupshup Partner API docs: https://partner-docs.gupshup.io/reference/get_partner-app-appid-onboarding-embed-link
 // This is the CORRECT way to get the onboarding link - requires an existing app
 func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appID, redirectURL string) (string, error) {
 	// Ensure we have a valid token
@@ -613,197 +614,123 @@ func (c *GupshupPartnerClient) GenerateEmbedSignedLink(ctx context.Context, appI
 		return "", fmt.Errorf("redirect URL is required")
 	}
 
-	// Try multiple possible endpoint variations
-	endpoints := []string{
-		fmt.Sprintf("%s/partner/app/%s/generate-embed-signed-link", c.BaseURL, appID),
-		fmt.Sprintf("%s/partner/app/%s/embed-signed-link", c.BaseURL, appID),
-		fmt.Sprintf("%s/partner/app/%s/generate-embed-link", c.BaseURL, appID),
-		fmt.Sprintf("%s/partner/app/%s/embed-link", c.BaseURL, appID),
-		fmt.Sprintf("%s/partner/app/%s/onboard-link", c.BaseURL, appID),
-		fmt.Sprintf("%s/partner/app/%s/go-live-link", c.BaseURL, appID),
-	}
-
 	c.tokenMutex.RLock()
 	token := c.Token
 	c.tokenMutex.RUnlock()
 
-	// Prepare both form-encoded (like CreateApp) and JSON payloads
-	formData := url.Values{}
-	formData.Set("redirectUrl", redirectURL)
-	formData.Set("redirect", redirectURL)
+	// According to Gupshup Partner API documentation:
+	// GET /partner/app/{appId}/onboarding/embed/link
+	// Query parameters: regenerate (optional boolean), user (optional), lang (optional)
+	// Headers: token (Partner JWT Token)
+	endpoint := fmt.Sprintf("%s/partner/app/%s/onboarding/embed/link", c.BaseURL, appID)
 
-	jsonPayload := map[string]interface{}{
-		"redirectUrl": redirectURL,
-		"redirect":    redirectURL,
+	// Build query parameters
+	queryParams := url.Values{}
+	queryParams.Set("regenerate", "false")
+	if redirectURL != "" {
+		// Some implementations might need redirectUrl as query param, try both
+		queryParams.Set("redirectUrl", redirectURL)
 	}
-	jsonData, _ := json.Marshal(jsonPayload)
 
+	fullURL := fmt.Sprintf("%s?%s", endpoint, queryParams.Encode())
+
+	// Make GET request with token header (as per Gupshup Partner API documentation)
 	client := &http.Client{Timeout: 15 * time.Second}
-
-	// Try each endpoint with multiple methods and payload formats
-	for _, endpoint := range endpoints {
-		// Try 1: POST with form-encoded data + token header (like CreateApp)
-		req1, err1 := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(formData.Encode()))
-		if err1 == nil {
-			req1.Header.Set("token", token)
-			req1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-			resp1, err1 := client.Do(req1)
-			if err1 == nil {
-				body1, _ := io.ReadAll(resp1.Body)
-				resp1.Body.Close()
-
-				if c.Logger != nil {
-					if resp1.StatusCode >= 400 {
-						c.Logger.Error("❌ Embed signed link (form-encoded, token header) failed",
-							zap.String("endpoint", endpoint),
-							zap.Int("status", resp1.StatusCode),
-							zap.String("response", truncateString(string(body1), 500)))
-					} else {
-						c.Logger.Info("🔍 Embed signed link (form-encoded, token header) response",
-							zap.String("endpoint", endpoint),
-							zap.Int("status", resp1.StatusCode),
-							zap.String("response_preview", truncateString(string(body1), 200)))
-					}
-				}
-
-				if resp1.StatusCode == 200 || resp1.StatusCode == 201 {
-					if link := extractLinkFromResponse(string(body1)); link != "" {
-						if c.Logger != nil {
-							c.Logger.Info("✅ Generated embed signed link (form-encoded, token header)",
-								zap.String("app_id", appID),
-								zap.String("endpoint", endpoint),
-								zap.String("link", link))
-						}
-						return link, nil
-					}
-				}
-			} else if c.Logger != nil {
-				c.Logger.Debug("Failed to call embed signed link endpoint (form-encoded)",
-					zap.String("endpoint", endpoint),
-					zap.Error(err1))
-			}
-		}
-
-		// Try 2: POST with JSON + Bearer token
-		req2, err2 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-		if err2 == nil {
-			req2.Header.Set("Authorization", "Bearer "+token)
-			req2.Header.Set("Content-Type", "application/json")
-
-			resp2, err2 := client.Do(req2)
-			if err2 == nil {
-				body2, _ := io.ReadAll(resp2.Body)
-				resp2.Body.Close()
-
-				if c.Logger != nil {
-					if resp2.StatusCode >= 400 {
-						c.Logger.Error("❌ Embed signed link (JSON, Bearer) failed",
-							zap.String("endpoint", endpoint),
-							zap.Int("status", resp2.StatusCode),
-							zap.String("response", truncateString(string(body2), 500)))
-					} else {
-						c.Logger.Info("🔍 Embed signed link (JSON, Bearer) response",
-							zap.String("endpoint", endpoint),
-							zap.Int("status", resp2.StatusCode),
-							zap.String("response_preview", truncateString(string(body2), 200)))
-					}
-				}
-
-				if resp2.StatusCode == 200 || resp2.StatusCode == 201 {
-					if link := extractLinkFromResponse(string(body2)); link != "" {
-						if c.Logger != nil {
-							c.Logger.Info("✅ Generated embed signed link (JSON, Bearer)",
-								zap.String("app_id", appID),
-								zap.String("endpoint", endpoint),
-								zap.String("link", link))
-						}
-						return link, nil
-					}
-				}
-
-				// If 401, try X-Authorization
-				if resp2.StatusCode == 401 {
-					req3, err3 := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonData))
-					if err3 == nil {
-						req3.Header.Set("X-Authorization", token)
-						req3.Header.Set("Content-Type", "application/json")
-
-						resp3, err3 := client.Do(req3)
-						if err3 == nil {
-							body3, _ := io.ReadAll(resp3.Body)
-							resp3.Body.Close()
-
-							if c.Logger != nil {
-								if resp3.StatusCode >= 400 {
-									c.Logger.Error("❌ Embed signed link (JSON, X-Authorization) failed",
-										zap.String("endpoint", endpoint),
-										zap.Int("status", resp3.StatusCode),
-										zap.String("response", truncateString(string(body3), 500)))
-								} else {
-									c.Logger.Info("🔍 Embed signed link (JSON, X-Authorization) response",
-										zap.String("endpoint", endpoint),
-										zap.Int("status", resp3.StatusCode),
-										zap.String("response_preview", truncateString(string(body3), 200)))
-								}
-							}
-
-							if resp3.StatusCode == 200 || resp3.StatusCode == 201 {
-								if link := extractLinkFromResponse(string(body3)); link != "" {
-									if c.Logger != nil {
-										c.Logger.Info("✅ Generated embed signed link (JSON, X-Authorization)",
-											zap.String("app_id", appID),
-											zap.String("endpoint", endpoint),
-											zap.String("link", link))
-									}
-									return link, nil
-								}
-							}
-						}
-					}
-				}
-			} else if c.Logger != nil {
-				c.Logger.Debug("Failed to call embed signed link endpoint (JSON, Bearer)",
-					zap.String("endpoint", endpoint),
-					zap.Error(err2))
-			}
-		}
-
-		// Try 3: GET request with redirectUrl as query parameter
-		getURL := fmt.Sprintf("%s?redirectUrl=%s", endpoint, url.QueryEscape(redirectURL))
-		req4, err4 := http.NewRequestWithContext(ctx, "GET", getURL, nil)
-		if err4 == nil {
-			req4.Header.Set("token", token)
-
-			resp4, err4 := client.Do(req4)
-			if err4 == nil {
-				body4, _ := io.ReadAll(resp4.Body)
-				resp4.Body.Close()
-
-				if resp4.StatusCode == 200 || resp4.StatusCode == 201 {
-					if link := extractLinkFromResponse(string(body4)); link != "" {
-						if c.Logger != nil {
-							c.Logger.Info("✅ Generated embed signed link (GET request)",
-								zap.String("app_id", appID),
-								zap.String("endpoint", endpoint))
-						}
-						return link, nil
-					}
-				}
-			}
-		}
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// If all attempts failed, log comprehensive error
+	req.Header.Set("token", token)
+
 	if c.Logger != nil {
-		c.Logger.Error("❌ Failed to generate embed signed link - all endpoint attempts failed",
+		c.Logger.Info("🔍 Attempting to generate embed signed link",
 			zap.String("app_id", appID),
-			zap.String("redirect_url", redirectURL),
-			zap.Int("endpoints_tried", len(endpoints)*3), // 3 methods per endpoint
-			zap.String("note", "Check logs above for detailed error responses from each attempt"))
+			zap.String("endpoint", fullURL),
+			zap.String("redirect_url", redirectURL))
 	}
 
-	return "", fmt.Errorf("failed to generate embed signed link: all endpoints failed for app ID %s. Check server logs for detailed error responses from each endpoint attempt", appID)
+	resp, err := client.Do(req)
+	if err != nil {
+		if c.Logger != nil {
+			c.Logger.Error("❌ Failed to call embed signed link endpoint",
+				zap.String("endpoint", fullURL),
+				zap.Error(err))
+		}
+		return "", fmt.Errorf("failed to call embed signed link endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if c.Logger != nil {
+		if resp.StatusCode >= 400 {
+			c.Logger.Error("❌ Embed signed link request failed",
+				zap.String("endpoint", fullURL),
+				zap.Int("status", resp.StatusCode),
+				zap.String("response", truncateString(string(body), 500)))
+		} else {
+			c.Logger.Info("✅ Embed signed link request succeeded",
+				zap.String("endpoint", fullURL),
+				zap.Int("status", resp.StatusCode),
+				zap.String("response_preview", truncateString(string(body), 200)))
+		}
+	}
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return "", fmt.Errorf("gupshup Partner API error %d: %s. Response: %s", resp.StatusCode, resp.Status, truncateString(string(body), 300))
+	}
+
+	// Parse response - expected format: {"status": "success", "link": "https://..."}
+	var response struct {
+		Status  string `json:"status"`
+		Link    string `json:"link"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		// Try extracting link directly if JSON parsing fails
+		if link := extractLinkFromResponse(string(body)); link != "" {
+			if c.Logger != nil {
+				c.Logger.Info("✅ Extracted embed signed link from response",
+					zap.String("app_id", appID),
+					zap.String("link", link))
+			}
+			return link, nil
+		}
+		return "", fmt.Errorf("failed to parse embed signed link response: %w. Response body: %s", err, truncateString(string(body), 300))
+	}
+
+	if response.Link != "" {
+		if c.Logger != nil {
+			c.Logger.Info("✅ Successfully generated embed signed link",
+				zap.String("app_id", appID),
+				zap.String("link", response.Link),
+				zap.String("status", response.Status))
+		}
+		return response.Link, nil
+	}
+
+	if response.Error != "" || response.Message != "" {
+		errorMsg := response.Error
+		if errorMsg == "" {
+			errorMsg = response.Message
+		}
+		return "", fmt.Errorf("gupshup Partner API returned error: %s. Full response: %s", errorMsg, string(body))
+	}
+
+	// Fallback: try extracting link using helper function
+	if link := extractLinkFromResponse(string(body)); link != "" {
+		if c.Logger != nil {
+			c.Logger.Info("✅ Extracted embed signed link using fallback method",
+				zap.String("app_id", appID),
+				zap.String("link", link))
+		}
+		return link, nil
+	}
+
+	return "", fmt.Errorf("no link found in response. Full response: %s", truncateString(string(body), 300))
 }
 
 // VerifyPartnerCredentials attempts to verify Partner credentials are correct

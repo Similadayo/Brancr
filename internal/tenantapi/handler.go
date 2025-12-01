@@ -5891,10 +5891,14 @@ func (h *Handler) connectWhatsAppGupshupPartner(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		// Generate app name in format like "BrancrTech" or "BrancrWhatsAppApp" - no spaces, just letters
-		// Format: {TenantName}WhatsAppApp (e.g., "BrancrWhatsAppApp")
-		appName := tenant.Name + "WhatsAppApp"
-		if strings.TrimSpace(tenant.Name) == "" {
+		// Generate app name in format like "Brancr123WhatsAppApp" - no spaces, just letters and numbers
+		// Format: {TenantName}{TenantID}WhatsAppApp (e.g., "Brancr123WhatsAppApp")
+		// IMPORTANT: Include tenant ID to ensure uniqueness in multi-tenant setup
+		// Without tenant ID, two tenants with same name would conflict (e.g., both "Brancr" → "BrancrWhatsAppApp")
+		var appName string
+		if strings.TrimSpace(tenant.Name) != "" {
+			appName = tenant.Name + fmt.Sprintf("%d", tenantID) + "WhatsAppApp"
+		} else {
 			appName = fmt.Sprintf("Tenant%dWhatsAppApp", tenantID)
 		}
 
