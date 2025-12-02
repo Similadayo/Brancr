@@ -139,17 +139,30 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// Set up webhook subscription if app is live
-	if status == "live" && app.SubscriptionID == "" {
-		webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup?app_id=%s&tenant_id=%d", h.Client.Config.PublicURL, appID, tenantID)
-		subID, err := h.Client.SetSubscription(appID, webhookURL, []string{"message", "delivery_status", "read_status"})
+	// Set up webhook subscription if app is connected/live
+	// Use "connected" or "live" status to determine if onboarding is complete
+	if (status == "live" || status == "connected") && app.SubscriptionID == "" {
+		// Webhook URL for incoming messages
+		webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup", h.Client.Config.PublicURL)
+		// Subscribe to required events: message, message-event, status
+		subID, err := h.Client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "status"})
 		if err != nil {
-			h.Logger.Warn("failed to set subscription", zap.Error(err))
+			h.Logger.Warn("failed to set subscription", 
+				zap.String("app_id", appID),
+				zap.Error(err))
 		} else {
 			app.SubscriptionID = subID
 			app.SubscriptionActive = true
 			app.WebhookURL = webhookURL
-			h.DB.Save(&app)
+			app.Status = "connected" // Mark as connected after subscription
+			if err := h.DB.Save(&app).Error; err != nil {
+				h.Logger.Error("failed to save subscription details", zap.Error(err))
+			} else {
+				h.Logger.Info("✅ Webhook subscription created",
+					zap.String("app_id", appID),
+					zap.String("subscription_id", subID),
+					zap.String("webhook_url", webhookURL))
+			}
 		}
 	}
 
@@ -190,11 +203,15 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		zap.String("status", status),
 		zap.String("phone", phone))
 
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"message": "Onboarding completed",
+		"message": "WhatsApp connected successfully",
 		"status":  status,
+		"app_id":  appID,
+		"phone":   phone,
 	})
 }
 
@@ -260,8 +277,20 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 
 	source, _ := payload["source"].(string)
 	waID, _ := payload["id"].(string)
+	if waID == "" {
+		waID, _ = payload["gsId"].(string) // Try alternative field name
+	}
+	
 	messageData, _ := payload["message"].(map[string]interface{})
 	messageType, _ := messageData["type"].(string)
+
+	// Extract sender name if available
+	customerName := ""
+	if sender, ok := payload["sender"].(map[string]interface{}); ok {
+		if name, ok := sender["name"].(string); ok {
+			customerName = name
+		}
+	}
 
 	// Extract text content
 	var content string
@@ -275,19 +304,30 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	timestamp := time.Now()
 	if ts, ok := payload["timestamp"].(float64); ok {
 		timestamp = time.Unix(int64(ts), 0)
+	} else if ts, ok := payload["timestamp"].(string); ok {
+		// Try parsing as string timestamp
+		if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+			timestamp = parsed
+		}
 	}
 
 	// Use existing MessageHandler to process message
+	// This will automatically:
+	// 1. Find or create customer
+	// 2. Find or create conversation
+	// 3. Save interaction to DB
+	// 4. Send to AI for intent detection
+	// 5. Generate and send reply
 	msg := IncomingMessage{
 		Platform:         "whatsapp",
 		TenantID:         tenantID,
-		CustomerID:       source,
-		CustomerName:      "",
+		CustomerID:       source, // Phone number in E.164 format
+		CustomerName:     customerName,
 		CustomerUsername: "",
 		MessageID:        waID,
 		Content:          content,
 		MessageType:      messageType,
-		ThreadID:         source,
+		ThreadID:         source, // Use phone number as thread ID
 		Timestamp:        timestamp,
 		Metadata: map[string]interface{}{
 			"gupshup_app_id": envelope["appId"],

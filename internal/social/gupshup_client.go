@@ -187,12 +187,16 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	// - countryCode, vertical, category (required for WhatsApp)
 	// - businessName (recommended)
 	payload := map[string]interface{}{
-		"appName":      appName,
-		"channel":      "whatsapp",  // REQUIRED: Must specify WhatsApp channel
-		"countryCode":  "NG",        // REQUIRED: Country code (e.g., "NG" for Nigeria)
-		"vertical":     "others",    // REQUIRED: Business industry/vertical
-		"category":     "marketing", // REQUIRED: Business category/type
-		"businessName": appName,     // RECOMMENDED: WhatsApp display name
+		"appName":            appName,
+		"channel":            "whatsapp",
+		"countryCode":        "NG",
+		"vertical":           "others",
+		"category":           "business",
+		"businessName":       appName,
+		"businessType":       "COMPANY",
+		"useCase":            "MARKETING",
+		"website":            "https://brancr.com",
+		"complianceCategory": "marketing",
 	}
 
 	jsonBody, _ := json.Marshal(payload)
