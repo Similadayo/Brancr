@@ -164,12 +164,29 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	apiURL := fmt.Sprintf("%s/partner/account/api/partnerApps", c.Config.GupshupAPIBaseURL)
 
 	// Required payload for WhatsApp Partner App
-	payload := map[string]string{
-		"appName": appName,
-		"channel": "whatsapp", // REQUIRED: Must specify WhatsApp channel
+	// WhatsApp onboarding requires MORE fields than regular Gupshup apps:
+	// - appName, channel (required)
+	// - countryCode, vertical, category (required for WhatsApp)
+	// - businessName (recommended)
+	payload := map[string]interface{}{
+		"appName":      appName,
+		"channel":      "whatsapp",  // REQUIRED: Must specify WhatsApp channel
+		"countryCode":  "NG",        // REQUIRED: Country code (e.g., "NG" for Nigeria)
+		"vertical":     "others",    // REQUIRED: Business industry/vertical
+		"category":     "marketing", // REQUIRED: Business category/type
+		"businessName": appName,     // RECOMMENDED: WhatsApp display name
 	}
 
 	jsonBody, _ := json.Marshal(payload)
+
+	// Log the exact request for debugging
+	if c.Logger != nil {
+		c.Logger.Info("Creating Gupshup WhatsApp Partner App",
+			zap.String("url", apiURL),
+			zap.String("payload", string(jsonBody)),
+			zap.String("app_name", appName))
+	}
+
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
@@ -191,6 +208,7 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 			c.Logger.Error("Gupshup Create App failed",
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("url", apiURL),
+				zap.String("request_payload", string(jsonBody)),
 				zap.String("response", string(body)),
 				zap.String("app_name", appName))
 		}
