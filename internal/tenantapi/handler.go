@@ -5784,6 +5784,10 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 
 	// Route to appropriate provider flow
 	switch provider {
+	case "meta_embedded", "meta", "embedded_signup":
+		// Meta Embedded Signup - redirect to Embedded Signup flow
+		h.connectWhatsAppMetaEmbedded(w, r, claims.TenantID)
+
 	case "respondio":
 		// For Respond.io, we use the shared account
 		h.connectWhatsAppRespondIO(w, r, claims.TenantID, phoneNumber, req.ChannelID)
@@ -5791,7 +5795,7 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "invalid_provider",
-			"message": fmt.Sprintf("Invalid provider '%s'. Use 'respondio' or 'auto'.", provider),
+			"message": fmt.Sprintf("Invalid provider '%s'. Use 'meta_embedded', 'respondio', or 'auto'.", provider),
 		})
 	}
 }
@@ -6062,6 +6066,34 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{
 		"connected": false,
 		"status":    "not_connected",
+	})
+}
+
+// connectWhatsAppMetaEmbedded - Connect WhatsApp via Meta Embedded Signup
+func (h *Handler) connectWhatsAppMetaEmbedded(w http.ResponseWriter, r *http.Request, tenantID uint) {
+	if h.Config.MetaAppID == "" || h.Config.MetaEmbeddedConfigID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "meta_not_configured",
+			"message": "Meta Embedded Signup is not configured. Please contact support.",
+		})
+		return
+	}
+
+	// Generate Embedded Signup URL
+	baseURL := h.Config.PublicURL
+	if baseURL == "" {
+		baseURL = "https://api.brancr.com"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	signupURL := fmt.Sprintf("%s/api/oauth/meta/whatsapp/start?tenant_id=%d", baseURL, tenantID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":        true,
+		"provider":       "meta_embedded",
+		"onboarding_url": signupURL,
+		"message":        "Redirect to Meta Embedded Signup to connect your WhatsApp Business Account.",
+		"note":           "After completing onboarding, your WhatsApp will be automatically connected. You can check status using the connection-status endpoint.",
 	})
 }
 

@@ -1399,3 +1399,66 @@ func GetExtendedCreditID(logger *zap.Logger, businessID, systemUserToken string)
 
 	return creditID, nil
 }
+
+// GetBusinessIDFromWABA gets the Business ID that owns a WABA.
+// This is useful when you only have WABA ID and need to find the Business ID.
+func GetBusinessIDFromWABA(logger *zap.Logger, wabaID, accessToken string) (string, error) {
+	if wabaID == "" || accessToken == "" {
+		return "", fmt.Errorf("waba_id and access_token are required")
+	}
+
+	// Get WABA details including owner_business_info
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s?fields=owner_business_info&access_token=%s", wabaID, accessToken)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to fetch WABA business info",
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		OwnerBusinessInfo struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"owner_business_info"`
+		Error *struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if response.Error != nil {
+		return "", fmt.Errorf("API error: %s (code %d)", response.Error.Message, response.Error.Code)
+	}
+
+	if response.OwnerBusinessInfo.ID == "" {
+		return "", fmt.Errorf("business ID not found in WABA response")
+	}
+
+	if logger != nil {
+		logger.Info("found business ID from WABA",
+			zap.String("waba_id", wabaID),
+			zap.String("business_id", response.OwnerBusinessInfo.ID),
+			zap.String("business_name", response.OwnerBusinessInfo.Name))
+	}
+
+	return response.OwnerBusinessInfo.ID, nil
+}
