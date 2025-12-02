@@ -42,42 +42,24 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 	}
 
 	// Use /partner/account/login endpoint as per Gupshup Partner API documentation
+	// IMPORTANT: Gupshup requires "email" (NOT "username") and "password"
 	apiURL := fmt.Sprintf("%s/partner/account/login", c.Config.GupshupAPIBaseURL)
 
-	// Try JSON format first (most common for REST APIs)
-	jsonPayload := map[string]string{
-		"username": c.Config.GupshupPartnerUsername,
-		"password": c.Config.GupshupPartnerPassword,
-	}
-	jsonBody, _ := json.Marshal(jsonPayload)
+	// Use form-urlencoded format (official recommended format)
+	data := url.Values{}
+	data.Set("email", c.Config.GupshupPartnerUsername) // Must be "email", not "username"
+	data.Set("password", c.Config.GupshupPartnerPassword)
 
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
-
-	// If JSON fails with 400/401, try form-urlencoded format
-	if err == nil && (resp.StatusCode == 400 || resp.StatusCode == 401) {
-		resp.Body.Close()
-		// Retry with form-urlencoded
-		data := url.Values{}
-		data.Set("username", c.Config.GupshupPartnerUsername)
-		data.Set("password", c.Config.GupshupPartnerPassword)
-
-		req, err = http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
-		if err != nil {
-			return "", fmt.Errorf("failed to create form request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Accept", "application/json")
-		resp, err = client.Do(req)
-	}
 
 	if err != nil {
 		return "", fmt.Errorf("token request failed: %w", err)
@@ -92,56 +74,33 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("url", apiURL),
 				zap.String("response", string(body)),
-				zap.String("username", c.Config.GupshupPartnerUsername))
+				zap.String("email", c.Config.GupshupPartnerUsername))
 		}
-		return "", fmt.Errorf("token request failed (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("partner token request failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Try to parse response - Gupshup may return different formats
+	// Parse response - Gupshup returns status and token
 	var result struct {
-		Status    string `json:"status"`
-		Token     string `json:"token"`
-		ExpiresIn int    `json:"expiresIn"`
-		Message   string `json:"message"`
-		Data      struct {
-			Token     string `json:"token"`
-			ExpiresIn int    `json:"expiresIn"`
-		} `json:"data"`
+		Status string `json:"status"`
+		Token  string `json:"token"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("failed to parse token response: %w, body: %s", err, string(body))
 	}
 
-	// Extract token from response (could be in root or data field)
-	token := result.Token
-	if token == "" && result.Data.Token != "" {
-		token = result.Data.Token
-	}
-
-	if result.Status != "success" && result.Status != "" {
-		return "", fmt.Errorf("invalid token response status '%s': %s", result.Status, string(body))
-	}
-
-	if token == "" {
-		return "", fmt.Errorf("token not found in response: %s", string(body))
+	if result.Token == "" {
+		return "", fmt.Errorf("no token in response: %s", string(body))
 	}
 
 	// Cache token
-	c.PartnerToken = token
-	expiresIn := result.ExpiresIn
-	if expiresIn == 0 && result.Data.ExpiresIn > 0 {
-		expiresIn = result.Data.ExpiresIn
-	}
-	if expiresIn > 0 {
-		c.TokenExpires = time.Now().Add(time.Duration(expiresIn) * time.Second)
-	} else {
-		c.TokenExpires = time.Now().Add(55 * time.Minute) // Default 1 hour with buffer
-	}
+	c.PartnerToken = result.Token
+	c.TokenExpires = time.Now().Add(55 * time.Minute) // Default 1 hour with buffer
 
 	if c.Logger != nil {
 		c.Logger.Info("✅ Gupshup partner token obtained",
-			zap.Time("expires_at", c.TokenExpires))
+			zap.Time("expires_at", c.TokenExpires),
+			zap.String("email", c.Config.GupshupPartnerUsername))
 	}
 
 	return c.PartnerToken, nil
