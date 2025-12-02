@@ -164,10 +164,9 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	apiURL := fmt.Sprintf("%s/partner/account/api/partnerApps", c.Config.GupshupAPIBaseURL)
 
 	// Required payload for WhatsApp Partner App
-	payload := map[string]interface{}{
-		"appName":     appName,
-		"channel":     "whatsapp", // REQUIRED: Must specify WhatsApp channel
-		"countryCode": "NG",       // Optional: Country code (e.g., "NG" for Nigeria)
+	payload := map[string]string{
+		"appName": appName,
+		"channel": "whatsapp", // REQUIRED: Must specify WhatsApp channel
 	}
 
 	jsonBody, _ := json.Marshal(payload)
@@ -221,13 +220,15 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 }
 
 // GenerateEmbedSignedLink generates an embedded signup link with redirect URL
+// CRITICAL: Must use /partnerApps endpoint (NOT /app) for WhatsApp Partner Apps
 func (c *GupshupClient) GenerateEmbedSignedLink(appID, redirectURL string) (string, error) {
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return "", err
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/app/%s/embedLink", c.Config.GupshupAPIBaseURL, appID)
+	// Use /partnerApps endpoint for WhatsApp apps (NOT /app)
+	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s/embedLink", c.Config.GupshupAPIBaseURL, appID)
 	if redirectURL != "" {
 		url += "?redirectUrl=" + strings.TrimSpace(redirectURL)
 	}
@@ -373,7 +374,8 @@ func (c *GupshupClient) GetAppDetails(appID string) (map[string]interface{}, err
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/app/%s", c.Config.GupshupAPIBaseURL, appID)
+	// Use /partnerApps endpoint for WhatsApp apps (NOT /app)
+	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s", c.Config.GupshupAPIBaseURL, appID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
