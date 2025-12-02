@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -41,25 +42,43 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 	}
 
 	// Use /partner/account/login endpoint as per Gupshup Partner API documentation
-	url := fmt.Sprintf("%s/partner/account/login", c.Config.GupshupAPIBaseURL)
-	// Note: "password" parameter accepts either:
-	// - Actual account password (for accounts created before Nov 20, 2024)
-	// - Client Secret (generated in Partner Portal Settings, recommended for newer accounts)
-	payload := map[string]string{
-		"username": c.Config.GupshupPartnerUsername,
-		"password": c.Config.GupshupPartnerPassword, // Can be password or client secret
-	}
+	apiURL := fmt.Sprintf("%s/partner/account/login", c.Config.GupshupAPIBaseURL)
 
-	jsonBody, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	// Try JSON format first (most common for REST APIs)
+	jsonPayload := map[string]string{
+		"username": c.Config.GupshupPartnerUsername,
+		"password": c.Config.GupshupPartnerPassword,
+	}
+	jsonBody, _ := json.Marshal(jsonPayload)
+
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	req.Header.Set("Accept", "application/json")
 
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
+
+	// If JSON fails with 400/401, try form-urlencoded format
+	if err == nil && (resp.StatusCode == 400 || resp.StatusCode == 401) {
+		resp.Body.Close()
+		// Retry with form-urlencoded
+		data := url.Values{}
+		data.Set("username", c.Config.GupshupPartnerUsername)
+		data.Set("password", c.Config.GupshupPartnerPassword)
+
+		req, err = http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+		if err != nil {
+			return "", fmt.Errorf("failed to create form request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Accept", "application/json")
+		resp, err = client.Do(req)
+	}
+
 	if err != nil {
 		return "", fmt.Errorf("token request failed: %w", err)
 	}
@@ -71,7 +90,7 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 		if c.Logger != nil {
 			c.Logger.Error("Gupshup Partner Token request failed",
 				zap.Int("status_code", resp.StatusCode),
-				zap.String("url", url),
+				zap.String("url", apiURL),
 				zap.String("response", string(body)),
 				zap.String("username", c.Config.GupshupPartnerUsername))
 		}
