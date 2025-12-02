@@ -349,26 +349,65 @@ func (c *GupshupClient) GenerateEmbedSignedLink(appID, redirectURL string) (stri
 }
 
 // SetSubscription creates or updates webhook subscription for an app
+// CRITICAL: Uses /partner/app/{appId}/subscription endpoint (as per Gupshup Partner API docs)
+// Endpoint: POST /partner/app/{appId}/subscription
+// Header: Authorization: {PARTNER_APP_TOKEN} (NOT Partner Token, but App Token)
+// Content-Type: application/x-www-form-urlencoded
+// Required fields: modes, tag, url, version
+// Response: {"status": "success", "subscription": {"id": "...", ...}}
 func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []string) (string, error) {
-	partnerToken, err := c.GetPartnerToken()
+	// Get App Token (NOT Partner Token) - required for subscription API
+	appToken, err := c.GetAppAccessToken(appID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get app token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s/subscription", c.Config.GupshupAPIBaseURL, appID)
-	payload := map[string]interface{}{
-		"webhookUrl": webhookURL,
-		"events":     events,
+	apiURL := fmt.Sprintf("%s/partner/app/%s/subscription", c.Config.GupshupAPIBaseURL, appID)
+
+	// Convert events array to modes string
+	// For version 3, use modes: MESSAGE (incoming messages), OTHERS (events like read, delivered, sent)
+	// or ALL (all messages and events)
+	modes := "MESSAGE,OTHERS" // Default: messages + events
+	if len(events) > 0 {
+		// Map common event names to modes
+		hasMessage := false
+		hasEvents := false
+		for _, event := range events {
+			switch event {
+			case "message", "messages":
+				hasMessage = true
+			case "message-event", "status", "read", "delivered", "sent":
+				hasEvents = true
+			}
+		}
+		if hasMessage && hasEvents {
+			modes = "MESSAGE,OTHERS"
+		} else if hasMessage {
+			modes = "MESSAGE"
+		} else if hasEvents {
+			modes = "OTHERS"
+		} else {
+			// Default to ALL for v3 if unsure
+			modes = "ALL"
+		}
 	}
 
-	jsonBody, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	// Build form-urlencoded payload
+	data := url.Values{}
+	data.Set("modes", modes)
+	data.Set("tag", fmt.Sprintf("BrancrSubscription-%s", appID[:8])) // Unique tag per app
+	data.Set("url", webhookURL)
+	data.Set("version", "3") // Use version 3 (supports MESSAGE, OTHERS, ALL, etc.)
+	data.Set("showOnUI", "false")
+
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+partnerToken)
-	req.Header.Set("Content-Type", "application/json")
+	// Use App Token in Authorization header (NOT Partner Token)
+	req.Header.Set("Authorization", appToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
@@ -379,31 +418,59 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Set Subscription failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("webhook_url", webhookURL),
+				zap.String("modes", modes),
+				zap.String("response", string(body)))
+		}
 		return "", fmt.Errorf("subscription request failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	// Response format: {"status": "success", "subscription": {"id": "...", "active": true, ...}}
 	var result struct {
-		Status         string `json:"status"`
-		SubscriptionID string `json:"subscriptionId"`
+		Status       string `json:"status"`
+		Subscription struct {
+			ID      string `json:"id"`
+			Active  bool   `json:"active"`
+			AppID   string `json:"appId"`
+			Tag     string `json:"tag"`
+			URL     string `json:"url"`
+			Mode    int    `json:"mode"`
+			Version int    `json:"version"`
+		} `json:"subscription"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		// Try alternative response format
+		// Try alternative response format (fallback)
 		var altResult map[string]interface{}
 		if err2 := json.Unmarshal(body, &altResult); err2 == nil {
-			if id, ok := altResult["id"].(string); ok {
-				return id, nil
+			if sub, ok := altResult["subscription"].(map[string]interface{}); ok {
+				if id, ok := sub["id"].(string); ok {
+					return id, nil
+				}
 			}
 		}
-		return "", fmt.Errorf("failed to parse subscription response: %w", err)
+		return "", fmt.Errorf("failed to parse subscription response: %w, body=%s", err, string(body))
 	}
 
-	if result.Status != "success" {
-		// Subscription might already exist, try to get it
-		return c.GetSubscription(appID)
+	if result.Status != "success" || result.Subscription.ID == "" {
+		return "", fmt.Errorf("invalid subscription response: %s", string(body))
 	}
 
-	return result.SubscriptionID, nil
+	if c.Logger != nil {
+		c.Logger.Info("✅ Gupshup webhook subscription created",
+			zap.String("app_id", appID),
+			zap.String("subscription_id", result.Subscription.ID),
+			zap.String("webhook_url", webhookURL),
+			zap.String("modes", modes),
+			zap.Bool("active", result.Subscription.Active))
+	}
+
+	return result.Subscription.ID, nil
 }
 
 // GetSubscription retrieves existing subscription
