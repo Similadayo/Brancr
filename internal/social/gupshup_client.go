@@ -150,20 +150,28 @@ func (c *GupshupClient) GetAppAccessToken(appID string) (string, error) {
 	return result.Token, nil
 }
 
-// CreateApp creates a new Gupshup app for a tenant
+// CreateApp creates a new WhatsApp Partner App for a tenant
+// CRITICAL: Must use /partner/account/api/partnerApps (NOT /app)
+// The /app endpoint creates generic Gupshup apps, NOT WhatsApp apps
+// WhatsApp apps require channel: "whatsapp" in the payload
 func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return "", err
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/app", c.Config.GupshupAPIBaseURL)
-	payload := map[string]string{
-		"appName": appName,
+	// Use /partnerApps endpoint for WhatsApp apps (NOT /app)
+	apiURL := fmt.Sprintf("%s/partner/account/api/partnerApps", c.Config.GupshupAPIBaseURL)
+
+	// Required payload for WhatsApp Partner App
+	payload := map[string]interface{}{
+		"appName":     appName,
+		"channel":     "whatsapp", // REQUIRED: Must specify WhatsApp channel
+		"countryCode": "NG",       // Optional: Country code (e.g., "NG" for Nigeria)
 	}
 
 	jsonBody, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -180,6 +188,13 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Create App failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("response", string(body)),
+				zap.String("app_name", appName))
+		}
 		return "", fmt.Errorf("create app failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -189,18 +204,17 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		// Try alternative response format
-		var altResult map[string]interface{}
-		if err2 := json.Unmarshal(body, &altResult); err2 == nil {
-			if id, ok := altResult["id"].(string); ok {
-				return id, nil
-			}
-		}
-		return "", fmt.Errorf("failed to parse create app response: %w", err)
+		return "", fmt.Errorf("failed to parse create app response: %w, resp=%s", err, string(body))
 	}
 
-	if result.Status != "success" || result.AppID == "" {
-		return "", fmt.Errorf("invalid create app response: %s", string(body))
+	if result.AppID == "" {
+		return "", fmt.Errorf("no appId in response: %s", string(body))
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("✅ Gupshup WhatsApp Partner App created",
+			zap.String("app_id", result.AppID),
+			zap.String("app_name", appName))
 	}
 
 	return result.AppID, nil
