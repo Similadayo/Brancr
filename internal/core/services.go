@@ -44,8 +44,6 @@ type Services struct {
 	MessageHandler          *social.MessageHandler
 	MetaWebhookHandler      *social.MetaWebhookHandler
 	RespondIOWebhookHandler *social.RespondIOWebhookHandler
-	GupshupWebhookHandler   *social.GupshupWebhookHandler
-	GupshupPartnerClient    *social.GupshupPartnerClient
 	MetaOAuthHandler        *social.MetaOAuthHandler
 	Scheduler               *social.Scheduler
 	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
@@ -168,40 +166,6 @@ func (s *Services) initSocial() error {
 		return nil
 	}
 
-	// Initialize Gupshup Partner client (multi-tenant) if configured
-	var gupshupPartnerClient *social.GupshupPartnerClient
-	var whatsappProvider social.WhatsAppProvider
-	if s.Config.GupshupPartnerAPIKey != "" && s.Config.GupshupPartnerID != "" && s.Config.GupshupPartnerEmail != "" {
-		gupshupPartnerClient = social.NewGupshupPartnerClient(
-			s.Config.GupshupPartnerBaseURL,
-			s.Config.GupshupPartnerAPIKey,
-			s.Config.GupshupPartnerEmail,
-			s.Config.GupshupPartnerID,
-			s.Logger,
-		)
-		s.GupshupPartnerClient = gupshupPartnerClient
-		whatsappProvider = social.NewGupshupWhatsAppProvider(s.DB, s.Logger, gupshupPartnerClient)
-		s.Logger.Info("✅ Gupshup Partner client initialized for multi-tenant WhatsApp integration")
-	} else {
-		s.Logger.Info("ℹ️  Gupshup Partner API credentials not configured — Gupshup Partner multi-tenant will be disabled")
-	}
-
-	// Initialize Gupshup legacy client if API credentials are configured (for backward compatibility)
-	// Note: SourceNumber is optional - can be set later after Go Live is complete
-	var gupshupClient *social.GupshupClient
-	if s.Config.GupshupAPIKey != "" && s.Config.GupshupAppName != "" {
-		gupshupClient = social.NewGupshupClient(
-			s.Config.GupshupAPIKey,
-			s.Config.GupshupAppName,
-			s.Config.GupshupSourceNumber, // Can be empty - will log warning when sending
-			s.Logger,
-		)
-		if s.Config.GupshupSourceNumber != "" {
-			s.Logger.Info("✅ Gupshup legacy client initialized for WhatsApp integration")
-		} else {
-			s.Logger.Info("✅ Gupshup legacy client initialized (API key and app name configured, but Source Number not set yet - complete Go Live to add it)")
-		}
-	}
 
 	// Initialize Respond.io client if API key is configured
 	var respondIOClient *social.RespondIOClient
@@ -220,8 +184,6 @@ func (s *Services) initSocial() error {
 		Responder:        s.CustomerResponder,
 		SystemToken:      s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp (fallback)
 		RespondIO:        respondIOClient,          // Respond.io client for WhatsApp integration
-		Gupshup:          gupshupClient,            // Gupshup legacy client (backward compatibility)
-		WhatsAppProvider: whatsappProvider,         // Gupshup Partner Provider (multi-tenant, Priority 1)
 		EscalationFunc:   escalationFunc,
 	}
 	s.MessageHandler = messageHandler
@@ -249,14 +211,6 @@ func (s *Services) initSocial() error {
 		respondIOWebhookHandler := social.NewRespondIOWebhookHandler(s.DB, s.Logger, messageHandler)
 		s.RespondIOWebhookHandler = respondIOWebhookHandler
 		s.Logger.Info("✅ Respond.io webhook handler initialized (optional - webhooks are not required for sending messages)")
-	}
-
-	// Initialize Gupshup Webhook Handler (works for both Partner and legacy)
-	if (s.Config.GupshupPartnerAPIKey != "" && s.Config.GupshupPartnerID != "") ||
-		(s.Config.GupshupAPIKey != "" && s.Config.GupshupAppName != "") {
-		gupshupWebhookHandler := social.NewGupshupWebhookHandler(s.DB, s.Logger, messageHandler, s.GupshupPartnerClient)
-		s.GupshupWebhookHandler = gupshupWebhookHandler
-		s.Logger.Info("✅ Gupshup webhook handler initialized")
 	}
 
 	if oauthHandler, err := social.NewMetaOAuthHandler(s.DB, s.Logger, s.Config); err != nil {

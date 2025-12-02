@@ -48,7 +48,7 @@ func SetupRouter(app *App) http.Handler {
 	r.Mount("/admin", admin.AdminRouter(adminCtx))
 	r.Mount("/bot", TenantRouter(app))
 
-	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.GupshupPartnerClient, app.Services.WorkflowOrchestrator, app.Services.Scheduler, app.Services.AIClient, app.Services.MessageHandler)
+	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.WorkflowOrchestrator, app.Services.Scheduler, app.Services.AIClient, app.Services.MessageHandler)
 	r.Route("/api", func(api chi.Router) {
 		apiHandler.RegisterRoutes(api)
 	})
@@ -72,18 +72,6 @@ func SetupRouter(app *App) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/respondio","message":"Respond.io webhook endpoint is reachable (optional - webhooks not required for sending messages)"}`)
-		})
-	}
-
-	// Gupshup webhook endpoint for incoming WhatsApp messages
-	// CRITICAL: Must support GET/HEAD (validation) and POST (events) for Gupshup Partner API
-	// HandleFunc in chi accepts all HTTP methods by default, including HEAD
-	if app.Services.GupshupWebhookHandler != nil {
-		r.HandleFunc("/webhooks/gupshup", app.Services.GupshupWebhookHandler.HandleGupshupWebhook)
-		r.Get("/api/webhooks/gupshup/test", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, `{"status":"ok","endpoint":"/webhooks/gupshup","message":"Gupshup webhook endpoint is reachable"}`)
 		})
 	}
 
