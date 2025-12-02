@@ -182,21 +182,14 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	apiURL := fmt.Sprintf("%s/partner/account/api/partnerApps", c.Config.GupshupAPIBaseURL)
 
 	// Required payload for WhatsApp Partner App
-	// WhatsApp onboarding requires MORE fields than regular Gupshup apps:
-	// - appName, channel (required)
-	// - countryCode, vertical, category (required for WhatsApp)
-	// - businessName (recommended)
+	// Core required fields only - avoid optional fields that might cause validation errors
 	payload := map[string]interface{}{
-		"appName":            appName,
-		"channel":            "whatsapp",
-		"countryCode":        "NG",
-		"vertical":           "others",
-		"category":           "business",
-		"businessName":       appName,
-		"businessType":       "COMPANY",
-		"useCase":            "MARKETING",
-		"website":            "https://brancr.com",
-		"complianceCategory": "marketing",
+		"appName":      appName,
+		"channel":      "whatsapp", // REQUIRED
+		"countryCode":  "NG",       // REQUIRED
+		"vertical":     "others",   // REQUIRED
+		"category":     "business", // REQUIRED
+		"businessName": appName,    // RECOMMENDED
 	}
 
 	jsonBody, _ := json.Marshal(payload)
