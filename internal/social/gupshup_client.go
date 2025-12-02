@@ -261,26 +261,50 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	return result.AppID, nil
 }
 
-// GenerateEmbedSignedLink generates an embedded signup link with redirect URL
-// CRITICAL: Must use /partnerApps endpoint (NOT /app) for WhatsApp Partner Apps
+// GenerateEmbedSignedLink generates an embedded signup link for WhatsApp onboarding
+// CRITICAL: Uses /partner/app/{appId}/onboarding/embed/link endpoint (as per Gupshup Partner API docs)
+// Endpoint: GET /partner/app/{appId}/onboarding/embed/link
+// Header: token (NOT Authorization Bearer)
+// Query params: regenerate (optional), user (optional), lang (optional)
+// Response: {"status": "success", "link": "<embed_link>"}
+// Note: The signed link is valid for 5 days only
 func (c *GupshupClient) GenerateEmbedSignedLink(appID, redirectURL string) (string, error) {
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return "", err
 	}
 
-	// Use /partnerApps endpoint for WhatsApp apps (NOT /app)
-	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s/embedLink", c.Config.GupshupAPIBaseURL, appID)
+	// Use correct endpoint as per Gupshup Partner API docs
+	apiURL := fmt.Sprintf("%s/partner/app/%s/onboarding/embed/link", c.Config.GupshupAPIBaseURL, appID)
+
+	// Build query parameters
+	params := url.Values{}
+	// Optional: regenerate link (default false)
+	params.Set("regenerate", "false")
+	// Optional: user name (use partner username if available)
+	if c.Config.GupshupPartnerUsername != "" {
+		params.Set("user", c.Config.GupshupPartnerUsername)
+	}
+	// Optional: language (default to English)
+	params.Set("lang", "en")
+
+	// Note: redirectUrl might be configured in Gupshup Partner Portal settings
+	// or passed as a separate parameter. For now, we'll use query params if provided.
 	if redirectURL != "" {
-		url += "?redirectUrl=" + strings.TrimSpace(redirectURL)
+		params.Set("redirectUrl", strings.TrimSpace(redirectURL))
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	if len(params) > 0 {
+		apiURL += "?" + params.Encode()
+	}
+
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+partnerToken)
+	// Use "token" header (NOT "Authorization: Bearer") as per Gupshup docs
+	req.Header.Set("token", partnerToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
@@ -291,23 +315,37 @@ func (c *GupshupClient) GenerateEmbedSignedLink(appID, redirectURL string) (stri
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Generate Embed Link failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("response", string(body)))
+		}
 		return "", fmt.Errorf("embed link request failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	// Response format: {"status": "success", "link": "<embed_link>"}
 	var result struct {
-		Status    string `json:"status"`
-		EmbedLink string `json:"embedLink"`
+		Status string `json:"status"`
+		Link   string `json:"link"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse embed link response: %w", err)
+		return "", fmt.Errorf("failed to parse embed link response: %w, body=%s", err, string(body))
 	}
 
-	if result.Status != "success" || result.EmbedLink == "" {
+	if result.Status != "success" || result.Link == "" {
 		return "", fmt.Errorf("invalid embed link response: %s", string(body))
 	}
 
-	return result.EmbedLink, nil
+	if c.Logger != nil {
+		c.Logger.Info("✅ Gupshup embed link generated",
+			zap.String("app_id", appID),
+			zap.String("link", result.Link))
+	}
+
+	return result.Link, nil
 }
 
 // SetSubscription creates or updates webhook subscription for an app
