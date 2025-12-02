@@ -503,14 +503,22 @@ func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, te
 		return err
 	}
 
-	// Stage 2: Set up billing first (may be required for ownership claims)
-	// Then claim the tenant's business and WABA (2025 automated access flow)
+	// Stage 2: Complete Solution Partner setup (billing, credit sharing, system user, claiming)
 	if cfg != nil && businessID != "" && wabaID != "" {
-		// Set up billing first - this may be required for successful ownership claims
+		// Step 1: Add system user to WABA (REQUIRED for API access)
+		// This must be done first so system user can make API calls
+		go addSystemUserToWABA(logger, cfg, wabaID, tenantID)
+
+		// Step 2: Set up billing (payment method)
 		// Meta often requires payment method to be configured before claiming ownership
 		setupWhatsAppBillingSync(logger, cfg, wabaID, tenantID)
 
-		// Then proceed with claiming (billing should be set up first)
+		// Step 3: Set up credit sharing (Solution Partner billing model)
+		// This allows Brancr to bill tenants instead of Meta billing them directly
+		go setupCreditSharing(logger, cfg, businessID, wabaID, tenantID)
+
+		// Step 4: Claim the tenant's business and WABA (2025 automated access flow)
+		// This establishes ownership relationship
 		go claimTenantBusinessAndWABA(logger, cfg, businessID, wabaID, tenantID, phoneID, token)
 	}
 
@@ -916,8 +924,14 @@ func claimTenantBusinessAndWABA(logger *zap.Logger, cfg *config.Config, tenantBu
 	// Subscribe to WABA
 	go subscribeAppToWABA(logger, cfg, tenantID, wabaID)
 
-	// Subscribe to phone number
-	if tenantToken != "" {
+	// Subscribe to phone number using system user token
+	// System user token should be used for all API operations after system user is added to WABA
+	if sysToken != "" {
+		go subscribePhoneNumber(logger, phoneID, sysToken)
+	} else if tenantToken != "" {
+		// Fallback to tenant token if system token not available (shouldn't happen)
+		logger.Warn("using tenant token for phone subscription (system token preferred)",
+			zap.Uint("tenant_id", tenantID))
 		go subscribePhoneNumber(logger, phoneID, tenantToken)
 	}
 }
@@ -1096,4 +1110,292 @@ func claimWABAOwnership(logger *zap.Logger, ourBusinessID, wabaID, sysToken stri
 			zap.String("waba_id", wabaID))
 	}
 	return nil
+}
+
+// addSystemUserToWABA adds Brancr's system user to the tenant's WABA.
+// This is REQUIRED for the system user to make API calls to manage the WABA.
+// According to Meta docs: "Employee-access system users need to be added to every WABA that is created"
+// POST /{waba-id}/assigned_users
+func addSystemUserToWABA(logger *zap.Logger, cfg *config.Config, wabaID string, tenantID uint) {
+	if cfg == nil || strings.TrimSpace(wabaID) == "" {
+		return
+	}
+
+	sysToken := strings.TrimSpace(cfg.MetaSystemUserToken)
+	sysUserID := strings.TrimSpace(cfg.MetaSystemUserID)
+
+	if sysToken == "" {
+		if logger != nil {
+			logger.Warn("system user addition skipped: missing system user token",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID))
+		}
+		return
+	}
+
+	if sysUserID == "" {
+		if logger != nil {
+			logger.Warn("system user addition skipped: missing system user ID",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.String("note", "Set META_SYSTEM_USER_ID environment variable"))
+		}
+		return
+	}
+
+	// Add system user to WABA with MANAGE task permissions
+	// POST /{waba-id}/assigned_users
+	body := map[string]interface{}{
+		"user":  sysUserID,
+		"tasks": []string{"MANAGE"}, // MANAGE allows full WABA management
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("system user addition failed: marshal error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/assigned_users?access_token=%s", wabaID, sysToken)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("system user addition failed: request build error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("system user addition failed: request error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		// Check if user is already assigned (common case)
+		if strings.Contains(string(respBody), "already assigned") || strings.Contains(string(respBody), "already exists") {
+			if logger != nil {
+				logger.Info("system user already added to WABA",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("waba_id", wabaID))
+			}
+			return
+		}
+
+		if logger != nil {
+			logger.Warn("system user addition failed: API error",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", respBody))
+		}
+		return
+	}
+
+	if logger != nil {
+		logger.Info("✅ System user added to WABA successfully",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("waba_id", wabaID),
+			zap.String("system_user_id", sysUserID),
+			zap.String("note", "System user can now make API calls to manage this WABA"))
+	}
+}
+
+// setupCreditSharing sets up credit sharing for Solution Partner billing model.
+// This allows Brancr to bill tenants instead of Meta billing them directly.
+// According to Meta docs: "Solution Partner as the credit line owner is the 'Bill To Party'"
+// POST /{extended_credit_id}/whatsapp_credit_sharing_and_attach
+func setupCreditSharing(logger *zap.Logger, cfg *config.Config, tenantBusinessID, wabaID string, tenantID uint) {
+	if cfg == nil || strings.TrimSpace(tenantBusinessID) == "" || strings.TrimSpace(wabaID) == "" {
+		return
+	}
+
+	creditLineID := strings.TrimSpace(cfg.MetaExtendedCreditID)
+	if creditLineID == "" {
+		if logger != nil {
+			logger.Info("credit sharing skipped: extended credit ID not configured",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.String("note", "Set META_EXTENDED_CREDIT_ID to enable Solution Partner billing. Tenants will be billed directly by Meta without this."))
+		}
+		return
+	}
+
+	sysToken := strings.TrimSpace(cfg.MetaSystemUserToken)
+	if sysToken == "" {
+		if logger != nil {
+			logger.Warn("credit sharing skipped: missing system user token",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID))
+		}
+		return
+	}
+
+	// Set up credit sharing: share Brancr's credit line with tenant's business
+	// POST /{extended_credit_id}/whatsapp_credit_sharing_and_attach
+	body := map[string]interface{}{
+		"receiving_business_id": tenantBusinessID,
+		"waba_id":               wabaID,
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("credit sharing setup failed: marshal error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/whatsapp_credit_sharing_and_attach?access_token=%s", creditLineID, sysToken)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("credit sharing setup failed: request build error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("credit sharing setup failed: request error",
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		// Check if credit sharing already exists
+		if strings.Contains(string(respBody), "already") || strings.Contains(string(respBody), "duplicate") {
+			if logger != nil {
+				logger.Info("credit sharing already configured for WABA",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("waba_id", wabaID))
+			}
+			return
+		}
+
+		if logger != nil {
+			logger.Warn("credit sharing setup failed: API error",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.String("tenant_business_id", tenantBusinessID),
+				zap.String("credit_line_id", creditLineID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", respBody),
+				zap.String("note", "This requires business_management permission and proper credit line setup. Tenant may be billed directly by Meta if this fails."))
+		}
+		return
+	}
+
+	var response struct {
+		ID string `json:"id"` // Allocation config ID
+	}
+
+	if err := json.Unmarshal(respBody, &response); err == nil && response.ID != "" {
+		if logger != nil {
+			logger.Info("✅ Credit sharing configured successfully",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.String("allocation_config_id", response.ID),
+				zap.String("note", "Brancr will now receive aggregated invoice from Meta. Tenant usage will be billed through Brancr."))
+		}
+	} else {
+		if logger != nil {
+			logger.Info("✅ Credit sharing configured successfully",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("waba_id", wabaID),
+				zap.String("note", "Brancr will now receive aggregated invoice from Meta. Tenant usage will be billed through Brancr."))
+		}
+	}
+}
+
+// GetExtendedCreditID fetches the Extended Credit Line ID for your Business Manager.
+// This is useful for finding your credit line ID if you don't know it.
+// Call this with your business ID and system user token.
+// Returns the first extended credit ID found, or empty string if none found.
+func GetExtendedCreditID(logger *zap.Logger, businessID, systemUserToken string) (string, error) {
+	if businessID == "" || systemUserToken == "" {
+		return "", fmt.Errorf("business_id and system_user_token are required")
+	}
+
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/extendedcredits?fields=id,legal_entity_name&access_token=%s", businessID, systemUserToken)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Error("failed to fetch extended credits",
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var response struct {
+		Data []struct {
+			ID             string `json:"id"`
+			LegalEntityName string `json:"legal_entity_name"`
+		} `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if response.Error != nil {
+		return "", fmt.Errorf("API error: %s (code %d)", response.Error.Message, response.Error.Code)
+	}
+
+	if len(response.Data) == 0 {
+		if logger != nil {
+			logger.Warn("no extended credits found for business",
+				zap.String("business_id", businessID),
+				zap.String("note", "You may need to create an Extended Credit account in Meta Business Manager > Billing"))
+		}
+		return "", fmt.Errorf("no extended credits found - create one in Meta Business Manager > Billing > Extended Credits")
+	}
+
+	creditID := response.Data[0].ID
+	if logger != nil {
+		logger.Info("found extended credit ID",
+			zap.String("credit_id", creditID),
+			zap.String("legal_entity_name", response.Data[0].LegalEntityName))
+	}
+
+	return creditID, nil
 }

@@ -6015,14 +6015,46 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 
 	tenantID := claims.TenantID
 
-	// Check for Respond.io connection
+	// Check for WhatsApp connection (Respond.io, Meta Embedded Signup, or Gupshup)
 	var account storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, "whatsapp", true).First(&account).Error; err == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
+		response := map[string]any{
 			"connected":    true,
 			"provider":     account.Mode,
-			"phone_number": account.PageID,
+			"phone_number": account.Username, // Phone number is stored in Username for WhatsApp
 			"status":       "connected",
+		}
+
+		// Add provider-specific details
+		if account.Mode == "oauth2" || account.Mode == "meta_embedded" {
+			response["provider"] = "meta_embedded"
+			response["phone_number_id"] = account.PageID
+			response["external_id"] = account.ExternalID
+		} else if account.Mode == "respondio" {
+			response["channel_id"] = account.ExternalID
+		} else if account.Mode == "gupshup_partner" {
+			// Check WhatsAppApp table for Gupshup details
+			var app storage.WhatsAppApp
+			if err := h.DB.Where("tenant_id = ?", tenantID).First(&app).Error; err == nil {
+				response["app_id"] = app.GupshupAppID
+				response["phone_number"] = app.PhoneNumber
+				response["status"] = app.Status
+			}
+		}
+
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Also check WhatsAppApp table (for Gupshup Partner)
+	var app storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ? AND status IN ?", tenantID, []string{"live", "pending_verification", "pending_onboarding"}).First(&app).Error; err == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"connected":    app.Status == "live",
+			"provider":     "gupshup_partner",
+			"phone_number": app.PhoneNumber,
+			"app_id":       app.GupshupAppID,
+			"status":       app.Status,
 		})
 		return
 	}

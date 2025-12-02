@@ -31,6 +31,8 @@ type Config struct {
 	MetaSystemUserToken  string
 	MetaBusinessID       string
 	MetaPaymentMethodID  string // Payment method ID for Brancr's billing (when Payment Processing API access is granted)
+	MetaExtendedCreditID string // Extended Credit Line ID for Solution Partner billing model
+	MetaSystemUserID     string // System User ID (needed to add to WABAs)
 	BrancrWABAID         string // Brancr's provider-owned WABA ID
 	BrancrWABAToken      string // Access token for Brancr's WABA (system user token)
 	TenantJWTSecret      string
@@ -76,6 +78,8 @@ func Load() *Config {
 		MetaSystemUserToken:  getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
 		MetaBusinessID:       os.Getenv("META_BUSINESS_ID"),
 		MetaPaymentMethodID:  os.Getenv("META_PAYMENT_METHOD_ID"), // Required for billing setup
+		MetaExtendedCreditID: os.Getenv("META_EXTENDED_CREDIT_ID"), // Extended Credit Line ID for Solution Partner billing
+		MetaSystemUserID:     os.Getenv("META_SYSTEM_USER_ID"),     // System User ID for adding to WABAs
 		BrancrWABAID:         os.Getenv("BRANCR_WABA_ID"),         // Provider-owned WABA ID
 		BrancrWABAToken:      os.Getenv("BRANCR_WABA_TOKEN"),      // WABA access token
 		TenantJWTSecret:      os.Getenv("TENANT_JWT_SECRET"),
@@ -128,6 +132,12 @@ func validateConfig(cfg *Config) {
 	}
 	if cfg.MetaPaymentMethodID == "" {
 		log.Println("ℹ️  META_PAYMENT_METHOD_ID not set — WhatsApp billing setup will be skipped. This may prevent ownership claims from succeeding.")
+	}
+	if cfg.MetaExtendedCreditID == "" {
+		log.Println("ℹ️  META_EXTENDED_CREDIT_ID not set — Credit sharing (Solution Partner billing) will be skipped. Tenants will be billed directly by Meta.")
+	}
+	if cfg.MetaSystemUserID == "" {
+		log.Println("ℹ️  META_SYSTEM_USER_ID not set — System user won't be added to WABAs automatically. This may cause API permission issues.")
 	}
 	if cfg.TenantJWTSecret == "" {
 		log.Println("⚠️  TENANT_JWT_SECRET missing — tenant authentication cookies will be insecure.")

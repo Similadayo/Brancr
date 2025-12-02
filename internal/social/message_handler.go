@@ -878,16 +878,19 @@ func (h *MessageHandler) sendWhatsAppReplyMeta(ctx context.Context, acc *storage
 		return fmt.Errorf("phone_number_id not found for WhatsApp account")
 	}
 
-	// For provider-owned model, use Brancr's system token (not tenant token)
+	// Use system user token for all WhatsApp API calls (Solution Partner model)
+	// According to Meta docs: System User tokens are long-lived and should be used for API operations
+	// The callback token is a user token (short-lived) and should not be used for API calls
 	var accessToken string
-	if acc.Mode == "provider_owned" {
-		// Use system user token for provider-owned model
+	if acc.Mode == "provider_owned" || acc.Mode == "oauth2" {
+		// Use system user token for provider-owned and Embedded Signup (oauth2) models
+		// System user is added to WABA during onboarding, so we can use system token
 		if h.SystemToken == "" {
-			return fmt.Errorf("system token not configured for provider-owned WhatsApp model")
+			return fmt.Errorf("system token not configured for WhatsApp API calls")
 		}
 		accessToken = h.SystemToken
 	} else {
-		// Legacy mode: use tenant's token
+		// Legacy mode: use tenant's token (fallback for other modes)
 		if acc.AccessToken != "" {
 			decrypted, err := utils.DecryptToken(acc.AccessToken)
 			if err != nil {
