@@ -166,49 +166,58 @@ func sanitizeAppName(name string) string {
 }
 
 // CreateApp creates a new WhatsApp Partner App for a tenant
-// CRITICAL: Must use /partner/account/api/partnerApps (NOT /app)
-// The /app endpoint creates generic Gupshup apps, NOT WhatsApp apps
-// WhatsApp apps require channel: "whatsapp" in the payload
-// App name must be alphanumeric only (no special characters)
+// CRITICAL: Uses /partner/app endpoint (as per Gupshup Partner API docs)
+// Endpoint: POST /partner/app
+// Content-Type: application/x-www-form-urlencoded
+// Header: token (NOT Authorization Bearer)
+// Required: name (6-150 chars, alphanumeric only, no special characters)
+// Optional: templateMessaging, disableOptinPrefUrl
 func (c *GupshupClient) CreateApp(appName string) (string, error) {
 	// Sanitize app name to remove special characters (Gupshup requirement)
 	appName = sanitizeAppName(appName)
+
+	// Validate app name length (6-150 chars as per Gupshup docs)
+	if len(appName) < 6 {
+		// Pad with numbers if too short
+		appName = appName + "12345"
+		appName = appName[:6] // Take first 6 chars
+	}
+	if len(appName) > 150 {
+		appName = appName[:150] // Truncate if too long
+	}
+
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return "", err
 	}
 
-	// Use /partnerApps endpoint for WhatsApp apps (NOT /app)
-	apiURL := fmt.Sprintf("%s/partner/account/api/partnerApps", c.Config.GupshupAPIBaseURL)
+	// Use /partner/app endpoint (as per Gupshup Partner API docs)
+	apiURL := fmt.Sprintf("%s/partner/app", c.Config.GupshupAPIBaseURL)
 
-	// Required payload for WhatsApp Partner App
-	// Core required fields only - avoid optional fields that might cause validation errors
-	payload := map[string]interface{}{
-		"appName":      appName,
-		"channel":      "whatsapp", // REQUIRED
-		"countryCode":  "NG",       // REQUIRED
-		"vertical":     "others",   // REQUIRED
-		"category":     "business", // REQUIRED
-		"businessName": appName,    // RECOMMENDED
-	}
-
-	jsonBody, _ := json.Marshal(payload)
+	// Use form-urlencoded format (as per Gupshup docs)
+	data := url.Values{}
+	data.Set("name", appName)
+	// Optional: Enable template messaging by default
+	data.Set("templateMessaging", "true")
+	// Optional: Disable opt-in preference URL (let Gupshup handle it)
+	data.Set("disableOptinPrefUrl", "false")
 
 	// Log the exact request for debugging
 	if c.Logger != nil {
 		c.Logger.Info("Creating Gupshup WhatsApp Partner App",
 			zap.String("url", apiURL),
-			zap.String("payload", string(jsonBody)),
-			zap.String("app_name", appName))
+			zap.String("name", appName),
+			zap.String("form_data", data.Encode()))
 	}
 
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+partnerToken)
-	req.Header.Set("Content-Type", "application/json")
+	// Use "token" header (NOT "Authorization: Bearer") as per Gupshup docs
+	req.Header.Set("token", partnerToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
@@ -223,16 +232,16 @@ func (c *GupshupClient) CreateApp(appName string) (string, error) {
 			c.Logger.Error("Gupshup Create App failed",
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("url", apiURL),
-				zap.String("request_payload", string(jsonBody)),
-				zap.String("response", string(body)),
-				zap.String("app_name", appName))
+				zap.String("name", appName),
+				zap.String("form_data", data.Encode()),
+				zap.String("response", string(body)))
 		}
 		return "", fmt.Errorf("create app failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	// Response format: {"appId": "<app_id>"} (no "status" field)
 	var result struct {
-		Status string `json:"status"`
-		AppID  string `json:"appId"`
+		AppID string `json:"appId"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
