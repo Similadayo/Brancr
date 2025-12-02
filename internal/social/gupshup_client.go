@@ -150,11 +150,29 @@ func (c *GupshupClient) GetAppAccessToken(appID string) (string, error) {
 	return result.Token, nil
 }
 
+// sanitizeAppName removes special characters from app name (only letters and numbers allowed)
+func sanitizeAppName(name string) string {
+	var result strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		}
+	}
+	sanitized := result.String()
+	if sanitized == "" {
+		sanitized = "App" // Fallback if name becomes empty
+	}
+	return sanitized
+}
+
 // CreateApp creates a new WhatsApp Partner App for a tenant
 // CRITICAL: Must use /partner/account/api/partnerApps (NOT /app)
 // The /app endpoint creates generic Gupshup apps, NOT WhatsApp apps
 // WhatsApp apps require channel: "whatsapp" in the payload
+// App name must be alphanumeric only (no special characters)
 func (c *GupshupClient) CreateApp(appName string) (string, error) {
+	// Sanitize app name to remove special characters (Gupshup requirement)
+	appName = sanitizeAppName(appName)
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return "", err

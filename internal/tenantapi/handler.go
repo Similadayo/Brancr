@@ -6112,7 +6112,8 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 	}
 
 	// Create new app for tenant
-	appName := fmt.Sprintf("Brancr-Tenant-%d", tenantID)
+	// App name must be alphanumeric only (no special characters like hyphens)
+	appName := fmt.Sprintf("BrancrTenant%d", tenantID)
 	appID, err := client.CreateApp(appName)
 	if err != nil {
 		h.Logger.Error("failed to create Gupshup app", zap.Error(err))
