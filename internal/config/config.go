@@ -45,9 +45,11 @@ type Config struct {
 	TenantCookieDomain   string
 	RespondIOAPIKey      string // Respond.io API access token for WhatsApp integration
 	FrontendURL           string // Frontend URL for redirects after OAuth
-	GupshupPartnerUsername string // Gupshup Partner username for authentication
-	GupshupPartnerPassword string // Gupshup Partner password for authentication
-	GupshupPartnerAppID   string // Gupshup Partner App ID (single app for all tenants)
+	GupshupPartnerUsername string // Gupshup Partner username/email for authentication
+	GupshupPartnerPassword string // Gupshup Partner password OR client secret (from Partner Portal Settings)
+	// For accounts after Nov 20, 2024: use Client Secret (recommended)
+	// For older accounts: use actual account password
+	GupshupPartnerAppID   string // Gupshup Partner App ID (single app for all tenants, optional)
 	GupshupAPIBaseURL      string // Gupshup API base URL
 }
 

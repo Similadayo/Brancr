@@ -30,6 +30,10 @@ func NewGupshupClient(cfg *config.Config, logger *zap.Logger) *GupshupClient {
 }
 
 // GetPartnerToken retrieves or refreshes the partner token
+// Uses Partner Login API: POST /partner/account/api/token
+// For accounts created after Nov 20, 2024: use Client Secret (from Partner Portal Settings) as password
+// For older accounts (pre-Nov 20, 2024): use actual account password
+// Both work - client secret is recommended for security
 func (c *GupshupClient) GetPartnerToken() (string, error) {
 	// Return cached token if still valid (with 5 minute buffer)
 	if c.PartnerToken != "" && time.Now().Before(c.TokenExpires.Add(-5*time.Minute)) {
@@ -37,9 +41,12 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 	}
 
 	url := fmt.Sprintf("%s/partner/account/api/token", c.Config.GupshupAPIBaseURL)
+	// Note: "password" parameter accepts either:
+	// - Actual account password (for accounts created before Nov 20, 2024)
+	// - Client Secret (generated in Partner Portal Settings, recommended for newer accounts)
 	payload := map[string]string{
 		"username": c.Config.GupshupPartnerUsername,
-		"password": c.Config.GupshupPartnerPassword,
+		"password": c.Config.GupshupPartnerPassword, // Can be password or client secret
 	}
 
 	jsonBody, _ := json.Marshal(payload)
@@ -274,7 +281,7 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 	}
 
 	var result struct {
-		Status        string `json:"status"`
+		Status         string `json:"status"`
 		SubscriptionID string `json:"subscriptionId"`
 	}
 
@@ -428,4 +435,3 @@ func (c *GupshupClient) SendMessage(appID, to, message string) (string, error) {
 
 	return "", fmt.Errorf("message ID not found in response: %s", string(body))
 }
-
