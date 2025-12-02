@@ -38,6 +38,22 @@ const (
 	sessionTTL    = 7 * 24 * time.Hour
 )
 
+// sanitizeForAppName removes special characters from a string, keeping only alphanumeric
+// This ensures app names meet Gupshup's requirements (alphanumeric only)
+func sanitizeForAppName(name string) string {
+	var result strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		}
+	}
+	sanitized := result.String()
+	if sanitized == "" {
+		return "App" // Fallback if name becomes empty
+	}
+	return sanitized
+}
+
 type Handler struct {
 	DB                   *gorm.DB
 	Logger               *zap.Logger
@@ -6113,7 +6129,46 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 
 	// Create new app for tenant
 	// App name must be alphanumeric only (no special characters like hyphens)
-	appName := fmt.Sprintf("BrancrTenant%d", tenantID)
+	// Make it unique by including tenant ID and business name
+	var tenant storage.Tenant
+	var businessProfile storage.BusinessProfile
+	var businessName string
+
+	// Try to get tenant's business name
+	if err := h.DB.First(&tenant, tenantID).Error; err == nil {
+		// Try to get business profile name
+		if err := h.DB.Where("tenant_id = ?", tenantID).First(&businessProfile).Error; err == nil && businessProfile.Name != "" {
+			businessName = businessProfile.Name
+		} else if tenant.Name != "" {
+			businessName = tenant.Name
+		}
+	}
+
+	// Sanitize business name (alphanumeric only)
+	sanitizedName := sanitizeForAppName(businessName)
+	if len(sanitizedName) > 15 {
+		sanitizedName = sanitizedName[:15] // Truncate if too long
+	}
+
+	// Generate unique app name: Brancr{BusinessName}{TenantID}{RandomSuffix}
+	// Format ensures uniqueness: business name + tenant ID + random 4-digit suffix
+	randomSuffix := time.Now().Unix() % 10000 // Last 4 digits of timestamp for uniqueness
+	var appName string
+	if sanitizedName != "" {
+		appName = fmt.Sprintf("Brancr%s%d%d", sanitizedName, tenantID, randomSuffix)
+	} else {
+		appName = fmt.Sprintf("BrancrTenant%d%d", tenantID, randomSuffix)
+	}
+
+	// Ensure minimum length (Gupshup requires 6 chars) and max (150 chars)
+	if len(appName) < 6 {
+		appName = appName + "12345"
+		appName = appName[:6]
+	}
+	if len(appName) > 150 {
+		appName = appName[:150] // Truncate if too long
+	}
+
 	appID, err := client.CreateApp(appName)
 	if err != nil {
 		h.Logger.Error("failed to create Gupshup app", zap.Error(err))
