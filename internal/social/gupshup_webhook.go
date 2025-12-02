@@ -139,31 +139,57 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// Set up webhook subscription if app is connected/live
-	// Use "connected" or "live" status to determine if onboarding is complete
-	if (status == "live" || status == "connected") && app.SubscriptionID == "" {
+	// Set up webhook subscription when onboarding completes
+	// Try to set subscription if status indicates success OR if we have app details
+	// Status can be: "live", "connected", "success", or empty (check if we have phone number)
+	shouldSetSubscription := false
+	if status == "live" || status == "connected" || status == "success" {
+		shouldSetSubscription = true
+	} else if status == "" && (phone != "" || appID != "") {
+		// If status is empty but we have phone/appID, onboarding might have completed
+		// Try to set subscription anyway (Gupshup will validate)
+		shouldSetSubscription = true
+	}
+
+	if shouldSetSubscription && app.SubscriptionID == "" {
 		// Webhook URL for incoming messages
 		webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup", h.Client.Config.PublicURL)
+
+		h.Logger.Info("🔔 Setting up webhook subscription",
+			zap.String("app_id", appID),
+			zap.String("status", status),
+			zap.String("webhook_url", webhookURL))
+
 		// Subscribe to required events: message, message-event, status
 		subID, err := h.Client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "status"})
 		if err != nil {
-			h.Logger.Warn("failed to set subscription", 
+			h.Logger.Error("❌ Failed to set subscription",
 				zap.String("app_id", appID),
+				zap.String("status", status),
+				zap.String("webhook_url", webhookURL),
 				zap.Error(err))
+			// Don't fail the redirect - log error but continue
 		} else {
 			app.SubscriptionID = subID
 			app.SubscriptionActive = true
 			app.WebhookURL = webhookURL
-			app.Status = "connected" // Mark as connected after subscription
+			if status == "" || status == "pending_onboarding" {
+				app.Status = "connected" // Mark as connected after subscription
+			}
 			if err := h.DB.Save(&app).Error; err != nil {
 				h.Logger.Error("failed to save subscription details", zap.Error(err))
 			} else {
-				h.Logger.Info("✅ Webhook subscription created",
+				h.Logger.Info("✅ Webhook subscription created successfully",
 					zap.String("app_id", appID),
 					zap.String("subscription_id", subID),
-					zap.String("webhook_url", webhookURL))
+					zap.String("webhook_url", webhookURL),
+					zap.String("status", app.Status))
 			}
 		}
+	} else if app.SubscriptionID != "" {
+		h.Logger.Info("ℹ️  Subscription already exists",
+			zap.String("app_id", appID),
+			zap.String("subscription_id", app.SubscriptionID))
 	}
 
 	// Also create/update SocialAccount for compatibility
@@ -175,7 +201,7 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				Platform:   "whatsapp",
 				Mode:       "gupshup_partner",
 				Username:   phone,
-				PageID:    phoneNumberID,
+				PageID:     phoneNumberID,
 				ExternalID: phoneNumberID,
 				Connected:  status == "live",
 			}
@@ -201,18 +227,32 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		zap.Uint("tenant_id", uint(tenantID)),
 		zap.String("app_id", appID),
 		zap.String("status", status),
-		zap.String("phone", phone))
+		zap.String("phone", phone),
+		zap.String("subscription_id", app.SubscriptionID),
+		zap.Bool("subscription_active", app.SubscriptionActive))
 
-	// Return success response
+	// Redirect to frontend success page
+	frontendSuccessURL := fmt.Sprintf("%s/settings/integrations?whatsapp_connected=true&provider=gupshup&app_id=%s&status=%s",
+		h.Client.Config.FrontendURL, appID, status)
+
+	// Return success response with redirect info
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "WhatsApp connected successfully",
-		"status":  status,
-		"app_id":  appID,
-		"phone":   phone,
+		"success":          true,
+		"message":          "WhatsApp connected successfully",
+		"status":           status,
+		"app_id":           appID,
+		"phone":            phone,
+		"subscription_id":  app.SubscriptionID,
+		"subscription_set": app.SubscriptionID != "",
+		"redirect_url":     frontendSuccessURL,
 	})
+
+	// Also redirect browser if this is a GET request (user clicking the link)
+	if r.Method == http.MethodGet {
+		http.Redirect(w, r, frontendSuccessURL, http.StatusFound)
+	}
 }
 
 // processWebhookEvent processes webhook events asynchronously
@@ -235,10 +275,10 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 
 	// Save webhook event to database
 	webhookEvent := storage.GupshupWebhookEvent{
-		TenantID:  tenantID,
-		AppID:     appID,
-		EventType: eventType,
-		Payload:   string(rawBody),
+		TenantID:   tenantID,
+		AppID:      appID,
+		EventType:  eventType,
+		Payload:    string(rawBody),
 		ReceivedAt: time.Now(),
 	}
 	h.DB.Create(&webhookEvent)
@@ -280,7 +320,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	if waID == "" {
 		waID, _ = payload["gsId"].(string) // Try alternative field name
 	}
-	
+
 	messageData, _ := payload["message"].(map[string]interface{})
 	messageType, _ := messageData["type"].(string)
 
@@ -421,4 +461,3 @@ func (h *GupshupWebhookHandler) handleReadStatus(ctx context.Context, tenantID u
 		}
 	}
 }
-
