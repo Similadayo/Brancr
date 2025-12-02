@@ -30,7 +30,7 @@ func NewGupshupClient(cfg *config.Config, logger *zap.Logger) *GupshupClient {
 }
 
 // GetPartnerToken retrieves or refreshes the partner token
-// Uses Partner Login API: POST /partner/account/api/token
+// Uses Partner Login API: POST /partner/account/login
 // For accounts created after Nov 20, 2024: use Client Secret (from Partner Portal Settings) as password
 // For older accounts (pre-Nov 20, 2024): use actual account password
 // Both work - client secret is recommended for security
@@ -40,7 +40,8 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 		return c.PartnerToken, nil
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/token", c.Config.GupshupAPIBaseURL)
+	// Use /partner/account/login endpoint as per Gupshup Partner API documentation
+	url := fmt.Sprintf("%s/partner/account/login", c.Config.GupshupAPIBaseURL)
 	// Note: "password" parameter accepts either:
 	// - Actual account password (for accounts created before Nov 20, 2024)
 	// - Client Secret (generated in Partner Portal Settings, recommended for newer accounts)
@@ -66,27 +67,55 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		// Log detailed error for debugging
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Partner Token request failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", url),
+				zap.String("response", string(body)),
+				zap.String("username", c.Config.GupshupPartnerUsername))
+		}
 		return "", fmt.Errorf("token request failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	// Try to parse response - Gupshup may return different formats
 	var result struct {
 		Status    string `json:"status"`
 		Token     string `json:"token"`
 		ExpiresIn int    `json:"expiresIn"`
+		Message   string `json:"message"`
+		Data      struct {
+			Token     string `json:"token"`
+			ExpiresIn int    `json:"expiresIn"`
+		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse token response: %w", err)
+		return "", fmt.Errorf("failed to parse token response: %w, body: %s", err, string(body))
 	}
 
-	if result.Status != "success" || result.Token == "" {
-		return "", fmt.Errorf("invalid token response: %s", string(body))
+	// Extract token from response (could be in root or data field)
+	token := result.Token
+	if token == "" && result.Data.Token != "" {
+		token = result.Data.Token
+	}
+
+	if result.Status != "success" && result.Status != "" {
+		return "", fmt.Errorf("invalid token response status '%s': %s", result.Status, string(body))
+	}
+
+	if token == "" {
+		return "", fmt.Errorf("token not found in response: %s", string(body))
 	}
 
 	// Cache token
-	c.PartnerToken = result.Token
-	if result.ExpiresIn > 0 {
-		c.TokenExpires = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	c.PartnerToken = token
+	expiresIn := result.ExpiresIn
+	if expiresIn == 0 && result.Data.ExpiresIn > 0 {
+		expiresIn = result.Data.ExpiresIn
+	}
+	if expiresIn > 0 {
+		c.TokenExpires = time.Now().Add(time.Duration(expiresIn) * time.Second)
 	} else {
 		c.TokenExpires = time.Now().Add(55 * time.Minute) // Default 1 hour with buffer
 	}
