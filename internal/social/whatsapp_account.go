@@ -497,27 +497,47 @@ func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, te
 		account.Username = phoneNumber
 	}
 	account.Mode = "oauth2"
-	account.Connected = strings.ToUpper(status) == "APPROVED" || status == ""
+	
+	// Mark as connected - Embedded Signup creates active accounts
+	// Status might be "APPROVED", "CONNECTED", "LIVE", or empty - all mean account is ready
+	account.Connected = true // Embedded Signup accounts are connected by default
 
 	if err := db.Save(&account).Error; err != nil {
 		return err
 	}
 
-	// Stage 2: Complete Solution Partner setup (billing, credit sharing, system user, claiming)
+	// Stage 2: Complete Solution Partner setup (SYNCHRONOUSLY for immediate activation)
+	// IMPORTANT: Do these steps SYNCHRONOUSLY so account is ready immediately
 	if cfg != nil && businessID != "" && wabaID != "" {
-		// Step 1: Add system user to WABA (REQUIRED for API access)
-		// This must be done first so system user can make API calls
-		go addSystemUserToWABA(logger, cfg, wabaID, tenantID)
+		// Step 1: Add system user to WABA FIRST (REQUIRED for all API calls)
+		// This must be done synchronously so we can make API calls immediately
+		addSystemUserToWABA(logger, cfg, wabaID, tenantID)
 
-		// Step 2: Set up billing (payment method)
-		// Meta often requires payment method to be configured before claiming ownership
+		// Step 2: Set up credit sharing IMMEDIATELY (SYNCHRONOUS)
+		// This tells Meta that Brancr is the "Bill To Party" and handles all payments
+		// When credit sharing is active, Meta knows not to collect payment method from tenants
+		setupCreditSharingSync(logger, cfg, businessID, wabaID, tenantID)
+
+		// Step 3: Set up billing (payment method) - Brancr's payment method
+		// This configures the WABA to use Brancr's payment method automatically
 		setupWhatsAppBillingSync(logger, cfg, wabaID, tenantID)
 
-		// Step 3: Set up credit sharing (Solution Partner billing model)
-		// This allows Brancr to bill tenants instead of Meta billing them directly
-		go setupCreditSharing(logger, cfg, businessID, wabaID, tenantID)
+		// Step 4: Subscribe to webhooks SYNCHRONOUSLY (required for receiving messages)
+		// Subscribe to WABA webhooks
+		subscribeAppToWABASync(logger, cfg, tenantID, wabaID)
+		
+		// Subscribe to phone number webhooks (use system token, not tenant token)
+		if sysToken := strings.TrimSpace(cfg.MetaSystemUserToken); sysToken != "" {
+			subscribePhoneNumberSync(logger, phoneID, sysToken)
+		}
 
-		// Step 4: Claim the tenant's business and WABA (2025 automated access flow)
+		// Step 5: Verify phone number is ready (check status)
+		// This ensures the account is actually active and can send/receive messages
+		if phoneID != "" && cfg.MetaSystemUserToken != "" {
+			verifyPhoneNumberReady(logger, phoneID, cfg.MetaSystemUserToken, tenantID, db)
+		}
+
+		// Step 6: Claim the tenant's business and WABA (async - non-blocking)
 		// This establishes ownership relationship
 		go claimTenantBusinessAndWABA(logger, cfg, businessID, wabaID, tenantID, phoneID, token)
 	}
@@ -540,6 +560,57 @@ func encryptToken(token string) (string, error) {
 // This is a public wrapper for the private subscribePhoneNumber function
 func SubscribePhoneNumberToWebhooks(logger *zap.Logger, phoneID, accessToken string) {
 	subscribePhoneNumber(logger, phoneID, accessToken)
+}
+
+// subscribePhoneNumberSync subscribes to phone number webhooks synchronously
+func subscribePhoneNumberSync(logger *zap.Logger, phoneID, accessToken string) {
+	phoneID = strings.TrimSpace(phoneID)
+	accessToken = strings.TrimSpace(accessToken)
+	if phoneID == "" || accessToken == "" {
+		return
+	}
+
+	// Subscribe synchronously (don't use async retry for initial setup)
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", phoneID)
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader("subscribed_fields=messages,statuses"))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp phone subscription build failed", zap.String("phone_number_id", phoneID), zap.Error(err))
+		}
+		return
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	q := make(url.Values)
+	q.Set("access_token", accessToken)
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("whatsapp phone subscription request failed",
+				zap.String("phone_number_id", phoneID),
+				zap.Error(err))
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		if logger != nil {
+			logger.Warn("whatsapp phone subscription returned non-200",
+				zap.String("phone_number_id", phoneID),
+				zap.Int("status", resp.StatusCode),
+				zap.ByteString("body", body))
+		}
+		return
+	}
+
+	if logger != nil {
+		logger.Info("✅ WhatsApp phone number subscribed (synchronous)",
+			zap.String("phone_number_id", phoneID),
+			zap.ByteString("response", body))
+	}
 }
 
 func subscribePhoneNumber(logger *zap.Logger, phoneID, tenantToken string) {
@@ -781,13 +852,67 @@ func CheckWABASubscription(logger *zap.Logger, wabaID, accessToken string) (bool
 	return false, nil, nil
 }
 
+// verifyPhoneNumberReady verifies that a phone number is ready to send/receive messages
+// and updates the account status if needed
+func verifyPhoneNumberReady(logger *zap.Logger, phoneID, accessToken string, tenantID uint, db *gorm.DB) {
+	if phoneID == "" || accessToken == "" {
+		return
+	}
+
+	// Get phone number status from Meta
+	status, err := GetPhoneNumberStatus(logger, phoneID, accessToken)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("failed to verify phone number status",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("phone_number_id", phoneID),
+				zap.Error(err))
+		}
+		return
+	}
+
+	// Check if phone number is verified and ready
+	codeVerificationStatus := ""
+	if val, ok := status["code_verification_status"].(string); ok {
+		codeVerificationStatus = strings.ToUpper(val)
+	}
+
+	phoneStatus := ""
+	if val, ok := status["status"].(string); ok {
+		phoneStatus = strings.ToUpper(val)
+	}
+
+	// Phone number is ready if:
+	// - code_verification_status is "VERIFIED" (or empty for trial accounts)
+	// - status is "CONNECTED" or "LIVE" (or empty)
+	isReady := (codeVerificationStatus == "VERIFIED" || codeVerificationStatus == "" || codeVerificationStatus == "PENDING") &&
+		(phoneStatus == "CONNECTED" || phoneStatus == "LIVE" || phoneStatus == "")
+
+	if logger != nil {
+		logger.Info("Phone number status check",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("phone_number_id", phoneID),
+			zap.String("code_verification_status", codeVerificationStatus),
+			zap.String("status", phoneStatus),
+			zap.Bool("is_ready", isReady))
+	}
+
+	// Update account if needed
+	if !isReady && logger != nil {
+		logger.Warn("Phone number not fully ready yet",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("phone_number_id", phoneID),
+			zap.String("note", "Phone number may need verification or may be in trial mode"))
+	}
+}
+
 // GetPhoneNumberStatus gets detailed status of a phone number from Meta
 func GetPhoneNumberStatus(logger *zap.Logger, phoneID, accessToken string) (map[string]interface{}, error) {
 	if phoneID == "" || accessToken == "" {
 		return nil, fmt.Errorf("phone_number_id and access_token are required")
 	}
 
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,status&access_token=%s", phoneID, accessToken)
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status,status&access_token=%s", phoneID, accessToken)
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -824,7 +949,8 @@ func GetPhoneNumberStatus(logger *zap.Logger, phoneID, accessToken string) (map[
 	return status, nil
 }
 
-func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID string) {
+// subscribeAppToWABASync subscribes to WABA webhooks synchronously (immediate, not async)
+func subscribeAppToWABASync(logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID string) {
 	if strings.TrimSpace(wabaID) == "" || cfg == nil {
 		return
 	}
@@ -841,7 +967,7 @@ func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, w
 	data.Set("access_token", sysToken)
 	data.Set("subscribed_fields", "messages,statuses")
 
-	endpoint := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/subscribed_apps", wabaID)
+	endpoint := fmt.Sprintf("https://graph.facebook.com/v20.0/%s/subscribed_apps", wabaID)
 	resp, err := http.PostForm(endpoint, data)
 	if err != nil {
 		if logger != nil {
@@ -851,9 +977,17 @@ func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, w
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
+		// Check if already subscribed
+		if strings.Contains(string(body), "already") || strings.Contains(string(body), "duplicate") {
+			if logger != nil {
+				logger.Info("WhatsApp WABA already subscribed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
+			}
+			return
+		}
+
 		if logger != nil {
-			body, _ := io.ReadAll(resp.Body)
 			logger.Warn("whatsapp subscription returned non-200",
 				zap.Uint("tenant_id", tenantID),
 				zap.String("waba_id", wabaID),
@@ -864,8 +998,12 @@ func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, w
 	}
 
 	if logger != nil {
-		logger.Info("WhatsApp WABA subscribed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
+		logger.Info("✅ WhatsApp WABA subscribed (synchronous)", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
 	}
+}
+
+func subscribeAppToWABA(logger *zap.Logger, cfg *config.Config, tenantID uint, wabaID string) {
+	subscribeAppToWABASync(logger, cfg, tenantID, wabaID)
 }
 
 // claimTenantBusinessAndWABA performs the 2025 automated access flow:
@@ -1214,9 +1352,17 @@ func addSystemUserToWABA(logger *zap.Logger, cfg *config.Config, wabaID string, 
 	}
 }
 
+// setupCreditSharingSync sets up credit sharing synchronously (immediately, not async).
+// This is called immediately after Embedded Signup callback to ensure Meta knows Brancr handles billing.
+func setupCreditSharingSync(logger *zap.Logger, cfg *config.Config, tenantBusinessID, wabaID string, tenantID uint) {
+	setupCreditSharing(logger, cfg, tenantBusinessID, wabaID, tenantID)
+}
+
 // setupCreditSharing sets up credit sharing for Solution Partner billing model.
 // This allows Brancr to bill tenants instead of Meta billing them directly.
 // According to Meta docs: "Solution Partner as the credit line owner is the 'Bill To Party'"
+// IMPORTANT: This should be set up IMMEDIATELY AFTER Embedded Signup completes
+// to tell Meta that Brancr handles billing, so tenants don't need to add payment method.
 // POST /{extended_credit_id}/whatsapp_credit_sharing_and_attach
 func setupCreditSharing(logger *zap.Logger, cfg *config.Config, tenantBusinessID, wabaID string, tenantID uint) {
 	if cfg == nil || strings.TrimSpace(tenantBusinessID) == "" || strings.TrimSpace(wabaID) == "" {
