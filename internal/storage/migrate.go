@@ -33,7 +33,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&SocialAccount{},
 		&WhatsAppPhoneNumber{},
 		&WhatsAppPhoneNumberRequest{},
-		&WhatsAppApp{}, // Gupshup Partner multi-tenant WhatsApp apps
+		&WhatsAppApp{},         // Gupshup Partner multi-tenant WhatsApp apps
+		&GupshupWebhookEvent{}, // Gupshup webhook events
 		&Persona{},
 		&MemoryItem{},
 		&IntentCatalog{},
@@ -55,7 +56,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&PlatformMetricsSnapshot{},
 		&AudienceSegment{},
 	)
-	
+
 	// Migrate payment audit logs table (from security package)
 	// Import and migrate PaymentAuditLog model
 	if err := migratePaymentAuditLogs(db); err != nil {
@@ -63,7 +64,7 @@ func AutoMigrate(db *gorm.DB) error {
 	} else {
 		log.Println("✅ Payment audit logs table ready")
 	}
-	
+
 	return nil
 }
 
@@ -80,11 +81,11 @@ func migratePaymentAuditLogs(db *gorm.DB) error {
 	`).Scan(&exists).Error; err != nil {
 		return fmt.Errorf("failed to check if payment_audit_logs table exists: %w", err)
 	}
-	
+
 	if exists {
 		return nil // Table already exists
 	}
-	
+
 	// Create the table with proper structure
 	if err := db.Exec(`
 		CREATE TABLE payment_audit_logs (
@@ -105,7 +106,7 @@ func migratePaymentAuditLogs(db *gorm.DB) error {
 	`).Error; err != nil {
 		return fmt.Errorf("failed to create payment_audit_logs table: %w", err)
 	}
-	
+
 	// Create indexes
 	indexes := []string{
 		`CREATE INDEX idx_payment_audit_tenant ON payment_audit_logs(tenant_id)`,
@@ -115,14 +116,14 @@ func migratePaymentAuditLogs(db *gorm.DB) error {
 		`CREATE INDEX idx_payment_audit_timestamp ON payment_audit_logs(timestamp)`,
 		`CREATE INDEX idx_payment_audit_deleted_at ON payment_audit_logs(deleted_at)`,
 	}
-	
+
 	for _, idxSQL := range indexes {
 		if err := db.Exec(idxSQL).Error; err != nil {
 			// Log but don't fail - indexes might already exist
 			log.Printf("⚠️ Could not create index (might already exist): %v", err)
 		}
 	}
-	
+
 	// Add foreign key constraints if interactions table exists
 	if err := db.Exec(`
 		ALTER TABLE payment_audit_logs
@@ -131,7 +132,7 @@ func migratePaymentAuditLogs(db *gorm.DB) error {
 	`).Error; err != nil {
 		log.Printf("⚠️ Could not add tenant foreign key (might already exist): %v", err)
 	}
-	
+
 	if err := db.Exec(`
 		ALTER TABLE payment_audit_logs
 		ADD CONSTRAINT fk_payment_audit_interaction 
@@ -139,7 +140,7 @@ func migratePaymentAuditLogs(db *gorm.DB) error {
 	`).Error; err != nil {
 		log.Printf("⚠️ Could not add interaction foreign key (might already exist): %v", err)
 	}
-	
+
 	return nil
 }
 

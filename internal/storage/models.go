@@ -220,6 +220,18 @@ type WhatsAppApp struct {
 	WebhookURL         string `gorm:"type:text"`                   // Webhook URL configured for this app
 }
 
+// GupshupWebhookEvent stores incoming webhook events from Gupshup
+type GupshupWebhookEvent struct {
+	gorm.Model
+	TenantID    uint   `gorm:"index"`
+	AppID       string `gorm:"index"`
+	EventType   string // message, delivery_status, read_status
+	Payload     string `gorm:"type:text"` // Full JSON payload
+	Processed   bool   `gorm:"default:false"`
+	ProcessedAt *time.Time
+	ReceivedAt  time.Time
+}
+
 // Persona — each tenant’s bot personality profile
 type Persona struct {
 	TenantID   uint   `gorm:"primaryKey"`

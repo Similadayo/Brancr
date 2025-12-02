@@ -75,6 +75,17 @@ func SetupRouter(app *App) http.Handler {
 		})
 	}
 
+	// Gupshup webhook endpoints
+	if app.Services.GupshupWebhookHandler != nil {
+		r.HandleFunc("/api/webhooks/gupshup", app.Services.GupshupWebhookHandler.HandleWebhook)
+		r.Get("/api/webhooks/gupshup/redirect", app.Services.GupshupWebhookHandler.HandleRedirect)
+		r.Get("/api/webhooks/gupshup/test", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/gupshup","message":"Gupshup webhook endpoint is reachable"}`)
+		})
+	}
+
 	// OAuth success page (public, no auth required)
 	oauthSuccessHandler := social.NewOAuthSuccessHandler()
 	r.Get("/oauth/success", oauthSuccessHandler.HandleSuccess)

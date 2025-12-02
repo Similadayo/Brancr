@@ -33,6 +33,7 @@ type MessageHandler struct {
 	Responder        *ai.CustomerResponder
 	SystemToken      string           // Brancr's system user token for provider-owned WhatsApp model (legacy)
 	RespondIO        *RespondIOClient // Respond.io API client for WhatsApp integration
+	GupshupClient    *GupshupClient   // Gupshup Partner API client
 	EscalationFunc   func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
 	BotGetter        BotGetter // Optional: for Telegram message sending
 }
@@ -829,9 +830,55 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 }
 
 // sendWhatsAppReply sends a reply via WhatsApp Business API
-// Priority order: Respond.io > Meta Direct API
+// Priority order: Gupshup > Respond.io > Meta Direct API
 func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAccount, customerID, reply string) error {
-	// Priority 1: Try Respond.io
+	// Priority 1: Try Gupshup (if mode is gupshup_partner)
+	if acc.Mode == "gupshup_partner" && h.GupshupClient != nil {
+		// Get app ID from WhatsAppApp table
+		var app storage.WhatsAppApp
+		if err := h.DB.Where("tenant_id = ?", acc.TenantID).First(&app).Error; err == nil && app.GupshupAppID != "" {
+			h.Logger.Info("📤 Attempting to send WhatsApp message via Gupshup",
+				zap.String("customer_id", customerID),
+				zap.String("app_id", app.GupshupAppID),
+				zap.String("message_preview", truncateString(reply, 50)))
+
+			messageID, err := h.GupshupClient.SendMessage(app.GupshupAppID, customerID, reply)
+			if err != nil {
+				h.Logger.Warn("⚠️ Gupshup send failed, trying Respond.io",
+					zap.String("customer_id", customerID),
+					zap.Error(err))
+				// Fall through to Respond.io
+			} else {
+				h.Logger.Info("✅ WhatsApp message sent via Gupshup",
+					zap.String("customer_id", customerID),
+					zap.String("message_id", messageID))
+				
+				// Update the most recent outgoing interaction with message ID
+				var interaction storage.Interaction
+				if err := h.DB.Where("tenant_id = ? AND platform = ? AND direction = ? AND response_status = ?",
+					acc.TenantID, "whatsapp", "outgoing", "pending").
+					Order("created_at DESC").First(&interaction).Error; err == nil {
+					interaction.PlatformMessageID = messageID
+					interaction.ResponseStatus = "sent"
+					// Store Gupshup message ID in metadata
+					var metadata map[string]interface{}
+					if interaction.Metadata != "" {
+						json.Unmarshal([]byte(interaction.Metadata), &metadata)
+					}
+					if metadata == nil {
+						metadata = make(map[string]interface{})
+					}
+					metadata["gupshup_message_id"] = messageID
+					metadataJSON, _ := json.Marshal(metadata)
+					interaction.Metadata = string(metadataJSON)
+					h.DB.Save(&interaction)
+				}
+				return nil
+			}
+		}
+	}
+
+	// Priority 2: Try Respond.io
 	if h.RespondIO != nil {
 		identifier := customerID
 		channelID := acc.ExternalID // WhatsApp channel ID from Respond.io
@@ -860,7 +907,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		}
 	}
 
-	// Priority 2: Fallback to Meta Direct API
+	// Priority 3: Fallback to Meta Direct API
 	h.Logger.Info("📤 Sending WhatsApp message via Meta Direct API (fallback)",
 		zap.String("customer_id", customerID))
 	return h.sendWhatsAppReplyMeta(ctx, acc, customerID, reply)

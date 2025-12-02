@@ -44,6 +44,7 @@ type Services struct {
 	MessageHandler          *social.MessageHandler
 	MetaWebhookHandler      *social.MetaWebhookHandler
 	RespondIOWebhookHandler *social.RespondIOWebhookHandler
+	GupshupWebhookHandler   *social.GupshupWebhookHandler
 	MetaOAuthHandler        *social.MetaOAuthHandler
 	Scheduler               *social.Scheduler
 	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
@@ -176,6 +177,15 @@ func (s *Services) initSocial() error {
 		s.Logger.Info("ℹ️  Respond.io API key not configured — WhatsApp will use Meta Direct API fallback")
 	}
 
+	// Initialize Gupshup client if configured
+	var gupshupClient *social.GupshupClient
+	if s.Config.GupshupPartnerUsername != "" && s.Config.GupshupPartnerPassword != "" {
+		gupshupClient = social.NewGupshupClient(s.Config, s.Logger)
+		s.Logger.Info("✅ Gupshup Partner client initialized for WhatsApp integration")
+	} else {
+		s.Logger.Info("ℹ️  Gupshup Partner credentials not configured — Gupshup WhatsApp integration disabled")
+	}
+
 	// Initialize Message Handler
 	messageHandler := &social.MessageHandler{
 		DB:               s.DB,
@@ -184,6 +194,7 @@ func (s *Services) initSocial() error {
 		Responder:        s.CustomerResponder,
 		SystemToken:      s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp (fallback)
 		RespondIO:        respondIOClient,          // Respond.io client for WhatsApp integration
+		GupshupClient:    gupshupClient,           // Gupshup Partner client for WhatsApp integration
 		EscalationFunc:   escalationFunc,
 	}
 	s.MessageHandler = messageHandler
@@ -211,6 +222,13 @@ func (s *Services) initSocial() error {
 		respondIOWebhookHandler := social.NewRespondIOWebhookHandler(s.DB, s.Logger, messageHandler)
 		s.RespondIOWebhookHandler = respondIOWebhookHandler
 		s.Logger.Info("✅ Respond.io webhook handler initialized (optional - webhooks are not required for sending messages)")
+	}
+
+	// Initialize Gupshup Webhook Handler
+	if gupshupClient != nil {
+		gupshupWebhookHandler := social.NewGupshupWebhookHandler(s.DB, s.Logger, messageHandler, gupshupClient)
+		s.GupshupWebhookHandler = gupshupWebhookHandler
+		s.Logger.Info("✅ Gupshup webhook handler initialized")
 	}
 
 	if oauthHandler, err := social.NewMetaOAuthHandler(s.DB, s.Logger, s.Config); err != nil {

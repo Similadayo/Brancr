@@ -5788,6 +5788,10 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 		// Meta Embedded Signup - redirect to Embedded Signup flow
 		h.connectWhatsAppMetaEmbedded(w, r, claims.TenantID)
 
+	case "gupshup", "gupshup_partner":
+		// Gupshup Partner - create app and generate embed link
+		h.connectWhatsAppGupshup(w, r, claims.TenantID)
+
 	case "respondio":
 		// For Respond.io, we use the shared account
 		h.connectWhatsAppRespondIO(w, r, claims.TenantID, phoneNumber, req.ChannelID)
@@ -5795,7 +5799,7 @@ func (h *Handler) connectWhatsApp(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":   "invalid_provider",
-			"message": fmt.Sprintf("Invalid provider '%s'. Use 'meta_embedded', 'respondio', or 'auto'.", provider),
+			"message": fmt.Sprintf("Invalid provider '%s'. Use 'meta_embedded', 'gupshup', 'respondio', or 'auto'.", provider),
 		})
 	}
 }
@@ -6066,6 +6070,93 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{
 		"connected": false,
 		"status":    "not_connected",
+	})
+}
+
+// connectWhatsAppGupshup - Connect WhatsApp via Gupshup Partner
+func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request, tenantID uint) {
+	if h.Config.GupshupPartnerUsername == "" || h.Config.GupshupPartnerPassword == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "gupshup_not_configured",
+			"message": "Gupshup Partner is not configured. Please contact support.",
+		})
+		return
+	}
+
+	// Create Gupshup client
+	client := social.NewGupshupClient(h.Config, h.Logger)
+
+	// Check if app already exists for this tenant
+	var existingApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ?", tenantID).First(&existingApp).Error; err == nil {
+		// App exists, generate new embed link
+		redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d", h.Config.PublicURL, tenantID)
+		embedLink, err := client.GenerateEmbedSignedLink(existingApp.GupshupAppID, redirectURL)
+		if err != nil {
+			h.Logger.Error("failed to generate embed link", zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "embed_link_failed",
+				"message": "Failed to generate onboarding link. Please try again.",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":        true,
+			"provider":       "gupshup_partner",
+			"onboarding_url": embedLink,
+			"message":        "Redirect to this URL to complete WhatsApp onboarding.",
+			"app_id":         existingApp.GupshupAppID,
+		})
+		return
+	}
+
+	// Create new app for tenant
+	appName := fmt.Sprintf("Brancr-Tenant-%d", tenantID)
+	appID, err := client.CreateApp(appName)
+	if err != nil {
+		h.Logger.Error("failed to create Gupshup app", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "app_creation_failed",
+			"message": "Failed to create WhatsApp app. Please try again.",
+		})
+		return
+	}
+
+	// Save app to database
+	app := storage.WhatsAppApp{
+		TenantID:     tenantID,
+		GupshupAppID: appID,
+		Status:       "pending_onboarding",
+		Mode:         "gupshup_partner",
+	}
+	if err := h.DB.Create(&app).Error; err != nil {
+		h.Logger.Error("failed to save WhatsAppApp", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "database_error",
+			"message": "Failed to save app details. Please try again.",
+		})
+		return
+	}
+
+	// Generate embed signed link with redirect URL
+	redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d", h.Config.PublicURL, tenantID)
+	embedLink, err := client.GenerateEmbedSignedLink(appID, redirectURL)
+	if err != nil {
+		h.Logger.Error("failed to generate embed link", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "embed_link_failed",
+			"message": "Failed to generate onboarding link. Please try again.",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":        true,
+		"provider":       "gupshup_partner",
+		"onboarding_url": embedLink,
+		"message":        "Redirect to this URL to complete WhatsApp onboarding.",
+		"app_id":         appID,
 	})
 }
 

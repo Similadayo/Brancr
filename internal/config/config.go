@@ -45,6 +45,10 @@ type Config struct {
 	TenantCookieDomain   string
 	RespondIOAPIKey      string // Respond.io API access token for WhatsApp integration
 	FrontendURL           string // Frontend URL for redirects after OAuth
+	GupshupPartnerUsername string // Gupshup Partner username for authentication
+	GupshupPartnerPassword string // Gupshup Partner password for authentication
+	GupshupPartnerAppID   string // Gupshup Partner App ID (single app for all tenants)
+	GupshupAPIBaseURL      string // Gupshup API base URL
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -92,6 +96,10 @@ func Load() *Config {
 		TenantCookieDomain:   getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
 		RespondIOAPIKey:      os.Getenv("RESPOND_IO_API_KEY"), // Respond.io API access token
 		FrontendURL:           os.Getenv("FRONTEND_URL"),
+		GupshupPartnerUsername: os.Getenv("GUPSHUP_PARTNER_USERNAME"),
+		GupshupPartnerPassword: os.Getenv("GUPSHUP_PARTNER_PASSWORD"),
+		GupshupPartnerAppID:   os.Getenv("GUPSHUP_PARTNER_APP_ID"),
+		GupshupAPIBaseURL:      getEnv("GUPSHUP_API_BASE_URL", "https://partner.gupshup.io"),
 	}
 
 	validateConfig(cfg)
