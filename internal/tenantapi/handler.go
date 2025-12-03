@@ -6359,9 +6359,11 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 
 	// Step 3: Immediately configure webhook subscription for account events
 	// This allows us to receive notifications when WABA is approved/phone is verified
+	// CRITICAL: Subscribe to account-event to receive Go-Live (onboarding-event) notifications
 	webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup", h.Config.PublicURL)
-	// Subscribe to: message (incoming messages), message-event (delivery/read status), and account-event (WABA status changes)
-	subID, err := client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "account-event"})
+	// Subscribe to: message (incoming messages), message-event (delivery/read status), account-event (WABA status changes), and onboarding-event (Go-Live)
+	// Using modes="ALL" ensures we receive all events including onboarding-event
+	subID, err := client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "account-event", "onboarding-event"})
 	if err != nil {
 		h.Logger.Warn("⚠️ Failed to set webhook subscription immediately after app creation",
 			zap.String("app_id", appID),

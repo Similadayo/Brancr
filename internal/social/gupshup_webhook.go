@@ -574,6 +574,10 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 	case "account-event", "system-event":
 		// Handle account status changes (WABA approval, phone verification, etc.)
 		h.handleAccountEvent(ctx, tenantID, appID, envelope)
+	case "onboarding-event":
+		// Handle Go-Live event when app completes onboarding via embedded link
+		// Payload: {"type": "onboarding-event", "payload": {"type": "docker-status-event", "payload": {"status": "live", "waId": "WABA_ID"}}}
+		h.handleOnboardingEvent(ctx, tenantID, appID, envelope)
 	default:
 		h.Logger.Info("unhandled webhook event type",
 			zap.String("type", eventType),
@@ -855,6 +859,172 @@ func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID
 			account.Connected = (app.Status == "live" && app.PhoneNumber != "")
 			if err := h.DB.Save(&account).Error; err != nil {
 				h.Logger.Warn("failed to update SocialAccount after account event", zap.Error(err))
+			}
+		}
+	}
+}
+
+// handleOnboardingEvent processes the Go-Live event when app completes onboarding
+// Event type: "onboarding-event"
+// Payload structure: {"type": "onboarding-event", "appId": "...", "phone": "...", "payload": {"type": "docker-status-event", "payload": {"status": "live", "waId": "WABA_ID"}}}
+func (h *GupshupWebhookHandler) handleOnboardingEvent(ctx context.Context, tenantID uint, appID string, envelope map[string]interface{}) {
+	h.Logger.Info("🎉 Processing Go-Live onboarding event",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID))
+
+	// Extract phone number from envelope (top level)
+	phone, _ := envelope["phone"].(string)
+
+	// Extract nested payload structure
+	payload, ok := envelope["payload"].(map[string]interface{})
+	if !ok {
+		h.Logger.Warn("invalid onboarding event payload structure",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID))
+		// Still try to update with phone number if available
+		if phone != "" {
+			h.updateAppFromOnboardingEvent(tenantID, appID, phone, "", "live")
+		}
+		return
+	}
+
+	// Check if payload.type is "docker-status-event"
+	payloadType, _ := payload["type"].(string)
+	if payloadType != "docker-status-event" {
+		h.Logger.Info("onboarding event with non-docker-status type",
+			zap.String("payload_type", payloadType),
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID))
+	}
+
+	// Extract nested payload.payload for docker-status-event
+	nestedPayload, ok := payload["payload"].(map[string]interface{})
+	if !ok {
+		h.Logger.Warn("invalid nested payload structure in onboarding event",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID))
+		// Still try to update with phone number if available
+		if phone != "" {
+			h.updateAppFromOnboardingEvent(tenantID, appID, phone, "", "live")
+		}
+		return
+	}
+
+	// Extract status and WABA ID from nested payload
+	status, _ := nestedPayload["status"].(string)
+	wabaID, _ := nestedPayload["waId"].(string)
+
+	h.Logger.Info("🎉 Go-Live event details",
+		zap.String("phone", phone),
+		zap.String("waba_id", wabaID),
+		zap.String("status", status),
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID))
+
+	// Update app record with Go-Live event data
+	h.updateAppFromOnboardingEvent(tenantID, appID, phone, wabaID, status)
+
+	// Also call GetAppDetails to ensure we have complete metadata
+	appDetails, err := h.Client.GetAppDetails(appID)
+	if err != nil {
+		h.Logger.Warn("failed to fetch app details after onboarding event (non-critical)",
+			zap.String("app_id", appID),
+			zap.Error(err))
+	} else {
+		// Update with complete metadata from GetAppDetails
+		var app storage.WhatsAppApp
+		if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", tenantID, appID).First(&app).Error; err == nil {
+			if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
+				// Update WABA ID if not already set
+				if app.WABAID == "" {
+					if businessID, ok := whatsapp["businessId"].(string); ok && businessID != "" {
+						app.WABAID = businessID
+						app.BusinessID = businessID
+					}
+				}
+
+				// Update phone number if not already set
+				if app.PhoneNumber == "" {
+					if phoneNum, ok := whatsapp["formattedPhoneNumber"].(string); ok && phoneNum != "" {
+						app.PhoneNumber = phoneNum
+					} else if phoneNum, ok := whatsapp["normalizedPhoneNumber"].(string); ok && phoneNum != "" {
+						app.PhoneNumber = phoneNum
+					}
+				}
+
+				// Update phone number ID
+				if phoneNumberID, ok := whatsapp["phoneNumberId"].(string); ok && phoneNumberID != "" {
+					app.PhoneNumberID = phoneNumberID
+				}
+
+				// Ensure status is "live"
+				if status == "live" || app.Status == "live" {
+					app.Status = "live"
+				}
+
+				h.DB.Save(&app)
+			}
+		}
+	}
+}
+
+// updateAppFromOnboardingEvent updates the WhatsAppApp record with data from Go-Live event
+func (h *GupshupWebhookHandler) updateAppFromOnboardingEvent(tenantID uint, appID, phone, wabaID, status string) {
+	var app storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", tenantID, appID).First(&app).Error; err != nil {
+		h.Logger.Warn("app not found for onboarding event",
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err))
+		return
+	}
+
+	updated := false
+
+	// Update phone number
+	if phone != "" && app.PhoneNumber != phone {
+		app.PhoneNumber = phone
+		updated = true
+	}
+
+	// Update WABA ID
+	if wabaID != "" && app.WABAID != wabaID {
+		app.WABAID = wabaID
+		app.BusinessID = wabaID
+		updated = true
+	}
+
+	// Update status to "live" if status is "live"
+	if status == "live" && app.Status != "live" {
+		app.Status = "live"
+		updated = true
+	}
+
+	if updated {
+		if err := h.DB.Save(&app).Error; err != nil {
+			h.Logger.Error("failed to update WhatsAppApp from onboarding event",
+				zap.String("app_id", appID),
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+			return
+		}
+
+		h.Logger.Info("✅ WhatsAppApp updated from Go-Live event",
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID),
+			zap.String("status", app.Status),
+			zap.String("waba_id", app.WABAID),
+			zap.String("phone", app.PhoneNumber))
+
+		// Also update SocialAccount for compatibility
+		var account storage.SocialAccount
+		if err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error; err == nil {
+			account.Username = app.PhoneNumber
+			account.PageID = app.PhoneNumberID
+			account.ExternalID = app.PhoneNumberID
+			account.Connected = (app.Status == "live" && app.PhoneNumber != "")
+			if err := h.DB.Save(&account).Error; err != nil {
+				h.Logger.Warn("failed to update SocialAccount after onboarding event", zap.Error(err))
 			}
 		}
 	}

@@ -410,7 +410,8 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 				hasMessage = true
 			case "message-event", "status", "read", "delivered", "sent":
 				hasEvents = true
-			case "account-event", "system-event", "status-event", "review-event":
+			case "account-event", "system-event", "status-event", "review-event", "onboarding-event":
+				// onboarding-event is the Go-Live event - needs ACCOUNT mode (which is included in ALL)
 				needsAccountEvents = true
 			}
 		}
