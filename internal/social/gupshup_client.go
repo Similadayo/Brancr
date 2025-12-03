@@ -1,7 +1,6 @@
 package social
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -804,29 +803,354 @@ func (c *GupshupClient) getAppDetailsDetailed(appID string) (map[string]interfac
 }
 
 // SendMessage sends a WhatsApp message via Gupshup
-func (c *GupshupClient) SendMessage(appID, to, message string) (string, error) {
+// GetTemplatesFromLibrary fetches pre-approved Meta Library Templates
+// Endpoint: GET /partner/app/{appId}/template/metalibrary
+func (c *GupshupClient) GetTemplatesFromLibrary(appID string, filters map[string]string) ([]map[string]interface{}, error) {
 	appToken, err := c.GetAppAccessToken(appID)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("failed to get app token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s/v3/messages", c.Config.GupshupAPIBaseURL, appID)
-	payload := map[string]interface{}{
-		"to":   to,
-		"type": "text",
-		"text": map[string]string{
-			"body": message,
-		},
+	apiURL := fmt.Sprintf("%s/partner/app/%s/template/metalibrary", c.Config.GupshupAPIBaseURL, appID)
+
+	// Build query parameters
+	params := url.Values{}
+	for k, v := range filters {
+		if v != "" {
+			params.Set(k, v)
+		}
+	}
+	if len(params) > 0 {
+		apiURL += "?" + params.Encode()
 	}
 
-	jsonBody, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", appToken)
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get templates request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Get Templates failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("response", string(body)))
+		}
+		return nil, fmt.Errorf("get templates failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Status    string                   `json:"status"`
+		Templates []map[string]interface{} `json:"templates"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse templates response: %w, body=%s", err, string(body))
+	}
+
+	return result.Templates, nil
+}
+
+// CreateTemplateFromLibrary creates a template from Meta Library template
+// This is used to create a simple text template for AI replies
+// Endpoint: POST /partner/app/{appId}/template/metalibrary
+// Header: Authorization: {PARTNER_APP_TOKEN} (App Token)
+// Content-Type: application/x-www-form-urlencoded
+func (c *GupshupClient) CreateTemplateFromLibrary(appID, elementName, category, languageCode, libraryTemplateName, buttons string) (map[string]interface{}, error) {
+	appToken, err := c.GetAppAccessToken(appID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get app token: %w", err)
+	}
+
+	apiURL := fmt.Sprintf("%s/partner/app/%s/template/metalibrary", c.Config.GupshupAPIBaseURL, appID)
+
+	data := url.Values{}
+	data.Set("elementName", elementName)
+	data.Set("category", category)
+	data.Set("languageCode", languageCode)
+	data.Set("libraryTemplateName", libraryTemplateName)
+	if buttons != "" {
+		data.Set("buttons", buttons)
+	}
+
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", appToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create template request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Create Template failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("element_name", elementName),
+				zap.String("response", string(body)))
+		}
+		return nil, fmt.Errorf("create template failed (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Status    string                 `json:"status"`
+		Templates map[string]interface{} `json:"templates"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse create template response: %w, body=%s", err, string(body))
+	}
+
+	if result.Status != "success" {
+		return nil, fmt.Errorf("invalid create template response: %s", string(body))
+	}
+
+	if c.Logger != nil {
+		templateID := ""
+		if id, ok := result.Templates["id"].(string); ok {
+			templateID = id
+		}
+		elementNameCreated := ""
+		if en, ok := result.Templates["elementName"].(string); ok {
+			elementNameCreated = en
+		}
+		c.Logger.Info("✅ Gupshup template created from Meta Library",
+			zap.String("app_id", appID),
+			zap.String("template_id", templateID),
+			zap.String("element_name", elementNameCreated),
+			zap.String("category", category),
+			zap.String("language_code", languageCode))
+	}
+
+	return result.Templates, nil
+}
+
+// CreateAITemplate creates a simple text template for AI replies
+// It first finds a simple text template from Meta Library, then creates a new one based on it
+// The new template will have a variable parameter {{1}} for AI-generated text
+func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
+	// Step 1: Get available templates from Meta Library
+	templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{
+		"topic":        "UTILITY",
+		"languageCode": "en",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get templates from library: %w", err)
+	}
+
+	if len(templates) == 0 {
+		return "", fmt.Errorf("no templates found in Meta Library for app")
+	}
+
+	// Step 2: Find a simple text template (prefer TEXT type, with minimal parameters)
+	var baseTemplate map[string]interface{}
+	for _, t := range templates {
+		if templateType, ok := t["templateType"].(string); ok && templateType == "TEXT" {
+			// Check if it has parameters (we want one with at least one parameter)
+			if data, ok := t["data"].(string); ok && strings.Contains(data, "{{1}}") {
+				baseTemplate = t
+				break
+			}
+		}
+	}
+
+	// If no TEXT template with {{1}}, use the first available template
+	if baseTemplate == nil {
+		baseTemplate = templates[0]
+	}
+
+	// Extract library template name (elementName)
+	libraryTemplateName, ok := baseTemplate["elementName"].(string)
+	if !ok || libraryTemplateName == "" {
+		return "", fmt.Errorf("library template name not found in template")
+	}
+
+	// Extract category
+	category := "UTILITY"
+	if cat, ok := baseTemplate["category"].(string); ok && cat != "" {
+		category = cat
+	}
+
+	// Extract language code
+	languageCode := "en"
+	if lang, ok := baseTemplate["languageCode"].(string); ok && lang != "" {
+		languageCode = lang
+	}
+
+	// Extract buttons (if any)
+	buttons := ""
+	if buttonsData, ok := baseTemplate["buttons"].(string); ok && buttonsData != "" {
+		buttons = buttonsData
+	}
+
+	// Step 3: Create new template with unique element name
+	// Use app ID prefix + timestamp for uniqueness
+	elementName := fmt.Sprintf("brancr_ai_reply_%s_%d", appID[:8], time.Now().Unix())
+
+	// Create the template
+	templateData, err := c.CreateTemplateFromLibrary(appID, elementName, category, languageCode, libraryTemplateName, buttons)
+	if err != nil {
+		return "", fmt.Errorf("failed to create template from library: %w", err)
+	}
+
+	// Return the elementName (this is the template ID we'll use)
+	createdElementName, ok := templateData["elementName"].(string)
+	if !ok || createdElementName == "" {
+		return "", fmt.Errorf("created template elementName not found in response")
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("✅ AI reply template created successfully",
+			zap.String("app_id", appID),
+			zap.String("template_element_name", createdElementName),
+			zap.String("base_library_template", libraryTemplateName))
+	}
+
+	return createdElementName, nil
+}
+
+// SendMessage sends a WhatsApp message via Gupshup using the template message API
+// For plain text messages, we first try to get a simple text template from Meta Library
+// Endpoint: POST /partner/app/{appId}/template/msg
+// Header: token: {PARTNER_APP_TOKEN} (App Token)
+// Content-Type: application/x-www-form-urlencoded
+func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID ...string) (string, error) {
+	appToken, err := c.GetAppAccessToken(appID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get app token: %w", err)
+	}
+
+	// Get app details to extract source phone number and app name
+	appDetails, err := c.GetAppDetails(appID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get app details: %w", err)
+	}
+
+	// Extract source phone number and app name
+	var sourcePhone string
+	var appName string
+
+	// Get phone from whatsapp object or from top-level
+	if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
+		if phone, ok := whatsapp["formattedPhoneNumber"].(string); ok && phone != "" {
+			sourcePhone = phone
+		} else if phone, ok := whatsapp["normalizedPhoneNumber"].(string); ok && phone != "" {
+			sourcePhone = phone
+		}
+	}
+
+	// Get phone from top-level if not in whatsapp object
+	if sourcePhone == "" {
+		if phone, ok := appDetails["phone"].(string); ok && phone != "" {
+			sourcePhone = phone
+		}
+	}
+
+	// Get app name
+	if name, ok := appDetails["name"].(string); ok && name != "" {
+		appName = name
+	}
+
+	if sourcePhone == "" {
+		return "", fmt.Errorf("source phone number not found for app")
+	}
+	if appName == "" {
+		return "", fmt.Errorf("app name not found for app")
+	}
+
+	// Use correct endpoint: /partner/app/{appId}/template/msg
+	apiURL := fmt.Sprintf("%s/partner/app/%s/template/msg", c.Config.GupshupAPIBaseURL, appID)
+
+	// Build form-urlencoded payload
+	data := url.Values{}
+	data.Set("channel", "whatsapp")
+	data.Set("source", sourcePhone)
+	data.Set("destination", to)
+	data.Set("src.name", appName)
+	data.Set("sandbox", "false")
+
+	// For AI-generated replies, we need a flexible template
+	// Strategy: Use a simple text template with a variable parameter
+	// The template should have format like: "{{1}}" where we pass the AI reply as param
+
+	// For AI-generated replies, we need a flexible template approach
+	// Strategy: Use a simple text template with a variable parameter
+	// The template should have format like: "{{1}}" where we pass the AI reply as param
+
+	var templateID string
+	var templateParams []string
+
+	// Priority 1: Use default template ID from database (if provided)
+	if len(defaultTemplateID) > 0 && defaultTemplateID[0] != "" {
+		templateID = defaultTemplateID[0]
+		// Pass AI-generated message as the first parameter
+		templateParams = []string{message}
+		if c.Logger != nil {
+			c.Logger.Info("✅ Using default template ID for AI reply",
+				zap.String("template_id", templateID))
+		}
+	} else {
+		// Priority 2: Try to get from Meta Library (fallback - may not work well for AI)
+		templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{
+			"topic":        "ACCOUNT_UPDATES",
+			"languageCode": "en",
+		})
+		if err == nil && len(templates) > 0 {
+			if elementName, ok := templates[0]["elementName"].(string); ok && elementName != "" {
+				templateID = elementName
+				templateParams = []string{message}
+				if c.Logger != nil {
+					c.Logger.Warn("⚠️ Using Meta Library template for AI reply (not ideal)",
+						zap.String("template_id", templateID),
+						zap.String("note", "Consider creating a dedicated text template for AI replies"))
+				}
+			}
+		}
+	}
+
+	// If no template found, we can't send the message
+	if templateID == "" {
+		return "", fmt.Errorf("no template available for sending AI reply - need to create a text template for app %s and store its ID in WhatsAppApp.DefaultTemplateID", appID)
+	}
+
+	// Use template with AI-generated message as parameter
+	paramsJSON, _ := json.Marshal(templateParams)
+	templateJSON := fmt.Sprintf(`{"id": "%s", "params": %s}`, templateID, string(paramsJSON))
+	data.Set("template", templateJSON)
+
+	// Message field is also required for text templates
+	messageJSON := fmt.Sprintf(`{"type": "text", "text": "%s"}`, escapeJSONString(message))
+	data.Set("message", messageJSON)
+
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+appToken)
-	req.Header.Set("Content-Type", "application/json")
+	// Use token header (as per Gupshup Partner API docs)
+	// Docs show: --header 'token: {PARTNER_APP_TOKEN}'
+	req.Header.Set("token", appToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("accept", "application/json")
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
@@ -837,24 +1161,46 @@ func (c *GupshupClient) SendMessage(appID, to, message string) (string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Send Message failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("source", sourcePhone),
+				zap.String("destination", to),
+				zap.String("response", string(body)))
+		}
 		return "", fmt.Errorf("send message failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var result map[string]interface{}
+	var result struct {
+		Status    string `json:"status"`
+		MessageID string `json:"messageId"`
+	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse send message response: %w", err)
+		return "", fmt.Errorf("failed to parse send message response: %w, body=%s", err, string(body))
 	}
 
-	// Extract message ID (field name may vary)
-	if msgID, ok := result["gsId"].(string); ok && msgID != "" {
-		return msgID, nil
-	}
-	if msgID, ok := result["id"].(string); ok && msgID != "" {
-		return msgID, nil
-	}
-	if msgID, ok := result["messageId"].(string); ok && msgID != "" {
-		return msgID, nil
+	if result.Status != "submitted" || result.MessageID == "" {
+		return "", fmt.Errorf("invalid send message response: %s", string(body))
 	}
 
-	return "", fmt.Errorf("message ID not found in response: %s", string(body))
+	if c.Logger != nil {
+		c.Logger.Info("✅ Gupshup message sent successfully",
+			zap.String("app_id", appID),
+			zap.String("message_id", result.MessageID),
+			zap.String("destination", to))
+	}
+
+	return result.MessageID, nil
+}
+
+// escapeJSONString escapes special characters in JSON string
+func escapeJSONString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	return s
 }

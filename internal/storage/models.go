@@ -218,6 +218,7 @@ type WhatsAppApp struct {
 	SubscriptionID     string `gorm:"type:text"`                   // Subscription ID from Subscription API
 	SubscriptionActive bool   `gorm:"default:false"`               // Whether subscription is active
 	WebhookURL         string `gorm:"type:text"`                   // Webhook URL configured for this app
+	DefaultTemplateID  string `gorm:"type:text"`                  // Default text template ID for AI replies (template with variable parameter)
 }
 
 // GupshupWebhookEvent stores incoming webhook events from Gupshup

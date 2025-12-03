@@ -850,12 +850,45 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		return fmt.Errorf("gupshup app is not live (status: %s)", app.Status)
 	}
 
+	// Check if we have a default template ID for AI replies
+	// If not, try to create one automatically
+	if app.DefaultTemplateID == "" {
+		h.Logger.Info("🎨 No AI template found, creating one automatically",
+			zap.String("app_id", app.GupshupAppID))
+		
+		templateID, err := h.GupshupClient.CreateAITemplate(app.GupshupAppID)
+		if err != nil {
+			h.Logger.Warn("⚠️ Failed to create AI template automatically (will try Meta Library fallback)",
+				zap.String("app_id", app.GupshupAppID),
+				zap.Error(err))
+		} else {
+			// Store the template ID in database
+			app.DefaultTemplateID = templateID
+			if err := h.DB.Save(&app).Error; err != nil {
+				h.Logger.Warn("failed to save template ID to database",
+					zap.String("app_id", app.GupshupAppID),
+					zap.String("template_id", templateID),
+					zap.Error(err))
+			} else {
+				h.Logger.Info("✅ AI template created and stored",
+					zap.String("app_id", app.GupshupAppID),
+					zap.String("template_id", templateID))
+			}
+		}
+	}
+
 	h.Logger.Info("📤 Sending WhatsApp message via Gupshup",
 		zap.String("customer_id", customerID),
 		zap.String("app_id", app.GupshupAppID),
+		zap.String("template_id", app.DefaultTemplateID),
 		zap.String("message_preview", truncateString(reply, 50)))
 
-	messageID, err := h.GupshupClient.SendMessage(app.GupshupAppID, customerID, reply)
+	// Pass the default template ID if available (for AI replies)
+	var templateID string
+	if app.DefaultTemplateID != "" {
+		templateID = app.DefaultTemplateID
+	}
+	messageID, err := h.GupshupClient.SendMessage(app.GupshupAppID, customerID, reply, templateID)
 	if err != nil {
 		h.Logger.Error("❌ Gupshup send failed",
 			zap.String("customer_id", customerID),

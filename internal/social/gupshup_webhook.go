@@ -1072,6 +1072,26 @@ func (h *GupshupWebhookHandler) updateAppFromOnboardingEvent(tenantID uint, appI
 	if status == "live" && app.Status != "live" {
 		app.Status = "live"
 		updated = true
+
+		// Create AI reply template when app goes live (if not already created)
+		if app.DefaultTemplateID == "" && h.Client != nil {
+			h.Logger.Info("🎨 Creating AI reply template for live app",
+				zap.String("app_id", appID),
+				zap.Uint("tenant_id", tenantID))
+
+			templateID, err := h.Client.CreateAITemplate(appID)
+			if err != nil {
+				h.Logger.Warn("failed to create AI template (non-critical, will retry later)",
+					zap.String("app_id", appID),
+					zap.Error(err))
+			} else {
+				app.DefaultTemplateID = templateID
+				updated = true
+				h.Logger.Info("✅ AI reply template created and stored",
+					zap.String("app_id", appID),
+					zap.String("template_id", templateID))
+			}
+		}
 	}
 
 	if updated {
