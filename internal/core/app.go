@@ -191,6 +191,14 @@ func NewApp(cfg *config.Config) (*App, error) {
 		logger.Info("📊 Analytics scheduler started")
 	}
 
+	// ✅ Start Gupshup Polling Worker (checks pending WhatsApp onboarding apps)
+	if services.GupshupWebhookHandler != nil {
+		ctx := context.Background()
+		// Poll every 10 minutes for apps stuck in pending_onboarding
+		go services.GupshupWebhookHandler.StartPollingWorker(ctx, 10*time.Minute)
+		logger.Info("🔄 Gupshup polling worker started")
+	}
+
 	return app, nil
 }
 

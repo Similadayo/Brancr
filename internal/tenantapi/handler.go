@@ -6214,25 +6214,41 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Step 3: Whitelist WABA ID (required before getting embed signup URL)
-	// This returns the actual embedSignupUrl we should use
-	_, embedLink, err := client.WhitelistWABA(appID)
+	// Step 3: Immediately configure webhook subscription for account events
+	// This allows us to receive notifications when WABA is approved/phone is verified
+	webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup", h.Config.PublicURL)
+	// Subscribe to: message (incoming messages), message-event (delivery/read status), and account-event (WABA status changes)
+	subID, err := client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "account-event"})
 	if err != nil {
-		h.Logger.Error("failed to whitelist WABA", zap.Error(err))
-		// Don't fail completely - try fallback to GenerateEmbedSignedLink
-		redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d", h.Config.PublicURL, tenantID)
-		embedLink, err = client.GenerateEmbedSignedLink(appID, redirectURL)
-		if err != nil {
-			h.Logger.Error("failed to generate embed link (fallback)", zap.Error(err))
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error":   "embed_link_failed",
-				"message": "Failed to generate onboarding link. Please try again.",
-			})
-			return
-		}
-		h.Logger.Warn("⚠️ Using fallback embed link (whitelist failed)", zap.String("app_id", appID))
+		h.Logger.Warn("⚠️ Failed to set webhook subscription immediately after app creation",
+			zap.String("app_id", appID),
+			zap.String("webhook_url", webhookURL),
+			zap.Error(err))
+		// Don't fail - we can set subscription later via redirect callback
 	} else {
-		h.Logger.Info("✅ WABA whitelisted, using embedSignupUrl from whitelist response", zap.String("app_id", appID))
+		app.SubscriptionID = subID
+		app.SubscriptionActive = true
+		app.WebhookURL = webhookURL
+		if err := h.DB.Save(&app).Error; err != nil {
+			h.Logger.Warn("failed to save subscription details", zap.Error(err))
+		} else {
+			h.Logger.Info("✅ Webhook subscription configured immediately after app creation",
+				zap.String("app_id", appID),
+				zap.String("subscription_id", subID),
+				zap.String("webhook_url", webhookURL))
+		}
+	}
+
+	// Step 4: Generate embed signup link
+	redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d", h.Config.PublicURL, tenantID)
+	embedLink, err := client.GenerateEmbedSignedLink(appID, redirectURL)
+	if err != nil {
+		h.Logger.Error("failed to generate embed link", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "embed_link_failed",
+			"message": "Failed to generate onboarding link. Please try again.",
+		})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

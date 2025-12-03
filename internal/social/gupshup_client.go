@@ -377,147 +377,6 @@ func (c *GupshupClient) GenerateEmbedSignedLink(appID, redirectURL string) (stri
 	return result.Link, nil
 }
 
-// WhitelistWABA whitelists a WhatsApp Business Account (WABA) ID for embedded onboarding flow
-// CRITICAL: Uses /partner/app/{appId}/obotoembed/whitelist endpoint (as per Gupshup Partner API docs)
-// Endpoint: POST /partner/app/{appId}/obotoembed/whitelist
-// Header: Authorization: {PARTNER_APP_TOKEN} (App Token, NOT Partner Token)
-// Response: {"status": "success", "id": "<waba_id>", "embedSignupUrl": "<url>"}
-// This is required before attaching credit lines and completing the WhatsApp onboarding process
-func (c *GupshupClient) WhitelistWABA(appID string) (string, string, error) {
-	// Get App Token (NOT Partner Token) - required for this API
-	appToken, err := c.GetAppAccessToken(appID)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get app token: %w", err)
-	}
-
-	apiURL := fmt.Sprintf("%s/partner/app/%s/obotoembed/whitelist", c.Config.GupshupAPIBaseURL, appID)
-
-	req, err := http.NewRequest("POST", apiURL, nil)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Use App Token in Authorization header (NOT Partner Token)
-	// Docs show both "Authorization" and "token" header - using Authorization as per sample request
-	req.Header.Set("Authorization", appToken)
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("whitelist WABA request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		if c.Logger != nil {
-			c.Logger.Error("Gupshup Whitelist WABA failed",
-				zap.Int("status_code", resp.StatusCode),
-				zap.String("url", apiURL),
-				zap.String("app_id", appID),
-				zap.String("response", string(body)))
-		}
-		return "", "", fmt.Errorf("whitelist WABA request failed (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	// Response format: {"status": "success", "id": "<waba_id>", "embedSignupUrl": "<url>"}
-	var result struct {
-		Status         string `json:"status"`
-		ID             string `json:"id"`             // WABA ID
-		EmbedSignupURL string `json:"embedSignupUrl"` // Updated embed signup URL
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("failed to parse whitelist WABA response: %w, body=%s", err, string(body))
-	}
-
-	if result.Status != "success" {
-		return "", "", fmt.Errorf("invalid whitelist WABA response: %s", string(body))
-	}
-
-	if c.Logger != nil {
-		c.Logger.Info("✅ Gupshup WABA whitelisted",
-			zap.String("app_id", appID),
-			zap.String("waba_id", result.ID),
-			zap.String("embed_signup_url", result.EmbedSignupURL))
-	}
-
-	return result.ID, result.EmbedSignupURL, nil
-}
-
-// VerifyAttachWABA verifies and attaches credit line to WABA (completes credit-line attach)
-// CRITICAL: Uses /partner/app/{appId}/obotoembed/verify endpoint (as per Gupshup Partner API docs)
-// Endpoint: POST /partner/app/{appId}/obotoembed/verify
-// Header: token: {PARTNER_APP_TOKEN} (App Token, NOT Partner Token)
-// This completes the credit-line attach process after WABA whitelisting
-func (c *GupshupClient) VerifyAttachWABA(appID string) error {
-	// Get App Token (NOT Partner Token) - required for this API
-	appToken, err := c.GetAppAccessToken(appID)
-	if err != nil {
-		return fmt.Errorf("failed to get app token: %w", err)
-	}
-
-	apiURL := fmt.Sprintf("%s/partner/app/%s/obotoembed/verify", c.Config.GupshupAPIBaseURL, appID)
-
-	req, err := http.NewRequest("POST", apiURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Use App Token in "token" header (NOT Partner Token, NOT Authorization)
-	req.Header.Set("token", appToken)
-	client := &http.Client{Timeout: 10 * time.Second}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("verify attach WABA request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		if c.Logger != nil {
-			c.Logger.Error("Gupshup Verify Attach WABA failed",
-				zap.Int("status_code", resp.StatusCode),
-				zap.String("url", apiURL),
-				zap.String("app_id", appID),
-				zap.String("response", string(body)))
-		}
-		return fmt.Errorf("verify attach WABA request failed (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	// Response format: {"status": "success", ...} (exact format may vary)
-	var result struct {
-		Status  string `json:"status"`
-		Message string `json:"message,omitempty"`
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		// If response doesn't match expected format, check if it's still success
-		if resp.StatusCode == 200 {
-			if c.Logger != nil {
-				c.Logger.Info("✅ Gupshup WABA verify/attach completed",
-					zap.String("app_id", appID),
-					zap.String("response", string(body)))
-			}
-			return nil
-		}
-		return fmt.Errorf("failed to parse verify attach response: %w, body=%s", err, string(body))
-	}
-
-	if result.Status != "success" {
-		return fmt.Errorf("verify attach failed: %s", result.Message)
-	}
-
-	if c.Logger != nil {
-		c.Logger.Info("✅ Gupshup WABA verify/attach completed",
-			zap.String("app_id", appID),
-			zap.String("message", result.Message))
-	}
-
-	return nil
-}
-
 // SetSubscription creates or updates webhook subscription for an app
 // CRITICAL: Uses /partner/app/{appId}/subscription endpoint (as per Gupshup Partner API docs)
 // Endpoint: POST /partner/app/{appId}/subscription
@@ -684,21 +543,26 @@ func (c *GupshupClient) GetSubscription(appID string) (string, error) {
 	return result.Subscription.SubscriptionID, nil
 }
 
-// GetAppDetails retrieves app details including status
+// GetAppDetails retrieves app details including WhatsApp metadata (WABA ID, phone number, etc.)
+// CRITICAL: Uses /partner/app/{appId} endpoint (as per Gupshup Partner API docs)
+// Endpoint: GET /partner/app/{appId}
+// Header: Authorization: {PARTNER_TOKEN} (Partner Token, NOT App Token)
+// Response contains WhatsApp object with: businessId, formattedPhoneNumber, normalizedPhoneNumber, wabaApprovalTimestamp, etc.
 func (c *GupshupClient) GetAppDetails(appID string) (map[string]interface{}, error) {
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return nil, err
 	}
 
-	// Use /partnerApps endpoint for WhatsApp apps (NOT /app)
-	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s", c.Config.GupshupAPIBaseURL, appID)
-	req, err := http.NewRequest("GET", url, nil)
+	// Use correct endpoint: /partner/app/{appId} (NOT /partner/account/api/partnerApps/{appId})
+	apiURL := fmt.Sprintf("%s/partner/app/%s", c.Config.GupshupAPIBaseURL, appID)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+partnerToken)
+	// Use Partner Token in Authorization header (without "Bearer " prefix)
+	req.Header.Set("Authorization", partnerToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
@@ -709,12 +573,33 @@ func (c *GupshupClient) GetAppDetails(appID string) (map[string]interface{}, err
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Get App Details failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("response", string(body)))
+		}
 		return nil, fmt.Errorf("get app details failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse app details response: %w", err)
+		return nil, fmt.Errorf("failed to parse app details response: %w, body=%s", err, string(body))
+	}
+
+	if c.Logger != nil {
+		// Log WhatsApp metadata if present
+		if whatsapp, ok := result["whatsapp"].(map[string]interface{}); ok {
+			c.Logger.Info("✅ Gupshup App Details retrieved",
+				zap.String("app_id", appID),
+				zap.Any("waba_id", whatsapp["businessId"]),
+				zap.Any("phone_number", whatsapp["formattedPhoneNumber"]),
+				zap.Any("normalized_phone", whatsapp["normalizedPhoneNumber"]))
+		} else {
+			c.Logger.Info("✅ Gupshup App Details retrieved (no WhatsApp metadata yet)",
+				zap.String("app_id", appID))
+		}
 	}
 
 	return result, nil

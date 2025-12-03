@@ -128,9 +128,6 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		}
 	} else {
 		// Update existing record
-		// Check if WABA ID is new (needs whitelisting)
-		wabaIDIsNew := wabaID != "" && app.WABAID != wabaID
-
 		if token != "" {
 			app.GupshupAppToken = token
 		}
@@ -153,42 +150,6 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 			h.Logger.Error("failed to update WhatsAppApp", zap.Error(err))
 			http.Error(w, "database error", http.StatusInternalServerError)
 			return
-		}
-
-		// Step 5: Verify/Attach WABA (complete credit-line attach)
-		// This should be called after onboarding when we receive the WABA ID
-		if wabaIDIsNew && wabaID != "" {
-			// First whitelist the WABA
-			whitelistedWABAID, embedURL, err := h.Client.WhitelistWABA(appID)
-			if err != nil {
-				h.Logger.Warn("failed to whitelist WABA",
-					zap.String("app_id", appID),
-					zap.String("waba_id", wabaID),
-					zap.Error(err))
-			} else {
-				app.WABAID = whitelistedWABAID
-				if err := h.DB.Save(&app).Error; err != nil {
-					h.Logger.Warn("failed to save whitelisted WABA ID", zap.Error(err))
-				} else {
-					h.Logger.Info("✅ WABA whitelisted successfully",
-						zap.String("app_id", appID),
-						zap.String("waba_id", whitelistedWABAID),
-						zap.String("embed_signup_url", embedURL))
-
-					// Then verify/attach (complete credit-line attach)
-					if err := h.Client.VerifyAttachWABA(appID); err != nil {
-						h.Logger.Warn("failed to verify/attach WABA",
-							zap.String("app_id", appID),
-							zap.String("waba_id", whitelistedWABAID),
-							zap.Error(err))
-						// Don't fail - continue with subscription setup
-					} else {
-						h.Logger.Info("✅ WABA verify/attach completed",
-							zap.String("app_id", appID),
-							zap.String("waba_id", whitelistedWABAID))
-					}
-				}
-			}
 		}
 	}
 
@@ -307,7 +268,13 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 	frontendSuccessURL := fmt.Sprintf("%s/settings/integrations?whatsapp_connected=true&provider=gupshup&app_id=%s&status=%s",
 		h.Client.Config.FrontendURL, appID, status)
 
-	// Return success response with redirect info
+	// For GET requests (browser redirect), perform HTTP redirect immediately
+	if r.Method == http.MethodGet {
+		http.Redirect(w, r, frontendSuccessURL, http.StatusFound)
+		return
+	}
+
+	// For API calls (POST, etc.), return JSON response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -320,11 +287,6 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		"subscription_set": app.SubscriptionID != "",
 		"redirect_url":     frontendSuccessURL,
 	})
-
-	// Also redirect browser if this is a GET request (user clicking the link)
-	if r.Method == http.MethodGet {
-		http.Redirect(w, r, frontendSuccessURL, http.StatusFound)
-	}
 }
 
 // processWebhookEvent processes webhook events asynchronously
@@ -363,6 +325,9 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 		h.handleDeliveryStatus(ctx, tenantID, envelope)
 	case "read_status":
 		h.handleReadStatus(ctx, tenantID, envelope)
+	case "account-event", "system-event":
+		// Handle account status changes (WABA approval, phone verification, etc.)
+		h.handleAccountEvent(ctx, tenantID, appID, envelope)
 	default:
 		h.Logger.Info("unhandled webhook event type",
 			zap.String("type", eventType),
@@ -530,6 +495,267 @@ func (h *GupshupWebhookHandler) handleReadStatus(ctx context.Context, tenantID u
 		if err == nil {
 			interaction.Metadata = string(metadataJSON)
 			h.DB.Save(&interaction)
+		}
+	}
+}
+
+// handleAccountEvent processes account status events (WABA approval, phone verification, etc.)
+// Event types: "account-event", "system-event"
+// Payload structure: {"type": "account-event", "payload": {"type": "review-event" | "status-event", ...}}
+func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID uint, appID string, envelope map[string]interface{}) {
+	h.Logger.Info("📋 Processing account event",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID))
+
+	// Extract payload
+	payload, ok := envelope["payload"].(map[string]interface{})
+	if !ok {
+		h.Logger.Warn("invalid account event payload structure",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", appID))
+		return
+	}
+
+	// Check event subtype: "review-event", "status-event", etc.
+	eventSubtype, _ := payload["type"].(string)
+	status, _ := payload["status"].(string)
+
+	h.Logger.Info("📋 Account event details",
+		zap.String("event_subtype", eventSubtype),
+		zap.String("status", status),
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID))
+
+	// If status is "approved" or equivalent, fetch app details to get WABA/phone metadata
+	if status == "approved" || status == "live" || status == "connected" || eventSubtype == "status-event" {
+		// Fetch latest app details from Gupshup API
+		appDetails, err := h.Client.GetAppDetails(appID)
+		if err != nil {
+			h.Logger.Error("failed to fetch app details after account event",
+				zap.String("app_id", appID),
+				zap.String("status", status),
+				zap.Error(err))
+			return
+		}
+
+		// Update WhatsAppApp record with metadata from GetAppDetails
+		var app storage.WhatsAppApp
+		if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", tenantID, appID).First(&app).Error; err != nil {
+			h.Logger.Warn("app not found for account event",
+				zap.String("app_id", appID),
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+			return
+		}
+
+		// Extract WhatsApp metadata from app details
+		// Response structure: {"whatsapp": {"businessId": "...", "formattedPhoneNumber": "...", "normalizedPhoneNumber": "...", ...}}
+		if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
+			// Update WABA ID
+			if businessID, ok := whatsapp["businessId"].(string); ok && businessID != "" {
+				app.WABAID = businessID
+				app.BusinessID = businessID
+			}
+
+			// Update phone number
+			if phone, ok := whatsapp["formattedPhoneNumber"].(string); ok && phone != "" {
+				app.PhoneNumber = phone
+			} else if phone, ok := whatsapp["normalizedPhoneNumber"].(string); ok && phone != "" {
+				app.PhoneNumber = phone
+			}
+
+			// Update phone number ID if available
+			if phoneNumberID, ok := whatsapp["phoneNumberId"].(string); ok && phoneNumberID != "" {
+				app.PhoneNumberID = phoneNumberID
+			}
+
+			// Update status
+			if status == "approved" || status == "live" || status == "connected" {
+				app.Status = "live"
+			}
+		}
+
+		// Update status from event if provided
+		if status != "" && (status == "approved" || status == "live" || status == "connected") {
+			app.Status = "live"
+		}
+
+		// Save updated app record
+		if err := h.DB.Save(&app).Error; err != nil {
+			h.Logger.Error("failed to update WhatsAppApp after account event",
+				zap.String("app_id", appID),
+				zap.Uint("tenant_id", tenantID),
+				zap.Error(err))
+			return
+		}
+
+		h.Logger.Info("✅ WhatsAppApp updated from account event",
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID),
+			zap.String("status", app.Status),
+			zap.String("waba_id", app.WABAID),
+			zap.String("phone", app.PhoneNumber))
+
+		// Also update SocialAccount for compatibility
+		var account storage.SocialAccount
+		if err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error; err == nil {
+			account.Username = app.PhoneNumber
+			account.PageID = app.PhoneNumberID
+			account.ExternalID = app.PhoneNumberID
+			account.Connected = (app.Status == "live" && app.PhoneNumber != "")
+			if err := h.DB.Save(&account).Error; err != nil {
+				h.Logger.Warn("failed to update SocialAccount after account event", zap.Error(err))
+			}
+		}
+	}
+}
+
+// PollPendingApps checks apps stuck in pending_onboarding status and fetches their latest status
+// This should be called periodically (e.g., every 5-10 minutes) as a fallback if webhooks fail
+// Call this from a background worker or cron job
+func (h *GupshupWebhookHandler) PollPendingApps(ctx context.Context) error {
+	// Find apps that are pending and haven't been updated in the last hour
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+	
+	var pendingApps []storage.WhatsAppApp
+	if err := h.DB.Where("status = ? AND updated_at < ?", "pending_onboarding", oneHourAgo).
+		Find(&pendingApps).Error; err != nil {
+		return fmt.Errorf("failed to query pending apps: %w", err)
+	}
+
+	if len(pendingApps) == 0 {
+		return nil // No pending apps to check
+	}
+
+	h.Logger.Info("🔄 Polling pending WhatsApp apps",
+		zap.Int("count", len(pendingApps)))
+
+	for _, app := range pendingApps {
+		// Skip if app was created less than 30 minutes ago (give it time)
+		if time.Since(app.CreatedAt) < 30*time.Minute {
+			continue
+		}
+
+		// Fetch latest app details from Gupshup
+		appDetails, err := h.Client.GetAppDetails(app.GupshupAppID)
+		if err != nil {
+			h.Logger.Warn("failed to fetch app details during polling",
+				zap.String("app_id", app.GupshupAppID),
+				zap.Uint("tenant_id", app.TenantID),
+				zap.Error(err))
+			continue
+		}
+
+		// Check if app status has changed
+		updated := false
+
+		// Extract WhatsApp metadata
+		if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
+			// Update WABA ID
+			if businessID, ok := whatsapp["businessId"].(string); ok && businessID != "" && app.WABAID != businessID {
+				app.WABAID = businessID
+				app.BusinessID = businessID
+				updated = true
+			}
+
+			// Update phone number
+			if phone, ok := whatsapp["formattedPhoneNumber"].(string); ok && phone != "" && app.PhoneNumber != phone {
+				app.PhoneNumber = phone
+				updated = true
+			} else if phone, ok := whatsapp["normalizedPhoneNumber"].(string); ok && phone != "" && app.PhoneNumber != phone {
+				app.PhoneNumber = phone
+				updated = true
+			}
+
+			// Update phone number ID
+			if phoneNumberID, ok := whatsapp["phoneNumberId"].(string); ok && phoneNumberID != "" && app.PhoneNumberID != phoneNumberID {
+				app.PhoneNumberID = phoneNumberID
+				updated = true
+			}
+		}
+
+		// Check app status from response
+		if status, ok := appDetails["status"].(string); ok {
+			if status == "live" || status == "connected" || status == "approved" {
+				if app.Status != "live" {
+					app.Status = "live"
+					updated = true
+				}
+			} else if status == "failed" || status == "rejected" {
+				if app.Status != "failed" {
+					app.Status = "failed"
+					updated = true
+					h.Logger.Warn("⚠️ WhatsApp app onboarding failed",
+						zap.String("app_id", app.GupshupAppID),
+						zap.Uint("tenant_id", app.TenantID),
+						zap.String("status", status))
+				}
+			}
+		}
+
+		// If app has been pending for more than 24 hours with no updates, mark as failed
+		if app.Status == "pending_onboarding" && time.Since(app.CreatedAt) > 24*time.Hour {
+			app.Status = "failed"
+			updated = true
+			h.Logger.Warn("⚠️ WhatsApp app onboarding timed out (24+ hours)",
+				zap.String("app_id", app.GupshupAppID),
+				zap.Uint("tenant_id", app.TenantID))
+		}
+
+		if updated {
+			if err := h.DB.Save(&app).Error; err != nil {
+				h.Logger.Error("failed to update app during polling",
+					zap.String("app_id", app.GupshupAppID),
+					zap.Uint("tenant_id", app.TenantID),
+					zap.Error(err))
+			} else {
+				h.Logger.Info("✅ Updated app status from polling",
+					zap.String("app_id", app.GupshupAppID),
+					zap.Uint("tenant_id", app.TenantID),
+					zap.String("status", app.Status),
+					zap.String("phone", app.PhoneNumber))
+
+				// Update SocialAccount if app is now live
+				if app.Status == "live" && app.PhoneNumber != "" {
+					var account storage.SocialAccount
+					if err := h.DB.Where("tenant_id = ? AND platform = ?", app.TenantID, "whatsapp").First(&account).Error; err == nil {
+						account.Username = app.PhoneNumber
+						account.PageID = app.PhoneNumberID
+						account.ExternalID = app.PhoneNumberID
+						account.Connected = true
+						h.DB.Save(&account)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// StartPollingWorker starts a background worker that periodically polls pending apps
+// Call this from your app initialization (e.g., in core/app.go)
+func (h *GupshupWebhookHandler) StartPollingWorker(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	h.Logger.Info("🔄 Gupshup polling worker started",
+		zap.Duration("interval", interval))
+
+	// Run immediately on start
+	if err := h.PollPendingApps(ctx); err != nil {
+		h.Logger.Error("polling worker error", zap.Error(err))
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			h.Logger.Info("🔄 Gupshup polling worker stopped")
+			return
+		case <-ticker.C:
+			if err := h.PollPendingApps(ctx); err != nil {
+				h.Logger.Error("polling worker error", zap.Error(err))
+			}
 		}
 	}
 }
