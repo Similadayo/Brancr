@@ -128,6 +128,9 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		}
 	} else {
 		// Update existing record
+		// Check if WABA ID is new (needs whitelisting)
+		wabaIDIsNew := wabaID != "" && app.WABAID != wabaID
+
 		if token != "" {
 			app.GupshupAppToken = token
 		}
@@ -150,6 +153,42 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 			h.Logger.Error("failed to update WhatsAppApp", zap.Error(err))
 			http.Error(w, "database error", http.StatusInternalServerError)
 			return
+		}
+
+		// Step 5: Verify/Attach WABA (complete credit-line attach)
+		// This should be called after onboarding when we receive the WABA ID
+		if wabaIDIsNew && wabaID != "" {
+			// First whitelist the WABA
+			whitelistedWABAID, embedURL, err := h.Client.WhitelistWABA(appID)
+			if err != nil {
+				h.Logger.Warn("failed to whitelist WABA",
+					zap.String("app_id", appID),
+					zap.String("waba_id", wabaID),
+					zap.Error(err))
+			} else {
+				app.WABAID = whitelistedWABAID
+				if err := h.DB.Save(&app).Error; err != nil {
+					h.Logger.Warn("failed to save whitelisted WABA ID", zap.Error(err))
+				} else {
+					h.Logger.Info("✅ WABA whitelisted successfully",
+						zap.String("app_id", appID),
+						zap.String("waba_id", whitelistedWABAID),
+						zap.String("embed_signup_url", embedURL))
+
+					// Then verify/attach (complete credit-line attach)
+					if err := h.Client.VerifyAttachWABA(appID); err != nil {
+						h.Logger.Warn("failed to verify/attach WABA",
+							zap.String("app_id", appID),
+							zap.String("waba_id", whitelistedWABAID),
+							zap.Error(err))
+						// Don't fail - continue with subscription setup
+					} else {
+						h.Logger.Info("✅ WABA verify/attach completed",
+							zap.String("app_id", appID),
+							zap.String("waba_id", whitelistedWABAID))
+					}
+				}
+			}
 		}
 	}
 

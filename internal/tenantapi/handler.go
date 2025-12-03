@@ -6214,16 +6214,25 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Generate embed signed link with redirect URL
-	redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d", h.Config.PublicURL, tenantID)
-	embedLink, err := client.GenerateEmbedSignedLink(appID, redirectURL)
+	// Step 3: Whitelist WABA ID (required before getting embed signup URL)
+	// This returns the actual embedSignupUrl we should use
+	_, embedLink, err := client.WhitelistWABA(appID)
 	if err != nil {
-		h.Logger.Error("failed to generate embed link", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "embed_link_failed",
-			"message": "Failed to generate onboarding link. Please try again.",
-		})
-		return
+		h.Logger.Error("failed to whitelist WABA", zap.Error(err))
+		// Don't fail completely - try fallback to GenerateEmbedSignedLink
+		redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d", h.Config.PublicURL, tenantID)
+		embedLink, err = client.GenerateEmbedSignedLink(appID, redirectURL)
+		if err != nil {
+			h.Logger.Error("failed to generate embed link (fallback)", zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "embed_link_failed",
+				"message": "Failed to generate onboarding link. Please try again.",
+			})
+			return
+		}
+		h.Logger.Warn("⚠️ Using fallback embed link (whitelist failed)", zap.String("app_id", appID))
+	} else {
+		h.Logger.Info("✅ WABA whitelisted, using embedSignupUrl from whitelist response", zap.String("app_id", appID))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
