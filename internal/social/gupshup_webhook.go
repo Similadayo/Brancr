@@ -741,7 +741,57 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 	if messageID == "" {
 		messageID, _ = payload["gsId"].(string)
 	}
-	status, _ := payload["status"].(string)
+
+	// Check for nested payload structure (for failed messages)
+	eventType, _ := payload["type"].(string)
+	var status string
+	var errorCode interface{}
+	var errorReason string
+
+	if eventType == "failed" {
+		// Failed messages have nested payload with error details
+		nestedPayload, ok := payload["payload"].(map[string]interface{})
+		if ok {
+			if code, ok := nestedPayload["code"].(float64); ok {
+				errorCode = int(code)
+			}
+			errorReason, _ = nestedPayload["reason"].(string)
+			status = "failed"
+
+			h.Logger.Error("❌ Message sending failed",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("message_id", messageID),
+				zap.Any("error_code", errorCode),
+				zap.String("error_reason", errorReason),
+				zap.String("full_payload", func() string {
+					jsonBytes, _ := json.Marshal(payload)
+					return string(jsonBytes)
+				}()))
+
+			// If template mismatch error, clear the template ID so we can retry with a different one
+			if errorCode == 4003 && strings.Contains(strings.ToLower(errorReason), "template") {
+				h.Logger.Warn("⚠️ Template mismatch detected - clearing invalid template ID",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.String("error_reason", errorReason))
+
+				// Find and clear the invalid template ID from WhatsAppApp
+				var app storage.WhatsAppApp
+				if err := h.DB.Where("tenant_id = ?", tenantID).First(&app).Error; err == nil {
+					if app.DefaultTemplateID != "" {
+						h.Logger.Warn("🧹 Clearing invalid template ID",
+							zap.String("old_template_id", app.DefaultTemplateID),
+							zap.Uint("tenant_id", tenantID))
+						app.DefaultTemplateID = ""
+						h.DB.Save(&app)
+					}
+				}
+			}
+		}
+	} else {
+		// Normal status update (delivered, sent, etc.)
+		status, _ = payload["status"].(string)
+	}
 
 	// Find interaction by platform message ID
 	var interaction storage.Interaction
@@ -759,16 +809,40 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 		metadata["delivery_status"] = status
 		metadata["delivery_status_updated_at"] = time.Now().UTC().Format(time.RFC3339)
 
+		// Add error details if failed
+		if status == "failed" {
+			metadata["error_code"] = errorCode
+			metadata["error_reason"] = errorReason
+			// Update response status to failed
+			interaction.ResponseStatus = "failed"
+		}
+
 		metadataJSON, err := json.Marshal(metadata)
 		if err == nil {
 			interaction.Metadata = string(metadataJSON)
 			h.DB.Save(&interaction)
 
-			h.Logger.Info("✅ Updated delivery status",
-				zap.Uint("tenant_id", tenantID),
-				zap.String("message_id", messageID),
-				zap.String("status", status))
+			if status == "failed" {
+				h.Logger.Error("❌ Updated interaction with failed status",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.String("status", status),
+					zap.Any("error_code", errorCode),
+					zap.String("error_reason", errorReason))
+			} else {
+				h.Logger.Info("✅ Updated delivery status",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.String("status", status))
+			}
 		}
+	} else if status == "failed" {
+		// Log failed message even if interaction not found
+		h.Logger.Warn("⚠️ Failed message event received but interaction not found",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("message_id", messageID),
+			zap.Any("error_code", errorCode),
+			zap.String("error_reason", errorReason))
 	}
 }
 
