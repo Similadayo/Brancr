@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/similadayo/brancr/internal/admin"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/social"
@@ -34,6 +35,9 @@ func SetupRouter(app *App) http.Handler {
 	r.Get("/health", app.HealthHandler)
 	r.Get("/health/ready", app.ReadinessHandler)
 	r.Get("/health/live", app.LivenessHandler)
+
+	// Prometheus metrics endpoint
+	r.Handle("/metrics", promhttp.Handler())
 
 	// Build a limited context for admin routes (breaks circular dependency)
 	adminCtx := &admin.AdminContext{

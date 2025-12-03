@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	_ "image/gif"
@@ -83,24 +84,79 @@ func (s *Scheduler) Run(ctx context.Context, pollInterval time.Duration, maxAtte
 
 func (s *Scheduler) processDuePosts(maxAttempts int) {
 	now := time.Now().UTC()
-	// Claim posts in a txn: find scheduled posts due now
-	// Note: scheduled_at is stored in UTC, but we compare with UTC now
-	var posts []storage.ScheduledPost
-	if err := s.DB.Where("status = ? AND scheduled_at <= ?", "scheduled", now).Limit(10).Find(&posts).Error; err != nil {
-		s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))
+	// Optimized: Process in batches with higher limit for high-volume scenarios
+	// Use FindInBatches to process large volumes efficiently
+	batchSize := 50 // Increased from 10 for high-volume processing
+	
+	var processedCount int64
+	err := s.DB.Model(&storage.ScheduledPost{}).
+		Where("status = ? AND scheduled_at <= ?", "scheduled", now).
+		Count(&processedCount).Error
+	
+	if err != nil {
+		s.Logger.Warn("scheduler: count due posts failed", zap.Error(err))
 		return
 	}
 
-	for _, p := range posts {
-		// Try to claim by updating status to "posting" if still scheduled (optimistic)
-		tx := s.DB.Begin()
-		if err := tx.Model(&storage.ScheduledPost{}).Where("id = ? AND status = ?", p.ID, "scheduled").Update("status", "posting").Error; err != nil {
-			tx.Rollback()
-			continue
-		}
-		tx.Commit()
+	// Update scheduler queue size metric if available
+	// This would be set by the metrics system
 
-		go s.executePost(p) // fire-and-forget per post
+	// Process in batches to avoid memory issues
+	var posts []storage.ScheduledPost
+	offset := 0
+	
+	for {
+		// Fetch batch
+		if err := s.DB.Where("status = ? AND scheduled_at <= ?", "scheduled", now).
+			Order("scheduled_at ASC"). // Process oldest first
+			Limit(batchSize).
+			Offset(offset).
+			Find(&posts).Error; err != nil {
+			s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))
+			return
+		}
+
+		if len(posts) == 0 {
+			break // No more posts to process
+		}
+
+		// Process batch concurrently with controlled concurrency
+		// Use a semaphore to limit concurrent executions
+		semaphore := make(chan struct{}, 20) // Max 20 concurrent posts
+		var wg sync.WaitGroup
+
+		for _, p := range posts {
+			// Try to claim by updating status to "posting" if still scheduled (optimistic locking)
+			tx := s.DB.Begin()
+			rowsAffected := tx.Model(&storage.ScheduledPost{}).
+				Where("id = ? AND status = ?", p.ID, "scheduled").
+				Update("status", "posting").RowsAffected
+			
+			if rowsAffected == 0 {
+				tx.Rollback()
+				continue // Post already claimed by another worker
+			}
+			tx.Commit()
+
+			// Execute post with concurrency control
+			wg.Add(1)
+			semaphore <- struct{}{} // Acquire semaphore
+			go func(post storage.ScheduledPost) {
+				defer func() {
+					<-semaphore // Release semaphore
+					wg.Done()
+				}()
+				s.executePost(post)
+			}(p)
+		}
+
+		// Wait for batch to complete before fetching next batch
+		wg.Wait()
+
+		offset += batchSize
+		if len(posts) < batchSize {
+			break // Last batch
+		}
 	}
 }
 

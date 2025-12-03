@@ -18,7 +18,7 @@ func AutoMigrate(db *gorm.DB) error {
 	fmt.Println("📦 Running migrations...")
 
 	// 🚀 Run all migrations
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&Tenant{},
 		&BusinessProfile{},
 		&BusinessMenuItem{},
@@ -55,7 +55,9 @@ func AutoMigrate(db *gorm.DB) error {
 		&TrendInsight{},
 		&PlatformMetricsSnapshot{},
 		&AudienceSegment{},
-	)
+	); err != nil {
+		return err
+	}
 
 	// Migrate payment audit logs table (from security package)
 	// Import and migrate PaymentAuditLog model

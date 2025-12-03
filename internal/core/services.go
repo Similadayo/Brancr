@@ -9,7 +9,11 @@ import (
 	"github.com/similadayo/brancr/internal/analytics"
 	"github.com/similadayo/brancr/internal/analytics/platforms"
 	"github.com/similadayo/brancr/internal/bot"
+	"github.com/similadayo/brancr/internal/cache"
+	"github.com/similadayo/brancr/internal/circuitbreaker"
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/queue"
 	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/workflows"
@@ -25,6 +29,12 @@ type Services struct {
 	Logger  *zap.Logger
 	Config  *config.Config
 	Metrics *metrics.Metrics
+
+	// Production Infrastructure
+	JobQueue      *queue.JobQueue
+	Cache         *cache.Cache
+	RateLimiter   *middleware.RateLimiter
+	CircuitBreakers map[string]*circuitbreaker.CircuitBreaker
 
 	// AI Services
 	AIClient          *ai.AIClient
@@ -58,10 +68,16 @@ type Services struct {
 // NewServices initializes all services with proper dependency injection
 func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *zap.Logger) (*Services, error) {
 	services := &Services{
-		DB:     db,
-		Redis:  redis,
-		Logger: logger,
-		Config: cfg,
+		DB:              db,
+		Redis:           redis,
+		Logger:          logger,
+		Config:          cfg,
+		CircuitBreakers: make(map[string]*circuitbreaker.CircuitBreaker),
+	}
+
+	// Initialize production infrastructure
+	if err := services.initProductionInfra(); err != nil {
+		return nil, fmt.Errorf("failed to initialize production infrastructure: %w", err)
 	}
 
 	// Initialize AI components first (no dependencies)
@@ -95,6 +111,39 @@ func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *z
 	}
 
 	return services, nil
+}
+
+func (s *Services) initProductionInfra() error {
+	// Initialize job queue
+	if s.Redis != nil && s.Config.RedisAddr != "" {
+		jobQueue, err := queue.NewJobQueue(s.Config.RedisAddr, s.Logger)
+		if err != nil {
+			s.Logger.Warn("failed to initialize job queue", zap.Error(err))
+		} else {
+			s.JobQueue = jobQueue
+			s.Logger.Info("✅ Job queue initialized")
+		}
+	}
+
+	// Initialize cache
+	s.Cache = cache.NewCache(s.Redis, s.Logger)
+	s.Logger.Info("✅ Cache layer initialized")
+
+	// Initialize rate limiter
+	s.RateLimiter = middleware.NewRateLimiter(s.Redis, s.Logger)
+	s.Logger.Info("✅ Rate limiter initialized")
+
+	// Initialize circuit breakers for external APIs
+	if s.Redis != nil {
+		cbConfig := circuitbreaker.DefaultConfig()
+		s.CircuitBreakers["tiktok"] = circuitbreaker.NewCircuitBreaker("tiktok", cbConfig, s.Redis, s.Logger)
+		s.CircuitBreakers["instagram"] = circuitbreaker.NewCircuitBreaker("instagram", cbConfig, s.Redis, s.Logger)
+		s.CircuitBreakers["facebook"] = circuitbreaker.NewCircuitBreaker("facebook", cbConfig, s.Redis, s.Logger)
+		s.CircuitBreakers["gupshup"] = circuitbreaker.NewCircuitBreaker("gupshup", cbConfig, s.Redis, s.Logger)
+		s.Logger.Info("✅ Circuit breakers initialized")
+	}
+
+	return nil
 }
 
 func (s *Services) initAI() error {
