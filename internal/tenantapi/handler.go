@@ -3601,6 +3601,12 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	tags := r.FormValue("tags") // Comma-separated
 	campaign := r.FormValue("campaign")
+	
+	// Get TikTok posting options (if provided)
+	tiktokDisableDuet := r.FormValue("tiktok_disable_duet") == "true"
+	tiktokDisableStitch := r.FormValue("tiktok_disable_stitch") == "true"
+	tiktokDisableComment := r.FormValue("tiktok_disable_comment") == "true"
+	tiktokScheduleTime := r.FormValue("tiktok_schedule_time") // RFC3339 format
 
 	// Determine resource type from file
 	mimeType := fileHeader.Header.Get("Content-Type")
@@ -3638,6 +3644,20 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 	urlsJSON, _ := json.Marshal([]string{url})
 	tagsJSON, _ := json.Marshal(tagsArray)
 
+	// Build metadata JSON with TikTok posting options if provided
+	metadata := make(map[string]interface{})
+	if tiktokDisableDuet || tiktokDisableStitch || tiktokDisableComment || tiktokScheduleTime != "" {
+		metadata["tiktok_disable_duet"] = tiktokDisableDuet
+		metadata["tiktok_disable_stitch"] = tiktokDisableStitch
+		metadata["tiktok_disable_comment"] = tiktokDisableComment
+		if tiktokScheduleTime != "" {
+			if scheduleTime, err := time.Parse(time.RFC3339, tiktokScheduleTime); err == nil {
+				metadata["tiktok_schedule_time"] = scheduleTime.Format(time.RFC3339)
+			}
+		}
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
 	asset := storage.MediaAsset{
 		TenantID:  claims.TenantID,
 		Type:      resourceType,
@@ -3647,6 +3667,7 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 		Platforms: "[]",
 		Tags:      string(tagsJSON),
 		Campaign:  campaign,
+		Metadata:  string(metadataJSON),
 	}
 
 	if err := h.DB.Create(&asset).Error; err != nil {

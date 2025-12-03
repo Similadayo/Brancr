@@ -136,6 +136,7 @@ type MediaAsset struct {
 	Tags         string `gorm:"type:text"` // JSON array of tags
 	Campaign     string // Optional campaign name
 	BulkUploadID string `gorm:"index"` // Links assets from same bulk upload
+	Metadata     string `gorm:"type:jsonb"` // Platform-specific metadata (e.g., TikTok posting options)
 }
 
 // POST SCHEDULING

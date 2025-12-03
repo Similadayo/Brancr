@@ -405,7 +405,7 @@ type TikTokPostingOptions struct {
 	ScheduleTime   *time.Time // Optional: schedule for future posting
 }
 
-// getPostingOptions extracts posting options from asset Tags (JSON) or returns defaults
+// getPostingOptions extracts posting options from asset Metadata (JSONB) or returns defaults
 func (t *TikTokConnector) getPostingOptions(asset *storage.MediaAsset) TikTokPostingOptions {
 	options := TikTokPostingOptions{
 		DisableDuet:    false, // Default: allow duets
@@ -413,31 +413,24 @@ func (t *TikTokConnector) getPostingOptions(asset *storage.MediaAsset) TikTokPos
 		DisableComment: false, // Default: allow comments
 	}
 
-	// Try to parse options from asset Tags if available
-	// Tags is a JSON array, but we can store metadata as JSON strings within it
-	if asset.Tags != "" {
-		var tags []string
-		if err := json.Unmarshal([]byte(asset.Tags), &tags); err == nil {
-			// Look for metadata JSON strings in tags
-			for _, tag := range tags {
-				var metadata map[string]interface{}
-				if err := json.Unmarshal([]byte(tag), &metadata); err == nil {
-					// Check if this is a metadata object (has tiktok_ prefix keys)
-					if duet, ok := metadata["tiktok_disable_duet"].(bool); ok {
-						options.DisableDuet = duet
-					}
-					if stitch, ok := metadata["tiktok_disable_stitch"].(bool); ok {
-						options.DisableStitch = stitch
-					}
-					if comment, ok := metadata["tiktok_disable_comment"].(bool); ok {
-						options.DisableComment = comment
-					}
-					// Parse schedule time if provided
-					if scheduleStr, ok := metadata["tiktok_schedule_time"].(string); ok {
-						if scheduleTime, err := time.Parse(time.RFC3339, scheduleStr); err == nil {
-							options.ScheduleTime = &scheduleTime
-						}
-					}
+	// Try to parse options from asset Metadata (JSONB field)
+	if asset.Metadata != "" {
+		var metadata map[string]interface{}
+		if err := json.Unmarshal([]byte(asset.Metadata), &metadata); err == nil {
+			// Extract TikTok posting options from metadata
+			if duet, ok := metadata["tiktok_disable_duet"].(bool); ok {
+				options.DisableDuet = duet
+			}
+			if stitch, ok := metadata["tiktok_disable_stitch"].(bool); ok {
+				options.DisableStitch = stitch
+			}
+			if comment, ok := metadata["tiktok_disable_comment"].(bool); ok {
+				options.DisableComment = comment
+			}
+			// Parse schedule time if provided
+			if scheduleStr, ok := metadata["tiktok_schedule_time"].(string); ok {
+				if scheduleTime, err := time.Parse(time.RFC3339, scheduleStr); err == nil {
+					options.ScheduleTime = &scheduleTime
 				}
 			}
 		}
