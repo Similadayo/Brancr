@@ -153,29 +153,37 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// Set up webhook subscription when onboarding completes
-	// Try to set subscription if status indicates success OR if we have app details
-	// Status can be: "live", "connected", "success", or empty (check if we have phone number)
-	shouldSetSubscription := false
+	// Check if onboarding is actually complete (has WABA ID, phone number, or business ID)
+	// Only close popup and set subscription when we have actual onboarding data
+	onboardingComplete := false
+	hasWABAID := app.WABAID != "" || wabaID != ""
+	hasPhoneNumber := app.PhoneNumber != "" || phone != ""
+	hasBusinessID := app.BusinessID != "" || businessID != ""
+	
+	// Onboarding is complete if we have WABA ID OR (phone number AND business ID)
+	onboardingComplete = hasWABAID || (hasPhoneNumber && hasBusinessID)
+	
+	// Also check status - if status is "live", "connected", or "success", consider it complete
 	if status == "live" || status == "connected" || status == "success" {
-		shouldSetSubscription = true
-	} else if status == "" && (phone != "" || appID != "") {
-		// If status is empty but we have phone/appID, onboarding might have completed
-		// Try to set subscription anyway (Gupshup will validate)
-		shouldSetSubscription = true
+		onboardingComplete = true
 	}
 
-	if shouldSetSubscription && app.SubscriptionID == "" {
-		// Webhook URL for incoming messages
+	// Set up webhook subscription ONLY when onboarding is actually complete
+	// This prevents popup from closing prematurely when subscription is set
+	if onboardingComplete && app.SubscriptionID == "" {
+		// Webhook URL for incoming messages and account events
 		webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup", h.Client.Config.PublicURL)
 
-		h.Logger.Info("🔔 Setting up webhook subscription",
+		h.Logger.Info("🔔 Setting up webhook subscription (onboarding complete)",
 			zap.String("app_id", appID),
 			zap.String("status", status),
+			zap.Bool("has_waba_id", hasWABAID),
+			zap.Bool("has_phone", hasPhoneNumber),
+			zap.Bool("has_business_id", hasBusinessID),
 			zap.String("webhook_url", webhookURL))
 
-		// Subscribe to required events: message, message-event, status
-		subID, err := h.Client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "status"})
+		// Subscribe to: message, message-event (delivery/read), and account-event (WABA status changes)
+		subID, err := h.Client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "account-event"})
 		if err != nil {
 			h.Logger.Error("❌ Failed to set subscription",
 				zap.String("app_id", appID),
@@ -204,6 +212,13 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		h.Logger.Info("ℹ️  Subscription already exists",
 			zap.String("app_id", appID),
 			zap.String("subscription_id", app.SubscriptionID))
+	} else if !onboardingComplete {
+		h.Logger.Info("⏳ Onboarding not yet complete - waiting for WABA ID, phone number, or business ID",
+			zap.String("app_id", appID),
+			zap.String("status", status),
+			zap.Bool("has_waba_id", hasWABAID),
+			zap.Bool("has_phone", hasPhoneNumber),
+			zap.Bool("has_business_id", hasBusinessID))
 	}
 
 	// Also create/update SocialAccount for compatibility with existing connection status checks
@@ -268,8 +283,99 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 	frontendSuccessURL := fmt.Sprintf("%s/settings/integrations?whatsapp_connected=true&provider=gupshup&app_id=%s&status=%s",
 		h.Client.Config.FrontendURL, appID, status)
 
-	// For GET requests (browser redirect), perform HTTP redirect immediately
+	// For GET requests (browser redirect from embedded signup popup)
+	// Only close popup if onboarding is actually complete (has WABA ID, phone, etc.)
 	if r.Method == http.MethodGet {
+		// Check if this is coming from a popup
+		isPopup := r.URL.Query().Get("popup") == "true" || r.Header.Get("Referer") != ""
+		
+		// Check if onboarding is actually complete
+		hasWABAID := app.WABAID != "" || wabaID != ""
+		hasPhoneNumber := app.PhoneNumber != "" || phone != ""
+		hasBusinessID := app.BusinessID != "" || businessID != ""
+		onboardingComplete := hasWABAID || (hasPhoneNumber && hasBusinessID) || status == "live" || status == "connected" || status == "success"
+		
+		if isPopup && onboardingComplete {
+			// Onboarding is complete - serve HTML page that posts message to parent window and closes popup
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+	<title>WhatsApp Connected</title>
+	<meta charset="utf-8">
+</head>
+<body>
+	<script>
+		// Notify parent window that connection is complete
+		if (window.opener || window.parent !== window) {
+			var targetWindow = window.opener || window.parent;
+			targetWindow.postMessage({
+				type: 'whatsapp_connected',
+				success: true,
+				provider: 'gupshup',
+				app_id: '%s',
+				status: '%s',
+				phone: '%s',
+				waba_id: '%s',
+				business_id: '%s',
+				subscription_id: '%s',
+				redirect_url: '%s'
+			}, '*');
+			
+			// Close popup after a short delay
+			setTimeout(function() {
+				if (window.opener) {
+					window.close();
+				} else {
+					// If in iframe, redirect parent
+					window.parent.location.href = '%s';
+				}
+			}, 1000);
+		} else {
+			// Not in popup, redirect normally
+			window.location.href = '%s';
+		}
+	</script>
+	<div style="text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+		<h2>✅ WhatsApp Connected Successfully!</h2>
+		<p>This window will close automatically...</p>
+		<p><a href="%s">Click here if the window doesn't close</a></p>
+	</div>
+</body>
+</html>`, appID, status, phone, app.WABAID, app.BusinessID, app.SubscriptionID, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL)
+			w.Write([]byte(html))
+			return
+		} else if isPopup && !onboardingComplete {
+			// Onboarding not complete yet - show waiting message, don't close popup
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			html := `<!DOCTYPE html>
+<html>
+<head>
+	<title>WhatsApp Onboarding</title>
+	<meta charset="utf-8">
+</head>
+<body>
+	<div style="text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+		<h2>⏳ Completing WhatsApp Onboarding...</h2>
+		<p>Please wait while we finalize your WhatsApp connection.</p>
+		<p>This window will close automatically when setup is complete.</p>
+		<p><small>Waiting for WABA ID, phone number, or business ID...</small></p>
+	</div>
+	<script>
+		// Poll for completion status every 3 seconds
+		setTimeout(function() {
+			window.location.reload();
+		}, 3000);
+	</script>
+</body>
+</html>`
+			w.Write([]byte(html))
+			return
+		}
+		
+		// Not a popup, redirect normally
 		http.Redirect(w, r, frontendSuccessURL, http.StatusFound)
 		return
 	}
