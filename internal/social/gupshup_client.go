@@ -649,13 +649,104 @@ func (c *GupshupClient) GetSubscription(appID string) (map[string]interface{}, e
 }
 
 // GetAppDetails retrieves app details including WhatsApp metadata (WABA ID, phone number, etc.)
-// CRITICAL: Uses /partner/app/{appId} endpoint (as per Gupshup Partner API docs)
-// Endpoint: GET /partner/app/{appId}
-// Header: Authorization: {APP_TOKEN} (App Token, NOT Partner Token) - App Token has access to app-specific data
-// Response contains WhatsApp object with: businessId, formattedPhoneNumber, normalizedPhoneNumber, wabaApprovalTimestamp, etc.
+// Uses two approaches:
+// 1. First tries /partner/account/api/partnerApps list to get live status and phone
+// 2. Then tries /partner/app/{appId} for detailed metadata
+// Header: Authorization: {PARTNER_TOKEN} for list, {APP_TOKEN} for details
 func (c *GupshupClient) GetAppDetails(appID string) (map[string]interface{}, error) {
+	// First, try to get app from the list endpoint which includes live status and phone
+	partnerToken, err := c.GetPartnerToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get partner token: %w", err)
+	}
+
+	// Get list of apps to find our app (this endpoint includes live and phone fields)
+	listURL := fmt.Sprintf("%s/partner/account/api/partnerApps", c.Config.GupshupAPIBaseURL)
+	req, err := http.NewRequest("GET", listURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create list request: %w", err)
+	}
+
+	req.Header.Set("Authorization", partnerToken)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil && resp.StatusCode < 300 {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		var listResult struct {
+			Status          string `json:"status"`
+			PartnerAppsList []struct {
+				ID         string `json:"id"`
+				Name       string `json:"name"`
+				Phone      string `json:"phone"`
+				Live       bool   `json:"live"`
+				CustomerID string `json:"customerId"`
+			} `json:"partnerAppsList"`
+		}
+		if err := json.Unmarshal(body, &listResult); err == nil {
+			// Find our app in the list
+			for _, app := range listResult.PartnerAppsList {
+				if app.ID == appID {
+					// Found our app - build result with live status and phone
+					result := map[string]interface{}{
+						"id":    app.ID,
+						"name":  app.Name,
+						"live":  app.Live,
+						"phone": app.Phone,
+					}
+
+					// If app is live and has phone, mark as having WhatsApp metadata
+					if app.Live && app.Phone != "" {
+						result["whatsapp"] = map[string]interface{}{
+							"formattedPhoneNumber":  app.Phone,
+							"normalizedPhoneNumber": app.Phone,
+						}
+						result["status"] = "live"
+					}
+
+					if c.Logger != nil {
+						c.Logger.Info("✅ Found app in partner apps list",
+							zap.String("app_id", appID),
+							zap.Bool("live", app.Live),
+							zap.String("phone", app.Phone))
+					}
+
+					// Still try to get detailed metadata from /partner/app/{appId}
+					// This will add WABA ID, business ID, etc. if available
+					detailedResult, err := c.getAppDetailsDetailed(appID)
+					if err == nil && detailedResult != nil {
+						// Merge detailed metadata into result
+						if whatsapp, ok := detailedResult["whatsapp"].(map[string]interface{}); ok {
+							// Merge WhatsApp metadata
+							if result["whatsapp"] == nil {
+								result["whatsapp"] = make(map[string]interface{})
+							}
+							resultWhatsapp := result["whatsapp"].(map[string]interface{})
+							for k, v := range whatsapp {
+								resultWhatsapp[k] = v
+							}
+						}
+						// Merge other fields
+						for k, v := range detailedResult {
+							if k != "whatsapp" && k != "id" && k != "name" {
+								result[k] = v
+							}
+						}
+					}
+
+					return result, nil
+				}
+			}
+		}
+	}
+
+	// Fallback: Try detailed endpoint
+	return c.getAppDetailsDetailed(appID)
+}
+
+// getAppDetailsDetailed gets detailed app metadata from /partner/app/{appId}
+func (c *GupshupClient) getAppDetailsDetailed(appID string) (map[string]interface{}, error) {
 	// Use App Token (NOT Partner Token) - App Token has permission to access app-specific details
-	// Partner Token might not have permission to access individual app details, causing 403 errors
 	appToken, err := c.GetAppAccessToken(appID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get app token: %w", err)
