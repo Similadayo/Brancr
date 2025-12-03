@@ -181,12 +181,24 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		if phoneNumberID != "" && app.PhoneNumberID == "" {
 			app.PhoneNumberID = phoneNumberID
 		}
-		// Don't update status from redirect - wait for webhook events or polling
-		// Only update if status is explicitly "live" or "connected" from redirect
-		if status == "live" || status == "connected" || status == "success" {
+		// CRITICAL: Don't update status from redirect - wait for webhook events or polling
+		// Status should only change to "live" when we have actual metadata from GetAppDetails
+		// Only update if status is explicitly "live" from redirect AND we have metadata
+		if status == "live" && (app.WABAID != "" || app.PhoneNumber != "") {
 			if app.Status == "pending_onboarding" {
 				app.Status = status
+				h.Logger.Info("📝 UPDATING EXISTING APP - Status changed to 'live' (has metadata)",
+					zap.String("app_id", appID),
+					zap.String("waba_id", app.WABAID),
+					zap.String("phone", app.PhoneNumber))
 			}
+		} else if status == "live" || status == "connected" || status == "success" {
+			h.Logger.Info("📝 UPDATING EXISTING APP - Ignoring status update from redirect (no metadata yet)",
+				zap.String("app_id", appID),
+				zap.String("redirect_status", status),
+				zap.String("current_db_status", app.Status),
+				zap.Bool("has_waba_id", app.WABAID != ""),
+				zap.Bool("has_phone", app.PhoneNumber != ""))
 		}
 		if err := h.DB.Save(&app).Error; err != nil {
 			h.Logger.Error("failed to update WhatsAppApp", zap.Error(err))
@@ -318,10 +330,32 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 	// If status is empty, "pending_onboarding", or anything else, keep popup open
 	if r.Method == http.MethodGet {
 		// Check if this is coming from a popup
-		isPopup := r.URL.Query().Get("popup") == "true" || r.Header.Get("Referer") != ""
+		popupParam := r.URL.Query().Get("popup")
+		referer := r.Header.Get("Referer")
+		isPopup := popupParam == "true" || referer != ""
+
+		h.Logger.Info("🔍 POPUP CLOSING CHECK - Starting evaluation",
+			zap.String("app_id", appID),
+			zap.String("method", r.Method),
+			zap.String("popup_param", popupParam),
+			zap.String("referer", referer),
+			zap.Bool("is_popup", isPopup),
+			zap.String("redirect_status_param", status),
+			zap.String("redirect_phone_param", phone),
+			zap.String("redirect_waba_id_param", wabaID))
 
 		// Get the actual status from the database (more reliable than query param)
 		currentStatus := app.Status
+
+		h.Logger.Info("🔍 POPUP CLOSING CHECK - Database state",
+			zap.String("app_id", appID),
+			zap.String("db_status", app.Status),
+			zap.String("db_waba_id", app.WABAID),
+			zap.String("db_phone_number", app.PhoneNumber),
+			zap.String("db_business_id", app.BusinessID),
+			zap.String("db_phone_number_id", app.PhoneNumberID),
+			zap.Bool("db_subscription_active", app.SubscriptionActive),
+			zap.String("db_subscription_id", app.SubscriptionID))
 
 		// CRITICAL: Onboarding is complete ONLY if:
 		// 1. Status is explicitly "live" (NOT "connected" or "pending_onboarding")
@@ -334,15 +368,25 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		// AND we have actual metadata (WABA ID or phone number)
 		onboardingComplete := currentStatus == "live" && (hasWABAID || hasPhoneNumber)
 
-		h.Logger.Info("🔍 Checking onboarding completion",
+		h.Logger.Info("🔍 POPUP CLOSING CHECK - Completion evaluation",
 			zap.String("app_id", appID),
 			zap.String("current_status", currentStatus),
 			zap.Bool("has_waba_id", hasWABAID),
 			zap.Bool("has_phone", hasPhoneNumber),
-			zap.Bool("onboarding_complete", onboardingComplete))
+			zap.Bool("onboarding_complete", onboardingComplete),
+			zap.String("status_check", fmt.Sprintf("currentStatus == 'live': %v", currentStatus == "live")),
+			zap.String("metadata_check", fmt.Sprintf("hasWABAID || hasPhoneNumber: %v", hasWABAID || hasPhoneNumber)))
 
 		if isPopup {
+			h.Logger.Info("🔍 POPUP CLOSING CHECK - Is popup, checking completion",
+				zap.String("app_id", appID),
+				zap.Bool("onboarding_complete", onboardingComplete))
 			if onboardingComplete {
+				h.Logger.Info("✅ POPUP CLOSING - Onboarding complete, closing popup",
+					zap.String("app_id", appID),
+					zap.String("status", currentStatus),
+					zap.Bool("has_waba_id", hasWABAID),
+					zap.Bool("has_phone", hasPhoneNumber))
 				// Onboarding is complete - serve HTML page that posts message to parent window and closes popup
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.WriteHeader(http.StatusOK)
@@ -394,6 +438,20 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				w.Write([]byte(html))
 				return
 			} else {
+				h.Logger.Info("⏳ POPUP STAYING OPEN - Onboarding not complete, showing waiting message",
+					zap.String("app_id", appID),
+					zap.String("current_status", currentStatus),
+					zap.Bool("has_waba_id", hasWABAID),
+					zap.Bool("has_phone", hasPhoneNumber),
+					zap.String("reason", func() string {
+						if currentStatus != "live" {
+							return fmt.Sprintf("Status is '%s', not 'live'", currentStatus)
+						}
+						if !hasWABAID && !hasPhoneNumber {
+							return "Missing WABA ID and phone number"
+						}
+						return "Unknown reason"
+					}()))
 				// Onboarding not complete yet - show waiting message and poll for completion
 				// Don't redirect back to embedded signup - user has already completed the signup flow
 				// Just wait for webhook events to provide the metadata
@@ -429,6 +487,9 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		}
 
 		// Not a popup, redirect normally
+		h.Logger.Info("🔍 POPUP CLOSING CHECK - Not a popup, redirecting normally",
+			zap.String("app_id", appID),
+			zap.String("redirect_url", frontendSuccessURL))
 		http.Redirect(w, r, frontendSuccessURL, http.StatusFound)
 		return
 	}
