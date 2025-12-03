@@ -949,16 +949,31 @@ func (c *GupshupClient) CreateTemplateFromLibrary(appID, elementName, category, 
 // The new template will have a variable parameter {{1}} for AI-generated text
 func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 	// Step 1: Get available templates from Meta Library
-	templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{
-		"topic":        "UTILITY",
-		"languageCode": "en",
-	})
+	// Try without filters first (get all templates)
+	templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{})
 	if err != nil {
-		return "", fmt.Errorf("failed to get templates from library: %w", err)
+		// If that fails, try with language code only
+		if c.Logger != nil {
+			c.Logger.Warn("Failed to get templates without filters, trying with language code",
+				zap.String("app_id", appID),
+				zap.Error(err))
+		}
+		templates, err = c.GetTemplatesFromLibrary(appID, map[string]string{
+			"languageCode": "en",
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to get templates from library: %w", err)
+		}
 	}
 
 	if len(templates) == 0 {
-		return "", fmt.Errorf("no templates found in Meta Library for app")
+		// Try with category filter
+		templates, err = c.GetTemplatesFromLibrary(appID, map[string]string{
+			"category": "UTILITY",
+		})
+		if err != nil || len(templates) == 0 {
+			return "", fmt.Errorf("no templates found in Meta Library for app (tried multiple filters)")
+		}
 	}
 
 	// Step 2: Find a simple text template (prefer TEXT type, with minimal parameters)
@@ -1110,18 +1125,70 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 		}
 	} else {
 		// Priority 2: Try to get from Meta Library (fallback - may not work well for AI)
-		templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{
-			"topic":        "ACCOUNT_UPDATES",
-			"languageCode": "en",
-		})
+		// Try without filters first to get all available templates
+		templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{})
+		if err != nil || len(templates) == 0 {
+			// Try with language code only
+			templates, err = c.GetTemplatesFromLibrary(appID, map[string]string{
+				"languageCode": "en",
+			})
+		}
+
 		if err == nil && len(templates) > 0 {
-			if elementName, ok := templates[0]["elementName"].(string); ok && elementName != "" {
-				templateID = elementName
-				templateParams = []string{message}
-				if c.Logger != nil {
-					c.Logger.Warn("⚠️ Using Meta Library template for AI reply (not ideal)",
-						zap.String("template_id", templateID),
-						zap.String("note", "Consider creating a dedicated text template for AI replies"))
+			// Find a simple TEXT template that can accept a parameter
+			var selectedTemplate map[string]interface{}
+			for _, t := range templates {
+				if templateType, ok := t["templateType"].(string); ok && templateType == "TEXT" {
+					// Check if it has at least one parameter placeholder
+					if data, ok := t["data"].(string); ok && (strings.Contains(data, "{{1}}") || strings.Contains(data, "{{ 1 }}")) {
+						selectedTemplate = t
+						break
+					}
+				}
+			}
+
+			// If no TEXT template with parameters, use first TEXT template
+			if selectedTemplate == nil {
+				for _, t := range templates {
+					if templateType, ok := t["templateType"].(string); ok && templateType == "TEXT" {
+						selectedTemplate = t
+						break
+					}
+				}
+			}
+
+			// If still no TEXT template, use first available (not ideal)
+			if selectedTemplate == nil && len(templates) > 0 {
+				selectedTemplate = templates[0]
+			}
+
+			if selectedTemplate != nil {
+				if elementName, ok := selectedTemplate["elementName"].(string); ok && elementName != "" {
+					templateID = elementName
+					// Only pass message as parameter if template has parameter placeholders
+					if data, ok := selectedTemplate["data"].(string); ok && (strings.Contains(data, "{{1}}") || strings.Contains(data, "{{ 1 }}")) {
+						templateParams = []string{message}
+					} else {
+						// Template doesn't have parameters - this won't work well
+						// But we'll try anyway (may fail)
+						templateParams = []string{}
+						if c.Logger != nil {
+							c.Logger.Warn("⚠️ Template doesn't have parameters - message may not be sent correctly",
+								zap.String("template_id", templateID),
+								zap.String("template_data", data))
+						}
+					}
+					if c.Logger != nil {
+						c.Logger.Warn("⚠️ Using Meta Library template for AI reply (not ideal)",
+							zap.String("template_id", templateID),
+							zap.String("template_type", func() string {
+								if tt, ok := selectedTemplate["templateType"].(string); ok {
+									return tt
+								}
+								return "unknown"
+							}()),
+							zap.String("note", "Consider creating a dedicated text template for AI replies"))
+					}
 				}
 			}
 		}
@@ -1138,8 +1205,23 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 	data.Set("template", templateJSON)
 
 	// Message field is also required for text templates
+	// Note: For templates with parameters, the message field might be ignored
+	// But we include it anyway as per API docs
 	messageJSON := fmt.Sprintf(`{"type": "text", "text": "%s"}`, escapeJSONString(message))
 	data.Set("message", messageJSON)
+
+	if c.Logger != nil {
+		c.Logger.Info("📤 Preparing to send message with template",
+			zap.String("template_id", templateID),
+			zap.Int("params_count", len(templateParams)),
+			zap.String("template_json", templateJSON),
+			zap.String("message_preview", func() string {
+				if len(message) > 100 {
+					return message[:100] + "..."
+				}
+				return message
+			}()))
+	}
 
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
 	if err != nil {

@@ -221,6 +221,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		DetectedIntent: intent.Intent,
 		DetectedTone:   intent.Tone,
 		Confidence:     intent.Confidence,
+		Metadata:       "{}", // Valid JSON object (empty object, not empty string)
 	}
 	if err := h.DB.Create(&outgoingInteraction).Error; err != nil {
 		h.Logger.Warn("failed to create outgoing interaction for auto-reply", zap.Error(err))
