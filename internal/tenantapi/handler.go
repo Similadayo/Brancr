@@ -222,6 +222,23 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/team/members/{id}", h.getTeamMember)
 		r.Put("/tenant/team/members/{id}", h.updateTeamMember)
 		r.Delete("/tenant/team/members/{id}", h.deleteTeamMember)
+
+		// TikTok Video Management API
+		r.Route("/tenant/tiktok", func(r chi.Router) {
+			// Video listing and details
+			r.Get("/videos", h.listTikTokVideos)
+			r.Get("/videos/{video_id}", h.getTikTokVideo)
+			r.Get("/videos/status/{publish_id}", h.getTikTokVideoStatus)
+			r.Delete("/videos/{video_id}", h.deleteTikTokVideo)
+
+			// Analytics
+			r.Get("/videos/{video_id}/analytics", h.getTikTokVideoAnalytics)
+			r.Get("/analytics", h.getTikTokAnalytics)
+
+			// Comment management
+			r.Get("/videos/{video_id}/comments", h.listTikTokComments)
+			r.Post("/videos/{video_id}/comments/{comment_id}/reply", h.replyToTikTokComment)
+		})
 	})
 }
 
@@ -6655,6 +6672,569 @@ func (h *Handler) deleteIntentCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "Intent catalog entry deleted successfully",
+	})
+}
+
+// ✅ TIKTOK VIDEO MANAGEMENT ENDPOINTS
+
+// listTikTokVideos lists all published TikTok videos for the tenant
+func (h *Handler) listTikTokVideos(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected. Please connect your TikTok account first.",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Parse query parameters
+	maxCount := 20
+	if mc := r.URL.Query().Get("max_count"); mc != "" {
+		if parsed, err := strconv.Atoi(mc); err == nil && parsed > 0 && parsed <= 50 {
+			maxCount = parsed
+		}
+	}
+	cursor := r.URL.Query().Get("cursor")
+
+	// Decrypt token for connector
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// List videos
+	videos, err := tikTokConnector.ListVideos(r.Context(), &acc, maxCount, cursor)
+	if err != nil {
+		h.Logger.Error("failed to list TikTok videos", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to list videos: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, videos)
+}
+
+// getTikTokVideo gets details of a specific TikTok video
+func (h *Handler) getTikTokVideo(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	videoID := chi.URLParam(r, "video_id")
+	if videoID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "video_id is required",
+		})
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// Get video analytics (includes video details)
+	analytics, err := tikTokConnector.GetVideoAnalytics(r.Context(), &acc, videoID)
+	if err != nil {
+		h.Logger.Error("failed to get TikTok video", zap.Error(err), zap.String("video_id", videoID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to get video: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, analytics)
+}
+
+// getTikTokVideoStatus checks the publish status of a video
+func (h *Handler) getTikTokVideoStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	publishID := chi.URLParam(r, "publish_id")
+	if publishID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "publish_id is required",
+		})
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// Check status
+	status, err := tikTokConnector.CheckVideoStatus(r.Context(), &acc, publishID)
+	if err != nil {
+		h.Logger.Error("failed to check TikTok video status", zap.Error(err), zap.String("publish_id", publishID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to check status: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, status)
+}
+
+// deleteTikTokVideo deletes a TikTok video
+func (h *Handler) deleteTikTokVideo(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	videoID := chi.URLParam(r, "video_id")
+	if videoID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "video_id is required",
+		})
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// Delete video
+	if err := tikTokConnector.DeleteVideo(r.Context(), &acc, videoID); err != nil {
+		h.Logger.Error("failed to delete TikTok video", zap.Error(err), zap.String("video_id", videoID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to delete video: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":  "Video deleted successfully",
+		"video_id": videoID,
+	})
+}
+
+// getTikTokVideoAnalytics gets analytics for a specific video
+func (h *Handler) getTikTokVideoAnalytics(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	videoID := chi.URLParam(r, "video_id")
+	if videoID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "video_id is required",
+		})
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// Get analytics
+	analytics, err := tikTokConnector.GetVideoAnalytics(r.Context(), &acc, videoID)
+	if err != nil {
+		h.Logger.Error("failed to get TikTok video analytics", zap.Error(err), zap.String("video_id", videoID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to get analytics: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, analytics)
+}
+
+// getTikTokAnalytics gets account-wide TikTok analytics
+func (h *Handler) getTikTokAnalytics(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// List all videos to aggregate analytics
+	maxCount := 50
+	videos, err := tikTokConnector.ListVideos(r.Context(), &acc, maxCount, "")
+	if err != nil {
+		h.Logger.Error("failed to list TikTok videos for analytics", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to get videos: %v", err),
+		})
+		return
+	}
+
+	// Aggregate analytics from all videos
+	var totalViews, totalLikes, totalComments, totalShares float64
+	var videoCount int
+
+	videosList, ok := videos["videos"].([]map[string]interface{})
+	if ok {
+		for _, video := range videosList {
+			if videoID, ok := video["video_id"].(string); ok && videoID != "" {
+				analytics, err := tikTokConnector.GetVideoAnalytics(r.Context(), &acc, videoID)
+				if err != nil {
+					h.Logger.Warn("failed to get analytics for video", zap.String("video_id", videoID), zap.Error(err))
+					continue
+				}
+
+				if views, ok := analytics["view_count"].(float64); ok {
+					totalViews += views
+				}
+				if likes, ok := analytics["like_count"].(float64); ok {
+					totalLikes += likes
+				}
+				if comments, ok := analytics["comment_count"].(float64); ok {
+					totalComments += comments
+				}
+				if shares, ok := analytics["share_count"].(float64); ok {
+					totalShares += shares
+				}
+				videoCount++
+			}
+		}
+	}
+
+	avgEngagementRate := 0.0
+	if totalViews > 0 {
+		avgEngagementRate = ((totalLikes + totalComments + totalShares) / totalViews) * 100
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_videos":        videoCount,
+		"total_views":         totalViews,
+		"total_likes":         totalLikes,
+		"total_comments":      totalComments,
+		"total_shares":        totalShares,
+		"total_engagement":    totalLikes + totalComments + totalShares,
+		"avg_engagement_rate": avgEngagementRate,
+	})
+}
+
+// listTikTokComments lists comments for a TikTok video
+func (h *Handler) listTikTokComments(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	videoID := chi.URLParam(r, "video_id")
+	if videoID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "video_id is required",
+		})
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// Parse query parameters
+	maxCount := 20
+	if mc := r.URL.Query().Get("max_count"); mc != "" {
+		if parsed, err := strconv.Atoi(mc); err == nil && parsed > 0 && parsed <= 50 {
+			maxCount = parsed
+		}
+	}
+	cursor := r.URL.Query().Get("cursor")
+
+	// List comments
+	comments, err := tikTokConnector.ListComments(r.Context(), &acc, videoID, maxCount, cursor)
+	if err != nil {
+		h.Logger.Error("failed to list TikTok comments", zap.Error(err), zap.String("video_id", videoID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to list comments: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, comments)
+}
+
+// replyToTikTokComment replies to a TikTok comment
+func (h *Handler) replyToTikTokComment(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	videoID := chi.URLParam(r, "video_id")
+	commentID := chi.URLParam(r, "comment_id")
+	if videoID == "" || commentID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "video_id and comment_id are required",
+		})
+		return
+	}
+
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "text is required",
+		})
+		return
+	}
+
+	// Get TikTok account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "TikTok account not connected",
+		})
+		return
+	}
+
+	// Get TikTok connector
+	connector, ok := social.Connectors["tiktok"]
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector not available",
+		})
+		return
+	}
+
+	tikTokConnector, ok := connector.(*social.TikTokConnector)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "TikTok connector type assertion failed",
+		})
+		return
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken
+
+	// Reply to comment
+	replyID, err := tikTokConnector.ReplyToComment(r.Context(), &acc, videoID, commentID, req.Text)
+	if err != nil {
+		h.Logger.Error("failed to reply to TikTok comment", zap.Error(err), zap.String("video_id", videoID), zap.String("comment_id", commentID))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": fmt.Sprintf("Failed to reply: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   "Reply sent successfully",
+		"reply_id":  replyID,
+		"video_id":  videoID,
+		"comment_id": commentID,
 	})
 }
 

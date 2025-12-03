@@ -26,6 +26,12 @@ const (
 	tikTokStatusPath      = "/v2/post/publish/status/fetch/"
 	tikTokCreatorInfoPath = "/v2/post/publish/creator_info/query/"
 	tikTokRefreshPath     = "/v2/oauth/token/"
+	tikTokVideoListPath   = "/v2/video/list/"
+	tikTokVideoQueryPath  = "/v2/video/query/"
+	tikTokVideoDeletePath = "/v2/video/delete/"
+	tikTokCommentListPath = "/v2/comment/list/"
+	tikTokCommentReplyPath = "/v2/comment/reply/"
+	tikTokResearchPath    = "/v2/research/video/query/"
 )
 
 // TikTokConnector handles posting media to TikTok using the Content Posting API.
@@ -93,9 +99,30 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return errors.New("tiktok asset payload missing")
 	}
 
-	videoURL, err := firstVideoURL(asset)
+	// ✅ Check if asset is photo or video
+	// TikTok Business API only supports videos, so we need to convert photos to video
+	mediaURL, isPhoto, err := t.getMediaURL(asset)
 	if err != nil {
 		return err
+	}
+
+	// If it's a photo, convert to video
+	var videoURL string
+	if isPhoto {
+		t.Logger.Info("📸 TikTok photo detected - converting to video",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("photo_url", mediaURL))
+		
+		convertedVideoURL, err := t.convertPhotoToVideo(ctx, mediaURL, caption)
+		if err != nil {
+			return fmt.Errorf("failed to convert photo to video: %w", err)
+		}
+		videoURL = convertedVideoURL
+		t.Logger.Info("✅ Photo converted to video for TikTok",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("video_url", videoURL))
+	} else {
+		videoURL = mediaURL
 	}
 
 	videoSize, err := t.getRemoteVideoSize(ctx, videoURL)
@@ -117,7 +144,10 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return err
 	}
 
-	session, err := t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel)
+	// Get posting options from asset metadata or use defaults
+	postingOptions := t.getPostingOptions(asset)
+
+	session, err := t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel, postingOptions)
 	if err != nil {
 		var apiErr *TikTokAPIError
 		if errors.As(err, &apiErr) {
@@ -125,7 +155,7 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 				t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
 					zap.Uint("tenant_id", acc.TenantID),
 					zap.String("current_privacy", t.PrivacyLevel))
-				session, err = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY")
+				session, err = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY", postingOptions)
 			}
 		}
 	if err != nil {
@@ -140,6 +170,39 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	t.Logger.Info("✅ TikTok video published",
 		zap.Uint("tenant_id", acc.TenantID),
 		zap.String("publish_id", session.PublishID))
+
+	// Store publish_id in Tags field (JSON) for later status checking
+	// Note: Tags is a JSON array, but we can use it to store metadata
+	if asset.Tags != "" {
+		var tags []string
+		if err := json.Unmarshal([]byte(asset.Tags), &tags); err == nil {
+			// Store publish_id as a tag-like entry
+			metadata := map[string]interface{}{
+				"tiktok_publish_id": session.PublishID,
+				"tiktok_published_at": time.Now().UTC().Format(time.RFC3339),
+			}
+			metadataJSON, _ := json.Marshal(metadata)
+			// Append metadata to tags (as JSON string)
+			tags = append(tags, string(metadataJSON))
+			tagsJSON, _ := json.Marshal(tags)
+			asset.Tags = string(tagsJSON)
+			// Note: Asset update should be handled by caller, but we log it
+			t.Logger.Info("📝 TikTok publish_id stored",
+				zap.String("publish_id", session.PublishID))
+		}
+	} else {
+		// Create new tags array with metadata
+		metadata := map[string]interface{}{
+			"tiktok_publish_id": session.PublishID,
+			"tiktok_published_at": time.Now().UTC().Format(time.RFC3339),
+		}
+		metadataJSON, _ := json.Marshal(metadata)
+		tags := []string{string(metadataJSON)}
+		tagsJSON, _ := json.Marshal(tags)
+		asset.Tags = string(tagsJSON)
+		t.Logger.Info("📝 TikTok publish_id stored (new)",
+			zap.String("publish_id", session.PublishID))
+	}
 
 	return nil
 }
@@ -302,21 +365,78 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 	return 0, errors.New("unable to determine video size for TikTok upload")
 }
 
-func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string, videoSize int64, privacyLevel string) (*tiktokSession, error) {
+// TikTokPostingOptions holds configurable posting options
+type TikTokPostingOptions struct {
+	DisableDuet    bool
+	DisableStitch  bool
+	DisableComment bool
+	ScheduleTime   *time.Time // Optional: schedule for future posting
+}
+
+// getPostingOptions extracts posting options from asset Tags (JSON) or returns defaults
+func (t *TikTokConnector) getPostingOptions(asset *storage.MediaAsset) TikTokPostingOptions {
+	options := TikTokPostingOptions{
+		DisableDuet:    false, // Default: allow duets
+		DisableStitch:  false, // Default: allow stitches
+		DisableComment: false, // Default: allow comments
+	}
+
+	// Try to parse options from asset Tags if available
+	// Tags is a JSON array, but we can store metadata as JSON strings within it
+	if asset.Tags != "" {
+		var tags []string
+		if err := json.Unmarshal([]byte(asset.Tags), &tags); err == nil {
+			// Look for metadata JSON strings in tags
+			for _, tag := range tags {
+				var metadata map[string]interface{}
+				if err := json.Unmarshal([]byte(tag), &metadata); err == nil {
+					// Check if this is a metadata object (has tiktok_ prefix keys)
+					if duet, ok := metadata["tiktok_disable_duet"].(bool); ok {
+						options.DisableDuet = duet
+					}
+					if stitch, ok := metadata["tiktok_disable_stitch"].(bool); ok {
+						options.DisableStitch = stitch
+					}
+					if comment, ok := metadata["tiktok_disable_comment"].(bool); ok {
+						options.DisableComment = comment
+					}
+					// Parse schedule time if provided
+					if scheduleStr, ok := metadata["tiktok_schedule_time"].(string); ok {
+						if scheduleTime, err := time.Parse(time.RFC3339, scheduleStr); err == nil {
+							options.ScheduleTime = &scheduleTime
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return options
+}
+
+func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption string, videoSize int64, privacyLevel string, options TikTokPostingOptions) (*tiktokSession, error) {
 	if videoSize <= 0 {
 		return nil, errors.New("invalid video size for TikTok upload")
 	}
 
 	level := normalizePrivacyForPayload(privacyLevel)
 
+	postInfo := map[string]interface{}{
+		"title":         defaultTikTokTitle(caption),
+		"privacy_level": level,
+		"disable_duet":  options.DisableDuet,
+		"disable_stitch": options.DisableStitch,
+		"disable_comment": options.DisableComment,
+	}
+
+	// Add schedule time if provided
+	if options.ScheduleTime != nil {
+		// TikTok expects Unix timestamp in seconds
+		postInfo["schedule_time"] = options.ScheduleTime.Unix()
+	}
+
 	payload := map[string]interface{}{
-		"post_info": map[string]interface{}{
-			"title":           defaultTikTokTitle(caption),
-			"privacy_level":   level,
-			"disable_duet":    false,
-			"disable_stitch":  false,
-			"disable_comment": false,
-		},
+		"post_info": postInfo,
 		"source_info": map[string]interface{}{
 			"source":            "FILE_UPLOAD",
 			"video_size":        videoSize,
@@ -389,21 +509,28 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}, nil
 }
 
-func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, caption, videoURL, privacyLevel string) (*tiktokSession, error) {
+func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, caption, videoURL, privacyLevel string, options TikTokPostingOptions) (*tiktokSession, error) {
 	if videoURL == "" {
 		return nil, errors.New("video URL is required for TikTok upload")
 	}
 
 	level := normalizePrivacyForPayload(privacyLevel)
 
+	postInfo := map[string]interface{}{
+		"title":         defaultTikTokTitle(caption),
+		"privacy_level": level,
+		"disable_duet":  options.DisableDuet,
+		"disable_stitch": options.DisableStitch,
+		"disable_comment": options.DisableComment,
+	}
+
+	// Add schedule time if provided
+	if options.ScheduleTime != nil {
+		postInfo["schedule_time"] = options.ScheduleTime.Unix()
+	}
+
 	payload := map[string]interface{}{
-		"post_info": map[string]interface{}{
-			"title":           defaultTikTokTitle(caption),
-			"privacy_level":   level,
-			"disable_duet":    false,
-			"disable_stitch":  false,
-			"disable_comment": false,
-		},
+		"post_info": postInfo,
 		"source_info": map[string]interface{}{
 			"source":    "PULL_FROM_URL",
 			"video_url": videoURL,
@@ -635,6 +762,89 @@ func defaultTikTokTitle(caption string) string {
 	return "Posted via Brancr"
 }
 
+// getMediaURL extracts the first media URL and determines if it's a photo or video
+func (t *TikTokConnector) getMediaURL(asset *storage.MediaAsset) (string, bool, error) {
+	var urls []string
+	if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil {
+		return "", false, fmt.Errorf("invalid media URLs: %w", err)
+	}
+	if len(urls) == 0 {
+		return "", false, errors.New("no media URLs provided for TikTok")
+	}
+
+	firstURL := urls[0]
+	lowerURL := strings.ToLower(firstURL)
+	
+	// Check if it's a video
+	isVideo := strings.HasSuffix(lowerURL, ".mp4") ||
+		strings.HasSuffix(lowerURL, ".mov") ||
+		strings.HasSuffix(lowerURL, ".avi") ||
+		strings.HasSuffix(lowerURL, ".mkv") ||
+		strings.Contains(lowerURL, "video") ||
+		asset.Type == "video"
+	
+	// Check if it's a photo
+	isPhoto := strings.HasSuffix(lowerURL, ".jpg") ||
+		strings.HasSuffix(lowerURL, ".jpeg") ||
+		strings.HasSuffix(lowerURL, ".png") ||
+		strings.HasSuffix(lowerURL, ".gif") ||
+		strings.HasSuffix(lowerURL, ".webp") ||
+		strings.Contains(lowerURL, "image") ||
+		asset.Type == "image"
+	
+	if !isVideo && !isPhoto {
+		// Try to infer from asset type
+		if asset.Type == "video" {
+			isVideo = true
+		} else if asset.Type == "image" {
+			isPhoto = true
+		} else {
+			return "", false, fmt.Errorf("unsupported media type for TikTok: %s (URL: %s)", asset.Type, firstURL)
+		}
+	}
+
+	return firstURL, isPhoto, nil
+}
+
+// convertPhotoToVideo converts a photo to a video by creating a simple slideshow
+// This is a workaround since TikTok Business API only supports videos
+func (t *TikTokConnector) convertPhotoToVideo(ctx context.Context, photoURL, caption string) (string, error) {
+	// Option 1: Use Cloudinary to convert photo to video (if available)
+	// Option 2: Use a simple video generation service
+	// Option 3: Create a static video with the image
+	
+	// For now, we'll use Cloudinary's video transformation API
+	// Format: https://res.cloudinary.com/{cloud_name}/video/upload/{transformations}/{image_id}.mp4
+	
+	// Check if photoURL is from Cloudinary
+	if strings.Contains(photoURL, "cloudinary.com") {
+		// Extract Cloudinary URL parts and convert to video
+		// Cloudinary can convert images to video using video transformation
+		// Example: https://res.cloudinary.com/demo/image/upload/sample.jpg
+		// Becomes: https://res.cloudinary.com/demo/video/upload/duration_3/sample.mp4
+		
+		// Replace /image/upload/ with /video/upload/duration_3/ (3 second video)
+		videoURL := strings.Replace(photoURL, "/image/upload/", "/video/upload/duration_3/", 1)
+		// Change extension to .mp4
+		videoURL = strings.TrimSuffix(videoURL, ".jpg")
+		videoURL = strings.TrimSuffix(videoURL, ".jpeg")
+		videoURL = strings.TrimSuffix(videoURL, ".png")
+		videoURL = strings.TrimSuffix(videoURL, ".gif")
+		videoURL = strings.TrimSuffix(videoURL, ".webp")
+		videoURL += ".mp4"
+		
+		t.Logger.Info("🔄 Converting Cloudinary photo to video",
+			zap.String("photo_url", photoURL),
+			zap.String("video_url", videoURL))
+		
+		return videoURL, nil
+	}
+	
+	// If not Cloudinary, we need to upload to Cloudinary first or use another service
+	// For now, return error - user should use Cloudinary URLs for photos
+	return "", fmt.Errorf("photo-to-video conversion currently only supports Cloudinary URLs. Photo URL: %s", photoURL)
+}
+
 func firstVideoURL(asset *storage.MediaAsset) (string, error) {
 	var urls []string
 	if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil {
@@ -689,4 +899,537 @@ func parseTikTokError(status int, body []byte) *TikTokAPIError {
 		LogID:   payload.Error.LogID,
 		Body:    errBody,
 	}
+}
+
+// ✅ ADVANCED FEATURES IMPLEMENTATION
+
+// CheckVideoStatus checks the status of a published video
+// Returns: status (PROCESSING, PUBLISHED, FAILED), video_id, and error details
+func (t *TikTokConnector) CheckVideoStatus(ctx context.Context, acc *storage.SocialAccount, publishID string) (map[string]interface{}, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return nil, errors.New("tiktok access token missing")
+	}
+	if publishID == "" {
+		return nil, errors.New("publish_id is required")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]interface{}{
+		"publish_id": publishID,
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokStatusPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			Status  string `json:"status"`  // PROCESSING, PUBLISHED, FAILED
+			VideoID string `json:"video_id"` // Available when status is PUBLISHED
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse status response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	statusInfo := map[string]interface{}{
+		"status":    result.Data.Status,
+		"video_id":  result.Data.VideoID,
+		"publish_id": publishID,
+	}
+
+	t.Logger.Info("✅ TikTok video status checked",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("publish_id", publishID),
+		zap.String("status", result.Data.Status),
+		zap.String("video_id", result.Data.VideoID))
+
+	return statusInfo, nil
+}
+
+// ListVideos retrieves a list of published videos for the account
+// Parameters: max_count (default 20, max 50), cursor for pagination
+func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAccount, maxCount int, cursor string) (map[string]interface{}, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return nil, errors.New("tiktok access token missing")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+
+	if maxCount <= 0 {
+		maxCount = 20
+	}
+	if maxCount > 50 {
+		maxCount = 50
+	}
+
+	payload := map[string]interface{}{
+		"max_count": maxCount,
+	}
+	if cursor != "" {
+		payload["cursor"] = cursor
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokVideoListPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			Videos []map[string]interface{} `json:"videos"`
+			Cursor string                    `json:"cursor"`
+			HasMore bool                     `json:"has_more"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse video list response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	response := map[string]interface{}{
+		"videos":  result.Data.Videos,
+		"cursor":  result.Data.Cursor,
+		"has_more": result.Data.HasMore,
+		"count":   len(result.Data.Videos),
+	}
+
+	t.Logger.Info("✅ TikTok videos listed",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Int("count", len(result.Data.Videos)),
+		zap.Bool("has_more", result.Data.HasMore))
+
+	return response, nil
+}
+
+// GetVideoAnalytics retrieves analytics for a specific video
+// Returns: views, likes, comments, shares, engagement metrics
+func (t *TikTokConnector) GetVideoAnalytics(ctx context.Context, acc *storage.SocialAccount, videoID string) (map[string]interface{}, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return nil, errors.New("tiktok access token missing")
+	}
+	if videoID == "" {
+		return nil, errors.New("video_id is required")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use Research API to get video analytics
+	payload := map[string]interface{}{
+		"query": map[string]interface{}{
+			"and": []map[string]interface{}{
+				{
+					"operation": "EQ",
+					"field_name": "video_id",
+					"field_values": []string{videoID},
+				},
+			},
+		},
+		"fields": []string{
+			"video_id",
+			"view_count",
+			"like_count",
+			"comment_count",
+			"share_count",
+			"video_duration",
+			"create_time",
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokResearchPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			Videos []map[string]interface{} `json:"videos"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse analytics response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	if len(result.Data.Videos) == 0 {
+		return nil, fmt.Errorf("video not found or analytics not available: %s", videoID)
+	}
+
+	analytics := result.Data.Videos[0]
+	
+	// Calculate engagement rate
+	viewCount, _ := analytics["view_count"].(float64)
+	likeCount, _ := analytics["like_count"].(float64)
+	commentCount, _ := analytics["comment_count"].(float64)
+	shareCount, _ := analytics["share_count"].(float64)
+	
+	engagementRate := 0.0
+	if viewCount > 0 {
+		engagementRate = ((likeCount + commentCount + shareCount) / viewCount) * 100
+	}
+	
+	analytics["engagement_rate"] = engagementRate
+	analytics["total_engagement"] = likeCount + commentCount + shareCount
+
+	t.Logger.Info("✅ TikTok video analytics retrieved",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("video_id", videoID),
+		zap.Float64("views", viewCount),
+		zap.Float64("likes", likeCount),
+		zap.Float64("engagement_rate", engagementRate))
+
+	return analytics, nil
+}
+
+// DeleteVideo deletes a published video
+func (t *TikTokConnector) DeleteVideo(ctx context.Context, acc *storage.SocialAccount, videoID string) error {
+	if acc == nil || acc.AccessToken == "" {
+		return errors.New("tiktok access token missing")
+	}
+	if videoID == "" {
+		return errors.New("video_id is required")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return err
+	}
+
+	payload := map[string]interface{}{
+		"video_id": videoID,
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokVideoDeletePath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode >= 400 {
+		return parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			Deleted bool `json:"deleted"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse delete response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	if !result.Data.Deleted {
+		return errors.New("video deletion failed - API returned deleted=false")
+	}
+
+	t.Logger.Info("✅ TikTok video deleted",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("video_id", videoID))
+
+	return nil
+}
+
+// ListComments retrieves comments for a video
+func (t *TikTokConnector) ListComments(ctx context.Context, acc *storage.SocialAccount, videoID string, maxCount int, cursor string) (map[string]interface{}, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return nil, errors.New("tiktok access token missing")
+	}
+	if videoID == "" {
+		return nil, errors.New("video_id is required")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+
+	if maxCount <= 0 {
+		maxCount = 20
+	}
+	if maxCount > 50 {
+		maxCount = 50
+	}
+
+	payload := map[string]interface{}{
+		"video_id": videoID,
+		"max_count": maxCount,
+	}
+	if cursor != "" {
+		payload["cursor"] = cursor
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokCommentListPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			Comments []map[string]interface{} `json:"comments"`
+			Cursor  string                    `json:"cursor"`
+			HasMore bool                      `json:"has_more"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse comments response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	response := map[string]interface{}{
+		"comments": result.Data.Comments,
+		"cursor":   result.Data.Cursor,
+		"has_more": result.Data.HasMore,
+		"count":    len(result.Data.Comments),
+	}
+
+	t.Logger.Info("✅ TikTok comments listed",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("video_id", videoID),
+		zap.Int("count", len(result.Data.Comments)))
+
+	return response, nil
+}
+
+// ReplyToComment replies to a comment on a video
+func (t *TikTokConnector) ReplyToComment(ctx context.Context, acc *storage.SocialAccount, videoID, commentID, replyText string) (string, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return "", errors.New("tiktok access token missing")
+	}
+	if videoID == "" || commentID == "" || replyText == "" {
+		return "", errors.New("video_id, comment_id, and reply_text are required")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return "", err
+	}
+
+	payload := map[string]interface{}{
+		"video_id":   videoID,
+		"comment_id": commentID,
+		"text":       replyText,
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokCommentReplyPath, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := t.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			ReplyID string `json:"reply_id"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("failed to parse reply response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return "", &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	t.Logger.Info("✅ TikTok comment replied",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("video_id", videoID),
+		zap.String("comment_id", commentID),
+		zap.String("reply_id", result.Data.ReplyID))
+
+	return result.Data.ReplyID, nil
 }
