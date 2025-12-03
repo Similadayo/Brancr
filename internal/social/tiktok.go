@@ -1145,6 +1145,20 @@ func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAcc
 
 	payload := map[string]interface{}{
 		"max_count": maxCount,
+		"fields": []string{
+			"video_id",
+			"title",
+			"cover_image_url",
+			"create_time",
+			"duration",
+			"share_url",
+			"embed_html",
+			"embed_link",
+			"like_count",
+			"comment_count",
+			"share_count",
+			"view_count",
+		},
 	}
 	if cursor != "" {
 		payload["cursor"] = cursor
