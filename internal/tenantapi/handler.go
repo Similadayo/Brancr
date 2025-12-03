@@ -6214,9 +6214,30 @@ func (h *Handler) connectWhatsAppGupshup(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// NOTE: Do NOT set subscription here - it causes the embedded popup to close prematurely
-	// Subscription will be set up in HandleRedirect AFTER onboarding completes (when we have WABA ID, phone, etc.)
-	// This ensures the popup stays open during the entire onboarding process
+	// Step 3: Immediately configure webhook subscription for account events
+	// This allows us to receive notifications when WABA is approved/phone is verified
+	webhookURL := fmt.Sprintf("%s/api/webhooks/gupshup", h.Config.PublicURL)
+	// Subscribe to: message (incoming messages), message-event (delivery/read status), and account-event (WABA status changes)
+	subID, err := client.SetSubscription(appID, webhookURL, []string{"message", "message-event", "account-event"})
+	if err != nil {
+		h.Logger.Warn("⚠️ Failed to set webhook subscription immediately after app creation",
+			zap.String("app_id", appID),
+			zap.String("webhook_url", webhookURL),
+			zap.Error(err))
+		// Don't fail - we can set subscription later via redirect callback
+	} else {
+		app.SubscriptionID = subID
+		app.SubscriptionActive = true
+		app.WebhookURL = webhookURL
+		if err := h.DB.Save(&app).Error; err != nil {
+			h.Logger.Warn("failed to save subscription details", zap.Error(err))
+		} else {
+			h.Logger.Info("✅ Webhook subscription configured immediately after app creation",
+				zap.String("app_id", appID),
+				zap.String("subscription_id", subID),
+				zap.String("webhook_url", webhookURL))
+		}
+	}
 
 	// Step 4: Generate embed signup link
 	// Add popup=true parameter so redirect handler knows to use postMessage
