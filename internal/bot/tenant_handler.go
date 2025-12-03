@@ -778,6 +778,10 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	case "onboarding":
 		// Handle onboarding wizard callbacks
 		h.handleOnboardingCallback(bot, tenantID, chatID, arg)
+	case "tiktok":
+		// Handle TikTok management callbacks
+		// arg format: "list", "analytics", "comments", "status"
+		h.handleTikTokCallback(bot, tenantID, chatID, arg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
@@ -1561,6 +1565,24 @@ func (h *TenantWebhookHandler) handleOnboardingCallback(bot *tgbotapi.BotAPI, te
 		bot.Send(tgbotapi.NewMessage(chatID, "👌 No problem! You can access the setup checklist anytime by typing 'checklist' or use 'menu' for all options."))
 	default:
 		h.Manager.Logger.Debug("unhandled onboarding callback", zap.String("arg", arg))
+	}
+}
+
+// handleTikTokCallback handles TikTok inline button callbacks
+func (h *TenantWebhookHandler) handleTikTokCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	intentRouter := NewIntentRouter(h.Manager)
+
+	switch arg {
+	case "list":
+		intentRouter.handleTikTokListVideos(bot, tenantID, chatID)
+	case "analytics":
+		intentRouter.handleTikTokAnalytics(bot, tenantID, chatID, "")
+	case "comments":
+		bot.Send(tgbotapi.NewMessage(chatID, "💬 Please provide a video ID.\n\nExample: `tiktok comments video_123`"))
+	case "status":
+		bot.Send(tgbotapi.NewMessage(chatID, "🔍 Please provide a publish ID.\n\nExample: `tiktok status publish_123`"))
+	default:
+		intentRouter.showTikTokMenu(bot, chatID, tenantID)
 	}
 }
 

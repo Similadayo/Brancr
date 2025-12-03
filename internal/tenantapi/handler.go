@@ -657,8 +657,16 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional status filter from query parameter
+	statusFilter := r.URL.Query().Get("status")
+	
+	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+	if statusFilter != "" {
+		query = query.Where("status = ?", statusFilter)
+	}
+
 	var posts []storage.ScheduledPost
-	if err := h.DB.Where("tenant_id = ?", claims.TenantID).
+	if err := query.
 		Order("scheduled_at ASC, created_at ASC").
 		Limit(100).
 		Find(&posts).Error; err != nil {

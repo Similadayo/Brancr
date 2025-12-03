@@ -180,6 +180,13 @@ func (r *IntentRouter) executeIntent(ctx context.Context, tenantID uint, chatID 
 		return r.handleUploadMedia(bot, tenantID, chatID, intent)
 	case "get_help":
 		return r.handleGetHelp(bot, tenantID, chatID, intent)
+	case "tiktok_command", "tiktok":
+		// Check if message contains TikTok-related keywords
+		lower := strings.ToLower(intent.RawMessage)
+		if strings.Contains(lower, "tiktok") {
+			return r.handleTikTokCommand(bot, tenantID, chatID, intent)
+		}
+		fallthrough
 	default:
 		// For "chat" or unknown, return false to let AI handle it
 		return false, nil
@@ -436,6 +443,31 @@ func (r *IntentRouter) fallbackIntentDetection(text string) *TenantIntent {
 			intent.Parameters["platform"] = "youtube"
 		} else if strings.Contains(lower, "whatsapp") {
 			intent.Parameters["platform"] = "whatsapp"
+		}
+	}
+
+	// TikTok commands
+	if strings.Contains(lower, "tiktok") {
+		if strings.Contains(lower, "video") || strings.Contains(lower, "analytics") || 
+		   strings.Contains(lower, "comment") || strings.Contains(lower, "status") ||
+		   strings.Contains(lower, "delete") || strings.Contains(lower, "reply") ||
+		   strings.Contains(lower, "list") {
+			intent.Action = "tiktok_command"
+			intent.Confidence = 0.85
+			// Extract parameters
+			if strings.Contains(lower, "video") {
+				intent.Parameters["tiktok_action"] = "list_videos"
+			} else if strings.Contains(lower, "analytics") || strings.Contains(lower, "stats") {
+				intent.Parameters["tiktok_action"] = "analytics"
+			} else if strings.Contains(lower, "comment") {
+				intent.Parameters["tiktok_action"] = "comments"
+			} else if strings.Contains(lower, "status") {
+				intent.Parameters["tiktok_action"] = "status"
+			} else if strings.Contains(lower, "delete") {
+				intent.Parameters["tiktok_action"] = "delete"
+			} else if strings.Contains(lower, "reply") {
+				intent.Parameters["tiktok_action"] = "reply"
+			}
 		}
 	}
 

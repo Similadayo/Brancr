@@ -108,26 +108,35 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 
 	// If it's a photo, convert to video
 	var videoURL string
+	var usePullFromURL bool
 	if isPhoto {
 		t.Logger.Info("📸 TikTok photo detected - converting to video",
 			zap.Uint("tenant_id", acc.TenantID),
 			zap.String("photo_url", mediaURL))
 		
-		convertedVideoURL, err := t.convertPhotoToVideo(ctx, mediaURL, caption)
-		if err != nil {
-			return fmt.Errorf("failed to convert photo to video: %w", err)
+		convertedVideoURL, convertErr := t.convertPhotoToVideo(ctx, mediaURL, caption)
+		if convertErr != nil {
+			return fmt.Errorf("failed to convert photo to video: %w", convertErr)
 		}
 		videoURL = convertedVideoURL
+		usePullFromURL = true // Use PULL_FROM_URL for converted videos (Cloudinary generates on-demand)
 		t.Logger.Info("✅ Photo converted to video for TikTok",
 			zap.Uint("tenant_id", acc.TenantID),
-			zap.String("video_url", videoURL))
+			zap.String("video_url", videoURL),
+			zap.String("note", "Using PULL_FROM_URL since Cloudinary generates video on-demand"))
 	} else {
 		videoURL = mediaURL
+		usePullFromURL = false
 	}
 
-	videoSize, err := t.getRemoteVideoSize(ctx, videoURL)
-	if err != nil {
-		return err
+	// For PULL_FROM_URL, we don't need video size
+	var videoSize int64
+	if !usePullFromURL {
+		var sizeErr error
+		videoSize, sizeErr = t.getRemoteVideoSize(ctx, videoURL)
+		if sizeErr != nil {
+			return sizeErr
+		}
 	}
 
 	t.Logger.Info("TikTok video size detected",
@@ -135,36 +144,59 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		zap.String("video_url", videoURL),
 		zap.Int64("video_size", videoSize))
 
-	if err := t.logCreatorInfo(ctx, acc); err != nil {
-		t.Logger.Warn("TikTok creator info query failed", zap.Error(err))
+	if logErr := t.logCreatorInfo(ctx, acc); logErr != nil {
+		t.Logger.Warn("TikTok creator info query failed", zap.Error(logErr))
 	}
 
-	accessToken, err := t.ensureAccessToken(ctx, acc)
-	if err != nil {
-		return err
+	accessToken, tokenErr := t.ensureAccessToken(ctx, acc)
+	if tokenErr != nil {
+		return tokenErr
 	}
 
 	// Get posting options from asset metadata or use defaults
 	postingOptions := t.getPostingOptions(asset)
 
-	session, err := t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel, postingOptions)
-	if err != nil {
-		var apiErr *TikTokAPIError
-		if errors.As(err, &apiErr) {
-			if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
-				t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
-					zap.Uint("tenant_id", acc.TenantID),
-					zap.String("current_privacy", t.PrivacyLevel))
-				session, err = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY", postingOptions)
+	// Use PULL_FROM_URL for converted videos, FILE_UPLOAD for direct videos
+	var session *tiktokSession
+	var initErr error
+	if usePullFromURL {
+		// Use PULL_FROM_URL method for Cloudinary-generated videos
+		session, initErr = t.initUploadWithURL(ctx, accessToken, caption, videoURL, t.PrivacyLevel, postingOptions)
+		if initErr != nil {
+			var apiErr *TikTokAPIError
+			if errors.As(initErr, &apiErr) {
+				if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
+					t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
+						zap.Uint("tenant_id", acc.TenantID),
+						zap.String("current_privacy", t.PrivacyLevel))
+					session, initErr = t.initUploadWithURL(ctx, accessToken, caption, videoURL, "SELF_ONLY", postingOptions)
+				}
 			}
 		}
-	if err != nil {
-		return fmt.Errorf("tiktok init upload failed: %w", err)
+	} else {
+		// Use FILE_UPLOAD method for direct video uploads
+		session, initErr = t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel, postingOptions)
+		if initErr != nil {
+			var apiErr *TikTokAPIError
+			if errors.As(initErr, &apiErr) {
+				if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
+					t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
+						zap.Uint("tenant_id", acc.TenantID),
+						zap.String("current_privacy", t.PrivacyLevel))
+					session, initErr = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY", postingOptions)
+				}
+			}
+		}
+		if initErr == nil && session != nil {
+			// Only upload if using FILE_UPLOAD (PULL_FROM_URL doesn't need upload step)
+			if uploadErr := t.uploadVideo(ctx, session, videoURL); uploadErr != nil {
+				return fmt.Errorf("tiktok upload failed: %w", uploadErr)
+			}
 		}
 	}
 
-	if err := t.uploadVideo(ctx, session, videoURL); err != nil {
-		return fmt.Errorf("tiktok upload failed: %w", err)
+	if initErr != nil {
+		return fmt.Errorf("tiktok init upload failed: %w", initErr)
 	}
 
 	t.Logger.Info("✅ TikTok video published",
