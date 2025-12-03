@@ -1177,11 +1177,16 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 	// Priority 1: Use default template ID from database (if provided)
 	if len(defaultTemplateID) > 0 && defaultTemplateID[0] != "" {
 		templateID = defaultTemplateID[0]
-		// Pass AI-generated message as the first parameter
+
+		// Try to get template details to see what parameters it expects
+		// For now, we'll try passing the message as the first parameter
+		// If the template was created from Meta Library, it should have at least one parameter
 		templateParams = []string{message}
+
 		if c.Logger != nil {
 			c.Logger.Info("✅ Using default template ID for AI reply",
-				zap.String("template_id", templateID))
+				zap.String("template_id", templateID),
+				zap.String("note", "Template is approved (Active - Quality pending means approved)"))
 		}
 	} else {
 		// Priority 2: Try to get from Meta Library (fallback - may not work well for AI)

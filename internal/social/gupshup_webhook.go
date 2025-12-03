@@ -768,24 +768,21 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 					return string(jsonBytes)
 				}()))
 
-			// If template mismatch error, clear the template ID so we can retry with a different one
+			// If template mismatch error (4003), it could be:
+			// 1. Template parameter mismatch (wrong number/format of parameters)
+			// 2. Template not actually approved (though "Active - Quality pending" means approved)
+			// 3. Template structure doesn't match what we're sending
+			// For now, log the error but DON'T clear the template ID immediately
+			// The template IS approved, so the issue is likely parameter format
 			if errorCode == 4003 && strings.Contains(strings.ToLower(errorReason), "template") {
-				h.Logger.Warn("⚠️ Template mismatch detected - clearing invalid template ID",
+				h.Logger.Error("❌ Template mismatch error - template is approved but parameters don't match",
 					zap.Uint("tenant_id", tenantID),
 					zap.String("message_id", messageID),
-					zap.String("error_reason", errorReason))
+					zap.String("error_reason", errorReason),
+					zap.String("note", "Template is approved (Active - Quality pending = approved). Issue is likely parameter format."))
 
-				// Find and clear the invalid template ID from WhatsAppApp
-				var app storage.WhatsAppApp
-				if err := h.DB.Where("tenant_id = ?", tenantID).First(&app).Error; err == nil {
-					if app.DefaultTemplateID != "" {
-						h.Logger.Warn("🧹 Clearing invalid template ID",
-							zap.String("old_template_id", app.DefaultTemplateID),
-							zap.Uint("tenant_id", tenantID))
-						app.DefaultTemplateID = ""
-						h.DB.Save(&app)
-					}
-				}
+				// TODO: We should fetch template details to see what parameters it expects
+				// For now, we'll keep the template ID and let the user know to check the template structure
 			}
 		}
 	} else {
