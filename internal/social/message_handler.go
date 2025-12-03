@@ -891,6 +891,58 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		return fmt.Errorf("gupshup app is not live (status: %s)", app.Status)
 	}
 
+	// Check if customer sent a message within 24 hours (session window)
+	// Within 24 hours: Can use session messages (plain text, no template) - simpler!
+	// Outside 24 hours: Must use templates
+	var customer storage.Customer
+	within24Hours := false
+	if err := h.DB.Where("tenant_id = ? AND platform_id = ? AND channel = ?", acc.TenantID, customerID, "whatsapp").First(&customer).Error; err == nil {
+		if !customer.LastMessageAt.IsZero() {
+			timeSinceLastMessage := time.Since(customer.LastMessageAt)
+			within24Hours = timeSinceLastMessage < 24*time.Hour
+			h.Logger.Info("📅 Checking 24-hour session window",
+				zap.String("customer_id", customerID),
+				zap.Duration("time_since_last_message", timeSinceLastMessage),
+				zap.Bool("within_24_hours", within24Hours),
+				zap.String("note", "If within 24h, can use session messages (no template). Otherwise, must use template."))
+		}
+	}
+
+	// If within 24 hours, try to use session message (no template) first
+	// Note: Gupshup Partner API might still require templates, but we'll try
+	if within24Hours {
+		h.Logger.Info("💬 Within 24-hour window - attempting session message (no template)",
+			zap.String("customer_id", customerID),
+			zap.String("app_id", app.GupshupAppID))
+		
+		// Try sending without template (session message)
+		// If Gupshup doesn't support this, it will fail and we'll fall back to template
+		messageID, err := h.GupshupClient.SendSessionMessage(app.GupshupAppID, customerID, reply)
+		if err == nil {
+			h.Logger.Info("✅ Session message sent successfully (no template needed)",
+				zap.String("customer_id", customerID),
+				zap.String("message_id", messageID))
+			
+			// Update interaction with message ID
+			var interaction storage.Interaction
+			if err := h.DB.Where("tenant_id = ? AND platform = ? AND direction = ? AND response_status = ?",
+				acc.TenantID, "whatsapp", "outgoing", "pending").
+				Order("created_at DESC").First(&interaction).Error; err == nil {
+				interaction.PlatformMessageID = messageID
+				interaction.ResponseStatus = "sent"
+				h.DB.Save(&interaction)
+			}
+			return nil
+		}
+		
+		// Session message failed - fall back to template
+		h.Logger.Warn("⚠️ Session message failed, falling back to template",
+			zap.String("customer_id", customerID),
+			zap.Error(err),
+			zap.String("note", "Gupshup Partner API may require templates for all messages"))
+	}
+
+	// Outside 24-hour window OR session message failed - use template
 	// Check if we have a default template ID for AI replies
 	// If not, try to create one automatically
 	if app.DefaultTemplateID == "" {

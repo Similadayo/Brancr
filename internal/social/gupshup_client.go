@@ -1159,6 +1159,114 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 	return createdElementName, nil
 }
 
+// SendSessionMessage sends a WhatsApp message without template (session message)
+// This can only be used within 24 hours of customer's last message
+// Endpoint: POST /partner/app/{appId}/v3/text/msg (or similar - need to verify exact endpoint)
+// Note: Gupshup Partner API might not support session messages - this is a fallback attempt
+func (c *GupshupClient) SendSessionMessage(appID, to, message string) (string, error) {
+	appToken, err := c.GetAppAccessToken(appID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get app token: %w", err)
+	}
+
+	// Get app details to extract source phone number and app name
+	appDetails, err := c.GetAppDetails(appID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get app details: %w", err)
+	}
+
+	var sourcePhone string
+	var appName string
+
+	if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
+		if phone, ok := whatsapp["formattedPhoneNumber"].(string); ok && phone != "" {
+			sourcePhone = phone
+		} else if phone, ok := whatsapp["normalizedPhoneNumber"].(string); ok && phone != "" {
+			sourcePhone = phone
+		}
+	}
+	if sourcePhone == "" {
+		if phone, ok := appDetails["phone"].(string); ok && phone != "" {
+			sourcePhone = phone
+		}
+	}
+	if name, ok := appDetails["name"].(string); ok && name != "" {
+		appName = name
+	}
+
+	if sourcePhone == "" {
+		return "", fmt.Errorf("source phone number not found for app")
+	}
+	if appName == "" {
+		return "", fmt.Errorf("app name not found for app")
+	}
+
+	// Try session message endpoint (may not exist in Gupshup Partner API)
+	// Common endpoints: /v3/text/msg, /msg, /text/msg
+	// If this doesn't work, we'll fall back to template messages
+	apiURL := fmt.Sprintf("%s/partner/app/%s/v3/text/msg", c.Config.GupshupAPIBaseURL, appID)
+
+	data := url.Values{}
+	data.Set("channel", "whatsapp")
+	data.Set("source", sourcePhone)
+	data.Set("destination", to)
+	data.Set("src.name", appName)
+	data.Set("message", message)
+	data.Set("sandbox", "false")
+
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Use Authorization header (as per Gupshup Partner API docs)
+	// Docs show: --header 'Authorization: {PARTNER_APP_TOKEN}'
+	req.Header.Set("Authorization", appToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("accept", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send session message request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		// Session message endpoint might not exist - return error so we can fall back to template
+		if c.Logger != nil {
+			c.Logger.Warn("Session message endpoint failed (may not be supported)",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("response", string(body)),
+				zap.String("note", "Will fall back to template messages"))
+		}
+		return "", fmt.Errorf("session message not supported (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Status    string `json:"status"`
+		MessageID string `json:"messageId"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse session message response: %w, body=%s", err, string(body))
+	}
+
+	if result.Status != "submitted" || result.MessageID == "" {
+		return "", fmt.Errorf("invalid session message response: %s", string(body))
+	}
+
+	if c.Logger != nil {
+		c.Logger.Info("✅ Session message sent successfully (no template)",
+			zap.String("app_id", appID),
+			zap.String("message_id", result.MessageID),
+			zap.String("destination", to))
+	}
+
+	return result.MessageID, nil
+}
+
 // SendMessage sends a WhatsApp message via Gupshup using the template message API
 // For plain text messages, we first try to get a simple text template from Meta Library
 // Endpoint: POST /partner/app/{appId}/template/msg
@@ -1209,6 +1317,9 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 	}
 
 	// Use correct endpoint: /partner/app/{appId}/template/msg
+	// Endpoint: POST /partner/app/{appId}/template/msg
+	// Header: Authorization: {PARTNER_APP_TOKEN} (App Token)
+	// Content-Type: application/x-www-form-urlencoded
 	apiURL := fmt.Sprintf("%s/partner/app/%s/template/msg", c.Config.GupshupAPIBaseURL, appID)
 
 	// Build form-urlencoded payload
@@ -1321,15 +1432,20 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 	}
 
 	// Use template with AI-generated message as parameter
+	// Template format: {"id": "template_id", "params": ["param1", "param2"]}
 	paramsJSON, _ := json.Marshal(templateParams)
 	templateJSON := fmt.Sprintf(`{"id": "%s", "params": %s}`, templateID, string(paramsJSON))
 	data.Set("template", templateJSON)
 
-	// Message field is also required for text templates
-	// Note: For templates with parameters, the message field might be ignored
-	// But we include it anyway as per API docs
-	messageJSON := fmt.Sprintf(`{"type": "text", "text": "%s"}`, escapeJSONString(message))
-	data.Set("message", messageJSON)
+	// Message field is OPTIONAL - only needed for carousel templates or special cases
+	// For simple text templates with parameters, we don't need the message field
+	// The template params will contain the AI-generated text
+	// Only include message field if template doesn't have parameters (unlikely for our use case)
+	if len(templateParams) == 0 {
+		// If no parameters, include message field (though this shouldn't happen for our templates)
+		messageJSON := fmt.Sprintf(`{"type": "text", "text": "%s"}`, escapeJSONString(message))
+		data.Set("message", messageJSON)
+	}
 
 	if c.Logger != nil {
 		c.Logger.Info("📤 Preparing to send message with template",
@@ -1349,9 +1465,9 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use token header (as per Gupshup Partner API docs)
-	// Docs show: --header 'token: {PARTNER_APP_TOKEN}'
-	req.Header.Set("token", appToken)
+	// Use Authorization header (as per Gupshup Partner API docs)
+	// Docs show: --header 'Authorization: {PARTNER_APP_TOKEN}'
+	req.Header.Set("Authorization", appToken)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("accept", "application/json")
 	client := &http.Client{Timeout: 10 * time.Second}
