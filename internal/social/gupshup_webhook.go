@@ -33,6 +33,7 @@ func NewGupshupWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *Messa
 }
 
 // HandleWebhook processes incoming webhook events from Gupshup
+// CRITICAL: This endpoint must be publicly reachable and respond quickly (2xx) to avoid Gupshup retries/drops
 func (h *GupshupWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Handle GET requests (webhook verification)
 	if r.Method == http.MethodGet {
@@ -49,8 +50,26 @@ func (h *GupshupWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Acknowledge quickly
+	// Log ALL incoming webhook requests (headers + body) for debugging
+	// This helps verify Gupshup is hitting the endpoint and what events are being sent
+	h.Logger.Info("📨 Gupshup webhook received",
+		zap.String("method", r.Method),
+		zap.String("url", r.URL.String()),
+		zap.String("content_type", r.Header.Get("Content-Type")),
+		zap.String("user_agent", r.Header.Get("User-Agent")),
+		zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
+		zap.String("x_real_ip", r.Header.Get("X-Real-IP")),
+		zap.Int("body_size", len(body)),
+		zap.String("body_preview", func() string {
+			if len(body) > 500 {
+				return string(body[:500])
+			}
+			return string(body)
+		}()))
+
+	// Acknowledge quickly (within 2 seconds) to prevent Gupshup from retrying
 	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
 
 	// Parse payload
 	var envelope map[string]interface{}
@@ -59,7 +78,7 @@ func (h *GupshupWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Process asynchronously
+	// Process asynchronously (after acknowledging)
 	go h.processWebhookEvent(context.Background(), envelope, body)
 }
 
@@ -101,56 +120,82 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 	}
 
 	// Find or create WhatsAppApp record
+	// CRITICAL: Don't rely on redirect URL params for WABA/phone metadata
+	// Treat redirect as purely UX (to let user complete login) - not a guarantee of WABA success
+	// Metadata will come from webhook events (account-event) or polling GetAppDetails
 	var app storage.WhatsAppApp
 	if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", uint(tenantID), appID).First(&app).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			// Create new record
+			// Create new record with minimal info from redirect (just app ID and status)
+			// Don't trust redirect params for WABA/phone - wait for webhook events
 			app = storage.WhatsAppApp{
 				TenantID:        uint(tenantID),
 				GupshupAppID:    appID,
-				GupshupAppToken: token,
-				PhoneNumber:     phone,
-				WABAID:          wabaID,
-				BusinessID:      businessID,
-				PhoneNumberID:   phoneNumberID,
-				Status:          status,
+				GupshupAppToken: token,                // Token from redirect is OK to use
+				Status:          "pending_onboarding", // Always start as pending, even if redirect says otherwise
 				Mode:            "gupshup_partner",
+			}
+			// Only set phone/WABA if they're actually present (but don't rely on them)
+			if phone != "" {
+				app.PhoneNumber = phone
+			}
+			if wabaID != "" {
+				app.WABAID = wabaID
+			}
+			if businessID != "" {
+				app.BusinessID = businessID
+			}
+			if phoneNumberID != "" {
+				app.PhoneNumberID = phoneNumberID
 			}
 			if err := h.DB.Create(&app).Error; err != nil {
 				h.Logger.Error("failed to create WhatsAppApp", zap.Error(err))
 				http.Error(w, "database error", http.StatusInternalServerError)
 				return
 			}
+			h.Logger.Info("📝 Created WhatsAppApp from redirect (metadata will come from webhooks)",
+				zap.String("app_id", appID),
+				zap.Uint("tenant_id", uint(tenantID)),
+				zap.String("status", app.Status))
 		} else {
 			h.Logger.Error("failed to query WhatsAppApp", zap.Error(err))
 			http.Error(w, "database error", http.StatusInternalServerError)
 			return
 		}
 	} else {
-		// Update existing record
+		// Update existing record - but don't overwrite existing WABA/phone with redirect params
+		// Only update if we don't already have the data (redirect params are unreliable)
 		if token != "" {
 			app.GupshupAppToken = token
 		}
-		if phone != "" {
+		// Only update phone/WABA if we don't already have them (redirect params may be empty/incomplete)
+		if phone != "" && app.PhoneNumber == "" {
 			app.PhoneNumber = phone
 		}
-		if wabaID != "" {
+		if wabaID != "" && app.WABAID == "" {
 			app.WABAID = wabaID
 		}
-		if businessID != "" {
+		if businessID != "" && app.BusinessID == "" {
 			app.BusinessID = businessID
 		}
-		if phoneNumberID != "" {
+		if phoneNumberID != "" && app.PhoneNumberID == "" {
 			app.PhoneNumberID = phoneNumberID
 		}
-		if status != "" {
-			app.Status = status
+		// Don't update status from redirect - wait for webhook events or polling
+		// Only update if status is explicitly "live" or "connected" from redirect
+		if status == "live" || status == "connected" || status == "success" {
+			if app.Status == "pending_onboarding" {
+				app.Status = status
+			}
 		}
 		if err := h.DB.Save(&app).Error; err != nil {
 			h.Logger.Error("failed to update WhatsAppApp", zap.Error(err))
 			http.Error(w, "database error", http.StatusInternalServerError)
 			return
 		}
+		h.Logger.Info("📝 Updated WhatsAppApp from redirect (waiting for webhook events for complete metadata)",
+			zap.String("app_id", appID),
+			zap.String("current_status", app.Status))
 	}
 
 	// Set up webhook subscription when onboarding completes
@@ -274,21 +319,21 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 	if r.Method == http.MethodGet {
 		// Check if this is coming from a popup
 		isPopup := r.URL.Query().Get("popup") == "true" || r.Header.Get("Referer") != ""
-		
+
 		// Get the actual status from the database (more reliable than query param)
 		// Also check if we have WABA ID or phone number as additional indicators
 		currentStatus := app.Status
 		if status != "" {
 			currentStatus = status
 		}
-		
+
 		// Onboarding is complete ONLY if status is explicitly "live", "connected", or "success"
 		// AND we have either WABA ID or phone number
 		hasWABAID := app.WABAID != "" || wabaID != ""
 		hasPhoneNumber := app.PhoneNumber != "" || phone != ""
 		onboardingComplete := (currentStatus == "live" || currentStatus == "connected" || currentStatus == "success") &&
 			(hasWABAID || hasPhoneNumber)
-		
+
 		if isPopup {
 			if onboardingComplete {
 				// Onboarding is complete - serve HTML page that posts message to parent window and closes popup
@@ -350,7 +395,7 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 					zap.String("status", currentStatus),
 					zap.Bool("has_waba_id", hasWABAID),
 					zap.Bool("has_phone", hasPhoneNumber))
-				
+
 				// Generate new embed link to continue onboarding
 				redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d&popup=true", h.Client.Config.PublicURL, tenantID)
 				embedLink, err := h.Client.GenerateEmbedSignedLink(appID, redirectURL)
@@ -383,13 +428,13 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 					w.Write([]byte(html))
 					return
 				}
-				
+
 				// Redirect back to embedded signup to continue onboarding
 				http.Redirect(w, r, embedLink, http.StatusFound)
 				return
 			}
 		}
-		
+
 		// Not a popup, redirect normally
 		http.Redirect(w, r, frontendSuccessURL, http.StatusFound)
 		return
@@ -647,30 +692,34 @@ func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", appID))
 
-	// If status is "approved" or equivalent, fetch app details to get WABA/phone metadata
-	if status == "approved" || status == "live" || status == "connected" || eventSubtype == "status-event" {
-		// Fetch latest app details from Gupshup API
-		appDetails, err := h.Client.GetAppDetails(appID)
-		if err != nil {
-			h.Logger.Error("failed to fetch app details after account event",
-				zap.String("app_id", appID),
-				zap.String("status", status),
-				zap.Error(err))
-			return
-		}
+	// CRITICAL: Always call GetAppDetails on account events to extract complete metadata
+	// Don't rely on webhook payload alone - GetAppDetails has the authoritative data
+	// This handles: WABA approval, phone verification, business ID, phone number ID, etc.
+	// Fetch latest app details from Gupshup API to get complete metadata
+	appDetails, err := h.Client.GetAppDetails(appID)
+	if err != nil {
+		h.Logger.Error("failed to fetch app details after account event",
+			zap.String("app_id", appID),
+			zap.String("status", status),
+			zap.String("event_subtype", eventSubtype),
+			zap.Error(err))
+		// Continue to update status even if GetAppDetails fails
+		appDetails = nil
+	}
 
-		// Update WhatsAppApp record with metadata from GetAppDetails
-		var app storage.WhatsAppApp
-		if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", tenantID, appID).First(&app).Error; err != nil {
-			h.Logger.Warn("app not found for account event",
-				zap.String("app_id", appID),
-				zap.Uint("tenant_id", tenantID),
-				zap.Error(err))
-			return
-		}
+	// Update WhatsAppApp record with metadata from GetAppDetails
+	var app storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ? AND gupshup_app_id = ?", tenantID, appID).First(&app).Error; err != nil {
+		h.Logger.Warn("app not found for account event",
+			zap.String("app_id", appID),
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err))
+		return
+	}
 
-		// Extract WhatsApp metadata from app details
-		// Response structure: {"whatsapp": {"businessId": "...", "formattedPhoneNumber": "...", "normalizedPhoneNumber": "...", ...}}
+	// Extract WhatsApp metadata from app details if available
+	// Response structure: {"whatsapp": {"businessId": "...", "formattedPhoneNumber": "...", "normalizedPhoneNumber": "...", ...}}
+	if appDetails != nil {
 		if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
 			// Update WABA ID
 			if businessID, ok := whatsapp["businessId"].(string); ok && businessID != "" {
@@ -737,7 +786,7 @@ func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID
 func (h *GupshupWebhookHandler) PollPendingApps(ctx context.Context) error {
 	// Find apps that are pending and haven't been updated in the last hour
 	oneHourAgo := time.Now().Add(-1 * time.Hour)
-	
+
 	var pendingApps []storage.WhatsAppApp
 	if err := h.DB.Where("status = ? AND updated_at < ?", "pending_onboarding", oneHourAgo).
 		Find(&pendingApps).Error; err != nil {

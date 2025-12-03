@@ -394,29 +394,38 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 	apiURL := fmt.Sprintf("%s/partner/app/%s/subscription", c.Config.GupshupAPIBaseURL, appID)
 
 	// Convert events array to modes string
-	// For version 3, use modes: MESSAGE (incoming messages), OTHERS (events like read, delivered, sent)
-	// or ALL (all messages and events)
-	modes := "MESSAGE,OTHERS" // Default: messages + events
+	// CRITICAL: For account events (WABA approval, phone verification), we need ALL events
+	// For version 3, use modes: MESSAGE (incoming messages), OTHERS (events like read, delivered, sent, account-event, status-event)
+	// or ALL (all messages and events including account-events/system-events)
+	modes := "ALL" // Default to ALL to ensure we receive account-events/system-events
 	if len(events) > 0 {
-		// Map common event names to modes
+		// Check if we need account-events/system-events
+		needsAccountEvents := false
 		hasMessage := false
 		hasEvents := false
+
 		for _, event := range events {
 			switch event {
 			case "message", "messages":
 				hasMessage = true
 			case "message-event", "status", "read", "delivered", "sent":
 				hasEvents = true
+			case "account-event", "system-event", "status-event", "review-event":
+				needsAccountEvents = true
 			}
 		}
-		if hasMessage && hasEvents {
+
+		// If we need account events, use ALL to ensure we get them
+		if needsAccountEvents {
+			modes = "ALL"
+		} else if hasMessage && hasEvents {
 			modes = "MESSAGE,OTHERS"
 		} else if hasMessage {
 			modes = "MESSAGE"
 		} else if hasEvents {
 			modes = "OTHERS"
 		} else {
-			// Default to ALL for v3 if unsure
+			// Default to ALL for v3 if unsure (ensures we get all event types)
 			modes = "ALL"
 		}
 	}
