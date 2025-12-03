@@ -891,9 +891,10 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		return fmt.Errorf("gupshup app is not live (status: %s)", app.Status)
 	}
 
-	// Check if customer sent a message within 24 hours (session window)
-	// Within 24 hours: Can use session messages (plain text, no template) - simpler!
-	// Outside 24 hours: Must use templates
+	// ✅ Check 24-hour session window for free-form messages
+	// WhatsApp Business Platform allows free-form (session) messages within 24 hours
+	// of the customer's last message. After 24h, must use pre-approved templates.
+	// The 24-hour window resets every time the customer sends a message.
 	var customer storage.Customer
 	within24Hours := false
 	if err := h.DB.Where("tenant_id = ? AND platform_id = ? AND channel = ?", acc.TenantID, customerID, "whatsapp").First(&customer).Error; err == nil {
@@ -904,8 +905,20 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 				zap.String("customer_id", customerID),
 				zap.Duration("time_since_last_message", timeSinceLastMessage),
 				zap.Bool("within_24_hours", within24Hours),
-				zap.String("note", "If within 24h, can use session messages (no template). Otherwise, must use template."))
+				zap.String("customer_last_message_at", customer.LastMessageAt.Format(time.RFC3339)),
+				zap.String("note", "Free-form window opens when user sends message. Resets with each user message. After 24h, must use templates."))
+		} else {
+			// No previous message from customer - can't use session messages
+			// Must use template to initiate conversation
+			h.Logger.Info("📅 No previous customer message - must use template to initiate",
+				zap.String("customer_id", customerID),
+				zap.String("note", "First message to customer requires template. Session messages only work after customer initiates."))
 		}
+	} else {
+		// Customer not found - likely first interaction, must use template
+		h.Logger.Info("📅 Customer not found in DB - must use template to initiate",
+			zap.String("customer_id", customerID),
+			zap.String("note", "First message requires template. Session messages only work after customer initiates conversation."))
 	}
 
 	// If within 24 hours, try to use session message (no template) first

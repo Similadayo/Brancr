@@ -573,9 +573,14 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 	case "message":
 		h.handleIncomingMessage(ctx, tenantID, envelope)
 	case "delivery_status", "message-event":
+		// Handles: sent, delivered, failed, deleted, warning
 		h.handleDeliveryStatus(ctx, tenantID, envelope)
 	case "read_status":
+		// Handles: read (when customer reads the message)
 		h.handleReadStatus(ctx, tenantID, envelope)
+	case "deleted":
+		// Handles: deleted (when customer deletes a message)
+		h.handleDeletedStatus(ctx, tenantID, envelope)
 	case "account-event", "system-event":
 		// Handle account status changes (WABA approval, phone verification, etc.)
 		h.handleAccountEvent(ctx, tenantID, appID, envelope)
@@ -793,8 +798,25 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 			}
 		}
 	} else {
-		// Normal status update (delivered, sent, etc.)
+		// Normal status update (delivered, sent, deleted, warning, etc.)
 		status, _ = payload["status"].(string)
+
+		// Handle "warning" status (catalog item unavailable)
+		if status == "warning" {
+			h.Logger.Warn("⚠️ Message warning status received",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("message_id", messageID),
+				zap.String("status", status),
+				zap.String("note", "Catalog item in message is unavailable or does not exist"))
+		}
+
+		// Handle "deleted" status (customer deleted message)
+		if status == "deleted" {
+			h.Logger.Info("🗑️ Message deleted by customer (from delivery status)",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("message_id", messageID),
+				zap.String("note", "Customer deleted this message - should be removed from system"))
+		}
 	}
 
 	// Find interaction by platform message ID
@@ -821,19 +843,46 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 			interaction.ResponseStatus = "failed"
 		}
 
+		// Handle "warning" status (catalog item unavailable)
+		if status == "warning" {
+			metadata["warning"] = true
+			metadata["warning_note"] = "Catalog item in message is unavailable or does not exist"
+		}
+
+		// Handle "deleted" status (customer deleted message)
+		if status == "deleted" {
+			metadata["deleted_status"] = "deleted"
+			metadata["deleted_at"] = time.Now().UTC().Format(time.RFC3339)
+			// Mark interaction as deleted (soft delete - keep record but mark as deleted)
+			interaction.ResponseStatus = "deleted"
+		}
+
 		metadataJSON, err := json.Marshal(metadata)
 		if err == nil {
 			interaction.Metadata = string(metadataJSON)
 			h.DB.Save(&interaction)
 
-			if status == "failed" {
+			switch status {
+			case "failed":
 				h.Logger.Error("❌ Updated interaction with failed status",
 					zap.Uint("tenant_id", tenantID),
 					zap.String("message_id", messageID),
 					zap.String("status", status),
 					zap.Any("error_code", errorCode),
 					zap.String("error_reason", errorReason))
-			} else {
+			case "deleted":
+				h.Logger.Info("🗑️ Updated interaction with deleted status",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.String("status", status),
+					zap.String("note", "Customer deleted this message"))
+			case "warning":
+				h.Logger.Warn("⚠️ Updated interaction with warning status",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.String("status", status),
+					zap.String("note", "Catalog item unavailable"))
+			default:
 				h.Logger.Info("✅ Updated delivery status",
 					zap.Uint("tenant_id", tenantID),
 					zap.String("message_id", messageID),
@@ -847,6 +896,67 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 			zap.String("message_id", messageID),
 			zap.Any("error_code", errorCode),
 			zap.String("error_reason", errorReason))
+	}
+}
+
+// handleDeletedStatus processes deleted message notifications
+// When a customer deletes a message, we should delete it from our system
+func (h *GupshupWebhookHandler) handleDeletedStatus(ctx context.Context, tenantID uint, envelope map[string]interface{}) {
+	payload, ok := envelope["payload"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	messageID, _ := payload["id"].(string)
+	if messageID == "" {
+		messageID, _ = payload["gsId"].(string)
+	}
+
+	if messageID == "" {
+		h.Logger.Warn("⚠️ Deleted status event received but no message ID found",
+			zap.Uint("tenant_id", tenantID),
+			zap.Any("payload", payload))
+		return
+	}
+
+	h.Logger.Info("🗑️ Message deleted by customer",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("message_id", messageID),
+		zap.String("note", "Customer deleted this message - should be removed from system"))
+
+	// Find interaction by platform message ID
+	var interaction storage.Interaction
+	if err := h.DB.Where("tenant_id = ? AND platform_message_id = ?", tenantID, messageID).First(&interaction).Error; err == nil {
+		// Update metadata with deleted status
+		var metadata map[string]interface{}
+		if interaction.Metadata != "" {
+			if err := json.Unmarshal([]byte(interaction.Metadata), &metadata); err != nil {
+				metadata = make(map[string]interface{})
+			}
+		} else {
+			metadata = make(map[string]interface{})
+		}
+
+		metadata["deleted_status"] = "deleted"
+		metadata["deleted_at"] = time.Now().UTC().Format(time.RFC3339)
+
+		metadataJSON, err := json.Marshal(metadata)
+		if err == nil {
+			interaction.Metadata = string(metadataJSON)
+			// Mark interaction as deleted (soft delete - keep record but mark as deleted)
+			// Note: We don't actually delete from DB, just mark it
+			interaction.ResponseStatus = "deleted"
+			h.DB.Save(&interaction)
+
+			h.Logger.Info("✅ Updated interaction with deleted status",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("message_id", messageID),
+				zap.Uint("interaction_id", interaction.ID))
+		}
+	} else {
+		h.Logger.Warn("⚠️ Deleted message event received but interaction not found",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("message_id", messageID))
 	}
 }
 

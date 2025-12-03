@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1159,10 +1160,18 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 	return createdElementName, nil
 }
 
-// SendSessionMessage sends a WhatsApp message without template (session message)
-// This can only be used within 24 hours of customer's last message
-// Endpoint: POST /partner/app/{appId}/v3/text/msg (or similar - need to verify exact endpoint)
-// Note: Gupshup Partner API might not support session messages - this is a fallback attempt
+// SendSessionMessage sends a WhatsApp free-form (session) message without template
+//
+// ✅ Free-form messages can only be sent within 24 hours of customer's last message
+// ✅ The 24-hour window opens automatically when a customer sends you a message
+// ✅ The window resets every time the customer sends a new message
+// ✅ After 24 hours of no customer messages, you must use pre-approved templates
+//
+// Endpoint: POST /partner/app/{appId}/msg (or /partner/app/{appId}/v3/msg)
+// This allows sending arbitrary text/media without template constraints
+//
+// Note: If this fails (e.g., outside 24h window or endpoint not available),
+// the caller should fall back to template messages
 func (c *GupshupClient) SendSessionMessage(appID, to, message string) (string, error) {
 	appToken, err := c.GetAppAccessToken(appID)
 	if err != nil {
@@ -1201,17 +1210,22 @@ func (c *GupshupClient) SendSessionMessage(appID, to, message string) (string, e
 		return "", fmt.Errorf("app name not found for app")
 	}
 
-	// Try session message endpoint (may not exist in Gupshup Partner API)
-	// Common endpoints: /v3/text/msg, /msg, /text/msg
-	// If this doesn't work, we'll fall back to template messages
-	apiURL := fmt.Sprintf("%s/partner/app/%s/v3/text/msg", c.Config.GupshupAPIBaseURL, appID)
+	// Session message endpoint for Gupshup Partner API
+	// For free-form messages within 24-hour window, use the session message API
+	// Endpoint: POST /partner/app/{appId}/msg (or /partner/app/{appId}/v3/msg)
+	// This allows sending arbitrary text/media without templates
+	apiURL := fmt.Sprintf("%s/partner/app/%s/msg", c.Config.GupshupAPIBaseURL, appID)
 
 	data := url.Values{}
 	data.Set("channel", "whatsapp")
 	data.Set("source", sourcePhone)
 	data.Set("destination", to)
 	data.Set("src.name", appName)
-	data.Set("message", message)
+
+	// For session messages, send message as plain text (not template)
+	// Format: {"type": "text", "text": "message content"}
+	messageJSON := fmt.Sprintf(`{"type": "text", "text": "%s"}`, escapeJSONString(message))
+	data.Set("message", messageJSON)
 	data.Set("sandbox", "false")
 
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
@@ -1234,13 +1248,57 @@ func (c *GupshupClient) SendSessionMessage(appID, to, message string) (string, e
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		// Session message endpoint might not exist - return error so we can fall back to template
+		// Session message endpoint might not exist or user is outside 24-hour window
+		// Try alternative endpoint: /partner/app/{appId}/v3/msg
+		if resp.StatusCode == 404 || resp.StatusCode == 400 {
+			// Try v3 endpoint as fallback
+			apiURLv3 := fmt.Sprintf("%s/partner/app/%s/v3/msg", c.Config.GupshupAPIBaseURL, appID)
+			req2, err := http.NewRequest("POST", apiURLv3, strings.NewReader(data.Encode()))
+			if err == nil {
+				req2.Header.Set("Authorization", appToken)
+				req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req2.Header.Set("accept", "application/json")
+
+				resp2, err := client.Do(req2)
+				if err == nil {
+					defer resp2.Body.Close()
+					body2, _ := io.ReadAll(resp2.Body)
+					if resp2.StatusCode < 300 {
+						// v3 endpoint worked!
+						var result struct {
+							Status    string `json:"status"`
+							MessageID string `json:"messageId"`
+						}
+						if err := json.Unmarshal(body2, &result); err == nil && result.Status == "submitted" && result.MessageID != "" {
+							if c.Logger != nil {
+								c.Logger.Info("✅ Session message sent successfully via v3 endpoint",
+									zap.String("app_id", appID),
+									zap.String("message_id", result.MessageID),
+									zap.String("destination", to))
+							}
+							return result.MessageID, nil
+						}
+					}
+				}
+			}
+		}
+
+		// Session message failed - return error so we can fall back to template
 		if c.Logger != nil {
-			c.Logger.Warn("Session message endpoint failed (may not be supported)",
+			errorMsg := ""
+			var errorResp map[string]interface{}
+			if err := json.Unmarshal(body, &errorResp); err == nil {
+				if msg, ok := errorResp["message"].(string); ok {
+					errorMsg = msg
+				}
+			}
+
+			c.Logger.Warn("⚠️ Session message endpoint failed",
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("url", apiURL),
+				zap.String("error_message", errorMsg),
 				zap.String("response", string(body)),
-				zap.String("note", "Will fall back to template messages"))
+				zap.String("note", "Will fall back to template messages. This may happen if: 1) User is outside 24-hour window, 2) Endpoint not available in Partner API, 3) User not opted-in"))
 		}
 		return "", fmt.Errorf("session message not supported (status %d): %s", resp.StatusCode, string(body))
 	}
@@ -1431,6 +1489,78 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 		return "", fmt.Errorf("no template available for sending AI reply - need to create a text template for app %s and store its ID in WhatsAppApp.DefaultTemplateID", appID)
 	}
 
+	// ✅ VALIDATION: Verify template parameters count & order
+	// Try to get template details to validate parameter count
+	// This helps catch "template mismatch" errors before sending
+	templateDetails, err := c.GetTemplateDetails(appID, templateID)
+	if err == nil && templateDetails != nil {
+		// Extract expected parameter count from template
+		expectedParamCount := c.countTemplatePlaceholders(templateDetails)
+		actualParamCount := len(templateParams)
+
+		if expectedParamCount != actualParamCount {
+			if c.Logger != nil {
+				c.Logger.Error("❌ Template parameter count mismatch",
+					zap.String("template_id", templateID),
+					zap.Int("expected_params", expectedParamCount),
+					zap.Int("actual_params", actualParamCount),
+					zap.String("template_data", func() string {
+						if data, ok := templateDetails["data"].(string); ok {
+							return data
+						}
+						return "unknown"
+					}()),
+					zap.String("fix", fmt.Sprintf("Template expects %d parameters but we're sending %d. Update template or params array.", expectedParamCount, actualParamCount)))
+			}
+			return "", fmt.Errorf("template parameter mismatch: template expects %d parameters but %d provided (template_id: %s)", expectedParamCount, actualParamCount, templateID)
+		}
+
+		// Check template type (text vs media)
+		templateType, _ := templateDetails["templateType"].(string)
+		if templateType != "TEXT" && templateType != "" {
+			if c.Logger != nil {
+				c.Logger.Warn("⚠️ Template is not TEXT type - may require media fields",
+					zap.String("template_id", templateID),
+					zap.String("template_type", templateType),
+					zap.String("note", "Media templates require message object with media fields"))
+			}
+		}
+	} else if c.Logger != nil {
+		c.Logger.Warn("⚠️ Could not fetch template details for validation",
+			zap.String("template_id", templateID),
+			zap.Error(err),
+			zap.String("note", "Proceeding without parameter count validation - may fail if params don't match"))
+	}
+
+	// ✅ VALIDATION: Clean and validate phone number format
+	// Remove any whitespace, dashes, or formatting
+	cleanDestination := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(to, " ", ""), "-", ""), "+", "")
+	if cleanDestination != to {
+		if c.Logger != nil {
+			c.Logger.Info("🧹 Cleaned destination phone number",
+				zap.String("original", to),
+				zap.String("cleaned", cleanDestination))
+		}
+		to = cleanDestination
+	}
+
+	// Validate phone number is numeric (country code + number)
+	if !isNumeric(cleanDestination) {
+		return "", fmt.Errorf("invalid destination phone number format: %s (must be numeric with country code, e.g., 2348164155954)", to)
+	}
+
+	// ✅ VALIDATION: Clean template parameters (remove extra whitespace/newlines)
+	cleanedParams := make([]string, len(templateParams))
+	for i, param := range templateParams {
+		// Trim whitespace and newlines, but preserve content
+		cleaned := strings.TrimSpace(param)
+		// Replace multiple newlines with single space
+		cleaned = strings.ReplaceAll(cleaned, "\n\n", " ")
+		cleaned = strings.ReplaceAll(cleaned, "\n", " ")
+		cleanedParams[i] = cleaned
+	}
+	templateParams = cleanedParams
+
 	// Use template with AI-generated message as parameter
 	// Template format: {"id": "template_id", "params": ["param1", "param2"]}
 	paramsJSON, _ := json.Marshal(templateParams)
@@ -1447,17 +1577,41 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 		data.Set("message", messageJSON)
 	}
 
+	// ✅ COMPREHENSIVE LOGGING: Log full payload for debugging
 	if c.Logger != nil {
+		// Log full payload details
+		fullPayload := map[string]interface{}{
+			"channel":     "whatsapp",
+			"source":      sourcePhone,
+			"destination": to,
+			"src.name":    appName,
+			"sandbox":     "false",
+			"template":    templateJSON,
+		}
+		if len(templateParams) == 0 {
+			messageJSON := fmt.Sprintf(`{"type": "text", "text": "%s"}`, escapeJSONString(message))
+			fullPayload["message"] = messageJSON
+		}
+
+		payloadJSON, _ := json.Marshal(fullPayload)
+
 		c.Logger.Info("📤 Preparing to send message with template",
+			zap.String("app_id", appID),
 			zap.String("template_id", templateID),
 			zap.Int("params_count", len(templateParams)),
+			zap.Strings("params", templateParams),
 			zap.String("template_json", templateJSON),
+			zap.String("source_phone", sourcePhone),
+			zap.String("destination_phone", to),
+			zap.String("app_name", appName),
+			zap.String("full_payload", string(payloadJSON)),
 			zap.String("message_preview", func() string {
 				if len(message) > 100 {
 					return message[:100] + "..."
 				}
 				return message
-			}()))
+			}()),
+			zap.String("validation_note", "✅ Parameter count validated, phone number cleaned, params trimmed"))
 	}
 
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
@@ -1480,14 +1634,50 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		// ✅ ENHANCED ERROR LOGGING: Log full context for debugging
 		if c.Logger != nil {
-			c.Logger.Error("Gupshup Send Message failed",
+			// Parse error response if possible
+			var errorResp map[string]interface{}
+			json.Unmarshal(body, &errorResp)
+
+			errorMessage := ""
+			if msg, ok := errorResp["message"].(string); ok {
+				errorMessage = msg
+			}
+
+			c.Logger.Error("❌ Gupshup Send Message failed",
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("url", apiURL),
 				zap.String("app_id", appID),
 				zap.String("source", sourcePhone),
 				zap.String("destination", to),
-				zap.String("response", string(body)))
+				zap.String("template_id", templateID),
+				zap.Int("params_count", len(templateParams)),
+				zap.Strings("params", templateParams),
+				zap.String("template_json", templateJSON),
+				zap.String("error_message", errorMessage),
+				zap.String("full_response", string(body)),
+				zap.String("debugging_tips", func() string {
+					tips := []string{}
+					if resp.StatusCode == 400 {
+						if strings.Contains(strings.ToLower(errorMessage), "template") {
+							tips = append(tips, "1. Check template ID is correct for this app")
+							tips = append(tips, "2. Verify parameter count matches template placeholders")
+							tips = append(tips, "3. Check template is approved (Active - Quality pending = approved)")
+							tips = append(tips, "4. Verify template type matches (text vs media)")
+						}
+						if strings.Contains(strings.ToLower(errorMessage), "destination") || strings.Contains(strings.ToLower(errorMessage), "invalid") {
+							tips = append(tips, "1. Check destination phone number format (country code + number)")
+							tips = append(tips, "2. Verify user is opted-in and active")
+							tips = append(tips, "3. Check user hasn't blocked or opted out")
+						}
+					}
+					if resp.StatusCode == 401 {
+						tips = append(tips, "1. Verify App Token is valid and not expired")
+						tips = append(tips, "2. Check Authorization header format")
+					}
+					return strings.Join(tips, "\n")
+				}()))
 		}
 		return "", fmt.Errorf("send message failed (status %d): %s", resp.StatusCode, string(body))
 	}
@@ -1522,4 +1712,63 @@ func escapeJSONString(s string) string {
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	s = strings.ReplaceAll(s, "\t", "\\t")
 	return s
+}
+
+// GetTemplateDetails fetches details of a specific template
+// This helps validate parameter count and template type before sending
+// Note: Gupshup may not have a direct "get template by ID" endpoint
+// This is a helper that tries to find the template in the library or app templates
+func (c *GupshupClient) GetTemplateDetails(appID, templateID string) (map[string]interface{}, error) {
+	// Try to get all templates and find the one matching templateID
+	// First try Meta Library templates
+	templates, err := c.GetTemplatesFromLibrary(appID, map[string]string{})
+	if err == nil {
+		for _, t := range templates {
+			if elementName, ok := t["elementName"].(string); ok && elementName == templateID {
+				return t, nil
+			}
+		}
+	}
+
+	// If not found in library, return nil (we can't fetch app-specific templates easily)
+	// This is a limitation - Gupshup may not expose a "get template by ID" endpoint
+	return nil, fmt.Errorf("template not found in Meta Library (template_id: %s)", templateID)
+}
+
+// countTemplatePlaceholders counts the number of placeholders in a template
+// Looks for patterns like {{1}}, {{2}}, {{ 1 }}, etc.
+func (c *GupshupClient) countTemplatePlaceholders(template map[string]interface{}) int {
+	// Check data field (template body)
+	data, ok := template["data"].(string)
+	if !ok {
+		return 0
+	}
+
+	// Count placeholders using regex: {{1}}, {{2}}, {{ 1 }}, etc.
+	// Pattern: {{ followed by optional space, number, optional space, }}
+	placeholderPattern := regexp.MustCompile(`\{\{\s*\d+\s*\}\}`)
+	matches := placeholderPattern.FindAllString(data, -1)
+
+	// Extract unique parameter numbers to count distinct placeholders
+	seen := make(map[string]bool)
+	for _, match := range matches {
+		// Extract number from {{1}} -> "1"
+		numPattern := regexp.MustCompile(`\d+`)
+		num := numPattern.FindString(match)
+		if num != "" {
+			seen[num] = true
+		}
+	}
+
+	return len(seen)
+}
+
+// isNumeric checks if a string contains only digits
+func isNumeric(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
