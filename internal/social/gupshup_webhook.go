@@ -269,13 +269,16 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		h.Client.Config.FrontendURL, appID, status)
 
 	// For GET requests (browser redirect from embedded signup popup)
-	// Serve an HTML page that uses postMessage to notify the parent window
+	// Only close popup when status is "live", "connected", or "success" (NOT "pending_onboarding")
 	if r.Method == http.MethodGet {
-		// Check if this is coming from a popup (check for referer or query param)
+		// Check if this is coming from a popup
 		isPopup := r.URL.Query().Get("popup") == "true" || r.Header.Get("Referer") != ""
 		
-		if isPopup {
-			// Serve HTML page that posts message to parent window and closes popup
+		// Check if onboarding is actually complete (status is live, not pending)
+		onboardingComplete := status == "live" || status == "connected" || status == "success"
+		
+		if isPopup && onboardingComplete {
+			// Onboarding is complete - serve HTML page that posts message to parent window and closes popup
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			html := fmt.Sprintf(`<!DOCTYPE html>
@@ -296,6 +299,8 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				app_id: '%s',
 				status: '%s',
 				phone: '%s',
+				waba_id: '%s',
+				business_id: '%s',
 				subscription_id: '%s',
 				redirect_url: '%s'
 			}, '*');
@@ -320,7 +325,38 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		<p><a href="%s">Click here if the window doesn't close</a></p>
 	</div>
 </body>
-</html>`, appID, status, phone, app.SubscriptionID, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL)
+</html>`, appID, status, phone, app.WABAID, app.BusinessID, app.SubscriptionID, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL)
+			w.Write([]byte(html))
+			return
+		} else if isPopup && !onboardingComplete {
+			// Onboarding not complete yet (status is still pending_onboarding)
+			// Show waiting message, don't close popup
+			// The webhook subscription is active and listening for account events
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+	<title>WhatsApp Onboarding</title>
+	<meta charset="utf-8">
+</head>
+<body>
+	<div style="text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+		<h2>⏳ Completing WhatsApp Onboarding...</h2>
+		<p>Please wait while we finalize your WhatsApp connection.</p>
+		<p>Status: <strong>%s</strong></p>
+		<p>This window will close automatically when setup is complete.</p>
+		<p><small>Webhook subscription is active and listening for account events...</small></p>
+	</div>
+	<script>
+		// Poll for completion status every 3 seconds
+		// Check if status has changed from pending_onboarding to live
+		setTimeout(function() {
+			window.location.reload();
+		}, 3000);
+	</script>
+</body>
+</html>`, status)
 			w.Write([]byte(html))
 			return
 		}
