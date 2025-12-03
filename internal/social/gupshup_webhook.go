@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -589,13 +590,67 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 	}
 }
 
-// resolveTenantFromAppID resolves tenant ID from Gupshup app ID
-func (h *GupshupWebhookHandler) resolveTenantFromAppID(appID string) (uint, error) {
+// resolveTenantFromAppID resolves tenant ID from Gupshup app ID or app name
+// Gupshup webhooks may send either UUID (appId) or app name (app field)
+func (h *GupshupWebhookHandler) resolveTenantFromAppID(appIDOrName string) (uint, error) {
+	// First try: Look up by UUID (gupshup_app_id)
 	var app storage.WhatsAppApp
-	if err := h.DB.Where("gupshup_app_id = ?", appID).First(&app).Error; err != nil {
-		return 0, fmt.Errorf("app not found: %w", err)
+	if err := h.DB.Where("gupshup_app_id = ?", appIDOrName).First(&app).Error; err == nil {
+		return app.TenantID, nil
 	}
-	return app.TenantID, nil
+
+	// Second try: If it looks like a name (not a UUID), try to find by matching app name
+	// UUIDs have format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (has dashes)
+	// App names don't have dashes typically
+	isUUID := strings.Contains(appIDOrName, "-") && len(appIDOrName) > 30
+
+	if !isUUID {
+		// It's likely an app name - try to get the UUID from Gupshup API
+		h.Logger.Info("🔍 App identifier looks like a name, fetching UUID from Gupshup",
+			zap.String("app_id_or_name", appIDOrName))
+
+		// Get list of apps from Gupshup to find the UUID for this app name
+		if h.Client != nil {
+			partnerToken, err := h.Client.GetPartnerToken()
+			if err == nil {
+				listURL := fmt.Sprintf("%s/partner/account/api/partnerApps", h.Client.Config.GupshupAPIBaseURL)
+				req, err := http.NewRequest("GET", listURL, nil)
+				if err == nil {
+					req.Header.Set("Authorization", partnerToken)
+					httpClient := &http.Client{Timeout: 10 * time.Second}
+					resp, err := httpClient.Do(req)
+					if err == nil && resp.StatusCode < 300 {
+						defer resp.Body.Close()
+						body, _ := io.ReadAll(resp.Body)
+						var listResult struct {
+							Status          string `json:"status"`
+							PartnerAppsList []struct {
+								ID   string `json:"id"`
+								Name string `json:"name"`
+							} `json:"partnerAppsList"`
+						}
+						if err := json.Unmarshal(body, &listResult); err == nil {
+							// Find app by name
+							for _, gupshupApp := range listResult.PartnerAppsList {
+								if gupshupApp.Name == appIDOrName {
+									// Found it! Now look up by UUID
+									h.Logger.Info("✅ Found app UUID from name",
+										zap.String("app_name", appIDOrName),
+										zap.String("app_uuid", gupshupApp.ID))
+									if err := h.DB.Where("gupshup_app_id = ?", gupshupApp.ID).First(&app).Error; err == nil {
+										return app.TenantID, nil
+									}
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("app not found (tried UUID and name lookup): %s", appIDOrName)
 }
 
 // handleIncomingMessage processes incoming message events
