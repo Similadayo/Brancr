@@ -197,6 +197,22 @@ func (h *TenantWebhookHandler) handlePlatformSelectionCallback(bot *tgbotapi.Bot
 			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Please select at least one platform."))
 			return
 		}
+		
+		// Check if TikTok is selected - if so, ask for TikTok posting options
+		hasTikTok := false
+		for _, p := range sess.Platforms {
+			if p == "tiktok" {
+				hasTikTok = true
+				break
+			}
+		}
+		
+		if hasTikTok && !sess.TikTokOptionsAsked {
+			// Show TikTok options UI
+			h.Manager.showTikTokPostingOptions(bot, chatID, sess)
+			return
+		}
+		
 		sess.Step = 5
 		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
 	}

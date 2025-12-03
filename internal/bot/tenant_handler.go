@@ -782,6 +782,10 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		// Handle TikTok management callbacks
 		// arg format: "list", "analytics", "comments", "status"
 		h.handleTikTokCallback(bot, tenantID, chatID, arg)
+	case "tiktok_option":
+		// Handle TikTok posting options during post flow
+		// arg format: "toggle:duet:true", "toggle:stitch:false", "default", "continue"
+		h.handleTikTokPostingOptionCallback(bot, tenantID, chatID, arg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
@@ -1583,6 +1587,54 @@ func (h *TenantWebhookHandler) handleTikTokCallback(bot *tgbotapi.BotAPI, tenant
 		bot.Send(tgbotapi.NewMessage(chatID, "🔍 Please provide a publish ID.\n\nExample: `tiktok status publish_123`"))
 	default:
 		intentRouter.showTikTokMenu(bot, chatID, tenantID)
+	}
+}
+
+// handleTikTokPostingOptionCallback handles TikTok posting options during post flow
+func (h *TenantWebhookHandler) handleTikTokPostingOptionCallback(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, arg string) {
+	sess, ok := tenantSessions[chatID]
+	if !ok {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Session expired. Please start over."))
+		return
+	}
+
+	parts := strings.Split(arg, ":")
+	if len(parts) == 0 {
+		return
+	}
+
+	switch parts[0] {
+	case "toggle":
+		// Format: "toggle:duet:true" or "toggle:stitch:false"
+		if len(parts) >= 3 {
+			option := parts[1]
+			enabled := parts[2] == "true"
+			
+			switch option {
+			case "duet":
+				sess.TikTokDisableDuet = !enabled
+			case "stitch":
+				sess.TikTokDisableStitch = !enabled
+			case "comment":
+				sess.TikTokDisableComment = !enabled
+			}
+			
+			// Show updated options
+			h.Manager.showTikTokPostingOptions(bot, chatID, sess)
+		}
+	case "default":
+		// Reset to defaults (all enabled)
+		sess.TikTokDisableDuet = false
+		sess.TikTokDisableStitch = false
+		sess.TikTokDisableComment = false
+		sess.TikTokOptionsAsked = true
+		sess.Step = 5
+		bot.Send(tgbotapi.NewMessage(chatID, "✅ Using default TikTok settings (duets, stitches, and comments enabled).\n\nWhen should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
+	case "continue":
+		// Continue to scheduling step
+		sess.TikTokOptionsAsked = true
+		sess.Step = 5
+		bot.Send(tgbotapi.NewMessage(chatID, "✅ TikTok options saved.\n\nWhen should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
 	}
 }
 

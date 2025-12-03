@@ -28,9 +28,21 @@ type PostSession struct {
 	BatchSpacing   string   // e.g., "24 hours apart"
 	OriginalInputs []string // For batch scheduling
 	TenantID       uint     // Added to check connected platforms
+	// TikTok posting options
+	TikTokDisableDuet    bool
+	TikTokDisableStitch  bool
+	TikTokDisableComment bool
+	TikTokScheduleTime   *time.Time
+	TikTokOptionsAsked   bool // Track if we've asked for TikTok options
 }
 
 var tenantSessions = make(map[int64]*PostSession) // chatID → session
+
+// getTenantSession retrieves a post session (exported for use in tenant_handler.go)
+func getTenantSession(chatID int64) (*PostSession, bool) {
+	sess, ok := tenantSessions[chatID]
+	return sess, ok
+}
 
 func (m *TenantBotManager) StartPostFlow(bot *tgbotapi.BotAPI, chatID int64, assetID uint) {
 	var ma storage.MediaAsset
@@ -156,6 +168,53 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 
 	case 4:
+		// Check if we're in TikTok options mode (after platforms selected)
+		if sess.TikTokOptionsAsked == false && len(sess.Platforms) > 0 {
+			// Check if TikTok is selected and we haven't asked for options yet
+			hasTikTok := false
+			for _, p := range sess.Platforms {
+				if p == "tiktok" {
+					hasTikTok = true
+					break
+				}
+			}
+			
+			if hasTikTok {
+				// Handle TikTok options via text input
+				lower := strings.ToLower(strings.TrimSpace(text))
+				if lower == "skip" || lower == "none" || lower == "default" {
+					// Use defaults (all options enabled)
+					sess.TikTokDisableDuet = false
+					sess.TikTokDisableStitch = false
+					sess.TikTokDisableComment = false
+					sess.TikTokOptionsAsked = true
+					sess.Step = 5
+					bot.Send(tgbotapi.NewMessage(chatID, "✅ Using default TikTok settings (duets, stitches, and comments enabled).\n\nWhen should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
+					return
+				}
+				// Try to parse TikTok options from text
+				if strings.Contains(lower, "disable") || strings.Contains(lower, "no") {
+					// Parse which options to disable
+					if strings.Contains(lower, "duet") {
+						sess.TikTokDisableDuet = true
+					}
+					if strings.Contains(lower, "stitch") {
+						sess.TikTokDisableStitch = true
+					}
+					if strings.Contains(lower, "comment") {
+						sess.TikTokDisableComment = true
+					}
+					sess.TikTokOptionsAsked = true
+					sess.Step = 5
+					bot.Send(tgbotapi.NewMessage(chatID, "✅ TikTok options saved.\n\nWhen should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
+					return
+				}
+				// If unclear, show options again
+				m.showTikTokPostingOptions(bot, chatID, sess)
+				return
+			}
+		}
+		
 		// Try to parse platforms from text first (for backward compatibility)
 		platforms := m.parsePlatforms(text)
 		if len(platforms) == 0 {
@@ -164,6 +223,22 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			return
 		}
 		sess.Platforms = platforms
+		
+		// Check if TikTok is selected - if so, ask for TikTok posting options
+		hasTikTok := false
+		for _, p := range platforms {
+			if p == "tiktok" {
+				hasTikTok = true
+				break
+			}
+		}
+		
+		if hasTikTok && !sess.TikTokOptionsAsked {
+			// Show TikTok options UI
+			m.showTikTokPostingOptions(bot, chatID, sess)
+			return
+		}
+		
 		sess.Step = 5
 		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
 
@@ -276,6 +351,83 @@ func (m *TenantBotManager) parsePlatforms(input string) []string {
 	return platforms
 }
 
+// showTikTokPostingOptions displays TikTok posting options with inline buttons
+func (m *TenantBotManager) showTikTokPostingOptions(bot *tgbotapi.BotAPI, chatID int64, sess *PostSession) {
+	text := `🎵 *TikTok Posting Options*
+
+Configure how your TikTok video will be posted:
+
+• *Duets*: %s
+• *Stitches*: %s
+• *Comments*: %s
+
+You can toggle these options using the buttons below, or type:
+• "disable duet" - Disable duets
+• "disable stitch" - Disable stitches  
+• "disable comment" - Disable comments
+• "disable all" - Disable all three
+• "skip" - Use defaults (all enabled)`
+
+	// Get current status
+	duetStatus := "✅ Enabled"
+	if sess.TikTokDisableDuet {
+		duetStatus = "❌ Disabled"
+	}
+	stitchStatus := "✅ Enabled"
+	if sess.TikTokDisableStitch {
+		stitchStatus = "❌ Disabled"
+	}
+	commentStatus := "✅ Enabled"
+	if sess.TikTokDisableComment {
+		commentStatus = "❌ Disabled"
+	}
+	
+	text = fmt.Sprintf(text, duetStatus, stitchStatus, commentStatus)
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("Duet: %s", func() string {
+					if sess.TikTokDisableDuet {
+						return "❌"
+					}
+					return "✅"
+				}()),
+				fmt.Sprintf("tiktok_option:toggle:duet:%v", !sess.TikTokDisableDuet),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("Stitch: %s", func() string {
+					if sess.TikTokDisableStitch {
+						return "❌"
+					}
+					return "✅"
+				}()),
+				fmt.Sprintf("tiktok_option:toggle:stitch:%v", !sess.TikTokDisableStitch),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("Comment: %s", func() string {
+					if sess.TikTokDisableComment {
+						return "❌"
+					}
+					return "✅"
+				}()),
+				fmt.Sprintf("tiktok_option:toggle:comment:%v", !sess.TikTokDisableComment),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Use Defaults", "tiktok_option:default"),
+			tgbotapi.NewInlineKeyboardButtonData("➡️ Continue", "tiktok_option:continue"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+}
+
 // showPlatformSelection displays platform selection with inline checkboxes
 func (m *TenantBotManager) showPlatformSelection(bot *tgbotapi.BotAPI, chatID int64, sess *PostSession) {
 	if sess.TenantID == 0 {
@@ -379,6 +531,35 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		if len(platforms) == 0 {
 			platforms = []string{"instagram"}
 		}
+	}
+
+	// Save TikTok posting options to MediaAsset Metadata if TikTok is selected
+	hasTikTok := false
+	for _, p := range platforms {
+		if p == "tiktok" {
+			hasTikTok = true
+			break
+		}
+	}
+	
+	if hasTikTok {
+		metadata := make(map[string]interface{})
+		// Try to parse existing metadata
+		if ma.Metadata != "" {
+			_ = json.Unmarshal([]byte(ma.Metadata), &metadata)
+		}
+		
+		// Add TikTok posting options
+		metadata["tiktok_disable_duet"] = sess.TikTokDisableDuet
+		metadata["tiktok_disable_stitch"] = sess.TikTokDisableStitch
+		metadata["tiktok_disable_comment"] = sess.TikTokDisableComment
+		if sess.TikTokScheduleTime != nil {
+			metadata["tiktok_schedule_time"] = sess.TikTokScheduleTime.Format(time.RFC3339)
+		}
+		
+		metadataJSON, _ := json.Marshal(metadata)
+		m.DB.Model(&ma).Update("metadata", string(metadataJSON))
+		ma.Metadata = string(metadataJSON)
 	}
 
 	// Validate platform connections before proceeding
