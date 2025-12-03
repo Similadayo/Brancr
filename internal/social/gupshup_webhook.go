@@ -65,6 +65,12 @@ func (h *GupshupWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Req
 
 // HandleRedirect handles the redirect URL after onboarding completion
 func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Request) {
+	// Log all incoming parameters for debugging
+	h.Logger.Info("🔔 Gupshup redirect received",
+		zap.String("method", r.Method),
+		zap.String("url", r.URL.String()),
+		zap.String("query", r.URL.RawQuery))
+
 	// Extract query parameters
 	appID := r.URL.Query().Get("appId")
 	status := r.URL.Query().Get("status")
@@ -75,7 +81,15 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 	phoneNumberID := r.URL.Query().Get("phoneNumberId")
 	tenantIDStr := r.URL.Query().Get("tenant_id")
 
+	h.Logger.Info("📋 Redirect parameters extracted",
+		zap.String("app_id", appID),
+		zap.String("status", status),
+		zap.String("phone", phone),
+		zap.String("waba_id", wabaID),
+		zap.String("tenant_id", tenantIDStr))
+
 	if appID == "" {
+		h.Logger.Error("❌ Missing appId in redirect", zap.String("url", r.URL.String()))
 		http.Error(w, "appId required", http.StatusBadRequest)
 		return
 	}
@@ -192,7 +206,11 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 			zap.String("subscription_id", app.SubscriptionID))
 	}
 
-	// Also create/update SocialAccount for compatibility
+	// Also create/update SocialAccount for compatibility with existing connection status checks
+	// Mark as connected if we have phone number and subscription is active
+	isConnected := (phone != "" && app.SubscriptionActive) ||
+		(status == "live" || status == "connected" || status == "success")
+
 	var account storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ?", uint(tenantID), "whatsapp").First(&account).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -203,24 +221,39 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				Username:   phone,
 				PageID:     phoneNumberID,
 				ExternalID: phoneNumberID,
-				Connected:  status == "live",
+				Connected:  isConnected,
 			}
 			if token != "" {
 				encrypted, _ := encryptToken(token)
 				account.AccessToken = encrypted
 			}
-			h.DB.Create(&account)
+			if err := h.DB.Create(&account).Error; err != nil {
+				h.Logger.Warn("failed to create SocialAccount", zap.Error(err))
+			} else {
+				h.Logger.Info("✅ SocialAccount created for compatibility",
+					zap.Uint("tenant_id", uint(tenantID)),
+					zap.Bool("connected", isConnected),
+					zap.String("phone", phone))
+			}
 		}
 	} else {
+		// Update existing SocialAccount
 		account.Username = phone
 		account.PageID = phoneNumberID
 		account.ExternalID = phoneNumberID
-		account.Connected = status == "live"
+		account.Connected = isConnected
 		if token != "" {
 			encrypted, _ := encryptToken(token)
 			account.AccessToken = encrypted
 		}
-		h.DB.Save(&account)
+		if err := h.DB.Save(&account).Error; err != nil {
+			h.Logger.Warn("failed to update SocialAccount", zap.Error(err))
+		} else {
+			h.Logger.Info("✅ SocialAccount updated",
+				zap.Uint("tenant_id", uint(tenantID)),
+				zap.Bool("connected", isConnected),
+				zap.String("phone", phone))
+		}
 	}
 
 	h.Logger.Info("✅ Gupshup onboarding redirect processed",

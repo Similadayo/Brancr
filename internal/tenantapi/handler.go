@@ -6040,6 +6040,25 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	tenantID := claims.TenantID
 
 	// Check for WhatsApp connection (Respond.io, Meta Embedded Signup, or Gupshup)
+	// First check Gupshup Partner (whatsapp_apps table)
+	var gupshupApp storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ? AND mode = ?", tenantID, "gupshup_partner").First(&gupshupApp).Error; err == nil {
+		// Gupshup Partner connection found
+		connected := gupshupApp.Status == "live" || gupshupApp.Status == "connected" || gupshupApp.SubscriptionActive
+		response := map[string]any{
+			"connected":        connected,
+			"provider":         "gupshup_partner",
+			"phone_number":     gupshupApp.PhoneNumber,
+			"status":           gupshupApp.Status,
+			"subscription_id":  gupshupApp.SubscriptionID,
+			"subscription_set": gupshupApp.SubscriptionActive,
+			"app_id":           gupshupApp.GupshupAppID,
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
+	// Fallback: Check SocialAccount table (for Respond.io, Meta, etc.)
 	var account storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, "whatsapp", true).First(&account).Error; err == nil {
 		response := map[string]any{
