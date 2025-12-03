@@ -394,16 +394,15 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 	apiURL := fmt.Sprintf("%s/partner/app/%s/subscription", c.Config.GupshupAPIBaseURL, appID)
 
 	// Convert events array to modes string
-	// CRITICAL: For account events (WABA approval, phone verification), we need ALL events
-	// For version 3, use modes: MESSAGE (incoming messages), OTHERS (events like read, delivered, sent, account-event, status-event)
-	// or ALL (all messages and events including account-events/system-events)
-	modes := "ALL" // Default to ALL to ensure we receive account-events/system-events
-	if len(events) > 0 {
-		// Check if we need account-events/system-events
-		needsAccountEvents := false
-		hasMessage := false
-		hasEvents := false
+	// CRITICAL: For Go-Live events (onboarding-event), we need ACCOUNT mode
+	// Docs say "for version 3: TEMPLATE, ACCOUNT, COPY are not supported" BUT
+	// ACCOUNT mode is still listed as valid and needed for account events
+	// Try using ACCOUNT mode explicitly - if it fails, fall back to OTHERS
+	needsAccountEvents := false
+	hasMessage := false
+	hasEvents := false
 
+	if len(events) > 0 {
 		for _, event := range events {
 			switch event {
 			case "message", "messages":
@@ -411,24 +410,39 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 			case "message-event", "status", "read", "delivered", "sent":
 				hasEvents = true
 			case "account-event", "system-event", "status-event", "review-event", "onboarding-event":
-				// onboarding-event is the Go-Live event - needs ACCOUNT mode (which is included in ALL)
+				// onboarding-event is the Go-Live event - REQUIRES ACCOUNT mode
 				needsAccountEvents = true
 			}
 		}
+	} else {
+		// If no events specified, default to all
+		needsAccountEvents = true
+		hasMessage = true
+		hasEvents = true
+	}
 
-		// If we need account events, use ALL to ensure we get them
-		if needsAccountEvents {
-			modes = "ALL"
-		} else if hasMessage && hasEvents {
-			modes = "MESSAGE,OTHERS"
+	// Build modes string - CRITICAL: Include ACCOUNT for Go-Live events
+	var modes string
+	if needsAccountEvents {
+		// Try ACCOUNT mode explicitly (even though docs say not supported in v3, it might work)
+		// If ACCOUNT doesn't work, OTHERS might catch account events
+		if hasMessage && hasEvents {
+			modes = "MESSAGE,OTHERS,ACCOUNT" // Try ACCOUNT mode
 		} else if hasMessage {
-			modes = "MESSAGE"
+			modes = "MESSAGE,ACCOUNT"
 		} else if hasEvents {
-			modes = "OTHERS"
+			modes = "OTHERS,ACCOUNT"
 		} else {
-			// Default to ALL for v3 if unsure (ensures we get all event types)
-			modes = "ALL"
+			modes = "ACCOUNT" // Just account events
 		}
+	} else if hasMessage && hasEvents {
+		modes = "MESSAGE,OTHERS"
+	} else if hasMessage {
+		modes = "MESSAGE"
+	} else if hasEvents {
+		modes = "OTHERS"
+	} else {
+		modes = "ALL" // Fallback
 	}
 
 	// Build form-urlencoded payload
@@ -436,7 +450,14 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 	data.Set("modes", modes)
 	data.Set("tag", fmt.Sprintf("BrancrSubscription-%s", appID[:8])) // Unique tag per app
 	data.Set("url", webhookURL)
-	data.Set("version", "3") // Use version 3 (supports MESSAGE, OTHERS, ALL, etc.)
+	// CRITICAL: Try version 2 first if using ACCOUNT mode (v3 docs say ACCOUNT not supported)
+	// If ACCOUNT mode fails, we'll fall back to version 3 with OTHERS
+	version := "3"
+	if needsAccountEvents && strings.Contains(modes, "ACCOUNT") {
+		// Try version 2 which explicitly supports ACCOUNT mode
+		version = "2"
+	}
+	data.Set("version", version)
 	data.Set("showOnUI", "false")
 
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
@@ -457,6 +478,59 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		// If ACCOUNT mode failed with version 2, try version 3 with OTHERS mode as fallback
+		if version == "2" && strings.Contains(modes, "ACCOUNT") && needsAccountEvents {
+			if c.Logger != nil {
+				c.Logger.Warn("⚠️ Subscription with ACCOUNT mode (v2) failed, retrying with OTHERS mode (v3)",
+					zap.Int("status_code", resp.StatusCode),
+					zap.String("response", string(body)))
+			}
+			// Retry with version 3 and OTHERS mode (which might catch account events)
+			fallbackModes := strings.ReplaceAll(modes, "ACCOUNT", "OTHERS")
+			fallbackModes = strings.ReplaceAll(fallbackModes, ",,", ",")
+			fallbackModes = strings.Trim(fallbackModes, ",")
+			if fallbackModes == "" {
+				fallbackModes = "MESSAGE,OTHERS"
+			}
+
+			data.Set("modes", fallbackModes)
+			data.Set("version", "3")
+
+			req2, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+			if err == nil {
+				req2.Header.Set("Authorization", appToken)
+				req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				resp2, err2 := client.Do(req2)
+				if err2 == nil {
+					defer resp2.Body.Close()
+					body2, _ := io.ReadAll(resp2.Body)
+					if resp2.StatusCode < 300 {
+						if c.Logger != nil {
+							c.Logger.Info("✅ Subscription created with fallback (v3, OTHERS mode)",
+								zap.String("app_id", appID),
+								zap.String("modes", fallbackModes))
+						}
+						// Parse response and return
+						var result2 struct {
+							Status       string `json:"status"`
+							Subscription struct {
+								ID      string `json:"id"`
+								Active  bool   `json:"active"`
+								AppID   string `json:"appId"`
+								Tag     string `json:"tag"`
+								URL     string `json:"url"`
+								Mode    int    `json:"mode"`
+								Version int    `json:"version"`
+							} `json:"subscription"`
+						}
+						if err := json.Unmarshal(body2, &result2); err == nil {
+							return result2.Subscription.ID, nil
+						}
+					}
+				}
+			}
+		}
+
 		if c.Logger != nil {
 			c.Logger.Error("Gupshup Set Subscription failed",
 				zap.Int("status_code", resp.StatusCode),
@@ -464,6 +538,7 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 				zap.String("app_id", appID),
 				zap.String("webhook_url", webhookURL),
 				zap.String("modes", modes),
+				zap.String("version", version),
 				zap.String("response", string(body)))
 		}
 		return "", fmt.Errorf("subscription request failed (status %d): %s", resp.StatusCode, string(body))
@@ -509,7 +584,9 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 			zap.Bool("active", result.Subscription.Active),
 			zap.Int("version", result.Subscription.Version),
 			zap.String("tag", result.Subscription.Tag),
-			zap.String("note", "Subscription configured with modes='ALL' to receive account-events/system-events for WABA approval/phone verification"))
+			zap.String("version_used", version),
+			zap.Bool("needs_account_events", needsAccountEvents),
+			zap.String("note", fmt.Sprintf("Subscription configured with modes='%s' (version %s) to receive Go-Live events (onboarding-event)", modes, version)))
 	}
 
 	return result.Subscription.ID, nil
