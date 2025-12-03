@@ -232,9 +232,9 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 			app.SubscriptionID = subID
 			app.SubscriptionActive = true
 			app.WebhookURL = webhookURL
-			if status == "" || status == "pending_onboarding" {
-				app.Status = "connected" // Mark as connected after subscription
-			}
+			// CRITICAL: Don't update status to "connected" just because subscription is set
+			// Status should only change to "live" when we have actual metadata (WABA ID, phone number)
+			// Keep status as "pending_onboarding" until webhook events provide the metadata
 			if err := h.DB.Save(&app).Error; err != nil {
 				h.Logger.Error("failed to save subscription details", zap.Error(err))
 			} else {
@@ -321,18 +321,25 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		isPopup := r.URL.Query().Get("popup") == "true" || r.Header.Get("Referer") != ""
 
 		// Get the actual status from the database (more reliable than query param)
-		// Also check if we have WABA ID or phone number as additional indicators
 		currentStatus := app.Status
-		if status != "" {
-			currentStatus = status
-		}
 
-		// Onboarding is complete ONLY if status is explicitly "live", "connected", or "success"
-		// AND we have either WABA ID or phone number
-		hasWABAID := app.WABAID != "" || wabaID != ""
-		hasPhoneNumber := app.PhoneNumber != "" || phone != ""
-		onboardingComplete := (currentStatus == "live" || currentStatus == "connected" || currentStatus == "success") &&
-			(hasWABAID || hasPhoneNumber)
+		// CRITICAL: Onboarding is complete ONLY if:
+		// 1. Status is explicitly "live" (NOT "connected" or "pending_onboarding")
+		// 2. AND we have either WABA ID or phone number in the database
+		// Don't trust redirect params - they're unreliable during signup
+		hasWABAID := app.WABAID != ""
+		hasPhoneNumber := app.PhoneNumber != ""
+
+		// Only consider complete if status is "live" (not "connected" or "pending_onboarding")
+		// AND we have actual metadata (WABA ID or phone number)
+		onboardingComplete := currentStatus == "live" && (hasWABAID || hasPhoneNumber)
+
+		h.Logger.Info("🔍 Checking onboarding completion",
+			zap.String("app_id", appID),
+			zap.String("current_status", currentStatus),
+			zap.Bool("has_waba_id", hasWABAID),
+			zap.Bool("has_phone", hasPhoneNumber),
+			zap.Bool("onboarding_complete", onboardingComplete))
 
 		if isPopup {
 			if onboardingComplete {
@@ -387,23 +394,12 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				w.Write([]byte(html))
 				return
 			} else {
-				// Onboarding not complete yet - redirect back to embedded signup to continue
-				// Don't show waiting message, just redirect back to Gupshup embedded flow
-				// This allows the user to continue the signup process
-				h.Logger.Info("⏳ Onboarding in progress - redirecting back to embedded signup",
-					zap.String("app_id", appID),
-					zap.String("status", currentStatus),
-					zap.Bool("has_waba_id", hasWABAID),
-					zap.Bool("has_phone", hasPhoneNumber))
-
-				// Generate new embed link to continue onboarding
-				redirectURL := fmt.Sprintf("%s/api/webhooks/gupshup/redirect?tenant_id=%d&popup=true", h.Client.Config.PublicURL, tenantID)
-				embedLink, err := h.Client.GenerateEmbedSignedLink(appID, redirectURL)
-				if err != nil {
-					// If we can't generate embed link, show waiting message
-					w.Header().Set("Content-Type", "text/html; charset=utf-8")
-					w.WriteHeader(http.StatusOK)
-					html := fmt.Sprintf(`<!DOCTYPE html>
+				// Onboarding not complete yet - show waiting message and poll for completion
+				// Don't redirect back to embedded signup - user has already completed the signup flow
+				// Just wait for webhook events to provide the metadata
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
 	<title>WhatsApp Onboarding</title>
@@ -416,21 +412,18 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		<p>Status: <strong>%s</strong></p>
 		<p>This window will close automatically when setup is complete.</p>
 		<p><small>Webhook subscription is active and listening for account events...</small></p>
+		<p><small>Waiting for WABA ID and phone number...</small></p>
 	</div>
 	<script>
 		// Poll for completion status every 5 seconds
+		// Check if status has changed from pending_onboarding to live
 		setTimeout(function() {
 			window.location.reload();
 		}, 5000);
 	</script>
 </body>
 </html>`, currentStatus)
-					w.Write([]byte(html))
-					return
-				}
-
-				// Redirect back to embedded signup to continue onboarding
-				http.Redirect(w, r, embedLink, http.StatusFound)
+				w.Write([]byte(html))
 				return
 			}
 		}
