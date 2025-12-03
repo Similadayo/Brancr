@@ -336,6 +336,7 @@ type tiktokSession struct {
 }
 
 func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL string) (int64, error) {
+	// Try HEAD request first (most efficient)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, videoURL, nil)
 	if err != nil {
 		return 0, err
@@ -349,6 +350,7 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 		}
 	}
 
+	// Try Range request to get Content-Range header
 	rangeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
 	if err != nil {
 		return 0, err
@@ -372,7 +374,56 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 		return rangeResp.ContentLength, nil
 	}
 
-	return 0, errors.New("unable to determine video size for TikTok upload")
+	// Fallback: Download the video to get its size (for Cloudinary and other services that don't provide headers)
+	// This is less efficient but necessary for some CDNs
+	t.Logger.Info("⚠️ Video size not available from headers, downloading to determine size",
+		zap.String("video_url", videoURL))
+	
+	downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	
+	downloadResp, err := t.httpClient.Do(downloadReq)
+	if err != nil {
+		return 0, fmt.Errorf("failed to download video to determine size: %w", err)
+	}
+	defer downloadResp.Body.Close()
+
+	if downloadResp.StatusCode >= 400 {
+		body, _ := io.ReadAll(downloadResp.Body)
+		return 0, fmt.Errorf("failed to download video (%d): %s", downloadResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Try to get size from Content-Length header
+	if downloadResp.ContentLength > 0 {
+		// Discard the body since we only needed the size
+		io.Copy(io.Discard, downloadResp.Body)
+		return downloadResp.ContentLength, nil
+	}
+
+	// Last resort: read the entire response to count bytes (not ideal but works)
+	// Limit to reasonable size to avoid memory issues (e.g., 500MB max)
+	const maxSize = 500 * 1024 * 1024 // 500MB
+	body, err := io.ReadAll(io.LimitReader(downloadResp.Body, maxSize+1))
+	if err != nil {
+		return 0, fmt.Errorf("failed to read video to determine size: %w", err)
+	}
+	
+	size := int64(len(body))
+	if size > maxSize {
+		return 0, fmt.Errorf("video too large (exceeds %d bytes)", maxSize)
+	}
+	
+	if size == 0 {
+		return 0, errors.New("video appears to be empty or could not be downloaded")
+	}
+
+	t.Logger.Info("✅ Video size determined by downloading",
+		zap.String("video_url", videoURL),
+		zap.Int64("size", size))
+	
+	return size, nil
 }
 
 // TikTokPostingOptions holds configurable posting options
