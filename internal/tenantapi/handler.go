@@ -6121,29 +6121,59 @@ func (h *Handler) refreshWhatsAppStatus(w http.ResponseWriter, r *http.Request) 
 	tenantID := claims.TenantID
 
 	// Find Gupshup app for this tenant
+	h.Logger.Info("🔄 Searching for Gupshup app",
+		zap.Uint("tenant_id", tenantID))
 	var app storage.WhatsAppApp
 	if err := h.DB.Where("tenant_id = ? AND mode = ?", tenantID, "gupshup_partner").First(&app).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
+			h.Logger.Warn("⚠️ No WhatsApp app found for tenant",
+				zap.Uint("tenant_id", tenantID))
 			writeJSON(w, http.StatusNotFound, map[string]any{
 				"error":   "no_whatsapp_app",
 				"message": "No WhatsApp app found for this tenant",
 			})
 			return
 		}
+		h.Logger.Error("❌ Database error finding app",
+			zap.Uint("tenant_id", tenantID),
+			zap.Error(err))
 		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
+	h.Logger.Info("✅ Found WhatsApp app",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", app.GupshupAppID),
+		zap.String("status", app.Status))
 
 	h.Logger.Info("🔄 Manual refresh WhatsApp status triggered",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("app_id", app.GupshupAppID),
-		zap.String("current_status", app.Status))
+		zap.String("current_status", app.Status),
+		zap.String("gupshup_app_id", app.GupshupAppID))
 
 	// Create Gupshup client
+	h.Logger.Info("🔄 Creating Gupshup client for refresh",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", app.GupshupAppID))
 	client := social.NewGupshupClient(h.Config, h.Logger)
 
 	// Call GetAppDetails to fetch latest metadata
+	h.Logger.Info("🔄 Calling GetAppDetails",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", app.GupshupAppID),
+		zap.String("gupshup_app_id", app.GupshupAppID))
 	appDetails, err := client.GetAppDetails(app.GupshupAppID)
+	if err != nil {
+		h.Logger.Error("❌ GetAppDetails failed during refresh",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", app.GupshupAppID),
+			zap.Error(err))
+	} else {
+		h.Logger.Info("✅ GetAppDetails succeeded during refresh",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", app.GupshupAppID),
+			zap.Bool("has_app_details", appDetails != nil))
+	}
 	if err != nil {
 		h.Logger.Error("failed to refresh app details",
 			zap.String("app_id", app.GupshupAppID),
