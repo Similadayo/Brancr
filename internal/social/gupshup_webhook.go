@@ -768,21 +768,28 @@ func (h *GupshupWebhookHandler) handleDeliveryStatus(ctx context.Context, tenant
 					return string(jsonBytes)
 				}()))
 
-			// If template mismatch error (4003), it could be:
-			// 1. Template parameter mismatch (wrong number/format of parameters)
-			// 2. Template not actually approved (though "Active - Quality pending" means approved)
-			// 3. Template structure doesn't match what we're sending
-			// For now, log the error but DON'T clear the template ID immediately
-			// The template IS approved, so the issue is likely parameter format
+			// If template mismatch error (4003), it means the template structure doesn't match
+			// The template IS approved, but it has the wrong structure (e.g., expects 2 params but we send 1)
+			// Solution: Clear the template ID so we can create a simpler one on next attempt
 			if errorCode == 4003 && strings.Contains(strings.ToLower(errorReason), "template") {
-				h.Logger.Error("❌ Template mismatch error - template is approved but parameters don't match",
+				h.Logger.Error("❌ Template mismatch error - template structure doesn't match AI message format",
 					zap.Uint("tenant_id", tenantID),
 					zap.String("message_id", messageID),
 					zap.String("error_reason", errorReason),
-					zap.String("note", "Template is approved (Active - Quality pending = approved). Issue is likely parameter format."))
+					zap.String("note", "Template is approved but has wrong structure. Will create simpler template on next attempt."))
 
-				// TODO: We should fetch template details to see what parameters it expects
-				// For now, we'll keep the template ID and let the user know to check the template structure
+				// Clear the template ID so we can create a simpler one
+				var app storage.WhatsAppApp
+				if err := h.DB.Where("tenant_id = ?", tenantID).First(&app).Error; err == nil {
+					if app.DefaultTemplateID != "" {
+						h.Logger.Warn("🧹 Clearing template with wrong structure - will create simpler one",
+							zap.String("old_template_id", app.DefaultTemplateID),
+							zap.Uint("tenant_id", tenantID),
+							zap.String("note", "Next message will trigger creation of a simpler template (just {{1}})"))
+						app.DefaultTemplateID = ""
+						h.DB.Save(&app)
+					}
+				}
 			}
 		}
 	} else {

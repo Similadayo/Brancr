@@ -976,18 +976,74 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 		}
 	}
 
-	// Step 2: Find a simple text template (prefer UTILITY category, TEXT type, with parameters)
+	// Step 2: Find the SIMPLEST possible template for AI free-form text
+	// We want a template that's just {{1}} or has minimal text around {{1}}
 	// IMPORTANT: Avoid AUTHENTICATION category - it requires exactly one OTP button
 	var baseTemplate map[string]interface{}
+	var simplestTemplate map[string]interface{}
+	simplestScore := 999 // Lower score = simpler (fewer parameters, less text)
 
-	// First priority: UTILITY category, TEXT type, with {{1}} parameter
+	// First priority: Find the SIMPLEST template with just {{1}} (single parameter, minimal text)
 	for _, t := range templates {
 		category, _ := t["category"].(string)
 		templateType, _ := t["templateType"].(string)
-		if category == "UTILITY" && templateType == "TEXT" {
-			if data, ok := t["data"].(string); ok && strings.Contains(data, "{{1}}") {
-				baseTemplate = t
-				break
+
+		// Skip AUTHENTICATION category
+		if category == "AUTHENTICATION" {
+			continue
+		}
+
+		if templateType == "TEXT" {
+			if data, ok := t["data"].(string); ok {
+				// Count total parameters ({{1}}, {{2}}, etc.)
+				totalParams := 0
+				for i := 1; i <= 10; i++ {
+					if strings.Contains(data, fmt.Sprintf("{{%d}}", i)) || strings.Contains(data, fmt.Sprintf("{{ %d }}", i)) {
+						totalParams = i // Track highest parameter number
+					}
+				}
+
+				// Prefer templates with ONLY {{1}} (single parameter)
+				// And minimal text around it (just {{1}} or very short text)
+				if totalParams == 1 {
+					// Calculate text length without parameters
+					textWithoutParams := data
+					textWithoutParams = strings.ReplaceAll(textWithoutParams, "{{1}}", "")
+					textWithoutParams = strings.ReplaceAll(textWithoutParams, "{{ 1 }}", "")
+					textLength := len(strings.TrimSpace(textWithoutParams))
+
+					// Score: lower is better (fewer params + less text = simpler)
+					score := textLength + (totalParams * 100)
+
+					if score < simplestScore {
+						simplestScore = score
+						simplestTemplate = t
+					}
+				}
+			}
+		}
+	}
+
+	if simplestTemplate != nil {
+		baseTemplate = simplestTemplate
+		if c.Logger != nil {
+			data, _ := simplestTemplate["data"].(string)
+			c.Logger.Info("✅ Found simplest template for AI replies",
+				zap.String("template_data", data),
+				zap.String("app_id", appID))
+		}
+	}
+
+	// Fallback: UTILITY category, TEXT type, with {{1}} parameter (if no simplest found)
+	if baseTemplate == nil {
+		for _, t := range templates {
+			category, _ := t["category"].(string)
+			templateType, _ := t["templateType"].(string)
+			if category == "UTILITY" && templateType == "TEXT" {
+				if data, ok := t["data"].(string); ok && strings.Contains(data, "{{1}}") {
+					baseTemplate = t
+					break
+				}
 			}
 		}
 	}
