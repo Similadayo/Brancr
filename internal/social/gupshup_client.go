@@ -976,11 +976,15 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 		}
 	}
 
-	// Step 2: Find a simple text template (prefer TEXT type, with minimal parameters)
+	// Step 2: Find a simple text template (prefer UTILITY category, TEXT type, with parameters)
+	// IMPORTANT: Avoid AUTHENTICATION category - it requires exactly one OTP button
 	var baseTemplate map[string]interface{}
+
+	// First priority: UTILITY category, TEXT type, with {{1}} parameter
 	for _, t := range templates {
-		if templateType, ok := t["templateType"].(string); ok && templateType == "TEXT" {
-			// Check if it has parameters (we want one with at least one parameter)
+		category, _ := t["category"].(string)
+		templateType, _ := t["templateType"].(string)
+		if category == "UTILITY" && templateType == "TEXT" {
 			if data, ok := t["data"].(string); ok && strings.Contains(data, "{{1}}") {
 				baseTemplate = t
 				break
@@ -988,9 +992,51 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 		}
 	}
 
-	// If no TEXT template with {{1}}, use the first available template
+	// Second priority: Any UTILITY category template (even without {{1}})
 	if baseTemplate == nil {
+		for _, t := range templates {
+			if category, ok := t["category"].(string); ok && category == "UTILITY" {
+				baseTemplate = t
+				break
+			}
+		}
+	}
+
+	// Third priority: TEXT type with {{1}} (any category except AUTHENTICATION)
+	if baseTemplate == nil {
+		for _, t := range templates {
+			category, _ := t["category"].(string)
+			templateType, _ := t["templateType"].(string)
+			if category != "AUTHENTICATION" && templateType == "TEXT" {
+				if data, ok := t["data"].(string); ok && strings.Contains(data, "{{1}}") {
+					baseTemplate = t
+					break
+				}
+			}
+		}
+	}
+
+	// Last resort: First non-AUTHENTICATION template
+	if baseTemplate == nil {
+		for _, t := range templates {
+			if category, ok := t["category"].(string); ok && category != "AUTHENTICATION" {
+				baseTemplate = t
+				break
+			}
+		}
+	}
+
+	// If still no template, use first available (but log warning)
+	if baseTemplate == nil && len(templates) > 0 {
 		baseTemplate = templates[0]
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Using first available template (may be AUTHENTICATION category)",
+				zap.String("app_id", appID))
+		}
+	}
+
+	if baseTemplate == nil {
+		return "", fmt.Errorf("no suitable template found in Meta Library for app")
 	}
 
 	// Extract library template name (elementName)
@@ -999,10 +1045,15 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 		return "", fmt.Errorf("library template name not found in template")
 	}
 
-	// Extract category
+	// Extract category - FORCE UTILITY for AI replies (avoid AUTHENTICATION requirements)
 	category := "UTILITY"
-	if cat, ok := baseTemplate["category"].(string); ok && cat != "" {
-		category = cat
+	originalCategory, _ := baseTemplate["category"].(string)
+	if originalCategory == "AUTHENTICATION" {
+		if c.Logger != nil {
+			c.Logger.Warn("⚠️ Base template is AUTHENTICATION category, forcing UTILITY for AI reply",
+				zap.String("base_template", libraryTemplateName),
+				zap.String("app_id", appID))
+		}
 	}
 
 	// Extract language code
@@ -1012,9 +1063,18 @@ func (c *GupshupClient) CreateAITemplate(appID string) (string, error) {
 	}
 
 	// Extract buttons (if any)
+	// IMPORTANT: For UTILITY category, we can create templates without buttons
+	// For AUTHENTICATION category, we'd need exactly one OTP button, which we don't want for AI replies
 	buttons := ""
-	if buttonsData, ok := baseTemplate["buttons"].(string); ok && buttonsData != "" {
-		buttons = buttonsData
+	if category == "UTILITY" {
+		// For UTILITY category, we can omit buttons (empty string)
+		// This allows us to create a simple text template for AI replies
+		buttons = ""
+	} else {
+		// For other categories, try to preserve buttons if they exist
+		if buttonsData, ok := baseTemplate["buttons"].(string); ok && buttonsData != "" {
+			buttons = buttonsData
+		}
 	}
 
 	// Step 3: Create new template with unique element name
