@@ -651,12 +651,14 @@ func (c *GupshupClient) GetSubscription(appID string) (map[string]interface{}, e
 // GetAppDetails retrieves app details including WhatsApp metadata (WABA ID, phone number, etc.)
 // CRITICAL: Uses /partner/app/{appId} endpoint (as per Gupshup Partner API docs)
 // Endpoint: GET /partner/app/{appId}
-// Header: Authorization: {PARTNER_TOKEN} (Partner Token, NOT App Token)
+// Header: Authorization: {APP_TOKEN} (App Token, NOT Partner Token) - App Token has access to app-specific data
 // Response contains WhatsApp object with: businessId, formattedPhoneNumber, normalizedPhoneNumber, wabaApprovalTimestamp, etc.
 func (c *GupshupClient) GetAppDetails(appID string) (map[string]interface{}, error) {
-	partnerToken, err := c.GetPartnerToken()
+	// Use App Token (NOT Partner Token) - App Token has permission to access app-specific details
+	// Partner Token might not have permission to access individual app details, causing 403 errors
+	appToken, err := c.GetAppAccessToken(appID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get app token: %w", err)
 	}
 
 	// Use correct endpoint: /partner/app/{appId} (NOT /partner/account/api/partnerApps/{appId})
@@ -666,8 +668,8 @@ func (c *GupshupClient) GetAppDetails(appID string) (map[string]interface{}, err
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use Partner Token in Authorization header (without "Bearer " prefix)
-	req.Header.Set("Authorization", partnerToken)
+	// Use App Token in Authorization header (without "Bearer " prefix)
+	req.Header.Set("Authorization", appToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
