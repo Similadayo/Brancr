@@ -233,7 +233,12 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			zap.Uint("tenant_id", msg.TenantID),
 			zap.Uint("customer_id", customer.ID),
 			zap.String("platform", msg.Platform),
-			zap.String("message_preview", truncateString(reply, 50)))
+			zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 		
 		// Update conversation's last message time after outgoing message is sent
 		if conversationID > 0 {
@@ -506,7 +511,12 @@ func (h *MessageHandler) sendTelegramReply(ctx context.Context, msg IncomingMess
 	h.Logger.Info("✅ Telegram message sent successfully",
 		zap.Uint("tenant_id", msg.TenantID),
 		zap.Int64("chat_id", chatID),
-		zap.String("message_preview", truncateString(reply, 50)))
+		zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 
 	return nil
 }
@@ -572,7 +582,12 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		zap.String("instagram_account_id", igAccountID),
 		zap.String("recipient_id", threadID),
 		zap.String("page_id", pageID),
-		zap.String("message_preview", truncateString(reply, 50)))
+		zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 
 	// Instagram messaging payload format according to Meta's Send Message API
 	// https://developers.facebook.com/docs/messenger-platform/instagram/feature-reference/send-message
@@ -687,11 +702,21 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		h.Logger.Info("✅ Instagram DM sent successfully",
 			zap.String("recipient_id", response.RecipientID),
 			zap.String("message_id", response.MessageID),
-			zap.String("message_preview", truncateString(reply, 50)))
+			zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 	} else {
 		h.Logger.Info("✅ Instagram DM sent",
 			zap.String("recipient_id", threadID),
-			zap.String("message_preview", truncateString(reply, 50)))
+			zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 	}
 
 	return nil
@@ -734,7 +759,12 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 		zap.String("page_id", pageID),
 		zap.String("recipient_id", threadID),
 		zap.String("endpoint", apiURL),
-		zap.String("message_preview", truncateString(reply, 50)))
+		zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 
 	// Facebook Messenger payload format according to Meta's Send API documentation
 	// https://developers.facebook.com/docs/messenger-platform/reference/send-api#request
@@ -820,11 +850,21 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 		h.Logger.Info("✅ Facebook Messenger message sent successfully",
 			zap.String("recipient_id", response.RecipientID),
 			zap.String("message_id", response.MessageID),
-			zap.String("message_preview", truncateString(reply, 50)))
+			zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 	} else {
 		h.Logger.Info("✅ Facebook Messenger message sent",
 			zap.String("recipient_id", threadID),
-			zap.String("message_preview", truncateString(reply, 50)))
+			zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 	}
 
 	return nil
@@ -882,7 +922,12 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		zap.String("customer_id", customerID),
 		zap.String("app_id", app.GupshupAppID),
 		zap.String("template_id", app.DefaultTemplateID),
-		zap.String("message_preview", truncateString(reply, 50)))
+		zap.String("message_preview", func() string {
+			if len(reply) > 50 {
+				return reply[:50] + "..."
+			}
+			return reply
+		}()))
 
 	// Pass the default template ID if available (for AI replies)
 	var templateID string
