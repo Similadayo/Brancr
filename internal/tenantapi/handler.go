@@ -6044,7 +6044,20 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	var gupshupApp storage.WhatsAppApp
 	if err := h.DB.Where("tenant_id = ? AND mode = ?", tenantID, "gupshup_partner").First(&gupshupApp).Error; err == nil {
 		// Gupshup Partner connection found
-		connected := gupshupApp.Status == "live" || gupshupApp.Status == "connected" || gupshupApp.SubscriptionActive
+		// CRITICAL: Only mark as connected if status is "live" AND we have metadata (WABA ID or phone number)
+		// Don't mark as connected just because subscription is active - that happens during onboarding
+		hasMetadata := gupshupApp.WABAID != "" || gupshupApp.PhoneNumber != ""
+		connected := gupshupApp.Status == "live" && hasMetadata
+		
+		h.Logger.Info("📊 WhatsApp connection status check",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("app_id", gupshupApp.GupshupAppID),
+			zap.String("status", gupshupApp.Status),
+			zap.Bool("has_waba_id", gupshupApp.WABAID != ""),
+			zap.Bool("has_phone", gupshupApp.PhoneNumber != ""),
+			zap.Bool("subscription_active", gupshupApp.SubscriptionActive),
+			zap.Bool("connected", connected))
+		
 		response := map[string]any{
 			"connected":        connected,
 			"provider":         "gupshup_partner",

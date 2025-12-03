@@ -403,6 +403,8 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 			var targetWindow = window.opener || window.parent;
 			targetWindow.postMessage({
 				type: 'whatsapp_connected',
+				// Also send the old type for backward compatibility
+				whatsapp_onboarding_complete: true,
 				success: true,
 				provider: 'gupshup',
 				app_id: '%s',
@@ -412,6 +414,16 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				business_id: '%s',
 				subscription_id: '%s',
 				redirect_url: '%s'
+			}, '*');
+			
+			// Also send the old message type for compatibility (frontend listens for this)
+			targetWindow.postMessage({
+				type: 'whatsapp_onboarding_complete',
+				success: true,
+				provider: 'gupshup',
+				app_id: '%s',
+				status: '%s',
+				phone: '%s'
 			}, '*');
 			
 			// Close popup after a short delay
@@ -434,7 +446,7 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		<p><a href="%s">Click here if the window doesn't close</a></p>
 	</div>
 </body>
-</html>`, appID, currentStatus, phone, app.WABAID, app.BusinessID, app.SubscriptionID, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL)
+</html>`, appID, currentStatus, phone, app.WABAID, app.BusinessID, app.SubscriptionID, frontendSuccessURL, appID, currentStatus, phone, frontendSuccessURL, frontendSuccessURL, frontendSuccessURL)
 				w.Write([]byte(html))
 				return
 			} else {
