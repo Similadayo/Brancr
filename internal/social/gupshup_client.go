@@ -106,20 +106,27 @@ func (c *GupshupClient) GetPartnerToken() (string, error) {
 	return c.PartnerToken, nil
 }
 
-// GetAppAccessToken gets the app-specific access token for sending messages
+// GetAppAccessToken gets the app-specific access token for sending messages and other app operations
+// CRITICAL: Uses /partner/app/{appId}/token endpoint (as per Gupshup Partner API docs)
+// Endpoint: GET /partner/app/{appId}/token
+// Header: Authorization: {PARTNER_TOKEN} (Partner Token, NOT App Token)
+// Response: {"status": "success", "token": {"token": "...", "authoriserId": "...", ...}}
+// The token is nested inside a "token" object, not at root level
 func (c *GupshupClient) GetAppAccessToken(appID string) (string, error) {
 	partnerToken, err := c.GetPartnerToken()
 	if err != nil {
 		return "", err
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s/token", c.Config.GupshupAPIBaseURL, appID)
-	req, err := http.NewRequest("GET", url, nil)
+	// Use correct endpoint: /partner/app/{appId}/token (NOT /partner/account/api/partnerApps/{appId}/token)
+	apiURL := fmt.Sprintf("%s/partner/app/%s/token", c.Config.GupshupAPIBaseURL, appID)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+partnerToken)
+	// Use Partner Token in Authorization header (NOT App Token)
+	req.Header.Set("Authorization", partnerToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
@@ -130,24 +137,46 @@ func (c *GupshupClient) GetAppAccessToken(appID string) (string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Get App Token failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("response", string(body)))
+		}
 		return "", fmt.Errorf("app token request failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
+	// Response format: {"status": "success", "token": {"token": "...", "authoriserId": "...", ...}}
 	var result struct {
-		Status    string `json:"status"`
-		Token     string `json:"token"`
-		ExpiresIn int    `json:"expiresIn"`
+		Status string `json:"status"`
+		Token  struct {
+			Token        string `json:"token"`
+			AuthoriserID string `json:"authoriserId"`
+			RequestorID  string `json:"requestorId"`
+			CreatedOn    int64  `json:"createdOn"`
+			ModifiedOn   int64  `json:"modifiedOn"`
+			ExpiresOn    int64  `json:"expiresOn"`
+			Active       bool   `json:"active"`
+		} `json:"token"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse app token response: %w", err)
+		return "", fmt.Errorf("failed to parse app token response: %w, body=%s", err, string(body))
 	}
 
-	if result.Status != "success" || result.Token == "" {
+	if result.Status != "success" || result.Token.Token == "" {
 		return "", fmt.Errorf("invalid app token response: %s", string(body))
 	}
 
-	return result.Token, nil
+	if c.Logger != nil {
+		c.Logger.Info("✅ Gupshup App Token obtained",
+			zap.String("app_id", appID),
+			zap.Bool("active", result.Token.Active),
+			zap.Int64("expires_on", result.Token.ExpiresOn))
+	}
+
+	return result.Token.Token, nil
 }
 
 // sanitizeAppName removes special characters from app name (only letters and numbers allowed)
@@ -368,9 +397,9 @@ func (c *GupshupClient) WhitelistWABA(appID string) (string, string, error) {
 		return "", "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use App Token in "token" header (NOT Partner Token, NOT Authorization)
-	// Docs specify: Headers: token: string required
-	req.Header.Set("token", appToken)
+	// Use App Token in Authorization header (NOT Partner Token)
+	// Docs show both "Authorization" and "token" header - using Authorization as per sample request
+	req.Header.Set("Authorization", appToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
