@@ -535,7 +535,11 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 	h.Logger.Info("📨 Processing webhook event",
 		zap.String("event_type", eventType),
 		zap.String("app_id", appID),
-		zap.String("full_envelope", fmt.Sprintf("%+v", envelope)))
+		zap.Any("full_envelope", envelope), // Use zap.Any for better JSON formatting
+		zap.String("envelope_json", func() string {
+			jsonBytes, _ := json.Marshal(envelope)
+			return string(jsonBytes)
+		}()))
 
 	// Resolve tenant from appID
 	tenantID, err := h.resolveTenantFromAppID(appID)
@@ -774,7 +778,12 @@ func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID
 		zap.String("event_subtype", eventSubtype),
 		zap.String("status", status),
 		zap.Uint("tenant_id", tenantID),
-		zap.String("app_id", appID))
+		zap.String("app_id", appID),
+		zap.Any("full_payload", payload), // Log full payload to see what data is available
+		zap.String("payload_json", func() string {
+			jsonBytes, _ := json.Marshal(payload)
+			return string(jsonBytes)
+		}()))
 
 	// CRITICAL: Always call GetAppDetails on account events to extract complete metadata
 	// Don't rely on webhook payload alone - GetAppDetails has the authoritative data
@@ -804,6 +813,16 @@ func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID
 	// Extract WhatsApp metadata from app details if available
 	// Response structure: {"whatsapp": {"businessId": "...", "formattedPhoneNumber": "...", "normalizedPhoneNumber": "...", ...}}
 	if appDetails != nil {
+		// Log full app details to debug why metadata is missing
+		appDetailsJSON, _ := json.Marshal(appDetails)
+		h.Logger.Info("📋 GetAppDetails response structure",
+			zap.String("app_id", appID),
+			zap.String("response_json", string(appDetailsJSON)),
+			zap.Bool("has_whatsapp_key", func() bool {
+				_, ok := appDetails["whatsapp"]
+				return ok
+			}()))
+
 		if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
 			// Update WABA ID
 			if businessID, ok := whatsapp["businessId"].(string); ok && businessID != "" {
