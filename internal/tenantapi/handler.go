@@ -162,6 +162,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		// New simplified WhatsApp connection (Respond.io)
 		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
 		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
+		r.Post("/tenant/whatsapp/refresh-status", h.refreshWhatsAppStatus) // Manual refresh - calls GetAppDetails
 
 		// Legacy embedded signup (deprecated - keeping for migration)
 		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
@@ -6097,27 +6098,156 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 				response["status"] = app.Status
 			}
 		}
-
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
 
-	// Also check WhatsAppApp table (for Gupshup Partner)
+	// No connection found
+	writeJSON(w, http.StatusOK, map[string]any{
+		"connected": false,
+		"status":     "not_connected",
+	})
+}
+
+// refreshWhatsAppStatus - Manually refresh WhatsApp status by calling GetAppDetails
+// This is useful when webhooks don't arrive - allows manual trigger to check status
+func (h *Handler) refreshWhatsAppStatus(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	tenantID := claims.TenantID
+
+	// Find Gupshup app for this tenant
 	var app storage.WhatsAppApp
-	if err := h.DB.Where("tenant_id = ? AND status IN ?", tenantID, []string{"live", "pending_verification", "pending_onboarding"}).First(&app).Error; err == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"connected":    app.Status == "live",
-			"provider":     "gupshup_partner",
-			"phone_number": app.PhoneNumber,
-			"app_id":       app.GupshupAppID,
-			"status":       app.Status,
+	if err := h.DB.Where("tenant_id = ? AND mode = ?", tenantID, "gupshup_partner").First(&app).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"error":   "no_whatsapp_app",
+				"message": "No WhatsApp app found for this tenant",
+			})
+			return
+		}
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	h.Logger.Info("🔄 Manual refresh WhatsApp status triggered",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", app.GupshupAppID),
+		zap.String("current_status", app.Status))
+
+	// Create Gupshup client
+	client := social.NewGupshupClient(h.Config, h.Logger)
+
+	// Call GetAppDetails to fetch latest metadata
+	appDetails, err := client.GetAppDetails(app.GupshupAppID)
+	if err != nil {
+		h.Logger.Error("failed to refresh app details",
+			zap.String("app_id", app.GupshupAppID),
+			zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "refresh_failed",
+			"message": fmt.Sprintf("Failed to fetch app details: %v", err),
 		})
 		return
 	}
 
+	// Extract WhatsApp metadata from app details
+	updated := false
+	if whatsapp, ok := appDetails["whatsapp"].(map[string]interface{}); ok {
+		// Update WABA ID
+		if businessID, ok := whatsapp["businessId"].(string); ok && businessID != "" && app.WABAID != businessID {
+			app.WABAID = businessID
+			app.BusinessID = businessID
+			updated = true
+			h.Logger.Info("✅ Updated WABA ID from GetAppDetails",
+				zap.String("app_id", app.GupshupAppID),
+				zap.String("waba_id", businessID))
+		}
+
+		// Update phone number
+		if phone, ok := whatsapp["formattedPhoneNumber"].(string); ok && phone != "" && app.PhoneNumber != phone {
+			app.PhoneNumber = phone
+			updated = true
+			h.Logger.Info("✅ Updated phone number from GetAppDetails",
+				zap.String("app_id", app.GupshupAppID),
+				zap.String("phone", phone))
+		} else if phone, ok := whatsapp["normalizedPhoneNumber"].(string); ok && phone != "" && app.PhoneNumber != phone {
+			app.PhoneNumber = phone
+			updated = true
+			h.Logger.Info("✅ Updated phone number (normalized) from GetAppDetails",
+				zap.String("app_id", app.GupshupAppID),
+				zap.String("phone", phone))
+		}
+
+		// Update phone number ID
+		if phoneNumberID, ok := whatsapp["phoneNumberId"].(string); ok && phoneNumberID != "" && app.PhoneNumberID != phoneNumberID {
+			app.PhoneNumberID = phoneNumberID
+			updated = true
+		}
+
+		// Update status to "live" if we have metadata
+		if (app.WABAID != "" || app.PhoneNumber != "") && app.Status != "live" {
+			app.Status = "live"
+			updated = true
+			h.Logger.Info("✅ Status updated to 'live' (has metadata)",
+				zap.String("app_id", app.GupshupAppID),
+				zap.String("waba_id", app.WABAID),
+				zap.String("phone", app.PhoneNumber))
+		}
+	}
+
+	// Check app status from response
+	if status, ok := appDetails["status"].(string); ok {
+		if status == "live" || status == "connected" || status == "approved" {
+			if app.Status != "live" {
+				app.Status = "live"
+				updated = true
+			}
+		}
+	}
+
+	if updated {
+		if err := h.DB.Save(&app).Error; err != nil {
+			h.Logger.Error("failed to save updated app",
+				zap.String("app_id", app.GupshupAppID),
+				zap.Error(err))
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":   "save_failed",
+				"message": "Failed to save updated app details",
+			})
+			return
+		}
+
+		// Also update SocialAccount for compatibility
+		var account storage.SocialAccount
+		if err := h.DB.Where("tenant_id = ? AND platform = ?", tenantID, "whatsapp").First(&account).Error; err == nil {
+			account.Username = app.PhoneNumber
+			account.PageID = app.PhoneNumberID
+			account.ExternalID = app.PhoneNumberID
+			account.Connected = (app.Status == "live" && app.PhoneNumber != "")
+			h.DB.Save(&account)
+		}
+	}
+
+	// Return updated status
+	hasMetadata := app.WABAID != "" || app.PhoneNumber != ""
+	connected := app.Status == "live" && hasMetadata
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"connected": false,
-		"status":    "not_connected",
+		"success":        true,
+		"message":        "Status refreshed successfully",
+		"connected":      connected,
+		"provider":       "gupshup_partner",
+		"phone_number":   app.PhoneNumber,
+		"status":         app.Status,
+		"waba_id":        app.WABAID,
+		"app_id":         app.GupshupAppID,
+		"updated":       updated,
+		"has_metadata":  hasMetadata,
 	})
 }
 

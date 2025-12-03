@@ -500,56 +500,74 @@ func (c *GupshupClient) SetSubscription(appID, webhookURL string, events []strin
 	}
 
 	if c.Logger != nil {
-		c.Logger.Info("✅ Gupshup webhook subscription created",
+		c.Logger.Info("✅ Gupshup webhook subscription created/updated",
 			zap.String("app_id", appID),
 			zap.String("subscription_id", result.Subscription.ID),
 			zap.String("webhook_url", webhookURL),
 			zap.String("modes", modes),
-			zap.Bool("active", result.Subscription.Active))
+			zap.Bool("active", result.Subscription.Active),
+			zap.Int("version", result.Subscription.Version),
+			zap.String("tag", result.Subscription.Tag),
+			zap.String("note", "Subscription configured with modes='ALL' to receive account-events/system-events for WABA approval/phone verification"))
 	}
 
 	return result.Subscription.ID, nil
 }
 
-// GetSubscription retrieves existing subscription
-func (c *GupshupClient) GetSubscription(appID string) (string, error) {
-	partnerToken, err := c.GetPartnerToken()
+// GetSubscription retrieves existing subscription details
+// Returns subscription ID, webhook URL, modes, and active status
+func (c *GupshupClient) GetSubscription(appID string) (map[string]interface{}, error) {
+	// Get App Token (NOT Partner Token) - required for subscription API
+	appToken, err := c.GetAppAccessToken(appID)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("failed to get app token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/partner/account/api/partnerApps/%s/subscription", c.Config.GupshupAPIBaseURL, appID)
-	req, err := http.NewRequest("GET", url, nil)
+	apiURL := fmt.Sprintf("%s/partner/app/%s/subscription", c.Config.GupshupAPIBaseURL, appID)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+partnerToken)
+	req.Header.Set("Authorization", appToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("get subscription request failed: %w", err)
+		return nil, fmt.Errorf("get subscription request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("get subscription failed (status %d): %s", resp.StatusCode, string(body))
+		if c.Logger != nil {
+			c.Logger.Error("Gupshup Get Subscription failed",
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("url", apiURL),
+				zap.String("app_id", appID),
+				zap.String("response", string(body)))
+		}
+		return nil, fmt.Errorf("get subscription failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	var result struct {
-		Status       string `json:"status"`
-		Subscription struct {
-			SubscriptionID string `json:"subscriptionId"`
-		} `json:"subscription"`
-	}
-
+	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("failed to parse subscription response: %w", err)
+		return nil, fmt.Errorf("failed to parse subscription response: %w, body=%s", err, string(body))
 	}
 
-	return result.Subscription.SubscriptionID, nil
+	if c.Logger != nil {
+		if subscription, ok := result["subscription"].(map[string]interface{}); ok {
+			c.Logger.Info("✅ Gupshup subscription retrieved",
+				zap.String("app_id", appID),
+				zap.Any("subscription_id", subscription["id"]),
+				zap.Any("webhook_url", subscription["url"]),
+				zap.Any("modes", subscription["modes"]),
+				zap.Any("active", subscription["active"]),
+				zap.Any("version", subscription["version"]))
+		}
+	}
+
+	return result, nil
 }
 
 // GetAppDetails retrieves app details including WhatsApp metadata (WABA ID, phone number, etc.)

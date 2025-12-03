@@ -52,6 +52,13 @@ func (h *GupshupWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Req
 
 	// Log ALL incoming webhook requests (headers + body) for debugging
 	// This helps verify Gupshup is hitting the endpoint and what events are being sent
+	bodyPreview := func() string {
+		if len(body) > 500 {
+			return string(body[:500])
+		}
+		return string(body)
+	}()
+
 	h.Logger.Info("📨 Gupshup webhook received",
 		zap.String("method", r.Method),
 		zap.String("url", r.URL.String()),
@@ -60,12 +67,8 @@ func (h *GupshupWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Req
 		zap.String("x_forwarded_for", r.Header.Get("X-Forwarded-For")),
 		zap.String("x_real_ip", r.Header.Get("X-Real-IP")),
 		zap.Int("body_size", len(body)),
-		zap.String("body_preview", func() string {
-			if len(body) > 500 {
-				return string(body[:500])
-			}
-			return string(body)
-		}()))
+		zap.String("body_preview", bodyPreview),
+		zap.String("full_body", string(body))) // Log full body for debugging
 
 	// Acknowledge quickly (within 2 seconds) to prevent Gupshup from retrying
 	w.WriteHeader(http.StatusOK)
@@ -529,15 +532,26 @@ func (h *GupshupWebhookHandler) processWebhookEvent(ctx context.Context, envelop
 		appID, _ = envelope["app"].(string)
 	}
 
+	h.Logger.Info("📨 Processing webhook event",
+		zap.String("event_type", eventType),
+		zap.String("app_id", appID),
+		zap.String("full_envelope", fmt.Sprintf("%+v", envelope)))
+
 	// Resolve tenant from appID
 	tenantID, err := h.resolveTenantFromAppID(appID)
 	if err != nil {
 		h.Logger.Warn("failed to resolve tenant from appID",
 			zap.String("app_id", appID),
 			zap.String("event_type", eventType),
+			zap.String("full_envelope", fmt.Sprintf("%+v", envelope)),
 			zap.Error(err))
 		return
 	}
+
+	h.Logger.Info("✅ Tenant resolved for webhook event",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("app_id", appID),
+		zap.String("event_type", eventType))
 
 	// Save webhook event to database
 	webhookEvent := storage.GupshupWebhookEvent{
