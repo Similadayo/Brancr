@@ -46,6 +46,7 @@ type TenantBotManager struct {
 	Config               *config.Config
 	sessionFinalizers    sync.Map
 	WorkflowOrchestrator interface{} // Workflow orchestrator for managing workflows
+	IndustrySelectionHandler *IndustrySelectionHandler // Industry selection handler
 }
 
 // StartPostFlowWithWorkflow starts post flow using the new workflow orchestrator if available, falls back to old method

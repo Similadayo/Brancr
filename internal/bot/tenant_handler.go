@@ -816,6 +816,15 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		// Handle TikTok posting options during post flow
 		// arg format: "toggle:duet:true", "toggle:stitch:false", "default", "continue"
 		h.handleTikTokPostingOptionCallback(bot, tenantID, chatID, arg)
+	case "industry":
+		// Handle industry selection callbacks
+		// arg format: "select:<industry_id>"
+		if strings.HasPrefix(arg, "select:") {
+			industryIDStr := strings.TrimPrefix(arg, "select:")
+			if h.Manager.IndustrySelectionHandler != nil {
+				h.Manager.IndustrySelectionHandler.HandleIndustrySelectionCallback(bot, tenantID, chatID, industryIDStr)
+			}
+		}
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}

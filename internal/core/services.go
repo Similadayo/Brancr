@@ -12,6 +12,7 @@ import (
 	"github.com/similadayo/brancr/internal/cache"
 	"github.com/similadayo/brancr/internal/circuitbreaker"
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/queue"
 	"github.com/similadayo/brancr/internal/security"
@@ -63,6 +64,9 @@ type Services struct {
 	// Analytics Services
 	AnalyticsService   *analytics.Service
 	AnalyticsScheduler *analytics.AnalyticsScheduler
+
+	// Industry Services
+	IndustryService *industry.Service
 }
 
 // NewServices initializes all services with proper dependency injection
@@ -85,7 +89,10 @@ func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *z
 		return nil, err
 	}
 
-	// Initialize Bot Manager (depends on AI)
+	// Initialize Industry Service (no dependencies, needed for BotManager)
+	services.initIndustry()
+
+	// Initialize Bot Manager (depends on AI and IndustryService)
 	if err := services.initBotManager(); err != nil {
 		return nil, err
 	}
@@ -179,6 +186,13 @@ func (s *Services) initAI() error {
 
 func (s *Services) initBotManager() error {
 	botManager := bot.NewTenantBotManager(s.DB, s.Config, s.Logger)
+	
+	// Initialize IndustrySelectionHandler if IndustryService is available
+	if s.IndustryService != nil {
+		industryHandler := bot.NewIndustrySelectionHandler(s.DB, s.IndustryService, s.Logger)
+		botManager.IndustrySelectionHandler = industryHandler
+	}
+	
 	s.BotManager = botManager
 	return nil
 }
@@ -388,6 +402,12 @@ func (s *Services) initWorkflows() error {
 
 	s.Logger.Info("✅ Workflow orchestrator initialized")
 	return nil
+}
+
+func (s *Services) initIndustry() {
+	// Initialize Industry Service
+	s.IndustryService = industry.NewService(s.DB, s.Logger)
+	s.Logger.Info("✅ Industry service initialized")
 }
 
 // botGetterWrapper wraps TenantBotManager to implement social.BotGetter interface

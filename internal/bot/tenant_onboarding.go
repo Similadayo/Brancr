@@ -15,6 +15,15 @@ func (m *TenantBotManager) CheckAndStartOnboarding(bot *tgbotapi.BotAPI, tenantI
 		return
 	}
 
+	// First, check if industry is selected (if IndustrySelectionHandler is available)
+	if m.IndustrySelectionHandler != nil {
+		m.IndustrySelectionHandler.CheckAndPromptIndustrySelection(bot, tenantID, chatID)
+		// If industry not selected, return early (industry selection takes priority)
+		if tenant.IndustryID == 0 {
+			return
+		}
+	}
+
 	// Check if tenant has completed initial setup
 	hasSocialAccount := false
 	var accounts []storage.SocialAccount
