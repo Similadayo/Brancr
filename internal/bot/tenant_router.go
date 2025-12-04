@@ -88,7 +88,20 @@ func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *T
 	var rdb *redis.Client
 	addr := strings.TrimSpace(cfg.RedisAddr)
 	if addr != "" {
-		client := redis.NewClient(&redis.Options{Addr: addr})
+		// Parse Redis URL if it's a full URL (Railway format)
+		var client *redis.Client
+		if strings.HasPrefix(addr, "redis://") || strings.HasPrefix(addr, "rediss://") {
+			opt, err := redis.ParseURL(addr)
+			if err == nil {
+				client = redis.NewClient(opt)
+			} else {
+				// Fallback to direct address
+				client = redis.NewClient(&redis.Options{Addr: addr})
+			}
+		} else {
+			// Direct address format (host:port)
+			client = redis.NewClient(&redis.Options{Addr: addr})
+		}
 		if err := client.Ping(context.Background()).Err(); err != nil {
 			logger.Warn("redis unavailable, falling back to in-memory collectors",
 				zap.Error(err))

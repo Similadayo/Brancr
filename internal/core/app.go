@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -116,12 +117,28 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// 🧠 Redis (optional)
 	var rdb *redis.Client
 	if addr := strings.TrimSpace(cfg.RedisAddr); addr != "" {
-		client := redis.NewClient(&redis.Options{Addr: addr})
+		// Parse Redis URL if it's a full URL (Railway format: redis://default:password@host:port)
+		var client *redis.Client
+		if strings.HasPrefix(addr, "redis://") || strings.HasPrefix(addr, "rediss://") {
+			// Use ParseURL for full Redis URLs
+			opt, err := redis.ParseURL(addr)
+			if err != nil {
+				logger.Warn("failed to parse Redis URL, trying as address", zap.Error(err), zap.String("addr", addr))
+				// Fallback to direct address
+				client = redis.NewClient(&redis.Options{Addr: addr})
+			} else {
+				client = redis.NewClient(opt)
+			}
+		} else {
+			// Direct address format (host:port)
+			client = redis.NewClient(&redis.Options{Addr: addr})
+		}
+
 		if err := client.Ping(context.Background()).Err(); err != nil {
 			logger.Warn("redis unavailable, proceeding without it", zap.Error(err))
 		} else {
 			rdb = client
-			logger.Info("redis connected", zap.String("addr", addr))
+			logger.Info("redis connected", zap.String("addr", maskRedisURL(addr)))
 		}
 	} else {
 		logger.Info("redis not configured; queueing and cache features running in-memory")
@@ -475,4 +492,27 @@ func (a *App) Run() error {
 
 	a.Services.Logger.Sync()
 	return nil
+}
+
+// maskRedisURL masks sensitive parts of Redis URL for logging
+func maskRedisURL(redisURL string) string {
+	if !strings.Contains(redisURL, "@") {
+		return redisURL // No password, safe to log
+	}
+
+	// Parse URL and mask password
+	parsed, err := url.Parse(redisURL)
+	if err != nil {
+		return "***" // Can't parse, mask everything
+	}
+
+	if parsed.User != nil {
+		password, _ := parsed.User.Password()
+		if password != "" {
+			// Replace password with ***
+			return strings.Replace(redisURL, password, "***", 1)
+		}
+	}
+
+	return redisURL
 }

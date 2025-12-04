@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -88,7 +89,19 @@ func NewJobQueue(redisAddr string, logger *zap.Logger) (*JobQueue, error) {
 	// Get Redis client for idempotency checks
 	var rdb *redis.Client
 	if redisAddr != "" {
-		rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+		// Parse Redis URL if it's a full URL (Railway format)
+		if strings.HasPrefix(redisAddr, "redis://") || strings.HasPrefix(redisAddr, "rediss://") {
+			opt, err := redis.ParseURL(redisAddr)
+			if err == nil {
+				rdb = redis.NewClient(opt)
+			} else {
+				// Fallback to direct address
+				rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+			}
+		} else {
+			// Direct address format (host:port)
+			rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+		}
 	}
 
 	queue := &JobQueue{
