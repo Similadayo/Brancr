@@ -164,7 +164,8 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	// This makes the AI response feel faster and more natural
 	h.sendTypingIndicator(ctx, msg)
 
-	reply, err := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform)
+	// Pass conversationID for sales conversation tracking
+	reply, err := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform, conversationID)
 	if err != nil {
 		h.Logger.Error("failed to generate reply", zap.Error(err))
 		// If reply generation fails, escalate as fallback
@@ -410,7 +411,13 @@ func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessa
 	}
 
 	// Generate suggested reply
-	suggestedReply, _ := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform)
+	// Get conversationID for sales tracking
+	var conversationID uint
+	conversation, _ := h.createOrGetConversation(ctx, msg, customer.ID)
+	if conversation != nil {
+		conversationID = conversation.ID
+	}
+	suggestedReply, _ := h.Responder.GenerateCustomerReply(ctx, msg.TenantID, customer.ID, msg.Content, intent.Intent, msg.Platform, conversationID)
 
 	// Send escalation via escalation handler
 	if h.EscalationFunc != nil {

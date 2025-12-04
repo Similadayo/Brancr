@@ -420,7 +420,37 @@ func (s *Services) initIndustry() {
 		}
 		s.CustomerResponder.RetrievalService = retrievalAdapter
 		s.Logger.Info("✅ Industry retrieval service linked to CustomerResponder")
+		
+		// Initialize Sales Conversation Manager
+		salesConvManager := ai.NewSalesConversationManager(s.DB, s.IndustryService, s.Logger)
+		s.CustomerResponder.SalesConversationManager = salesConvManager
+		s.Logger.Info("✅ Sales conversation manager initialized")
+		
+		// Initialize Payment Instruction Generator
+		paymentGen := ai.NewPaymentInstructionGenerator(s.DB, s.Logger)
+		s.CustomerResponder.PaymentInstructionGen = paymentGen
+		s.Logger.Info("✅ Payment instruction generator initialized")
+		
+		// Link IndustryService to CustomerResponder
+		industryAdapter := &industryServiceAdapter{
+			industry: s.IndustryService,
+		}
+		s.CustomerResponder.IndustryService = industryAdapter
+		s.Logger.Info("✅ Industry service linked to CustomerResponder")
 	}
+}
+
+// industryServiceAdapter adapts IndustryService to CustomerResponder interface
+type industryServiceAdapter struct {
+	industry *industry.Service
+}
+
+func (a *industryServiceAdapter) GetTenantIndustry(ctx context.Context, tenantID uint) (interface{}, error) {
+	return a.industry.GetTenantIndustry(ctx, tenantID)
+}
+
+func (a *industryServiceAdapter) GetIndustrySettings(ctx context.Context, tenantID uint) (map[string]interface{}, error) {
+	return a.industry.GetIndustrySettings(ctx, tenantID)
 }
 
 // retrievalServiceAdapter adapts RetrievalService to CustomerResponder interface

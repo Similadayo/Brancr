@@ -158,6 +158,108 @@ type Customer struct {
 	CreatedAt     time.Time
 }
 
+// Order represents a customer order
+type Order struct {
+	ID                  uint   `gorm:"primaryKey"`
+	TenantID            uint   `gorm:"index"`
+	CustomerID          uint   `gorm:"index"`
+	OrderNumber         string `gorm:"uniqueIndex;size:50"` // "ORD-2024-001234"
+	PaymentReference    string `gorm:"uniqueIndex;size:50"` // "BRNCR-123-20241204-ABC123"
+	Status              string `gorm:"size:50"`             // pending, confirmed, processing, completed, cancelled
+	TotalAmount         float64
+	Currency            string `gorm:"size:10;default:'NGN'"`
+	Items               string `gorm:"type:jsonb"` // JSON array of OrderItem
+	CustomerName        string `gorm:"size:255"`
+	CustomerPhone       string `gorm:"size:50"`
+	CustomerEmail       string `gorm:"size:255"`
+	Platform            string `gorm:"size:50"`   // whatsapp, instagram, telegram, facebook
+	PaymentInstructions string `gorm:"type:text"` // Bank details, etc. sent to customer
+	Notes               string `gorm:"type:text"` // Tenant notes
+	CreatedAt           time.Time
+	ConfirmedAt         *time.Time // When tenant confirmed payment
+	CompletedAt         *time.Time // When order is fulfilled
+}
+
+// Payment represents a payment transaction
+type Payment struct {
+	ID                 uint   `gorm:"primaryKey"`
+	TenantID           uint   `gorm:"index"`
+	OrderID            uint   `gorm:"index"`
+	CustomerID         uint   `gorm:"index"`
+	PaymentReference   string `gorm:"uniqueIndex;size:50"` // Links to Order.PaymentReference
+	Amount             float64
+	Currency           string `gorm:"size:10;default:'NGN'"`
+	PaymentMethod      string `gorm:"size:50"` // bank_transfer, cash, mobile_money, card, other
+	Status             string `gorm:"size:50"` // pending, verified, confirmed, failed, refunded
+	VerificationStatus string `gorm:"size:50"` // unverified, tenant_verified, disputed, auto_verified
+	ClaimedByCustomer  bool   `gorm:"default:false"`
+	ClaimedAt          *time.Time
+	VerifiedBy         *int64 `gorm:"index"` // Tenant's Telegram ID who verified
+	VerifiedAt         *time.Time
+	ReceiptID          string `gorm:"uniqueIndex;size:50"`
+	ReceiptURL         string `gorm:"type:text"`
+	PortalToken        string `gorm:"uniqueIndex;size:100"` // Unique token for customer portal access
+	PortalURL          string `gorm:"type:text"`            // Full portal URL with token
+	Metadata           string `gorm:"type:jsonb"`           // Additional payment data
+	CreatedAt          time.Time
+	CompletedAt        *time.Time // When payment was fully processed/confirmed
+}
+
+// OrderItem represents a single item in an order (used in Order.Items JSONB)
+type OrderItem struct {
+	Name        string  `json:"name"`
+	Description string  `json:"description,omitempty"`
+	Quantity    int     `json:"quantity"`
+	UnitPrice   float64 `json:"unit_price"`
+	TotalPrice  float64 `json:"total_price"`
+}
+
+// TenantPaymentAccount stores tenant's payment account details
+type TenantPaymentAccount struct {
+	gorm.Model
+	TenantID            uint   `gorm:"index"`
+	AccountType         string `gorm:"size:50"` // bank, mobile_money, cash
+	BankName            string `gorm:"size:100"`
+	AccountNumber       string `gorm:"type:text"` // Encrypted
+	AccountName         string `gorm:"size:255"`
+	MobileMoneyProvider string `gorm:"size:100"` // For mobile money (MTN, Airtel, etc.)
+	PhoneNumber         string `gorm:"size:50"`  // For mobile money
+	IsDefault           bool   `gorm:"default:false"`
+	IsActive            bool   `gorm:"default:true"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// SalesConversation tracks sales conversation state
+type SalesConversation struct {
+	gorm.Model
+	ConversationID   uint    `gorm:"index"` // Links to Conversation
+	TenantID         uint    `gorm:"index"`
+	CustomerID       uint    `gorm:"index"`
+	Stage            string  `gorm:"size:50"`    // greeting, product_inquiry, negotiation, commitment_confirmation, payment_instructions
+	CommitmentLevel  string  `gorm:"size:50"`    // exploring, interested, considering, committed, payment_ready
+	ItemsDiscussed   string  `gorm:"type:jsonb"` // JSON array of products/services discussed
+	PriceDiscussed   float64 // Price discussed (may change during negotiation)
+	NegotiationCount int     `gorm:"default:0"`  // Number of negotiation rounds
+	ObjectionsRaised string  `gorm:"type:jsonb"` // JSON array of objections
+	LastIntent       string  `gorm:"size:50"`    // Last detected intent
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// NegotiationHistory tracks negotiation attempts
+type NegotiationHistory struct {
+	gorm.Model
+	SalesConversationID uint    `gorm:"index"`   // Links to SalesConversation
+	Type                string  `gorm:"size:50"` // price, quantity, terms
+	CustomerOffer       float64 // What customer offered
+	CounterOffer        float64 // What AI countered with
+	FinalAgreement      float64 // Final agreed price (if any)
+	Status              string  `gorm:"size:50"` // ongoing, agreed, rejected
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 // ACTIVITY & LOGGING
 
 type EventLog struct {

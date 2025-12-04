@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -12,14 +13,20 @@ import (
 
 // CustomerResponder generates AI replies for customer conversations
 type CustomerResponder struct {
-	Client          *AIClient
-	Memory          *MemoryService
-	DB              *gorm.DB
-	Logger          *zap.Logger
-	RetrievalService interface { // Industry-aware retrieval service (optional)
+	Client                   *AIClient
+	Memory                   *MemoryService
+	DB                       *gorm.DB
+	Logger                   *zap.Logger
+	RetrievalService         interface { // Industry-aware retrieval service (optional)
 		SearchItems(ctx context.Context, tenantID uint, query string, limit int) (interface{}, error)
 		GetAllActive(ctx context.Context, tenantID uint, limit int) (interface{}, error)
 		FormatForAI(items interface{}) string
+	}
+	SalesConversationManager *SalesConversationManager      // Sales conversation tracking
+	PaymentInstructionGen    *PaymentInstructionGenerator   // Payment instruction generator
+	IndustryService          interface { // Industry service (optional)
+		GetTenantIndustry(ctx context.Context, tenantID uint) (interface{}, error)
+		GetIndustrySettings(ctx context.Context, tenantID uint) (map[string]interface{}, error)
 	}
 }
 
@@ -34,7 +41,17 @@ func NewCustomerResponder(client *AIClient, db *gorm.DB, logger *zap.Logger, mem
 }
 
 // GenerateCustomerReply generates an AI reply for a customer message
-func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID uint, customerID uint, message string, intent string, platform string) (string, error) {
+// conversationID is optional - if provided, sales conversation tracking will be used
+func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID uint, customerID uint, message string, intent string, platform string, conversationID ...uint) (string, error) {
+	var convID uint
+	if len(conversationID) > 0 {
+		convID = conversationID[0]
+	}
+	return r.GenerateCustomerReplyWithSales(ctx, tenantID, customerID, message, intent, platform, convID)
+}
+
+// GenerateCustomerReplyWithSales generates an AI reply with sales conversation tracking
+func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, tenantID uint, customerID uint, message string, intent string, platform string, conversationID uint) (string, error) {
 	// Load persona and business profile
 	var persona storage.Persona
 	if err := r.DB.First(&persona, "tenant_id = ?", tenantID).Error; err != nil {
@@ -104,9 +121,42 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 		businessContext = r.buildBusinessContext(menuItems, faqs, intent)
 	}
 
+	// Sales conversation tracking (if enabled)
+	var salesContext string
+	var isCommitted, isNegotiating bool
+	if r.SalesConversationManager != nil && conversationID > 0 {
+		salesConv, err := r.SalesConversationManager.GetOrCreateSalesConversation(ctx, tenantID, customerID, conversationID)
+		if err == nil {
+			// Detect commitment
+			isCommitted, _ = r.SalesConversationManager.DetectCommitment(ctx, message, salesConv)
+			if isCommitted {
+				r.SalesConversationManager.UpdateCommitmentLevel(ctx, salesConv.ID, "committed")
+				r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, "payment_instructions")
+			}
+
+			// Detect negotiation
+			isNegotiating, _, _ = r.SalesConversationManager.DetectNegotiation(ctx, message)
+			if isNegotiating {
+				r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, "negotiation")
+				r.SalesConversationManager.IncrementNegotiation(ctx, salesConv.ID)
+			}
+
+			// Build sales context
+			salesContext, _ = r.SalesConversationManager.BuildIndustrySalesContext(ctx, tenantID, salesConv)
+			r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, r.determineSalesStage(intent, isCommitted, isNegotiating))
+		}
+	}
+
 	// Add current message
 	intro := BuildIntroTone(persona, biz)
 	formatHint := getPlatformFormatting(platform)
+	
+	// Add sales context if available
+	salesGuidance := ""
+	if salesContext != "" {
+		salesGuidance = fmt.Sprintf("\n\nSALES CONVERSATION CONTEXT:\n%s\n\nUse this context to guide your sales approach. Adapt your response based on the sales stage and commitment level.", salesContext)
+	}
+	
 	task := fmt.Sprintf(`%s
 
 Task: Reply to the latest customer message on %s.
@@ -137,7 +187,7 @@ CRITICAL:
 
 Use the conversation history above as context.
 
-%s
+%s%s
 
 Detected intent: %s
 Formatting notes: %s
@@ -146,6 +196,7 @@ Customer message: %s`,
 		intro,
 		strings.ToUpper(platform),
 		businessContext,
+		salesGuidance,
 		intent,
 		formatHint,
 		message,
@@ -158,7 +209,53 @@ Customer message: %s`,
 		return "", fmt.Errorf("failed to generate reply: %w", err)
 	}
 
-	return strings.TrimSpace(reply), nil
+	reply = strings.TrimSpace(reply)
+
+	// If customer is committed and ready for payment, append payment instructions
+	if r.SalesConversationManager != nil && conversationID > 0 && r.PaymentInstructionGen != nil {
+		salesConv, err := r.SalesConversationManager.GetOrCreateSalesConversation(ctx, tenantID, customerID, conversationID)
+		if err == nil && salesConv.CommitmentLevel == "committed" && salesConv.Stage == "payment_instructions" {
+			// Generate payment instructions
+			amount := salesConv.PriceDiscussed
+			if amount == 0 {
+				// Try to get amount from items discussed
+				var items []map[string]interface{}
+				json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items)
+				if len(items) > 0 {
+					if price, ok := items[0]["price"].(float64); ok {
+						amount = price
+					}
+				}
+			}
+			
+			if amount > 0 {
+				paymentInstructions, err := r.PaymentInstructionGen.GeneratePaymentInstructions(ctx, tenantID, amount, "NGN")
+				if err == nil && paymentInstructions != "" {
+					reply += "\n\n" + paymentInstructions
+				}
+			}
+		}
+	}
+
+	return reply, nil
+}
+
+// determineSalesStage determines the sales stage based on intent and conversation state
+func (r *CustomerResponder) determineSalesStage(intent string, isCommitted, isNegotiating bool) string {
+	if isCommitted {
+		return "payment_instructions"
+	}
+	if isNegotiating {
+		return "negotiation"
+	}
+	switch intent {
+	case "order", "payment":
+		return "commitment_confirmation"
+	case "inquiry":
+		return "product_inquiry"
+	default:
+		return "greeting"
+	}
 }
 
 // buildBusinessContextWithItems creates context string from industry-aware items and FAQs

@@ -174,6 +174,27 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Put("/tenant/services/{id}", h.updateService)
 		r.Delete("/tenant/services/{id}", h.deleteService)
 
+		// Payment Account management
+		r.Get("/tenant/payment-accounts", h.listPaymentAccounts)
+		r.Post("/tenant/payment-accounts", h.createPaymentAccount)
+		r.Get("/tenant/payment-accounts/{id}", h.getPaymentAccount)
+		r.Put("/tenant/payment-accounts/{id}", h.updatePaymentAccount)
+		r.Delete("/tenant/payment-accounts/{id}", h.deletePaymentAccount)
+		r.Put("/tenant/payment-accounts/{id}/set-default", h.setDefaultPaymentAccount)
+
+		// Order management
+		r.Get("/tenant/orders", h.listOrders)
+		r.Get("/tenant/orders/{id}", h.getOrder)
+		r.Put("/tenant/orders/{id}", h.updateOrder)
+		r.Put("/tenant/orders/{id}/confirm-payment", h.confirmOrderPayment)
+		r.Get("/tenant/orders/stats", h.getOrderStats)
+
+		// Payment management
+		r.Get("/tenant/payments", h.listPayments)
+		r.Get("/tenant/payments/{id}", h.getPayment)
+		r.Put("/tenant/payments/{id}/verify", h.verifyPayment)
+		r.Put("/tenant/payments/{id}/dispute", h.disputePayment)
+
 		// WhatsApp provider-owned model (new)
 		r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
 		r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
