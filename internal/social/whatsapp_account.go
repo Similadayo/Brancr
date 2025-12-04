@@ -981,7 +981,7 @@ func subscribeAppToWABASync(logger *zap.Logger, cfg *config.Config, tenantID uin
 	if resp.StatusCode >= 400 {
 		// Check if already subscribed
 		if strings.Contains(string(body), "already") || strings.Contains(string(body), "duplicate") {
-			if logger != nil {
+		if logger != nil {
 				logger.Info("WhatsApp WABA already subscribed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
 			}
 			return

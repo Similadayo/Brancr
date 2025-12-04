@@ -1010,7 +1010,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 
 	h.Logger.Info("✅ WhatsApp message sent via Gupshup",
 		zap.String("customer_id", customerID),
-		zap.String("message_id", messageID),
+				zap.String("message_id", messageID),
 		zap.String("app_id", app.GupshupAppID))
 	
 	// Update the most recent outgoing interaction with message ID

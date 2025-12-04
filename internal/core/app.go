@@ -114,6 +114,13 @@ func NewApp(cfg *config.Config) (*App, error) {
 		logger.Warn("seed test tenant failed", zap.Error(err))
 	}
 
+	// 🏭 Seed default industries
+	if err := storage.SeedIndustries(db); err != nil {
+		logger.Warn("seed industries failed", zap.Error(err))
+	} else {
+		logger.Info("✅ Industries seeded")
+	}
+
 	// 🧠 Redis (optional)
 	var rdb *redis.Client
 	if addr := strings.TrimSpace(cfg.RedisAddr); addr != "" {

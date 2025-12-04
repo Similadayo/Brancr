@@ -173,7 +173,7 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 
 	if initErr != nil {
 		return fmt.Errorf("tiktok init upload failed: %w", initErr)
-	}
+		}
 
 	// Upload the video file (downloads from URL and uploads to TikTok)
 	if session != nil && session.UploadURL != "" {

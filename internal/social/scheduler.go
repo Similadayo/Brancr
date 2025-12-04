@@ -112,9 +112,9 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 			Limit(batchSize).
 			Offset(offset).
 			Find(&posts).Error; err != nil {
-			s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))
-			return
-		}
+		s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))
+		return
+	}
 
 		if len(posts) == 0 {
 			break // No more posts to process
@@ -125,18 +125,18 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 		semaphore := make(chan struct{}, 20) // Max 20 concurrent posts
 		var wg sync.WaitGroup
 
-		for _, p := range posts {
+	for _, p := range posts {
 			// Try to claim by updating status to "posting" if still scheduled (optimistic locking)
-			tx := s.DB.Begin()
+		tx := s.DB.Begin()
 			rowsAffected := tx.Model(&storage.ScheduledPost{}).
 				Where("id = ? AND status = ?", p.ID, "scheduled").
 				Update("status", "posting").RowsAffected
 			
 			if rowsAffected == 0 {
-				tx.Rollback()
+			tx.Rollback()
 				continue // Post already claimed by another worker
-			}
-			tx.Commit()
+		}
+		tx.Commit()
 
 			// Execute post with concurrency control
 			wg.Add(1)

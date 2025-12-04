@@ -23,6 +23,11 @@ func AutoMigrate(db *gorm.DB) error {
 		&BusinessProfile{},
 		&BusinessMenuItem{},
 		&BusinessFAQ{},
+		// Industry & Products
+		&Industry{},
+		&Product{},
+		&MenuItem{},
+		&Service{},
 		&AdminUser{},
 		&Customer{},
 		&EventLog{},
@@ -231,5 +236,72 @@ func SeedTestTenant(db *gorm.DB) error {
 	}
 
 	fmt.Println("✅ Seeded test tenant:", testEmail)
+	return nil
+}
+
+// SeedIndustries ensures default industries are available
+func SeedIndustries(db *gorm.DB) error {
+	industries := []Industry{
+		{
+			Name:        "E-commerce",
+			Category:    "retail",
+			Description: "Online retail stores selling physical products",
+			HasProducts: true,
+			HasMenu:     false,
+			HasServices: false,
+			Settings:    `{"sales_style": "product_focused", "negotiation_enabled": true, "bulk_discounts": true}`,
+		},
+		{
+			Name:        "Restaurant",
+			Category:    "food",
+			Description: "Restaurants, cafes, and food service businesses",
+			HasProducts: false,
+			HasMenu:     true,
+			HasServices: false,
+			Settings:    `{"sales_style": "menu_focused", "recommendations_enabled": true, "dietary_aware": true}`,
+		},
+		{
+			Name:        "Consultant",
+			Category:    "professional_services",
+			Description: "Consulting and advisory services",
+			HasProducts: false,
+			HasMenu:     false,
+			HasServices: true,
+			Settings:    `{"sales_style": "consultative", "relationship_focused": true, "consultation_booking": true}`,
+		},
+		{
+			Name:        "Agency",
+			Category:    "professional_services",
+			Description: "Marketing, design, and creative agencies",
+			HasProducts: false,
+			HasMenu:     false,
+			HasServices: true,
+			Settings:    `{"sales_style": "solution_focused", "package_based": true, "portfolio_references": true}`,
+		},
+		{
+			Name:        "General",
+			Category:    "general",
+			Description: "General business (no specific industry)",
+			HasProducts: false,
+			HasMenu:     false,
+			HasServices: false,
+			Settings:    `{"sales_style": "general", "flexible": true}`,
+		},
+	}
+
+	for _, industry := range industries {
+		var existing Industry
+		if err := db.Where("name = ?", industry.Name).First(&existing).Error; err == nil {
+			// Industry exists, skip
+			continue
+		}
+
+		if err := db.Create(&industry).Error; err != nil {
+			log.Printf("⚠️ Could not seed industry %s: %v", industry.Name, err)
+		} else {
+			log.Printf("✅ Seeded industry: %s", industry.Name)
+		}
+	}
+
 	return nil
 }

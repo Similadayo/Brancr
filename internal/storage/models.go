@@ -12,20 +12,22 @@ import (
 
 type Tenant struct {
 	gorm.Model
-	Name             string
-	Email            string
-	OwnerName        string
-	OwnerTelegramID  int64  `gorm:"index"` // identifies the business owner in Telegram
-	TelegramBotToken string // encrypted token, optional in dashboard sign-up
-	BotUsername      string `gorm:"index"`
-	PlanType         string
-	Status           string // active, suspended, pending
-	BusinessProfile  BusinessProfile
-	PasswordHash     string
-	OwnerPhone       string
-	OnboardingStep   string `gorm:"default:business_profile"` // business_profile, persona, business_details, social_connect, complete
-	OnboardingComplete bool `gorm:"default:false"`
-	Timezone         string `gorm:"size:50;default:'UTC'"` // e.g., "America/New_York", "Europe/London"
+	Name               string
+	Email              string
+	OwnerName          string
+	OwnerTelegramID    int64  `gorm:"index"` // identifies the business owner in Telegram
+	TelegramBotToken   string // encrypted token, optional in dashboard sign-up
+	BotUsername        string `gorm:"index"`
+	PlanType           string
+	Status             string // active, suspended, pending
+	BusinessProfile    BusinessProfile
+	PasswordHash       string
+	OwnerPhone         string
+	OnboardingStep     string `gorm:"default:business_profile"` // business_profile, persona, business_details, social_connect, complete
+	OnboardingComplete bool   `gorm:"default:false"`
+	Timezone           string `gorm:"size:50;default:'UTC'"` // e.g., "America/New_York", "Europe/London"
+	IndustryID         uint   `gorm:"index"`                 // Links to Industry model
+	IndustrySettings   string `gorm:"type:jsonb"`            // Industry-specific custom settings
 }
 
 // BusinessProfile represents the personality and niche of the tenant’s bot
@@ -62,6 +64,73 @@ type BusinessFAQ struct {
 	TenantID uint   `gorm:"index"`
 	Question string `gorm:"type:text"`
 	Answer   string `gorm:"type:text"`
+}
+
+// =======================
+//  INDUSTRY & PRODUCTS
+// =======================
+
+// Industry represents a business industry category
+type Industry struct {
+	ID          uint   `gorm:"primaryKey"`
+	Name        string `gorm:"size:100;uniqueIndex"` // e.g., "E-commerce", "Restaurant", "Consultant"
+	Category    string `gorm:"size:50"`              // e.g., "retail", "food", "professional_services"
+	Description string `gorm:"type:text"`
+	HasProducts bool   `gorm:"default:false"` // Whether this industry uses products/menu
+	HasMenu     bool   `gorm:"default:false"` // Whether this industry uses menu items
+	HasServices bool   `gorm:"default:false"` // Whether this industry uses services
+	Settings    string `gorm:"type:jsonb"`    // Industry-specific settings (sales style, negotiation rules, etc.)
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// Product represents a product for e-commerce businesses
+type Product struct {
+	gorm.Model
+	TenantID     uint   `gorm:"index"`
+	Name         string `gorm:"size:255;index"`
+	Description  string `gorm:"type:text"`
+	Price        float64
+	Currency     string `gorm:"size:10;default:'NGN'"`
+	Category     string `gorm:"size:100;index"`
+	Images       string `gorm:"type:jsonb"`                 // JSON array of image URLs
+	Variants     string `gorm:"type:jsonb"`                 // JSON: {"size": ["S", "M", "L"], "color": ["Red", "Blue"]}
+	Tags         string `gorm:"type:jsonb"`                 // JSON array of tags for search
+	StockCount   int    `gorm:"default:-1"`                 // -1 = unlimited, 0+ = actual stock
+	Availability string `gorm:"size:20;default:'in_stock'"` // in_stock, out_of_stock, low_stock
+	IsActive     bool   `gorm:"default:true"`
+	SKU          string `gorm:"size:100;index"` // Stock Keeping Unit (optional)
+}
+
+// MenuItem represents a menu item for restaurant businesses
+type MenuItem struct {
+	gorm.Model
+	TenantID        uint   `gorm:"index"`
+	Name            string `gorm:"size:255;index"`
+	Description     string `gorm:"type:text"`
+	Price           float64
+	Currency        string `gorm:"size:10;default:'NGN'"`
+	Category        string `gorm:"size:100;index"` // appetizer, main, dessert, drink, etc.
+	Images          string `gorm:"type:jsonb"`     // JSON array of image URLs
+	DietaryInfo     string `gorm:"type:jsonb"`     // JSON: ["vegetarian", "vegan", "gluten-free"]
+	PreparationTime int    // Minutes
+	Availability    string `gorm:"size:20;default:'available'"` // available, unavailable, limited
+	IsActive        bool   `gorm:"default:true"`
+	SpiceLevel      string `gorm:"size:20"` // mild, medium, hot, etc. (optional)
+}
+
+// Service represents a service for consultant/agency businesses
+type Service struct {
+	gorm.Model
+	TenantID     uint   `gorm:"index"`
+	Name         string `gorm:"size:255;index"`
+	Description  string `gorm:"type:text"`
+	Pricing      string `gorm:"type:jsonb"` // JSON: {"type": "fixed", "amount": 50000} or {"type": "hourly", "rate": 5000}
+	Packages     string `gorm:"type:jsonb"` // JSON array of package options
+	Duration     string `gorm:"size:50"`    // e.g., "1 hour", "2 weeks", "1 month"
+	Deliverables string `gorm:"type:text"`  // What the customer gets
+	IsActive     bool   `gorm:"default:true"`
+	Category     string `gorm:"size:100;index"` // consultation, project, retainer, etc.
 }
 
 // ADMIN USERS (SYSTEM)
@@ -135,7 +204,7 @@ type MediaAsset struct {
 	Platforms    string // JSON array
 	Tags         string `gorm:"type:text"` // JSON array of tags
 	Campaign     string // Optional campaign name
-	BulkUploadID string `gorm:"index"` // Links assets from same bulk upload
+	BulkUploadID string `gorm:"index"`      // Links assets from same bulk upload
 	Metadata     string `gorm:"type:jsonb"` // Platform-specific metadata (e.g., TikTok posting options)
 }
 
@@ -180,46 +249,46 @@ type SocialAccount struct {
 // WhatsAppPhoneNumber represents a phone number in Brancr's provider-owned WABA
 type WhatsAppPhoneNumber struct {
 	gorm.Model
-	PhoneNumberID   string `gorm:"uniqueIndex"` // Meta's phone_number_id (used for webhook routing)
-	PhoneNumber     string // Display format: +1234567890
-	WABAID          string `gorm:"index"` // Which WABA this number belongs to
-	TenantID        *uint  `gorm:"index"` // NULL = available, assigned to tenant if set
-	DisplayName     string // Tenant's business name (when assigned)
-	VerifiedName    string // From Meta API
-	QualityRating   string // Meta quality rating
-	Status          string // available, assigned, suspended
-	AssignedAt      *time.Time
+	PhoneNumberID string `gorm:"uniqueIndex"` // Meta's phone_number_id (used for webhook routing)
+	PhoneNumber   string // Display format: +1234567890
+	WABAID        string `gorm:"index"` // Which WABA this number belongs to
+	TenantID      *uint  `gorm:"index"` // NULL = available, assigned to tenant if set
+	DisplayName   string // Tenant's business name (when assigned)
+	VerifiedName  string // From Meta API
+	QualityRating string // Meta quality rating
+	Status        string // available, assigned, suspended
+	AssignedAt    *time.Time
 }
 
 // WhatsAppPhoneNumberRequest represents a tenant's request to add their own phone number
 type WhatsAppPhoneNumberRequest struct {
 	gorm.Model
-	TenantID        uint      `gorm:"index"` // Tenant who requested the number
-	PhoneNumber     string    // Display format: +1234567890
-	DisplayName     string    // Tenant's business name
-	Status          string    // pending, added_to_meta, verification_code_sent, verified, rejected
-	PhoneNumberID   string    // Meta's phone_number_id (filled after admin adds to Meta)
-	VerificationCode string   // Code provided by tenant (filled when tenant provides code)
-	RejectedReason  string    // Reason if rejected
-	ProcessedAt     *time.Time // When admin processed the request
+	TenantID         uint       `gorm:"index"` // Tenant who requested the number
+	PhoneNumber      string     // Display format: +1234567890
+	DisplayName      string     // Tenant's business name
+	Status           string     // pending, added_to_meta, verification_code_sent, verified, rejected
+	PhoneNumberID    string     // Meta's phone_number_id (filled after admin adds to Meta)
+	VerificationCode string     // Code provided by tenant (filled when tenant provides code)
+	RejectedReason   string     // Reason if rejected
+	ProcessedAt      *time.Time // When admin processed the request
 }
 
 // WhatsAppApp represents a Gupshup Partner app for a tenant (multi-tenant WhatsApp)
 type WhatsAppApp struct {
 	gorm.Model
 	TenantID           uint   `gorm:"index;not null"`
-	GupshupAppID       string `gorm:"type:text;not null;index"`    // UUID from Gupshup redirect callback
-	GupshupAppToken    string `gorm:"type:text;not null"`          // Encrypted token from callback
+	GupshupAppID       string `gorm:"type:text;not null;index"` // UUID from Gupshup redirect callback
+	GupshupAppToken    string `gorm:"type:text;not null"`       // Encrypted token from callback
 	WABAID             string `gorm:"type:text"`
 	BusinessID         string `gorm:"type:text"`
 	PhoneNumberID      string `gorm:"type:text"`
-	PhoneNumber        string `gorm:"type:text"`                   // From redirect callback
+	PhoneNumber        string `gorm:"type:text"`                            // From redirect callback
 	Status             string `gorm:"size:50;default:'pending_onboarding'"` // pending_onboarding, pending_verification, live, failed
 	Mode               string `gorm:"size:50;default:'gupshup_partner'"`
-	SubscriptionID     string `gorm:"type:text"`                   // Subscription ID from Subscription API
-	SubscriptionActive bool   `gorm:"default:false"`               // Whether subscription is active
-	WebhookURL         string `gorm:"type:text"`                   // Webhook URL configured for this app
-	DefaultTemplateID  string `gorm:"type:text"`                  // Default text template ID for AI replies (template with variable parameter)
+	SubscriptionID     string `gorm:"type:text"`     // Subscription ID from Subscription API
+	SubscriptionActive bool   `gorm:"default:false"` // Whether subscription is active
+	WebhookURL         string `gorm:"type:text"`     // Webhook URL configured for this app
+	DefaultTemplateID  string `gorm:"type:text"`     // Default text template ID for AI replies (template with variable parameter)
 }
 
 // GupshupWebhookEvent stores incoming webhook events from Gupshup
@@ -306,22 +375,22 @@ type PostLog struct {
 // BulkUploadSession tracks bulk media uploads
 type BulkUploadSession struct {
 	gorm.Model
-	TenantID        uint   `gorm:"index"`
-	SessionID       string `gorm:"uniqueIndex"` // Unique session identifier
-	TotalItems      int
-	ProcessedItems  int
-	Status          string // pending, processing, completed, failed
-	SplitStrategy   string // equal, by_count, by_date, ai_organized
-	CarouselCount   int    // Number of carousels to create
+	TenantID         uint   `gorm:"index"`
+	SessionID        string `gorm:"uniqueIndex"` // Unique session identifier
+	TotalItems       int
+	ProcessedItems   int
+	Status           string // pending, processing, completed, failed
+	SplitStrategy    string // equal, by_count, by_date, ai_organized
+	CarouselCount    int    // Number of carousels to create
 	ItemsPerCarousel int
 	ScheduleStrategy string // spread, custom, optimal
-	Metadata        string `gorm:"type:text"` // JSON metadata
+	Metadata         string `gorm:"type:text"` // JSON metadata
 }
 
 // RecurringTemplate for recurring posts
 type RecurringTemplate struct {
 	gorm.Model
-	TenantID        uint   `gorm:"index"`
+	TenantID        uint `gorm:"index"`
 	Name            string
 	Frequency       string // daily, weekly, monthly, custom
 	Schedule        string `gorm:"type:text"` // JSON: {"days": [1,3,5], "time": "10:00", "timezone": "America/New_York"}
@@ -336,10 +405,10 @@ type RecurringTemplate struct {
 // ContentCalendar entry
 type ContentCalendar struct {
 	gorm.Model
-	TenantID    uint      `gorm:"index"`
-	Date        time.Time `gorm:"index"`
-	Posts       string    `gorm:"type:text"` // JSON array of ScheduledPost IDs
-	Theme       string    // Optional theme for the day
-	Notes       string    `gorm:"type:text"`
-	Status      string    // planned, scheduled, posted, cancelled
+	TenantID uint      `gorm:"index"`
+	Date     time.Time `gorm:"index"`
+	Posts    string    `gorm:"type:text"` // JSON array of ScheduledPost IDs
+	Theme    string    // Optional theme for the day
+	Notes    string    `gorm:"type:text"`
+	Status   string    // planned, scheduled, posted, cancelled
 }
