@@ -334,7 +334,11 @@ type signupRequest struct {
 func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	var req signupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
+		h.Logger.Warn("signup: failed to decode request", zap.Error(err))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "invalid_payload",
+			"message": "Invalid request format. Please check your input.",
+		})
 		return
 	}
 
@@ -343,22 +347,44 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	req.CompanyName = strings.TrimSpace(req.CompanyName)
 
 	if req.Email == "" || req.Password == "" || req.CompanyName == "" {
-		http.Error(w, "missing required fields", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "missing_fields",
+			"message": "Email, password, and company name are required.",
+		})
 		return
 	}
 
 	var existing int64
 	h.DB.Model(&storage.Tenant{}).Where("email = ?", req.Email).Count(&existing)
 	if existing > 0 {
-		http.Error(w, "email already registered", http.StatusConflict)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "email_exists",
+			"message": "An account with this email already exists. Please login instead.",
+		})
 		return
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		h.Logger.Error("bcrypt error", zap.Error(err))
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		h.Logger.Error("bcrypt password hashing failed", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "signup_failed",
+			"message": "Could not process password. Please try again.",
+		})
 		return
+	}
+
+	// Get default "General" industry ID (or use 0 if not found)
+	var defaultIndustry storage.Industry
+	defaultIndustryID := uint(0)
+	if err := h.DB.Where("name = ?", "General").First(&defaultIndustry).Error; err == nil {
+		defaultIndustryID = defaultIndustry.ID
+	} else {
+		// Fallback: try to get any industry
+		if err := h.DB.Order("id ASC").First(&defaultIndustry).Error; err == nil {
+			defaultIndustryID = defaultIndustry.ID
+		}
+		// If no industries exist, defaultIndustryID will be 0 (will be set during onboarding)
 	}
 
 	tenant := storage.Tenant{
@@ -371,11 +397,16 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		PasswordHash:       string(hash),
 		OnboardingStep:     "business_profile",
 		OnboardingComplete: false,
+		IndustryID:         defaultIndustryID, // Set to default industry or 0
+		IndustrySettings:   "{}",
 	}
 
 	if err := h.DB.Create(&tenant).Error; err != nil {
-		h.Logger.Error("create tenant", zap.Error(err))
-		http.Error(w, "could not create tenant", http.StatusInternalServerError)
+		h.Logger.Error("create tenant failed", zap.Error(err), zap.String("email", req.Email))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "signup_failed",
+			"message": "Could not create account. Please try again.",
+		})
 		return
 	}
 
@@ -385,7 +416,16 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		Name:     req.CompanyName,
 		Tone:     "friendly",
 	}
-	h.DB.Create(&profile)
+	if err := h.DB.Create(&profile).Error; err != nil {
+		h.Logger.Error("create business profile failed", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
+		// Try to clean up tenant if profile creation fails
+		h.DB.Delete(&tenant)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "signup_failed",
+			"message": "Could not create business profile. Please try again.",
+		})
+		return
+	}
 
 	// Create initial persona
 	persona := storage.Persona{
@@ -396,18 +436,30 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		Humor:      true,
 		StyleNotes: "",
 	}
-	h.DB.Create(&persona)
-
-	if err := h.setSessionCookie(w, tenant.ID, tenant.Email); err != nil {
-		h.Logger.Error("issue session cookie", zap.Error(err))
-		http.Error(w, "login failed", http.StatusInternalServerError)
+	if err := h.DB.Create(&persona).Error; err != nil {
+		h.Logger.Error("create persona failed", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
+		// Try to clean up tenant and profile if persona creation fails
+		h.DB.Delete(&profile)
+		h.DB.Delete(&tenant)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "signup_failed",
+			"message": "Could not create persona. Please try again.",
+		})
 		return
 	}
 
+	// Set session cookie (non-critical - user can still login manually)
+	if err := h.setSessionCookie(w, tenant.ID, tenant.Email); err != nil {
+		h.Logger.Warn("failed to set session cookie during signup", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
+		// Don't fail signup if cookie fails - user can login manually
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{
+		"success":   true,
 		"tenant_id": tenant.ID,
 		"name":      tenant.Name,
 		"email":     tenant.Email,
+		"message":   "Account created successfully",
 	})
 }
 

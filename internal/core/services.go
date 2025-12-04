@@ -14,9 +14,11 @@ import (
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/order"
 	"github.com/similadayo/brancr/internal/queue"
 	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/social"
+	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/workflows"
 	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
@@ -431,6 +433,19 @@ func (s *Services) initIndustry() {
 		s.CustomerResponder.PaymentInstructionGen = paymentGen
 		s.Logger.Info("✅ Payment instruction generator initialized")
 		
+		// Initialize Order Service
+		orderService := order.NewOrderService(s.DB, s.Logger)
+		orderServiceAdapter := &orderServiceAdapter{
+			orderService: orderService,
+		}
+		s.CustomerResponder.OrderService = orderServiceAdapter
+		s.Logger.Info("✅ Order service initialized and linked to CustomerResponder")
+		
+		// Initialize Customer Info Extractor
+		customerExtractor := ai.NewCustomerInfoExtractor(s.DB, s.Logger)
+		s.CustomerResponder.CustomerExtractor = customerExtractor
+		s.Logger.Info("✅ Customer info extractor initialized")
+		
 		// Link IndustryService to CustomerResponder
 		industryAdapter := &industryServiceAdapter{
 			industry: s.IndustryService,
@@ -438,6 +453,15 @@ func (s *Services) initIndustry() {
 		s.CustomerResponder.IndustryService = industryAdapter
 		s.Logger.Info("✅ Industry service linked to CustomerResponder")
 	}
+}
+
+// orderServiceAdapter adapts OrderService to CustomerResponder interface
+type orderServiceAdapter struct {
+	orderService *order.OrderService
+}
+
+func (a *orderServiceAdapter) CreateOrderFromSalesConversation(ctx context.Context, tenantID, customerID, conversationID uint, salesConv *storage.SalesConversation, customerName, customerPhone, customerEmail, platform string) (*storage.Order, error) {
+	return a.orderService.CreateOrderFromSalesConversation(ctx, tenantID, customerID, conversationID, salesConv, customerName, customerPhone, customerEmail, platform)
 }
 
 // industryServiceAdapter adapts IndustryService to CustomerResponder interface

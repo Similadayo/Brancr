@@ -24,6 +24,10 @@ type CustomerResponder struct {
 	}
 	SalesConversationManager *SalesConversationManager      // Sales conversation tracking
 	PaymentInstructionGen    *PaymentInstructionGenerator   // Payment instruction generator
+	OrderService             interface { // Order service for creating orders
+		CreateOrderFromSalesConversation(ctx context.Context, tenantID, customerID, conversationID uint, salesConv *storage.SalesConversation, customerName, customerPhone, customerEmail, platform string) (*storage.Order, error)
+	}
+	CustomerExtractor        *CustomerInfoExtractor         // Customer info extraction
 	IndustryService          interface { // Industry service (optional)
 		GetTenantIndustry(ctx context.Context, tenantID uint) (interface{}, error)
 		GetIndustrySettings(ctx context.Context, tenantID uint) (map[string]interface{}, error)
@@ -211,19 +215,51 @@ Customer message: %s`,
 
 	reply = strings.TrimSpace(reply)
 
-	// If customer is committed and ready for payment, append payment instructions
+	// If customer is committed and ready for payment, create order and append payment instructions
 	if r.SalesConversationManager != nil && conversationID > 0 && r.PaymentInstructionGen != nil {
 		salesConv, err := r.SalesConversationManager.GetOrCreateSalesConversation(ctx, tenantID, customerID, conversationID)
 		if err == nil && salesConv.CommitmentLevel == "committed" && salesConv.Stage == "payment_instructions" {
+			// Create order if not already created
+			var order *storage.Order
+			if r.OrderService != nil && r.CustomerExtractor != nil {
+				// Extract customer info
+				customerName, customerPhone, customerEmail, _ := r.CustomerExtractor.ExtractCustomerInfo(
+					ctx, tenantID, customerID, conversationID, platform)
+
+				// Create order
+				order, err = r.OrderService.CreateOrderFromSalesConversation(
+					ctx,
+					tenantID,
+					customerID,
+					conversationID,
+					salesConv,
+					customerName,
+					customerPhone,
+					customerEmail,
+					platform,
+				)
+				if err != nil {
+					r.Logger.Error("failed to create order", zap.Error(err))
+				} else {
+					r.Logger.Info("order created from sales conversation",
+						zap.Uint("order_id", order.ID),
+						zap.String("order_number", order.OrderNumber))
+				}
+			}
+
 			// Generate payment instructions
 			amount := salesConv.PriceDiscussed
-			if amount == 0 {
+			if order != nil {
+				amount = order.TotalAmount
+			} else if amount == 0 {
 				// Try to get amount from items discussed
 				var items []map[string]interface{}
-				json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items)
-				if len(items) > 0 {
-					if price, ok := items[0]["price"].(float64); ok {
-						amount = price
+				if salesConv.ItemsDiscussed != "" {
+					json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items)
+					if len(items) > 0 {
+						if price, ok := items[0]["price"].(float64); ok {
+							amount = price
+						}
 					}
 				}
 			}
@@ -231,6 +267,11 @@ Customer message: %s`,
 			if amount > 0 {
 				paymentInstructions, err := r.PaymentInstructionGen.GeneratePaymentInstructions(ctx, tenantID, amount, "NGN")
 				if err == nil && paymentInstructions != "" {
+					// Add order number and payment reference if order was created
+					if order != nil {
+						paymentInstructions += fmt.Sprintf("\n\nOrder Number: %s\nPayment Reference: %s", 
+							order.OrderNumber, order.PaymentReference)
+					}
 					reply += "\n\n" + paymentInstructions
 				}
 			}
@@ -256,6 +297,22 @@ func (r *CustomerResponder) determineSalesStage(intent string, isCommitted, isNe
 	default:
 		return "greeting"
 	}
+}
+
+// trackItemsInSalesConversation tracks items mentioned in the conversation
+func (r *CustomerResponder) trackItemsInSalesConversation(ctx context.Context, salesConv *storage.SalesConversation, itemsContext, message string) {
+	// This is a simplified tracking - in production, you might want to use AI to extract
+	// specific items and prices from the conversation
+	
+	// For now, we'll update price discussed if a number is mentioned
+	// and let the order creation extract items from ItemsDiscussed JSON
+	
+	// If ItemsDiscussed is empty, we could try to parse itemsContext
+	// But for now, we'll rely on the retrieval service to populate items
+	// when they're discussed in the conversation
+	
+	// This is a placeholder for future enhancement
+	// The actual item tracking should happen when AI mentions specific products
 }
 
 // buildBusinessContextWithItems creates context string from industry-aware items and FAQs
