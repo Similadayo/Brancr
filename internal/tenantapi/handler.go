@@ -23,6 +23,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
@@ -63,12 +64,13 @@ type Handler struct {
 	Scheduler            *social.Scheduler
 	AIClient             *ai.AIClient
 	MessageHandler       *social.MessageHandler // For sending replies via MessageHandler
+	IndustryService      *industry.Service      // Industry service for industry-aware features
 
 	signupCache sync.Map
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler) *Handler {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service) *Handler {
 	return &Handler{
 		DB:                   db,
 		Logger:               logger,
@@ -78,6 +80,7 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 		Scheduler:            scheduler,
 		AIClient:             aiClient,
 		MessageHandler:       messageHandler,
+		IndustryService:      industryService,
 	}
 }
 
@@ -106,6 +109,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/onboarding/business-profile", h.updateBusinessProfile)
 		r.Post("/tenant/onboarding/persona", h.updatePersona)
 		r.Post("/tenant/onboarding/business-details", h.updateBusinessDetails)
+		r.Post("/tenant/onboarding/industry", h.setOnboardingIndustry)
 		r.Post("/tenant/onboarding/complete", h.completeOnboarding)
 		// Post-onboarding settings
 		r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
@@ -143,6 +147,32 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/intent-catalog", h.createIntentCatalog)
 		r.Put("/tenant/intent-catalog/{id}", h.updateIntentCatalog)
 		r.Delete("/tenant/intent-catalog/{id}", h.deleteIntentCatalog)
+
+		// Industry management
+		r.Get("/tenant/industries", h.listIndustries)
+		r.Get("/tenant/industry", h.getTenantIndustry)
+		r.Post("/tenant/industry", h.setTenantIndustry)
+
+		// Product management (E-commerce)
+		r.Get("/tenant/products", h.listProducts)
+		r.Post("/tenant/products", h.createProduct)
+		r.Get("/tenant/products/{id}", h.getProduct)
+		r.Put("/tenant/products/{id}", h.updateProduct)
+		r.Delete("/tenant/products/{id}", h.deleteProduct)
+
+		// Menu item management (Restaurants)
+		r.Get("/tenant/menu-items", h.listMenuItems)
+		r.Post("/tenant/menu-items", h.createMenuItem)
+		r.Get("/tenant/menu-items/{id}", h.getMenuItem)
+		r.Put("/tenant/menu-items/{id}", h.updateMenuItem)
+		r.Delete("/tenant/menu-items/{id}", h.deleteMenuItem)
+
+		// Service management (Consultants/Agencies)
+		r.Get("/tenant/services", h.listServices)
+		r.Post("/tenant/services", h.createService)
+		r.Get("/tenant/services/{id}", h.getService)
+		r.Put("/tenant/services/{id}", h.updateService)
+		r.Delete("/tenant/services/{id}", h.deleteService)
 
 		// WhatsApp provider-owned model (new)
 		r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
