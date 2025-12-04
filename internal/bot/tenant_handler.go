@@ -448,6 +448,36 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			h.handleVerifyCommand(bot, uint(tenantID), chatID, platform)
 			return
 		}
+
+		// 🧠 AI Conversational Fallback: If no command matched, use AI to respond naturally
+		if h.Manager.Responder != nil {
+			go func(tenantID uint, chatID int64, messageText string) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						h.Manager.Logger.Error("panic in AI conversational reply",
+							zap.Any("recover", rec),
+							zap.Uint("tenant_id", tenantID),
+							zap.String("stack", string(debug.Stack())))
+					}
+				}()
+
+				ctx := context.Background()
+				reply, err := h.Manager.Responder.GenerateTenantAssistantReply(ctx, tenantID, messageText)
+				if err != nil {
+					h.Manager.Logger.Error("failed to generate AI reply",
+						zap.Error(err),
+						zap.Uint("tenant_id", tenantID))
+					// Send a friendly fallback message
+					bot.Send(tgbotapi.NewMessage(chatID, "I'm here to help! What would you like to do? You can schedule posts, connect accounts, view stats, or just chat with me. 😊"))
+					return
+				}
+
+				if reply != "" {
+					bot.Send(tgbotapi.NewMessage(chatID, reply))
+				}
+			}(uint(tenantID), chatID, text)
+			return
+		}
 	}
 
 	// 🧩 Step 5️: Check onboarding status - if complete, use DB data; otherwise trigger onboarding

@@ -75,13 +75,17 @@ func CreateIndexes(db *gorm.DB) error {
 		// Post Analytics indexes
 		{"idx_post_analytics_tenant", "post_analytics", "tenant_id", false},
 		{"idx_post_analytics_platform", "post_analytics", "platform", false},
-		{"idx_post_analytics_date", "post_analytics", "date", false},
-		{"idx_post_analytics_tenant_date", "post_analytics", "tenant_id, date", false},
+		{"idx_post_analytics_created", "post_analytics", "created_at", false},
+		{"idx_post_analytics_tenant_created", "post_analytics", "tenant_id, created_at", false},
+		{"idx_post_analytics_scheduled_post", "post_analytics", "scheduled_post_id", false},
+		{"idx_post_analytics_platform_post_id", "post_analytics", "platform_post_id", false},
 
 		// Campaign Analytics indexes
 		{"idx_campaign_analytics_tenant", "campaign_analytics", "tenant_id", false},
-		{"idx_campaign_analytics_campaign", "campaign_analytics", "campaign_name", false},
-		{"idx_campaign_analytics_date", "campaign_analytics", "date", false},
+		{"idx_campaign_analytics_campaign_id", "campaign_analytics", "campaign_id", false},
+		{"idx_campaign_analytics_name", "campaign_analytics", "name", false},
+		{"idx_campaign_analytics_start_date", "campaign_analytics", "start_date", false},
+		{"idx_campaign_analytics_end_date", "campaign_analytics", "end_date", false},
 
 		// Event Log indexes
 		{"idx_event_log_tenant", "event_logs", "tenant_id", false},
