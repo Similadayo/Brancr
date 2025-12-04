@@ -56,8 +56,28 @@ func NewJobQueue(redisAddr string, logger *zap.Logger) (*JobQueue, error) {
 		return nil, fmt.Errorf("redis address required for job queue")
 	}
 
-	redisOpt := asynq.RedisClientOpt{
-		Addr: redisAddr,
+	// Parse Redis URL if it's a full URL (Railway format: redis://default:password@host:port)
+	var redisOpt asynq.RedisClientOpt
+	if strings.HasPrefix(redisAddr, "redis://") || strings.HasPrefix(redisAddr, "rediss://") {
+		// Parse the Redis URL to extract components
+		opt, err := redis.ParseURL(redisAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse Redis URL: %w", err)
+		}
+		// Convert redis.Options to asynq.RedisClientOpt
+		redisOpt = asynq.RedisClientOpt{
+			Addr:     opt.Addr,
+			Password: opt.Password,
+			DB:       opt.DB,
+		}
+		if opt.TLSConfig != nil {
+			redisOpt.TLSConfig = opt.TLSConfig
+		}
+	} else {
+		// Direct address format (host:port)
+		redisOpt = asynq.RedisClientOpt{
+			Addr: redisAddr,
+		}
 	}
 
 	client := asynq.NewClient(redisOpt)
