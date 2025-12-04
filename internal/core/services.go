@@ -172,6 +172,9 @@ func (s *Services) initAI() error {
 
 	// Initialize Customer Responder
 	customerResponder := ai.NewCustomerResponder(aiClient, s.DB, s.Logger, memoryService)
+	
+	// Set retrieval service if IndustryService is available (will be initialized later)
+	// We'll set it after IndustryService is initialized
 	s.CustomerResponder = customerResponder
 
 	// Initialize Caption Optimizer
@@ -408,6 +411,36 @@ func (s *Services) initIndustry() {
 	// Initialize Industry Service
 	s.IndustryService = industry.NewService(s.DB, s.Logger)
 	s.Logger.Info("✅ Industry service initialized")
+	
+	// Link retrieval service to CustomerResponder if available
+	if s.CustomerResponder != nil && s.IndustryService != nil && s.IndustryService.Retrieval != nil {
+		// Create adapter to match interface
+		retrievalAdapter := &retrievalServiceAdapter{
+			retrieval: s.IndustryService.Retrieval,
+		}
+		s.CustomerResponder.RetrievalService = retrievalAdapter
+		s.Logger.Info("✅ Industry retrieval service linked to CustomerResponder")
+	}
+}
+
+// retrievalServiceAdapter adapts RetrievalService to CustomerResponder interface
+type retrievalServiceAdapter struct {
+	retrieval *industry.RetrievalService
+}
+
+func (a *retrievalServiceAdapter) SearchItems(ctx context.Context, tenantID uint, query string, limit int) (interface{}, error) {
+	return a.retrieval.SearchItems(ctx, tenantID, query, limit)
+}
+
+func (a *retrievalServiceAdapter) GetAllActive(ctx context.Context, tenantID uint, limit int) (interface{}, error) {
+	return a.retrieval.GetAllActive(ctx, tenantID, limit)
+}
+
+func (a *retrievalServiceAdapter) FormatForAI(items interface{}) string {
+	if results, ok := items.([]industry.RetrievalResult); ok {
+		return a.retrieval.FormatForAI(results)
+	}
+	return ""
 }
 
 // botGetterWrapper wraps TenantBotManager to implement social.BotGetter interface

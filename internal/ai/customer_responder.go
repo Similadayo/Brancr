@@ -12,10 +12,15 @@ import (
 
 // CustomerResponder generates AI replies for customer conversations
 type CustomerResponder struct {
-	Client *AIClient
-	Memory *MemoryService
-	DB     *gorm.DB
-	Logger *zap.Logger
+	Client          *AIClient
+	Memory          *MemoryService
+	DB              *gorm.DB
+	Logger          *zap.Logger
+	RetrievalService interface { // Industry-aware retrieval service (optional)
+		SearchItems(ctx context.Context, tenantID uint, query string, limit int) (interface{}, error)
+		GetAllActive(ctx context.Context, tenantID uint, limit int) (interface{}, error)
+		FormatForAI(items interface{}) string
+	}
 }
 
 // NewCustomerResponder creates a new CustomerResponder
@@ -43,9 +48,37 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 		biz.Niche = ""
 	}
 
-	// Load business menu items for product inquiries
+	// Load business items using industry-aware retrieval (if available)
+	// Fallback to old BusinessMenuItem for backward compatibility
 	var menuItems []storage.BusinessMenuItem
-	r.DB.Where("tenant_id = ?", tenantID).Find(&menuItems)
+	var itemsContext string
+	
+	// Try to use industry-aware retrieval if available
+	if r.RetrievalService != nil {
+		// Extract query from message for search
+		query := message
+		if len(query) > 50 {
+			query = query[:50] // Limit query length
+		}
+		
+		items, err := r.RetrievalService.SearchItems(ctx, tenantID, query, 10)
+		if err == nil && items != nil {
+			itemsContext = r.RetrievalService.FormatForAI(items)
+		}
+		
+		// If search returned empty, try getting all active items
+		if itemsContext == "" {
+			items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 10)
+			if err == nil && items != nil {
+				itemsContext = r.RetrievalService.FormatForAI(items)
+			}
+		}
+	}
+	
+	// Fallback to old BusinessMenuItem if retrieval service not available or returned no results
+	if itemsContext == "" {
+		r.DB.Where("tenant_id = ?", tenantID).Find(&menuItems)
+	}
 
 	// Load FAQs for question matching
 	var faqs []storage.BusinessFAQ
@@ -62,7 +95,14 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 	messages = append(messages, conversationHistory...)
 
 	// Build business context (menu items and FAQs)
-	businessContext := r.buildBusinessContext(menuItems, faqs, intent)
+	var businessContext string
+	if itemsContext != "" {
+		// Use new industry-aware context
+		businessContext = r.buildBusinessContextWithItems(itemsContext, faqs, intent)
+	} else {
+		// Use old BusinessMenuItem context
+		businessContext = r.buildBusinessContext(menuItems, faqs, intent)
+	}
 
 	// Add current message
 	intro := BuildIntroTone(persona, biz)
@@ -121,7 +161,40 @@ Customer message: %s`,
 	return strings.TrimSpace(reply), nil
 }
 
-// buildBusinessContext creates context string from menu items and FAQs based on intent
+// buildBusinessContextWithItems creates context string from industry-aware items and FAQs
+func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, faqs []storage.BusinessFAQ, intent string) string {
+	var context strings.Builder
+
+	// For product/service inquiries, include items
+	if intent == "inquiry" || intent == "order" {
+		if itemsContext != "" {
+			context.WriteString("\nAVAILABLE PRODUCTS/SERVICES:\n")
+			context.WriteString(itemsContext)
+			context.WriteString("\n")
+		}
+	}
+
+	// For general inquiries, include relevant FAQs
+	if intent == "inquiry" || intent == "casual" {
+		if len(faqs) > 0 {
+			context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
+			for i, faq := range faqs {
+				if i >= 5 { // Limit to 5 FAQs
+					break
+				}
+				context.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", faq.Question, faq.Answer))
+			}
+		}
+	}
+
+	result := context.String()
+	if result != "" {
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. If they ask about products/services, reference the items listed. If they ask questions similar to the FAQs, use those answers as a guide (but rephrase naturally).", result)
+	}
+	return ""
+}
+
+// buildBusinessContext creates context string from menu items and FAQs based on intent (legacy)
 func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, intent string) string {
 	var context strings.Builder
 

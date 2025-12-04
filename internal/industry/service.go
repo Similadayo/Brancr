@@ -20,11 +20,12 @@ type Service struct {
 	serviceRepo     *repositories.ServiceRepository
 	tenantRepo      *repositories.TenantRepository
 	logger          *zap.Logger
+	Retrieval       *RetrievalService // Industry-aware product/menu/service retrieval
 }
 
 // NewService creates a new industry service
 func NewService(db *gorm.DB, logger *zap.Logger) *Service {
-	return &Service{
+	service := &Service{
 		db:              db,
 		industryRepo:    repositories.NewIndustryRepository(db),
 		productRepo:     repositories.NewProductRepository(db),
@@ -33,6 +34,17 @@ func NewService(db *gorm.DB, logger *zap.Logger) *Service {
 		tenantRepo:      repositories.NewTenantRepository(db),
 		logger:          logger,
 	}
+	
+	// Initialize retrieval service
+	service.Retrieval = NewRetrievalService(
+		service,
+		service.productRepo,
+		service.menuItemRepo,
+		service.serviceRepo,
+		logger,
+	)
+	
+	return service
 }
 
 // GetIndustryByID retrieves an industry by ID
