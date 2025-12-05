@@ -361,7 +361,12 @@ func (h *Handler) confirmOrderPayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate receipt automatically when payment is confirmed
-	receiptService := receipt.NewReceiptService(h.DB, h.Logger)
+	cloudinaryURL := h.getCloudinaryURL()
+	publicURL := h.Config.PublicURL
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com" // Default fallback
+	}
+	receiptService := receipt.NewReceiptService(h.DB, h.Logger, cloudinaryURL, publicURL, h.EmailService)
 	_, err = receiptService.GenerateReceipt(r.Context(), payment.ID, claims.TenantID)
 	if err != nil {
 		h.Logger.Warn("failed to auto-generate receipt", zap.Error(err), zap.Uint("payment_id", payment.ID))

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"os"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -26,11 +27,38 @@ type ReceiptService struct {
 }
 
 // NewReceiptService creates a new ReceiptService
-func NewReceiptService(db *gorm.DB, logger *zap.Logger) *ReceiptService {
-	return &ReceiptService{
-		DB:     db,
-		Logger: logger,
+// cloudinaryURL can be empty (will try to get from env), publicURL is required for portal links, emailService is optional
+func NewReceiptService(db *gorm.DB, logger *zap.Logger, cloudinaryURL, publicURL string, emailService interface {
+	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+}) *ReceiptService {
+	// If cloudinaryURL is empty, try to get from environment
+	if cloudinaryURL == "" {
+		cloudinaryURL = getCloudinaryURL()
 	}
+
+	return &ReceiptService{
+		DB:            db,
+		Logger:        logger,
+		CloudinaryURL: cloudinaryURL,
+		PublicURL:     publicURL,
+		EmailService:  emailService,
+	}
+}
+
+// getCloudinaryURL gets Cloudinary URL from environment or constructs it from components
+func getCloudinaryURL() string {
+	// First try CLOUDINARY_URL env var
+	if url := os.Getenv("CLOUDINARY_URL"); url != "" {
+		return url
+	}
+	// If not available, try constructing from individual components
+	cloudName := os.Getenv("CLOUDINARY_CLOUD_NAME")
+	apiKey := os.Getenv("CLOUDINARY_API_KEY")
+	apiSecret := os.Getenv("CLOUDINARY_API_SECRET")
+	if cloudName != "" && apiKey != "" && apiSecret != "" {
+		return fmt.Sprintf("cloudinary://%s:%s@%s", apiKey, apiSecret, cloudName)
+	}
+	return ""
 }
 
 // GenerateReceipt generates a receipt for a confirmed payment

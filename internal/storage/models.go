@@ -165,7 +165,7 @@ type Order struct {
 	CustomerID          uint   `gorm:"index"`
 	OrderNumber         string `gorm:"uniqueIndex;size:50"` // "ORD-2024-001234"
 	PaymentReference    string `gorm:"uniqueIndex;size:50"` // "BRNCR-123-20241204-ABC123"
-	Status              string `gorm:"size:50"`             // pending, confirmed, processing, completed, cancelled
+	Status              string `gorm:"size:50;index"`       // pending, confirmed, processing, completed, cancelled
 	TotalAmount         float64
 	Currency            string `gorm:"size:10;default:'NGN'"`
 	Items               string `gorm:"type:jsonb"` // JSON array of OrderItem
@@ -189,9 +189,9 @@ type Payment struct {
 	PaymentReference   string `gorm:"uniqueIndex;size:50"` // Links to Order.PaymentReference
 	Amount             float64
 	Currency           string `gorm:"size:10;default:'NGN'"`
-	PaymentMethod      string `gorm:"size:50"` // bank_transfer, cash, mobile_money, card, other
-	Status             string `gorm:"size:50"` // pending, verified, confirmed, failed, refunded
-	VerificationStatus string `gorm:"size:50"` // unverified, tenant_verified, disputed, auto_verified
+	PaymentMethod      string `gorm:"size:50"`       // bank_transfer, cash, mobile_money, card, other
+	Status             string `gorm:"size:50;index"` // pending, verified, confirmed, failed, refunded
+	VerificationStatus string `gorm:"size:50;index"` // unverified, tenant_verified, disputed, auto_verified
 	ClaimedByCustomer  bool   `gorm:"default:false"`
 	ClaimedAt          *time.Time
 	VerifiedBy         *int64 `gorm:"index"` // Tenant's Telegram ID who verified

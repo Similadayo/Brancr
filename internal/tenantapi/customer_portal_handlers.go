@@ -151,7 +151,12 @@ func (h *Handler) getReceiptByPortalToken(w http.ResponseWriter, r *http.Request
 	if payment.ReceiptID == "" || payment.ReceiptURL == "" {
 		// Generate receipt if not exists
 		if payment.Status == "confirmed" || payment.Status == "verified" {
-			receiptService := receipt.NewReceiptService(h.DB, h.Logger)
+			cloudinaryURL := h.getCloudinaryURL()
+			publicURL := h.Config.PublicURL
+			if publicURL == "" {
+				publicURL = "https://api.brancr.com" // Default fallback
+			}
+			receiptService := receipt.NewReceiptService(h.DB, h.Logger, cloudinaryURL, publicURL, h.EmailService)
 			_, err := receiptService.GenerateReceipt(r.Context(), payment.ID, payment.TenantID)
 			if err != nil {
 				h.Logger.Error("failed to generate receipt", zap.Error(err), zap.Uint("payment_id", payment.ID))
@@ -291,7 +296,7 @@ func (h *Handler) generatePortalToken(w http.ResponseWriter, r *http.Request) {
 		publicURL = "https://api.brancr.com" // Default fallback
 	}
 	// ReceiptService for portal token generation doesn't need Cloudinary or EmailService
-	receiptService := receipt.NewReceiptService(h.DB, h.Logger)
+	receiptService := receipt.NewReceiptService(h.DB, h.Logger, "", publicURL, nil)
 
 	token, url, err := receiptService.GeneratePortalTokenAndURL(r.Context(), uint(orderID), claims.TenantID, publicURL)
 	if err != nil {

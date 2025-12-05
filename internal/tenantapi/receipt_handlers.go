@@ -36,7 +36,12 @@ func (h *Handler) generateReceipt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate receipt
-	receiptService := receipt.NewReceiptService(h.DB, h.Logger)
+	cloudinaryURL := h.getCloudinaryURL()
+	publicURL := h.Config.PublicURL
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com" // Default fallback
+	}
+	receiptService := receipt.NewReceiptService(h.DB, h.Logger, cloudinaryURL, publicURL, h.EmailService)
 	payment, err := receiptService.GenerateReceipt(r.Context(), paymentID, claims.TenantID)
 	if err != nil {
 		h.Logger.Error("failed to generate receipt", zap.Error(err), zap.Uint("payment_id", paymentID))
