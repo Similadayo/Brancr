@@ -286,11 +286,12 @@ func (h *Handler) generatePortalToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate portal token and URL
-	receiptService := receipt.NewReceiptService(h.DB, h.Logger)
 	publicURL := h.Config.PublicURL
 	if publicURL == "" {
 		publicURL = "https://api.brancr.com" // Default fallback
 	}
+	// ReceiptService for portal token generation doesn't need Cloudinary or EmailService
+	receiptService := receipt.NewReceiptService(h.DB, h.Logger)
 
 	token, url, err := receiptService.GeneratePortalTokenAndURL(r.Context(), uint(orderID), claims.TenantID, publicURL)
 	if err != nil {

@@ -71,20 +71,20 @@ func (h *Handler) listOrders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type orderResp struct {
-		ID                  uint                   `json:"id"`
-		OrderNumber         string                 `json:"order_number"`
-		PaymentReference    string                 `json:"payment_reference"`
-		CustomerName        string                 `json:"customer_name"`
-		CustomerPhone       string                 `json:"customer_phone"`
-		CustomerEmail       string                 `json:"customer_email"`
-		TotalAmount         float64                `json:"total_amount"`
-		Currency            string                 `json:"currency"`
-		Status              string                 `json:"status"`
-		Platform            string                 `json:"platform"`
-		Items               []storage.OrderItem    `json:"items"`
-		CreatedAt           string                 `json:"created_at"`
-		ConfirmedAt         *string                `json:"confirmed_at,omitempty"`
-		CompletedAt         *string                `json:"completed_at,omitempty"`
+		ID               uint                `json:"id"`
+		OrderNumber      string              `json:"order_number"`
+		PaymentReference string              `json:"payment_reference"`
+		CustomerName     string              `json:"customer_name"`
+		CustomerPhone    string              `json:"customer_phone"`
+		CustomerEmail    string              `json:"customer_email"`
+		TotalAmount      float64             `json:"total_amount"`
+		Currency         string              `json:"currency"`
+		Status           string              `json:"status"`
+		Platform         string              `json:"platform"`
+		Items            []storage.OrderItem `json:"items"`
+		CreatedAt        string              `json:"created_at"`
+		ConfirmedAt      *string             `json:"confirmed_at,omitempty"`
+		CompletedAt      *string             `json:"completed_at,omitempty"`
 	}
 
 	resp := make([]orderResp, len(orders))
@@ -170,22 +170,22 @@ func (h *Handler) getOrder(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"order": map[string]any{
-			"id":                  order.ID,
-			"order_number":        order.OrderNumber,
-			"payment_reference":   order.PaymentReference,
-			"customer_name":       order.CustomerName,
-			"customer_phone":      order.CustomerPhone,
-			"customer_email":      order.CustomerEmail,
-			"total_amount":        order.TotalAmount,
-			"currency":            order.Currency,
-			"status":              order.Status,
-			"platform":            order.Platform,
-			"items":               items,
+			"id":                   order.ID,
+			"order_number":         order.OrderNumber,
+			"payment_reference":    order.PaymentReference,
+			"customer_name":        order.CustomerName,
+			"customer_phone":       order.CustomerPhone,
+			"customer_email":       order.CustomerEmail,
+			"total_amount":         order.TotalAmount,
+			"currency":             order.Currency,
+			"status":               order.Status,
+			"platform":             order.Platform,
+			"items":                items,
 			"payment_instructions": order.PaymentInstructions,
-			"notes":               order.Notes,
-			"created_at":          order.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"confirmed_at":        confirmedAt,
-			"completed_at":        completedAt,
+			"notes":                order.Notes,
+			"created_at":           order.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"confirmed_at":         confirmedAt,
+			"completed_at":         completedAt,
 		},
 	})
 }
@@ -227,7 +227,7 @@ func (h *Handler) updateOrder(w http.ResponseWriter, r *http.Request) {
 			"pending":    true,
 			"confirmed":  true,
 			"processing": true,
-			"completed": true,
+			"completed":  true,
 			"cancelled":  true,
 		}
 		if !validStatuses[*req.Status] {
@@ -340,16 +340,16 @@ func (h *Handler) confirmOrderPayment(w http.ResponseWriter, r *http.Request) {
 	if err := h.DB.Where("order_id = ?", order.ID).First(&payment).Error; err != nil {
 		// Create new payment record
 		payment = storage.Payment{
-			TenantID:          claims.TenantID,
-			OrderID:           order.ID,
+			TenantID:           claims.TenantID,
+			OrderID:            order.ID,
 			CustomerID:         order.CustomerID,
-			PaymentReference:  order.PaymentReference,
-			Amount:            order.TotalAmount,
-			Currency:          order.Currency,
-			PaymentMethod:     "manual", // Tenant manually confirmed
-			Status:            "verified",
+			PaymentReference:   order.PaymentReference,
+			Amount:             order.TotalAmount,
+			Currency:           order.Currency,
+			PaymentMethod:      "manual", // Tenant manually confirmed
+			Status:             "verified",
 			VerificationStatus: "tenant_verified",
-			VerifiedAt:        &now,
+			VerifiedAt:         &now,
 		}
 		h.DB.Create(&payment)
 	} else {
@@ -391,12 +391,12 @@ func (h *Handler) getOrderStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var stats struct {
-		TotalOrders      int64   `json:"total_orders"`
-		PendingOrders    int64   `json:"pending_orders"`
-		ConfirmedOrders  int64   `json:"confirmed_orders"`
-		CompletedOrders  int64   `json:"completed_orders"`
-		TotalRevenue     float64 `json:"total_revenue"`
-		PendingRevenue   float64 `json:"pending_revenue"`
+		TotalOrders       int64   `json:"total_orders"`
+		PendingOrders     int64   `json:"pending_orders"`
+		ConfirmedOrders   int64   `json:"confirmed_orders"`
+		CompletedOrders   int64   `json:"completed_orders"`
+		TotalRevenue      float64 `json:"total_revenue"`
+		PendingRevenue    float64 `json:"pending_revenue"`
 		AverageOrderValue float64 `json:"average_order_value"`
 	}
 
@@ -446,4 +446,3 @@ func (h *Handler) getOrderStats(w http.ResponseWriter, r *http.Request) {
 		"stats": stats,
 	})
 }
-

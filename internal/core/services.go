@@ -12,6 +12,7 @@ import (
 	"github.com/similadayo/brancr/internal/cache"
 	"github.com/similadayo/brancr/internal/circuitbreaker"
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/email"
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/order"
@@ -69,6 +70,11 @@ type Services struct {
 
 	// Industry Services
 	IndustryService *industry.Service
+
+	// Email Service
+	EmailService interface {
+		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+	}
 }
 
 // NewServices initializes all services with proper dependency injection
@@ -93,6 +99,9 @@ func NewServices(cfg *config.Config, db *gorm.DB, redis *redis.Client, logger *z
 
 	// Initialize Industry Service (no dependencies, needed for BotManager)
 	services.initIndustry()
+
+	// Initialize Email Service (optional, for sending receipts)
+	services.initEmail()
 
 	// Initialize Bot Manager (depends on AI and IndustryService)
 	if err := services.initBotManager(); err != nil {
@@ -495,6 +504,19 @@ func (a *retrievalServiceAdapter) FormatForAI(items interface{}) string {
 		return a.retrieval.FormatForAI(results)
 	}
 	return ""
+}
+
+func (s *Services) initEmail() {
+	// Initialize Email Service (optional - will be nil if SMTP not configured)
+	emailService := email.NewEmailService(s.Logger)
+	// Check if SMTP is configured
+	if emailService.SMTPHost == "" || emailService.SMTPUser == "" || emailService.SMTPPass == "" {
+		s.Logger.Info("ℹ️  Email service not configured (SMTP settings missing) - receipt emails will be skipped")
+		s.EmailService = nil
+	} else {
+		s.EmailService = emailService
+		s.Logger.Info("✅ Email service initialized")
+	}
 }
 
 // botGetterWrapper wraps TenantBotManager to implement social.BotGetter interface

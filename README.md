@@ -107,13 +107,48 @@ Copy `env.example` to `.env` (or export the values in your platform settings) an
 
 **Meta OAuth & Webhooks**
 
-- `META_APP_ID` / `META_APP_SECRET` — Meta app credentials
+- `META_APP_ID` / `META_APP_SECRET` — Meta app credentials (required for Meta OAuth)
 - `META_REDIRECT_URI` — Callback URL registered in the Meta developer console (e.g. `https://your-domain/api/oauth/meta/callback`)
 - `META_SUCCESS_REDIRECT` — Optional post-auth success URL (e.g. admin dashboard)
 - `META_WEBHOOK_VERIFY_TOKEN` — Verification token used when registering Meta webhooks
 - `WEBHOOK_VERIFY_TOKEN` — Legacy fallback verification token
 - `META_WHATSAPP_CONFIG_ID` — WhatsApp Embedded Signup configuration ID (Meta Business Manager)
 - `META_WHATSAPP_EXTRAS` — Optional extras JSON for embedded signup (defaults to `{"sessionInfoVersion":"3","version":"v3"}`)
+- `META_SYSTEM_USER_TOKEN` — System user token for WhatsApp webhook subscription
+- `META_BUSINESS_ID` — Meta Business ID (optional)
+- `META_PAYMENT_METHOD_ID` — Payment method ID for billing setup (optional)
+- `META_EXTENDED_CREDIT_ID` — Extended Credit Line ID for Solution Partner billing (optional)
+- `META_SYSTEM_USER_ID` — System User ID for adding to WABAs (optional)
+- `BRANCR_WABA_ID` — Brancr's provider-owned WABA ID (optional)
+- `BRANCR_WABA_TOKEN` — Access token for Brancr's WABA (optional)
+
+**TikTok OAuth**
+
+- `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET` — TikTok app credentials (required for TikTok OAuth)
+- `TIKTOK_REDIRECT_URI` — Callback URL registered in TikTok developer console (e.g. `https://your-domain/api/oauth/tiktok/callback`)
+- `TIKTOK_SCOPES` — Comma-separated list of TikTok scopes (defaults to `user.info.basic,video.list,video.upload,video.publish`)
+- `TIKTOK_DEFAULT_PRIVACY_LEVEL` — Default privacy level for TikTok posts (e.g. `PUBLIC_TO_EVERYONE`)
+
+**Gupshup Partner API (WhatsApp)**
+
+- `GUPSHUP_PARTNER_USERNAME` — Gupshup Partner username/email
+- `GUPSHUP_PARTNER_PASSWORD` — Gupshup Partner password OR client secret (from Partner Portal Settings)
+  - For accounts after Nov 20, 2024: use Client Secret (recommended)
+  - For older accounts: use actual account password
+- `GUPSHUP_PARTNER_APP_ID` — Gupshup Partner App ID (optional)
+- `GUPSHUP_API_BASE_URL` — Gupshup API base URL (defaults to `https://partner.gupshup.io`)
+
+**Email Configuration (SMTP)**
+
+- `SMTP_HOST` — SMTP server host (e.g. `smtp.gmail.com`)
+- `SMTP_PORT` — SMTP server port (defaults to `587`)
+- `SMTP_USER` — SMTP username
+- `SMTP_PASS` — SMTP password
+- `SMTP_FROM` — From email address (defaults to `noreply@brancr.com`)
+
+**Customer Portal**
+
+- `PORTAL_TOKEN_EXPIRY_DAYS` — Portal token expiration in days (defaults to `90`)
 
 **Scheduling Defaults**
 
@@ -121,7 +156,9 @@ Copy `env.example` to `.env` (or export the values in your platform settings) an
 
 **Other Integrations**
 
-- `YOUTUBE_API_KEY`
+- `YOUTUBE_API_KEY` — YouTube API key (optional)
+- `RESPOND_IO_API_KEY` — Respond.io API access token for WhatsApp integration (optional)
+- `FRONTEND_URL` — Frontend URL for redirects after OAuth
 - `TIKTOK_CLIENT_KEY` / `TIKTOK_CLIENT_SECRET`
 - `TIKTOK_REDIRECT_URI`
 - `TIKTOK_SCOPES` — Optional override (defaults to `user.info.basic,video.list,video.upload`)

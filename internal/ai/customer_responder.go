@@ -276,8 +276,9 @@ Customer message: %s`,
 						// We'll generate portal token via receipt service
 						// For now, we'll create a placeholder - portal token will be generated when payment is confirmed
 						// But we can generate it now for customer access
+						publicURL := "https://api.brancr.com" // Default fallback - TODO: Get from config if available
+						// ReceiptService for portal token generation
 						receiptService := receipt.NewReceiptService(r.DB, r.Logger)
-						publicURL := "https://api.brancr.com" // TODO: Get from config
 						token, url, err := receiptService.GeneratePortalTokenAndURL(ctx, order.ID, tenantID, publicURL)
 						if err == nil {
 							portalURL = url

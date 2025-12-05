@@ -16,11 +16,11 @@ import (
 
 // ReceiptService handles receipt generation and management
 type ReceiptService struct {
-	DB              *gorm.DB
-	Logger          *zap.Logger
-	CloudinaryURL   string // Cloudinary connection string
-	PublicURL       string // Public URL for receipt links
-	EmailService    interface {
+	DB            *gorm.DB
+	Logger        *zap.Logger
+	CloudinaryURL string // Cloudinary connection string
+	PublicURL     string // Public URL for receipt links
+	EmailService  interface {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
 	} // Optional email service
 }
@@ -99,7 +99,7 @@ func (s *ReceiptService) GenerateReceipt(ctx context.Context, paymentID uint, te
 		if payment.PortalToken != "" && s.PublicURL != "" {
 			portalURL = fmt.Sprintf("%s/portal/order?token=%s", s.PublicURL, payment.PortalToken)
 		}
-		
+
 		if err := s.EmailService.SendReceiptEmail(
 			order.CustomerEmail,
 			order.CustomerName,
@@ -132,24 +132,24 @@ func (s *ReceiptService) GenerateReceiptHTML(order storage.Order, payment storag
 
 	// Prepare template data
 	data := ReceiptData{
-		ReceiptID:      payment.ReceiptID,
-		OrderNumber:    order.OrderNumber,
-		PaymentRef:     payment.PaymentReference,
-		Date:           payment.CreatedAt.Format("January 2, 2006"),
-		Time:           payment.CreatedAt.Format("3:04 PM"),
-		BusinessName:   tenant.BusinessProfile.Name,
-		BusinessEmail:  tenant.Email,
-		BusinessPhone:  tenant.OwnerPhone,
+		ReceiptID:       payment.ReceiptID,
+		OrderNumber:     order.OrderNumber,
+		PaymentRef:      payment.PaymentReference,
+		Date:            payment.CreatedAt.Format("January 2, 2006"),
+		Time:            payment.CreatedAt.Format("3:04 PM"),
+		BusinessName:    tenant.BusinessProfile.Name,
+		BusinessEmail:   tenant.Email,
+		BusinessPhone:   tenant.OwnerPhone,
 		BusinessAddress: tenant.BusinessProfile.Location,
-		CustomerName:   order.CustomerName,
-		CustomerPhone:  order.CustomerPhone,
-		CustomerEmail:  order.CustomerEmail,
-		Items:         items,
-		Subtotal:       order.TotalAmount,
-		Total:          order.TotalAmount,
-		Currency:       order.Currency,
-		PaymentMethod:  payment.PaymentMethod,
-		Status:         payment.Status,
+		CustomerName:    order.CustomerName,
+		CustomerPhone:   order.CustomerPhone,
+		CustomerEmail:   order.CustomerEmail,
+		Items:           items,
+		Subtotal:        order.TotalAmount,
+		Total:           order.TotalAmount,
+		Currency:        order.Currency,
+		PaymentMethod:   payment.PaymentMethod,
+		Status:          payment.Status,
 	}
 
 	// Parse template
@@ -169,24 +169,24 @@ func (s *ReceiptService) GenerateReceiptHTML(order storage.Order, payment storag
 
 // ReceiptData holds data for receipt template
 type ReceiptData struct {
-	ReceiptID      string
-	OrderNumber    string
-	PaymentRef     string
-	Date           string
-	Time           string
-	BusinessName   string
-	BusinessEmail  string
-	BusinessPhone  string
+	ReceiptID       string
+	OrderNumber     string
+	PaymentRef      string
+	Date            string
+	Time            string
+	BusinessName    string
+	BusinessEmail   string
+	BusinessPhone   string
 	BusinessAddress string
-	CustomerName   string
-	CustomerPhone  string
-	CustomerEmail  string
-	Items          []storage.OrderItem
-	Subtotal       float64
-	Total          float64
-	Currency       string
-	PaymentMethod  string
-	Status         string
+	CustomerName    string
+	CustomerPhone   string
+	CustomerEmail   string
+	Items           []storage.OrderItem
+	Subtotal        float64
+	Total           float64
+	Currency        string
+	PaymentMethod   string
+	Status          string
 }
 
 // receiptHTMLTemplate is the HTML template for receipts
@@ -468,4 +468,3 @@ func (s *ReceiptService) GeneratePortalTokenAndURL(ctx context.Context, orderID 
 
 	return payment.PortalToken, portalURL, nil
 }
-

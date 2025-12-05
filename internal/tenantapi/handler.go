@@ -65,12 +65,17 @@ type Handler struct {
 	AIClient             *ai.AIClient
 	MessageHandler       *social.MessageHandler // For sending replies via MessageHandler
 	IndustryService      *industry.Service      // Industry service for industry-aware features
+	EmailService         interface {
+		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+	} // Optional email service for sending receipts
 
 	signupCache sync.Map
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service) *Handler {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service, emailService interface {
+	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+}) *Handler {
 	return &Handler{
 		DB:                   db,
 		Logger:               logger,
@@ -81,7 +86,21 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 		AIClient:             aiClient,
 		MessageHandler:       messageHandler,
 		IndustryService:      industryService,
+		EmailService:         emailService,
 	}
+}
+
+// getCloudinaryURL gets Cloudinary URL from config or environment
+func (h *Handler) getCloudinaryURL() string {
+	// First try CLOUDINARY_URL env var
+	if url := os.Getenv("CLOUDINARY_URL"); url != "" {
+		return url
+	}
+	// If not available, try constructing from config components
+	if h.Config.CloudName != "" && h.Config.CloudAPIKey != "" && h.Config.CloudAPISecret != "" {
+		return fmt.Sprintf("cloudinary://%s:%s@%s", h.Config.CloudAPIKey, h.Config.CloudAPISecret, h.Config.CloudName)
+	}
+	return ""
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
