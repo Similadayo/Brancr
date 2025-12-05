@@ -67,12 +67,13 @@ func BuildIndustrySalesPrompt(industryName string, salesStage string, commitment
 
 	case "Consultant", "Agency":
 		guidance.WriteString("\nCONSULTANT/AGENCY SALES APPROACH:\n")
-		guidance.WriteString("- Ask consultative questions to understand needs\n")
+		guidance.WriteString("- Answer their questions directly first - don't ask questions until you've answered what they asked\n")
 		guidance.WriteString("- Focus on value and ROI, not just price\n")
-		guidance.WriteString("- Present packages and deliverables clearly\n")
-		guidance.WriteString("- Build trust through expertise demonstration\n")
+		guidance.WriteString("- Present packages and deliverables clearly when asked\n")
+		guidance.WriteString("- Build trust through helpful, direct answers\n")
 		guidance.WriteString("- Address concerns professionally\n")
-		guidance.WriteString("- Show how you solve their specific problem\n")
+		guidance.WriteString("- Show how you solve their specific problem - but only when relevant\n")
+		guidance.WriteString("- Only ask questions if you genuinely need more info to help them (e.g., budget questions only if they ask about pricing)\n")
 		
 		if salesStage == "negotiation" {
 			guidance.WriteString("\nNEGOTIATION TIPS:\n")
