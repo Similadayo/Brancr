@@ -280,11 +280,66 @@ func (m *MemoryService) GetRecentConversationHistory(ctx context.Context, tenant
 }
 
 // GetRecentCustomerConversationWithTimeLimit retrieves customer conversations from the last N days
+// Uses Interaction records as primary source (more reliable) with MemoryItem as fallback
+// If conversationID > 0, filters by conversation for more precise history
 func (m *MemoryService) GetRecentCustomerConversationWithTimeLimit(ctx context.Context, tenantID, customerID uint, days int) []Message {
+	return m.GetRecentCustomerConversationWithTimeLimitAndConversation(ctx, tenantID, customerID, 0, days)
+}
+
+// GetRecentCustomerConversationWithTimeLimitAndConversation retrieves customer conversations with optional conversation filter
+func (m *MemoryService) GetRecentCustomerConversationWithTimeLimitAndConversation(ctx context.Context, tenantID, customerID, conversationID uint, days int) []Message {
 	cutoffDate := time.Now().AddDate(0, 0, -days)
 	
+	// PRIMARY SOURCE: Use Interaction records (created immediately, more reliable)
+	var interactions []storage.Interaction
+	query := m.DB.WithContext(ctx).
+		Where("tenant_id = ? AND customer_id = ? AND created_at >= ?", 
+			tenantID, customerID, cutoffDate)
+	
+	// If conversationID is provided, filter by it for more precise history
+	if conversationID > 0 {
+		query = query.Where("conversation_id = ?", conversationID)
+	}
+	
+	result := query.
+		Order("created_at ASC"). // Chronological order (oldest first)
+		Limit(400). // Max 400 messages (200 pairs) to avoid token overflow
+		Find(&interactions)
+
+	var messages []Message
+	
+	if result.Error == nil && len(interactions) > 0 {
+		// Build messages from interactions
+		for _, interaction := range interactions {
+			if interaction.Direction == "incoming" {
+				// Customer message
+				if strings.TrimSpace(interaction.Content) != "" {
+					messages = append(messages, Message{Role: "user", Content: interaction.Content})
+				}
+			} else if interaction.Direction == "outgoing" {
+				// AI reply - use FinalReply if available, otherwise Content
+				reply := interaction.FinalReply
+				if reply == "" {
+					reply = interaction.Content
+				}
+				if strings.TrimSpace(reply) != "" {
+					messages = append(messages, Message{Role: "assistant", Content: reply})
+				}
+			}
+		}
+		
+		fmt.Printf("📚 Retrieved %d interactions for customer %d (last %d days), converted to %d messages\n", 
+			len(interactions), customerID, days, len(messages))
+		
+		// If we got messages from interactions, return them
+		if len(messages) > 0 {
+			return messages
+		}
+	}
+
+	// FALLBACK: Use MemoryItem records (for backward compatibility)
 	var items []storage.MemoryItem
-	result := m.DB.WithContext(ctx).
+	result = m.DB.WithContext(ctx).
 		Where("tenant_id = ? AND customer_id = ? AND category = ? AND created_at >= ?", 
 			tenantID, customerID, "conversation", cutoffDate).
 		Order("created_at DESC").
@@ -293,13 +348,12 @@ func (m *MemoryService) GetRecentCustomerConversationWithTimeLimit(ctx context.C
 
 	if result.Error != nil {
 		fmt.Printf("⚠️ Error retrieving customer conversation history: %v\n", result.Error)
-		return []Message{}
+		return messages // Return whatever we got from interactions
 	}
 
-	fmt.Printf("📚 Retrieved %d conversation items for customer %d (last %d days)\n", len(items), customerID, days)
+	fmt.Printf("📚 Retrieved %d memory items for customer %d (last %d days)\n", len(items), customerID, days)
 
 	// Reverse to get chronological order (oldest first)
-	var messages []Message
 	for i := len(items) - 1; i >= 0; i-- {
 		text := items[i].Text
 		// Parse "User: X\nAssistant: Y" format
@@ -312,7 +366,7 @@ func (m *MemoryService) GetRecentCustomerConversationWithTimeLimit(ctx context.C
 		}
 	}
 	
-	fmt.Printf("📝 Converted to %d messages for customer context (from last %d days)\n", len(messages), days)
+	fmt.Printf("📝 Converted to %d total messages for customer context (from last %d days)\n", len(messages), days)
 	return messages
 }
 

@@ -106,8 +106,15 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	var faqs []storage.BusinessFAQ
 	r.DB.Where("tenant_id = ?", tenantID).Limit(10).Find(&faqs)
 
-	// Load conversation history
-	conversationHistory := r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30) // Last 30 days
+	// Load conversation history - use conversationID if available for more precise history
+	var conversationHistory []Message
+	if conversationID > 0 {
+		// Use conversation-specific history for better context
+		conversationHistory = r.Memory.GetRecentCustomerConversationWithTimeLimitAndConversation(ctx, tenantID, customerID, conversationID, 30)
+	} else {
+		// Fallback to customer-wide history
+		conversationHistory = r.Memory.GetRecentCustomerConversationWithTimeLimit(ctx, tenantID, customerID, 30) // Last 30 days
+	}
 
 	// Use customer-facing prompts (not tenant-facing)
 	base := BuildCustomerBaseMessages(persona, biz)
