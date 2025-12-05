@@ -43,31 +43,69 @@ type ContentPart struct {
 }
 
 type AIClient struct {
-	APIKey  string
-	BaseURL string
-	Model   string
+	APIKey      string
+	BaseURL     string
+	Model       string
+	IsOpenRouter bool // Track if using OpenRouter vs OpenAI direct
 }
 
 func NewAIClient() *AIClient {
-	key := os.Getenv("OPENROUTER_API_KEY")
-	if key == "" {
-		key = os.Getenv("OPENAI_API_KEY")
-	}
-
-	base := os.Getenv("OPENROUTER_API_BASE")
-	if base == "" {
-		base = "https://openrouter.ai/api/v1" // ✅ FIXED: remove /chat/completions
+	// Check which API key is provided to determine which service to use
+	openRouterKey := os.Getenv("OPENROUTER_API_KEY")
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	
+	var key, base string
+	var isOpenRouter bool
+	
+	if openRouterKey != "" {
+		// Using OpenRouter
+		key = openRouterKey
+		base = os.Getenv("OPENROUTER_API_BASE")
+		if base == "" {
+			base = "https://openrouter.ai/api/v1"
+		}
+		isOpenRouter = true
+	} else if openAIKey != "" {
+		// Using OpenAI direct API
+		key = openAIKey
+		base = os.Getenv("OPENAI_API_BASE")
+		if base == "" {
+			base = "https://api.openai.com/v1"
+		}
+		isOpenRouter = false
+	} else {
+		// No key found - will fail at runtime, but set defaults
+		key = ""
+		base = "https://api.openai.com/v1" // Default to OpenAI
+		isOpenRouter = false
 	}
 
 	model := os.Getenv("AI_MODEL")
 	if model == "" {
-		model = "mistralai/mistral-small" // ✅ stable fallback model
+		if isOpenRouter {
+			model = "openai/gpt-4o-mini" // OpenRouter format
+		} else {
+			model = "gpt-4o-mini" // OpenAI direct format
+		}
+	} else {
+		// If using OpenAI direct API and model has "openai/" prefix, remove it
+		if !isOpenRouter && len(model) > 7 && model[:7] == "openai/" {
+			model = model[7:] // Remove "openai/" prefix
+		}
+		// If using OpenRouter and model doesn't have provider prefix, add "openai/"
+		if isOpenRouter && model != "" && model[:7] != "openai/" && model[:8] != "anthropic" && model[:5] != "google" {
+			// Only add prefix if it's a known OpenAI model
+			if model[:3] == "gpt" || model[:2] == "o1" || model[:2] == "o3" || model[:2] == "o4" {
+				model = "openai/" + model
+			}
+		}
 	}
 
 	return &AIClient{
-		APIKey:  key,
-		BaseURL: base,
-		Model:   model,
+		APIKey:      key,
+		BaseURL:     base,
+		Model:       model,
+		IsOpenRouter: isOpenRouter,
 	}
 }
 
@@ -107,8 +145,12 @@ func (c *AIClient) Generate(ctx context.Context, messages []Message) (string, er
 
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("HTTP-Referer", "http://localhost") // ✅ required by OpenRouter
-	req.Header.Set("X-Title", "Brancr AI Automation")  // ✅ required by OpenRouter
+	
+	// OpenRouter-specific headers (only add if using OpenRouter)
+	if c.IsOpenRouter {
+		req.Header.Set("HTTP-Referer", "http://localhost") // Required by OpenRouter
+		req.Header.Set("X-Title", "Brancr AI Automation")  // Required by OpenRouter
+	}
 
 	// Increased timeout to 90 seconds for slower AI models
 	client := &http.Client{Timeout: 90 * time.Second}
