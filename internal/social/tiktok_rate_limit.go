@@ -1,6 +1,7 @@
 package social
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -107,11 +108,32 @@ func checkRateLimitResponse(resp *http.Response, body []byte) error {
 }
 
 // executeWithRateLimitRetry executes an HTTP request with automatic rate limit retry
+// IMPORTANT: The request body must be provided as bytes so it can be recreated on retry
+// If req.Body is nil, it will be used as-is. Otherwise, the body bytes should be passed separately.
 func (t *TikTokConnector) executeWithRateLimitRetry(ctx context.Context, req *http.Request, maxRetries int) (*http.Response, error) {
+	// Read and store request body bytes for retries (if body exists)
+	var bodyBytes []byte
+	var bodyErr error
+	if req.Body != nil {
+		bodyBytes, bodyErr = io.ReadAll(req.Body)
+		req.Body.Close()
+		if bodyErr != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", bodyErr)
+		}
+	}
+
 	var lastErr error
 	var lastResp *http.Response
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Recreate request body on retry (bodies can only be read once)
+		if attempt > 0 && len(bodyBytes) > 0 {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		} else if attempt == 0 && len(bodyBytes) > 0 {
+			// First attempt: recreate body from bytes
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
 		if attempt > 0 {
 			// Calculate backoff delay
 			backoff := time.Duration(attempt) * time.Minute

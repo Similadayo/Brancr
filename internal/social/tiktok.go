@@ -1269,28 +1269,38 @@ func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAcc
 		maxCount = 50
 	}
 
+	// Ensure fields array is always present and non-empty (required by TikTok API)
+	fields := []string{
+		"video_id",
+		"title",
+		"cover_image_url",
+		"create_time",
+		"duration",
+		"share_url",
+		"embed_html",
+		"embed_link",
+		"like_count",
+		"comment_count",
+		"share_count",
+		"view_count",
+	}
+	if len(fields) == 0 {
+		// Fallback: at minimum, request video_id
+		fields = []string{"video_id"}
+	}
+
 	payload := map[string]interface{}{
 		"max_count": maxCount,
-		"fields": []string{
-			"video_id",
-			"title",
-			"cover_image_url",
-			"create_time",
-			"duration",
-			"share_url",
-			"embed_html",
-			"embed_link",
-			"like_count",
-			"comment_count",
-			"share_count",
-			"view_count",
-		},
+		"fields":    fields, // Always include fields (required by TikTok API)
 	}
 	if cursor != "" {
 		payload["cursor"] = cursor
 	}
 
-	body, _ := json.Marshal(payload)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal TikTok list videos payload: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokVideoListPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -1298,19 +1308,28 @@ func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAcc
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := t.httpClient.Do(req)
+	// Use rate limit retry wrapper
+	resp, err := t.executeWithRateLimitRetry(ctx, req, 3)
 	if err != nil {
-		return nil, err
+		return nil, EnhanceError(err, 0)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, EnhanceError(err, 0)
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, parseTikTokError(resp.StatusCode, respBody)
+		// Check for rate limit error specifically
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 429 {
+			rateLimitErr := checkRateLimitResponse(resp, respBody)
+			if rateLimitErr != nil {
+				return nil, EnhanceError(rateLimitErr, resp.StatusCode)
+			}
+		}
+		apiErr := parseTikTokError(resp.StatusCode, respBody)
+		return nil, EnhanceError(apiErr, resp.StatusCode)
 	}
 
 	var result struct {
