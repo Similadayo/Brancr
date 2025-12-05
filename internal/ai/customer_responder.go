@@ -152,6 +152,57 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		// Use old BusinessMenuItem context
 		businessContext = r.buildBusinessContext(menuItems, faqs, biz.KnowledgeBase, intent, message)
 	}
+	
+	// Add business profile details (name, description, niche) at the top of context
+	if businessContext != "" {
+		businessProfileInfo := ""
+		if biz.Name != "" {
+			businessProfileInfo += fmt.Sprintf("Business Name: %s\n", biz.Name)
+		}
+		if biz.Description != "" {
+			businessProfileInfo += fmt.Sprintf("Description: %s\n", biz.Description)
+		}
+		if biz.Niche != "" {
+			businessProfileInfo += fmt.Sprintf("Niche/Industry: %s\n", biz.Niche)
+		}
+		if businessProfileInfo != "" {
+			businessContext = businessProfileInfo + "\n" + businessContext
+		}
+	}
+	
+	// Add payment account information to business context (so AI can reference it when answering payment questions)
+	if r.PaymentInstructionGen != nil {
+		var paymentAccounts []storage.TenantPaymentAccount
+		if err := r.DB.Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Order("is_default DESC").
+			Find(&paymentAccounts).Error; err == nil && len(paymentAccounts) > 0 {
+			paymentInfo := "\nPAYMENT ACCOUNTS (USE THESE EXACT DETAILS WHEN ASKED ABOUT PAYMENT):\n"
+			for _, account := range paymentAccounts {
+				if account.AccountType == "bank" {
+					paymentInfo += fmt.Sprintf("- Bank: %s\n", account.BankName)
+					paymentInfo += fmt.Sprintf("  Account Name: %s\n", account.AccountName)
+					paymentInfo += fmt.Sprintf("  Account Number: %s\n", account.AccountNumber)
+					if account.IsDefault {
+						paymentInfo += "  (Primary payment method)\n"
+					}
+				} else if account.AccountType == "mobile_money" {
+					paymentInfo += fmt.Sprintf("- %s Mobile Money\n", account.MobileMoneyProvider)
+					paymentInfo += fmt.Sprintf("  Account Name: %s\n", account.AccountName)
+					paymentInfo += fmt.Sprintf("  Phone Number: %s\n", account.PhoneNumber)
+					if account.IsDefault {
+						paymentInfo += "  (Primary payment method)\n"
+					}
+				}
+			}
+			paymentInfo += "\nCRITICAL: When customers ask about payment methods, payment details, or how to pay, use the EXACT account numbers, bank names, and phone numbers from above. Never make up payment details.\n"
+			
+			if businessContext != "" {
+				businessContext += paymentInfo
+			} else {
+				businessContext = paymentInfo
+			}
+		}
+	}
 
 	// Sales conversation tracking (if enabled)
 	var salesContext string
@@ -223,14 +274,20 @@ CUSTOMER JUST SAID: "%s"
 
 RESPOND TO THAT MESSAGE ONLY.%s
 
+═══════════════════════════════════════════════════════════════
+BUSINESS INFORMATION (USE THIS TO ANSWER QUESTIONS):
+═══════════════════════════════════════════════════════════════
 %s%s
 
 CRITICAL: USE BUSINESS INFORMATION ABOVE
-- The BUSINESS INFORMATION section contains the EXACT menu items, pricing, FAQs, and knowledge base
-- When asked about pricing, use the EXACT prices from menu items (e.g., "Basic Social Media Starter - 50000")
+- The BUSINESS INFORMATION section contains the business name, description, niche, EXACT menu items, pricing, FAQs, and knowledge base
+- This is your PRIMARY source of information about the business - use it to answer ALL questions
+- When asked about pricing, use the EXACT prices from AVAILABLE PRODUCTS/SERVICES (e.g., "Basic Social Media Starter - 50000")
 - When asked about services, reference the knowledge base and FAQs
-- NEVER make up pricing or services - always use what's in the BUSINESS INFORMATION section
+- When asked about the business, use the business name, description, and niche from above
+- NEVER make up pricing, services, or business details - always use what's in the BUSINESS INFORMATION section
 - If they ask "what is your pricing?" or "let me see starter packages", use the menu items/packages listed above
+- If they ask "what do you do?" or "tell me about your business", use the description and niche from above
 
 CRITICAL RULES - Answer First, Questions Later:
 1. **ANSWER THEIR QUESTION DIRECTLY FIRST** - If they ask "what is your pricing?", tell them the pricing. If they ask "let me see starter packages", describe or send the packages. Don't ask more questions until you've answered what they asked.
@@ -448,27 +505,18 @@ func (r *CustomerResponder) determineSalesStage(intent string, isCommitted, isNe
 }
 
 // buildBusinessContextWithItems creates context string from industry-aware items, FAQs, and knowledge base
+// ALWAYS includes all business information - it's essential for accurate responses
 func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, faqs []storage.BusinessFAQ, knowledgeBase string, intent string, message string) string {
 	var context strings.Builder
 
-	// Check if message is about pricing/packages/services - if so, ALWAYS include menu items
-	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") || 
-		strings.Contains(strings.ToLower(message), "price") ||
-		strings.Contains(strings.ToLower(message), "cost") ||
-		strings.Contains(strings.ToLower(message), "package") ||
-		strings.Contains(strings.ToLower(message), "starter") ||
-		strings.Contains(strings.ToLower(message), "plan") ||
-		strings.Contains(strings.ToLower(message), "service") ||
-		strings.Contains(strings.ToLower(message), "what do you offer")
-
-	// Always include menu items if available (especially for pricing questions)
-	if itemsContext != "" && (isPricingQuestion || intent == "inquiry" || intent == "order") {
+	// ALWAYS include menu items if available (not conditional - business needs to know what they offer)
+	if itemsContext != "" {
 		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES):\n")
 		context.WriteString(itemsContext)
 		context.WriteString("\n")
 	}
 
-	// Always include knowledge base if available (contains comprehensive business information)
+	// ALWAYS include knowledge base if available (contains comprehensive business information)
 	if strings.TrimSpace(knowledgeBase) != "" {
 		context.WriteString("\nBUSINESS KNOWLEDGE BASE:\n")
 		// Limit knowledge base to first 2000 characters to avoid token bloat
@@ -480,7 +528,7 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 		context.WriteString("\n")
 	}
 
-	// Always include FAQs (they're useful for all inquiries)
+	// ALWAYS include FAQs (they're useful for all inquiries)
 	if len(faqs) > 0 {
 		context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
 		for i, faq := range faqs {
@@ -498,22 +546,13 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 	return ""
 }
 
-// buildBusinessContext creates context string from menu items, FAQs, and knowledge base based on intent (legacy)
+// buildBusinessContext creates context string from menu items, FAQs, and knowledge base (legacy)
+// ALWAYS includes all business information - it's essential for accurate responses
 func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, knowledgeBase string, intent string, message string) string {
 	var context strings.Builder
 
-	// Check if message is about pricing/packages/services - if so, ALWAYS include menu items
-	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") || 
-		strings.Contains(strings.ToLower(message), "price") ||
-		strings.Contains(strings.ToLower(message), "cost") ||
-		strings.Contains(strings.ToLower(message), "package") ||
-		strings.Contains(strings.ToLower(message), "starter") ||
-		strings.Contains(strings.ToLower(message), "plan") ||
-		strings.Contains(strings.ToLower(message), "service") ||
-		strings.Contains(strings.ToLower(message), "what do you offer")
-
-	// Always include menu items if available (especially for pricing questions)
-	if len(menuItems) > 0 && (isPricingQuestion || intent == "inquiry" || intent == "order") {
+	// ALWAYS include menu items if available (not conditional - business needs to know what they offer)
+	if len(menuItems) > 0 {
 		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES):\n")
 		for i, item := range menuItems {
 			if i >= 10 { // Limit to 10 items to avoid token bloat
