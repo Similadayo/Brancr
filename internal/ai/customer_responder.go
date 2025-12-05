@@ -189,13 +189,15 @@ Formatting notes: %s
 %s%s
 
 CRITICAL: Write like a real human customer service rep would - natural, empathetic, and genuinely helpful.
-- Vary your sentence structure (mix short responses with longer explanations when needed)
+- Keep responses SHORT and DIRECT - maximum 2-3 sentences for simple questions, 4-5 sentences maximum for complex issues
+- Answer the customer's question directly - don't give long explanations unless they ask
 - Use contractions and conversational language naturally
 - Show genuine empathy - match their emotional state authentically
 - Don't sound like a script, template, or corporate bot
 - Write like you're texting a friend who happens to be a customer
 - Match their energy - if they're casual, be casual; if they're serious, be appropriately serious
 - Don't be overly polished or generic - sound like a real person
+- NEVER send multiple messages - keep it to ONE concise message
 
 Nigerian English Awareness: Many customers may use Nigerian English or Pidgin patterns. 
 
@@ -211,8 +213,9 @@ CRITICAL:
 - Do NOT use Pidgin words like "sha", "abi", "na so", "dey", "go come", etc.
 - Use customer's name when available - more personal and respectful
 - If uncertain about gender, use name directly - it's okay to not use sir/ma
+- MAXIMUM LENGTH: Keep your response under 150 words. Be concise and direct.
 
-Reply courteously and empathetically to address their issue. Acknowledge their feelings and provide solutions.`,
+Reply courteously and empathetically to address their issue. Acknowledge their feelings and provide solutions. Keep it brief and conversational.`,
 		intro,
 		brandContext,
 		strings.ToUpper(platform),
@@ -231,6 +234,34 @@ Reply courteously and empathetically to address their issue. Acknowledge their f
 	}
 
 	reply = strings.TrimSpace(reply)
+	
+	// Enforce maximum length for WhatsApp (keep responses concise)
+	// Split by sentences to avoid cutting mid-sentence
+	maxLength := 500 // characters (roughly 100 words)
+	originalLength := len(reply)
+	if originalLength > maxLength {
+		// Try to cut at a sentence boundary
+		cutPoint := maxLength
+		for i := maxLength; i > maxLength-100 && i > 0; i-- {
+			if i < len(reply) && (reply[i] == '.' || reply[i] == '!' || reply[i] == '?') {
+				cutPoint = i + 1
+				break
+			}
+		}
+		if cutPoint < len(reply) {
+			reply = reply[:cutPoint]
+			// Add ellipsis if we cut it
+			if !strings.HasSuffix(reply, "...") {
+				reply += "..."
+			}
+			if r.Logger != nil {
+				r.Logger.Warn("AI reply was too long, truncated",
+					zap.Int("original_length", originalLength),
+					zap.Int("truncated_length", len(reply)),
+					zap.Int("max_length", maxLength))
+			}
+		}
+	}
 
 	// If customer is committed and ready for payment, create order and append payment instructions
 	if r.SalesConversationManager != nil && conversationID > 0 && r.PaymentInstructionGen != nil {

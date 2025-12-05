@@ -43,8 +43,7 @@ func TestConfig() *config.Config {
 	return &config.Config{
 		AppEnv:           "test",
 		Port:             "8080",
-		OpenRouterMode:   "free",
-		OpenRouterAPIKey: "test-key",
+		// OpenRouter removed - using OpenAI direct API only
 		PostgresDSN:      "",
 		RedisAddr:        "localhost:6379",
 		AdminBotToken:    "test-token",

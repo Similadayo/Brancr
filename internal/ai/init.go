@@ -14,7 +14,7 @@ func NewAIResponder(db *gorm.DB, persona storage.Persona) *Responder {
 		Encoder: embedder,
 	}
 
-	client := NewAIClient()       // Your LLM (OpenRouter/OpenAI) chat generator
+	client := NewAIClient()       // Your LLM (OpenAI) chat generator
 	classifier := NewClassifier() // Intent detection
 	emotion := NewEmotionAnalyzer()
 	policy := NewPolicyEngine()

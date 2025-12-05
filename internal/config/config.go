@@ -13,8 +13,7 @@ type Config struct {
 	AppEnv               string // development | production | staging
 	Port                 string // e.g., 8080
 	PublicURL            string // e.g. https://api.brancr.com
-	OpenRouterMode       string // free | pro
-	OpenRouterAPIKey     string
+	// OpenRouter removed - using OpenAI direct API only
 	PostgresDSN          string
 	CloudName            string
 	CloudAPIKey          string
@@ -73,8 +72,7 @@ func Load() *Config {
 		AppEnv:               getEnv("APP_ENV", "development"),
 		Port:                 getEnv("PORT", "8080"),
 		PublicURL:            os.Getenv("BRANCR_PUBLIC_URL"),
-		OpenRouterMode:       getEnv("OPENROUTER_MODE", "free"),
-		OpenRouterAPIKey:     os.Getenv("OPENROUTER_API_KEY"),
+		// OpenRouter removed - using OpenAI direct API only
 		PostgresDSN:          os.Getenv("POSTGRES_DSN"),
 		CloudName:            os.Getenv("CLOUDINARY_CLOUD_NAME"),
 		CloudAPIKey:          os.Getenv("CLOUDINARY_API_KEY"),

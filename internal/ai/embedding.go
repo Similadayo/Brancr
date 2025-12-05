@@ -17,7 +17,7 @@ type EmbeddingClient struct {
 	BaseURL string
 }
 
-// EmbeddingResponse mirrors OpenAI / OpenRouter embedding structure.
+// EmbeddingResponse mirrors OpenAI embedding structure.
 type EmbeddingResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
@@ -28,16 +28,16 @@ type EmbeddingResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// NewEmbeddingClient creates a client for embeddings (works with OpenRouter or OpenAI)
+// NewEmbeddingClient creates a client for embeddings (OpenAI only)
 func NewEmbeddingClient() *EmbeddingClient {
-	key := os.Getenv("OPENROUTER_API_KEY")
+	key := os.Getenv("OPENAI_API_KEY")
 	if key == "" {
-		key = os.Getenv("OPENAI_API_KEY") // fallback if you're using OpenAI
+		key = "" // Will fail at runtime with clear error
 	}
 
-	base := os.Getenv("OPENROUTER_API_BASE")
+	base := os.Getenv("OPENAI_API_BASE")
 	if base == "" {
-		base = "https://openrouter.ai/api/v1"
+		base = "https://api.openai.com/v1"
 	}
 
 	model := os.Getenv("EMBEDDING_MODEL")
