@@ -447,6 +447,42 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 			platform := strings.TrimSpace(strings.TrimPrefix(textLower, "verify"))
 			h.handleVerifyCommand(bot, uint(tenantID), chatID, platform)
 			return
+
+		// New feature commands
+		case textLower == "/orders" || textLower == "orders" || strings.HasPrefix(textLower, "orders"):
+			h.showOrdersMenu(bot, chatID, uint(tenantID))
+			return
+		case textLower == "/products" || textLower == "products" || strings.HasPrefix(textLower, "products"):
+			h.showProductsMenu(bot, chatID, uint(tenantID))
+			return
+		case textLower == "/payments" || textLower == "payments" || strings.HasPrefix(textLower, "payments"):
+			h.showPaymentsMenu(bot, chatID, uint(tenantID))
+			return
+		case strings.HasPrefix(textLower, "order "):
+			// Handle "order <order_number>" or "order <id>"
+			arg := strings.TrimSpace(strings.TrimPrefix(textLower, "order "))
+			if orderID, err := strconv.ParseUint(arg, 10, 32); err == nil {
+				h.viewOrderDetails(bot, chatID, uint(tenantID), uint(orderID))
+			} else {
+				// Try to find by order number
+				var order storage.Order
+				if err := h.Manager.DB.Where("tenant_id = ? AND order_number = ?", tenantID, strings.ToUpper(arg)).First(&order).Error; err == nil {
+					h.viewOrderDetails(bot, chatID, uint(tenantID), order.ID)
+				} else {
+					bot.Send(tgbotapi.NewMessage(chatID, "❌ Order not found. Use 'orders' to see all orders."))
+				}
+			}
+			return
+		case strings.HasPrefix(textLower, "payment "):
+			// Handle "payment <reference>"
+			arg := strings.TrimSpace(strings.TrimPrefix(textLower, "payment "))
+			var payment storage.Payment
+			if err := h.Manager.DB.Where("tenant_id = ? AND payment_reference = ?", tenantID, strings.ToUpper(arg)).First(&payment).Error; err == nil {
+				h.viewPaymentDetails(bot, chatID, uint(tenantID), payment.ID)
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Payment not found. Use 'payments' to see all payments."))
+			}
+			return
 		}
 
 		// 🧠 AI Conversational Fallback: If no command matched, use AI to respond naturally
@@ -825,6 +861,66 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 				h.Manager.IndustrySelectionHandler.HandleIndustrySelectionCallback(bot, tenantID, chatID, industryIDStr)
 			}
 		}
+	case "orders":
+		// Handle order management callbacks
+		// arg format: "menu", "list:<status>", "view:<id>", "confirm:<id>", etc.
+		parts := strings.SplitN(arg, ":", 2)
+		action := parts[0]
+		actionArg := ""
+		if len(parts) > 1 {
+			actionArg = parts[1]
+		}
+		h.handleOrderCallback(bot, tenantID, chatID, action, actionArg)
+	case "order":
+		// Handle single order callbacks
+		// arg format: "view:<id>", "confirm:<id>", "complete:<id>", "receipt:<id>", "notes:<id>"
+		parts := strings.SplitN(arg, ":", 2)
+		action := parts[0]
+		actionArg := ""
+		if len(parts) > 1 {
+			actionArg = parts[1]
+		}
+		h.handleOrderCallback(bot, tenantID, chatID, action, actionArg)
+	case "products":
+		// Handle product/menu/service management callbacks
+		// arg format: "menu", "list:<type>", "add:<type>", "view:<id>:<type>", etc.
+		parts := strings.SplitN(arg, ":", 2)
+		action := parts[0]
+		actionArg := ""
+		if len(parts) > 1 {
+			actionArg = parts[1]
+		}
+		h.handleProductCallback(bot, tenantID, chatID, action, actionArg)
+	case "product":
+		// Handle single product/menu/service callbacks
+		// arg format: "view:<id>:<type>", "edit:<id>:<type>", "delete:<id>:<type>"
+		parts := strings.SplitN(arg, ":", 2)
+		action := parts[0]
+		actionArg := ""
+		if len(parts) > 1 {
+			actionArg = parts[1]
+		}
+		h.handleProductCallback(bot, tenantID, chatID, action, actionArg)
+	case "payments":
+		// Handle payment management callbacks
+		// arg format: "menu", "list:<status>", "view:<id>", "verify:<id>", etc.
+		parts := strings.SplitN(arg, ":", 2)
+		action := parts[0]
+		actionArg := ""
+		if len(parts) > 1 {
+			actionArg = parts[1]
+		}
+		h.handlePaymentCallback(bot, tenantID, chatID, action, actionArg)
+	case "payment":
+		// Handle single payment callbacks
+		// arg format: "view:<id>", "verify:<id>", "dispute:<id>", "receipt:<id>"
+		parts := strings.SplitN(arg, ":", 2)
+		action := parts[0]
+		actionArg := ""
+		if len(parts) > 1 {
+			actionArg = parts[1]
+		}
+		h.handlePaymentCallback(bot, tenantID, chatID, action, actionArg)
 	default:
 		h.Manager.Logger.Debug("unhandled callback", zap.String("data", data))
 	}
@@ -928,11 +1024,16 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 			tgbotapi.NewInlineKeyboardButtonData("💬 Manage Business Info", "menu:business"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📊 View Analytics", "menu:analytics"),
-			tgbotapi.NewInlineKeyboardButtonData("🤖 Customize AI Assistant", "menu:ai"),
+			tgbotapi.NewInlineKeyboardButtonData("📦 Products/Menu", "products:menu"),
+			tgbotapi.NewInlineKeyboardButtonData("📋 Orders", "orders:menu"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🧩 Help & Tutorials", "help:menu"),
+			tgbotapi.NewInlineKeyboardButtonData("💳 Payments", "payments:menu"),
+			tgbotapi.NewInlineKeyboardButtonData("📊 Analytics", "menu:analytics"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🤖 Customize AI", "menu:ai"),
+			tgbotapi.NewInlineKeyboardButtonData("🧩 Help", "help:menu"),
 		),
 	)
 
