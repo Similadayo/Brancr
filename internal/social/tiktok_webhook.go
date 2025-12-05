@@ -60,20 +60,35 @@ func (h *TikTokWebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Requ
 	}
 	defer r.Body.Close()
 
-	// Verify webhook signature if secret is configured
-	if h.WebhookSecret != "" {
-		signature := r.Header.Get("X-TikTok-Signature")
-		if signature == "" {
-			signature = r.Header.Get("X-Signature") // Alternative header name
-		}
+	// SECURITY: Webhook secret is REQUIRED - reject if not configured
+	if h.WebhookSecret == "" {
+		h.Logger.Error("webhook secret not configured - rejecting request for security",
+			zap.String("remote_addr", r.RemoteAddr))
+		http.Error(w, "Webhook endpoint disabled - secret not configured", http.StatusServiceUnavailable)
+		return
+	}
 
-		if !h.verifySignature(body, signature) {
-			h.Logger.Warn("invalid webhook signature",
-				zap.String("signature", signature),
-				zap.String("body_length", fmt.Sprintf("%d", len(body))))
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
-			return
-		}
+	// Verify webhook signature (REQUIRED for security)
+	signature := r.Header.Get("X-TikTok-Signature")
+	if signature == "" {
+		signature = r.Header.Get("X-Signature") // Alternative header name
+	}
+
+	if signature == "" {
+		h.Logger.Warn("missing webhook signature header",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("body_length", fmt.Sprintf("%d", len(body))))
+		http.Error(w, "Missing signature header", http.StatusUnauthorized)
+		return
+	}
+
+	if !h.verifySignature(body, signature) {
+		h.Logger.Warn("invalid webhook signature",
+			zap.String("signature", signature),
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("body_length", fmt.Sprintf("%d", len(body))))
+		http.Error(w, "Invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	// Parse webhook event
@@ -174,10 +189,11 @@ func (h *TikTokWebhookHandler) handleVideoStatusUpdate(ctx context.Context, even
 		return fmt.Errorf("publish_id missing in video status update")
 	}
 
-	// Find the social account by publish_id (stored in MediaAsset tags)
+	// Find the asset by publish_id (stored in MediaAsset metadata)
 	var asset storage.MediaAsset
 	if err := h.DB.WithContext(ctx).
-		Where("tags LIKE ?", fmt.Sprintf("%%tiktok_publish_id\":\"%s%%", event.PublishID)).
+		Where("metadata LIKE ?", fmt.Sprintf("%%tiktok_publish_id\":\"%s%%", event.PublishID)).
+		Or("metadata LIKE ?", fmt.Sprintf("%%\"tiktok_publish_id\":\"%s\"%%", event.PublishID)).
 		First(&asset).Error; err != nil {
 		// If not found, log and continue (video might have been posted outside our system)
 		h.Logger.Debug("video not found for publish_id", zap.String("publish_id", event.PublishID))

@@ -186,38 +186,24 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		zap.Uint("tenant_id", acc.TenantID),
 		zap.String("publish_id", session.PublishID))
 
-	// Store publish_id in Tags field (JSON) for later status checking
-	// Note: Tags is a JSON array, but we can use it to store metadata
-	if asset.Tags != "" {
-		var tags []string
-		if err := json.Unmarshal([]byte(asset.Tags), &tags); err == nil {
-			// Store publish_id as a tag-like entry
-			metadata := map[string]interface{}{
-				"tiktok_publish_id": session.PublishID,
-				"tiktok_published_at": time.Now().UTC().Format(time.RFC3339),
-			}
-			metadataJSON, _ := json.Marshal(metadata)
-			// Append metadata to tags (as JSON string)
-			tags = append(tags, string(metadataJSON))
-			tagsJSON, _ := json.Marshal(tags)
-			asset.Tags = string(tagsJSON)
-			// Note: Asset update should be handled by caller, but we log it
-			t.Logger.Info("📝 TikTok publish_id stored",
-				zap.String("publish_id", session.PublishID))
-		}
-	} else {
-		// Create new tags array with metadata
-		metadata := map[string]interface{}{
-			"tiktok_publish_id": session.PublishID,
-			"tiktok_published_at": time.Now().UTC().Format(time.RFC3339),
-		}
-		metadataJSON, _ := json.Marshal(metadata)
-		tags := []string{string(metadataJSON)}
-		tagsJSON, _ := json.Marshal(tags)
-		asset.Tags = string(tagsJSON)
-		t.Logger.Info("📝 TikTok publish_id stored (new)",
-			zap.String("publish_id", session.PublishID))
+	// Store publish_id in Metadata field (JSONB) for later status checking via webhooks
+	// This is consistent with how other TikTok metadata (video_id, status) is stored
+	if asset.Metadata == "" {
+		asset.Metadata = "{}"
 	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(asset.Metadata), &metadata); err != nil {
+		metadata = make(map[string]interface{})
+	}
+
+	metadata["tiktok_publish_id"] = session.PublishID
+	metadata["tiktok_published_at"] = time.Now().UTC().Format(time.RFC3339)
+
+	metadataJSON, _ := json.Marshal(metadata)
+	asset.Metadata = string(metadataJSON)
+
+	t.Logger.Info("📝 TikTok publish_id stored in metadata",
+		zap.String("publish_id", session.PublishID))
 
 	return nil
 }
@@ -292,6 +278,49 @@ func (t *TikTokConnector) ensureAccessToken(ctx context.Context, acc *storage.So
 
 	newTokens, err := t.refreshAccessToken(ctx, acc.RefreshToken)
 	if err != nil {
+		// Check if error is invalid_grant (refresh token expired/invalid)
+		var tokenErr *TikTokTokenError
+		if errors.As(err, &tokenErr) && tokenErr.IsInvalidGrant() {
+			// Mark account as disconnected
+			if t.DB != nil {
+				updates := map[string]interface{}{
+					"connected": false,
+				}
+				if updateErr := t.DB.WithContext(ctx).
+					Model(&storage.SocialAccount{}).
+					Where("id = ?", acc.ID).
+					Updates(updates).Error; updateErr != nil {
+					t.Logger.Warn("failed to mark TikTok account as disconnected", zap.Error(updateErr))
+				} else {
+					acc.Connected = false
+					t.Logger.Warn("🔴 TikTok account marked as disconnected due to invalid refresh token",
+						zap.Uint("tenant_id", acc.TenantID),
+						zap.Uint("account_id", acc.ID))
+				}
+			}
+			return "", fmt.Errorf("tiktok refresh token expired or invalid - please reconnect your TikTok account: %w", err)
+		}
+		// Also check error message for invalid_grant (fallback)
+		if strings.Contains(strings.ToLower(err.Error()), "invalid_grant") {
+			// Mark account as disconnected
+			if t.DB != nil {
+				updates := map[string]interface{}{
+					"connected": false,
+				}
+				if updateErr := t.DB.WithContext(ctx).
+					Model(&storage.SocialAccount{}).
+					Where("id = ?", acc.ID).
+					Updates(updates).Error; updateErr != nil {
+					t.Logger.Warn("failed to mark TikTok account as disconnected", zap.Error(updateErr))
+				} else {
+					acc.Connected = false
+					t.Logger.Warn("🔴 TikTok account marked as disconnected due to invalid refresh token",
+						zap.Uint("tenant_id", acc.TenantID),
+						zap.Uint("account_id", acc.ID))
+				}
+			}
+			return "", fmt.Errorf("tiktok refresh token expired or invalid - please reconnect your TikTok account: %w", err)
+		}
 		return "", fmt.Errorf("tiktok token refresh failed: %w", err)
 	}
 
@@ -792,6 +821,16 @@ func (t *TikTokConnector) refreshAccessToken(ctx context.Context, refreshToken s
 	}
 	apiErr := parseTikTokAPIError(parsed.Error, parsed.Message)
 	if apiErr.Code != 0 {
+		// Check for invalid_grant error specifically
+		if strings.Contains(strings.ToLower(apiErr.Raw), "invalid_grant") ||
+			strings.Contains(strings.ToLower(apiErr.Message), "invalid_grant") {
+			return nil, &TikTokTokenError{
+				Type:    "invalid_grant",
+				Message: "Refresh token expired or invalid",
+				Code:    apiErr.Code,
+				Raw:     apiErr.Raw,
+			}
+		}
 		return nil, fmt.Errorf("tiktok refresh error (%d): %s (raw=%s)", apiErr.Code, apiErr.Message, apiErr.Raw)
 	}
 	if parsed.Data.AccessToken == "" {
@@ -1027,6 +1066,26 @@ func (e *TikTokAPIError) Error() string {
 		return fmt.Sprintf("tiktok API error (%s): %s (log_id: %s)", code, e.Message, e.LogID)
 	}
 	return fmt.Sprintf("tiktok API error (%s): %s", code, e.Message)
+}
+
+// TikTokTokenError represents a token-related error (e.g., invalid_grant)
+type TikTokTokenError struct {
+	Type    string
+	Message string
+	Code    int
+	Raw     string
+}
+
+func (e *TikTokTokenError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("tiktok token error (%s): %s", e.Type, e.Message)
+}
+
+// IsInvalidGrant checks if the error is an invalid_grant error
+func (e *TikTokTokenError) IsInvalidGrant() bool {
+	return e != nil && e.Type == "invalid_grant"
 }
 
 func parseTikTokError(status int, body []byte) *TikTokAPIError {
