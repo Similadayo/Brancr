@@ -63,7 +63,7 @@ func NewAIClient() *AIClient {
 
 	model := os.Getenv("AI_MODEL")
 	if model == "" {
-		model = "gpt-4o-mini" // Default model
+		model = "gpt-5-mini" // Default model (budget-friendly with good quality)
 	} else {
 		// Remove "openai/" prefix if present (for backward compatibility)
 		if len(model) > 7 && model[:7] == "openai/" {
