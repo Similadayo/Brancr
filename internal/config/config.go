@@ -100,7 +100,7 @@ func Load() *Config {
 		TikTokClientKey:      os.Getenv("TIKTOK_CLIENT_KEY"),
 		TikTokClientSecret:   os.Getenv("TIKTOK_CLIENT_SECRET"),
 		TikTokRedirectURI:    os.Getenv("TIKTOK_REDIRECT_URI"),
-		TikTokScopes:         getEnv("TIKTOK_SCOPES", "user.info.basic,video.list,video.upload,video.publish"),
+		TikTokScopes:         getEnv("TIKTOK_SCOPES", "user.info.basic,video.upload"),
 		TikTokDefaultPrivacy: os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
 		TikTokWebhookSecret:  os.Getenv("TIKTOK_WEBHOOK_SECRET"),
 		CORSAllowedOrigins:   getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
