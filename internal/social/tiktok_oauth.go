@@ -148,12 +148,18 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 
 	params := url.Values{}
 	params.Set("client_key", h.ClientKey)
-	params.Set("scope", strings.Join(h.Scopes, ","))
+	// TikTok OAuth requires space-separated scopes, not comma-separated
+	params.Set("scope", strings.Join(h.Scopes, " "))
 	params.Set("redirect_uri", h.RedirectURI)
 	params.Set("response_type", "code")
 	params.Set("state", stateToken)
 	params.Set("code_challenge", codeChallenge)
 	params.Set("code_challenge_method", "S256")
+	
+	// Log scopes for debugging
+	h.Logger.Info("TikTok OAuth scopes",
+		zap.String("scopes", strings.Join(h.Scopes, " ")),
+		zap.Strings("scope_list", h.Scopes))
 
 	authURL.RawQuery = params.Encode()
 
