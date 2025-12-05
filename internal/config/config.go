@@ -42,6 +42,7 @@ type Config struct {
 	TikTokRedirectURI    string
 	TikTokScopes         string
 	TikTokDefaultPrivacy string
+	TikTokWebhookSecret  string // Secret for verifying TikTok webhook signatures
 	CORSAllowedOrigins   string
 	TenantCookieDomain   string
 	RespondIOAPIKey      string // Respond.io API access token for WhatsApp integration
@@ -101,6 +102,7 @@ func Load() *Config {
 		TikTokRedirectURI:    os.Getenv("TIKTOK_REDIRECT_URI"),
 		TikTokScopes:         getEnv("TIKTOK_SCOPES", "user.info.basic,video.list,video.upload,video.publish"),
 		TikTokDefaultPrivacy: os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
+		TikTokWebhookSecret:  os.Getenv("TIKTOK_WEBHOOK_SECRET"),
 		CORSAllowedOrigins:   getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
 		TenantCookieDomain:   getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
 		RespondIOAPIKey:      os.Getenv("RESPOND_IO_API_KEY"), // Respond.io API access token

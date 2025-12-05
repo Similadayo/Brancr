@@ -104,6 +104,16 @@ func SetupRouter(app *App) http.Handler {
 		r.Get("/api/oauth/tiktok/callback", app.Services.TikTokOAuthHandler.Callback)
 	}
 
+	// TikTok webhook endpoint
+	if app.Services.TikTokWebhookHandler != nil {
+		r.HandleFunc("/api/webhooks/tiktok", app.Services.TikTokWebhookHandler.HandleWebhook)
+		r.Get("/api/webhooks/tiktok/test", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"status":"ok","endpoint":"/api/webhooks/tiktok","message":"TikTok webhook endpoint is reachable"}`)
+		})
+	}
+
 	if app.Services.EmbeddedSignupHandler != nil {
 		r.Get("/api/oauth/meta/whatsapp/start", app.Services.EmbeddedSignupHandler.Start)
 		r.MethodFunc(http.MethodGet, "/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Verify)

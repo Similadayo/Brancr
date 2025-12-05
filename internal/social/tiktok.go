@@ -535,7 +535,8 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := t.httpClient.Do(req)
+	// Use rate limit retry wrapper
+	resp, err := t.executeWithRateLimitRetry(ctx, req, 3)
 	if err != nil {
 		return nil, err
 	}
@@ -547,6 +548,13 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	}
 
 	if resp.StatusCode >= 400 {
+		// Check for rate limit error specifically
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 429 {
+			rateLimitErr := checkRateLimitResponse(resp, respBody)
+			if rateLimitErr != nil {
+				return nil, rateLimitErr
+			}
+		}
 		errResp := parseTikTokError(resp.StatusCode, respBody)
 		t.Logger.Warn("TikTok init upload response", zap.Int("status", resp.StatusCode), zap.String("body", errResp.Body))
 		return nil, errResp

@@ -63,6 +63,7 @@ type Services struct {
 	Scheduler               *social.Scheduler
 	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
 	TikTokOAuthHandler      *social.TikTokOAuthHandler
+	TikTokWebhookHandler    *social.TikTokWebhookHandler
 
 	// Analytics Services
 	AnalyticsService   *analytics.Service
@@ -316,6 +317,21 @@ func (s *Services) initSocial() error {
 
 	if tikTokHandler := social.NewTikTokOAuthHandler(s.DB, s.Logger, s.Config); tikTokHandler != nil {
 		s.TikTokOAuthHandler = tikTokHandler
+		s.Logger.Info("✅ TikTok OAuth handler initialized")
+	} else {
+		s.Logger.Info("ℹ️  TikTok OAuth disabled — missing TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, or TIKTOK_REDIRECT_URI")
+	}
+
+	// Initialize TikTok Webhook Handler
+	if s.Config.TikTokWebhookSecret != "" {
+		tikTokWebhookHandler := social.NewTikTokWebhookHandler(s.DB, s.Logger, s.Config.TikTokWebhookSecret)
+		s.TikTokWebhookHandler = tikTokWebhookHandler
+		s.Logger.Info("✅ TikTok webhook handler initialized")
+	} else {
+		s.Logger.Info("ℹ️  TikTok webhook disabled — missing TIKTOK_WEBHOOK_SECRET (webhook signature verification will be skipped)")
+		// Still create handler without secret (signature verification will be skipped)
+		tikTokWebhookHandler := social.NewTikTokWebhookHandler(s.DB, s.Logger, "")
+		s.TikTokWebhookHandler = tikTokWebhookHandler
 	}
 
 	if embeddedHandler := social.NewEmbeddedSignupHandler(s.DB, s.Logger, s.Config); embeddedHandler != nil {
