@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -60,6 +61,19 @@ func (e *EmotionAnalyzer) Analyze(ctx context.Context, tenantID uint, message st
 	return &EmotionResult{Label: parsed.Label, Confidence: parsed.Confidence, CheckedAt: time.Now()}, nil
 }
 
+// buildEmotionPrompt constructs the emotion analysis prompt
+// Template: #12 EmotionAnalyzer (structured JSON output)
 func buildEmotionPrompt(message string) string {
-	return "Return JSON {\"label\":\"<label>\",\"confidence\":<0-1>} where label in [neutral,positive,frustrated,urgent,angry,sad]. Message: \"" + escapeForPrompt(message) + "\""
+	return fmt.Sprintf(`Evaluate the sentiment and emotional tone of this customer message.
+
+Return ONLY a JSON object with this exact structure (no additional text):
+{
+  "emotion": "positive",
+  "confidence": 0.85
+}
+
+Emotion should be one of: neutral, positive, frustrated, urgent, angry, sad
+Confidence should be a number between 0.0 and 1.0
+
+Message: "%s"`, escapeForPrompt(message))
 }

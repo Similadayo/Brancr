@@ -137,6 +137,8 @@ Latest message: %s`, intro, speaker, userMsg)
 }
 
 // buildContextPrompt creates a rich context-aware prompt
+// buildContextPrompt constructs context-aware prompt
+// Template: #9 ContextAwareResponseGenerator (full context response generation)
 func (g *ContextAwareResponseGenerator) buildContextPrompt(
 	persona storage.Persona,
 	biz storage.BusinessProfile,

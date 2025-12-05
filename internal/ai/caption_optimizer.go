@@ -160,12 +160,21 @@ func buildBusinessContext(biz storage.BusinessProfile, menuItems []storage.Busin
 }
 
 // buildCaptionPrompt constructs the caption generation prompt
+// Template: #13 OptimizeCaption (caption optimization)
 func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide string, imageAnalysis string, businessContext string) string {
 	var prompt strings.Builder
 
 	prompt.WriteString(intro)
 	prompt.WriteString("\n\n")
-	prompt.WriteString(fmt.Sprintf("Task: Write a social media caption for %s.\n\n", strings.ToUpper(req.Platform)))
+	prompt.WriteString(fmt.Sprintf("Task: Optimize and rewrite a social media caption for %s.\n\n", strings.ToUpper(req.Platform)))
+	
+	if req.OriginalCaption != "" {
+		prompt.WriteString(fmt.Sprintf("Current caption: \"%s\"\n", req.OriginalCaption))
+	}
+	if len(req.ImageURLs) > 0 {
+		prompt.WriteString(fmt.Sprintf("Image URL: %s\n", req.ImageURLs[0]))
+	}
+	prompt.WriteString(fmt.Sprintf("Brand voice: {{brand_tone}}\n\n"))
 
 	// Add image analysis if available
 	if imageAnalysis != "" {
@@ -195,14 +204,19 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString(platformGuide)
 
 	prompt.WriteString("\n\n")
+	prompt.WriteString("Rewrite the caption to be more engaging and aligned with the brand's voice.\n\n")
+	
 	prompt.WriteString("CRITICAL - Write like a REAL HUMAN would write this caption:\n")
 	prompt.WriteString("- Vary your sentence length naturally (mix short punchy lines with longer descriptive ones)\n")
 	prompt.WriteString("- Use conversational language - write like you're talking to friends, not crafting marketing copy\n")
 	prompt.WriteString("- Avoid overly formal or corporate phrasing\n")
 	prompt.WriteString("- Don't sound like a template or robot - add personality and authenticity\n")
 	prompt.WriteString("- Use contractions naturally (I'm, we're, you're, it's)\n")
-	prompt.WriteString("- Let your personality shine through - don't be generic or overly polished\n\n")
-
+	prompt.WriteString("- Let your personality shine through - don't be generic or overly polished\n")
+	prompt.WriteString("- Make the caption concise, clear, and appealing for the target audience\n")
+	prompt.WriteString("- Follow brand voice but keep the style lively and informal as appropriate\n")
+	prompt.WriteString("- Do NOT use em-dashes in captions. Use commas, periods, or regular hyphens instead.\n\n")
+	
 	prompt.WriteString("Rules:\n")
 	prompt.WriteString("1. Reflect the brand tone and vibe described above.\n")
 	prompt.WriteString("2. Keep the caption to one or two natural sentences - vary the length.\n")
@@ -210,7 +224,6 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString("4. Connect image content to business offerings when appropriate - do it naturally, not forced.\n")
 	prompt.WriteString("5. Use emojis only if they fit the brand personality. Include no more than three relevant hashtags.\n")
 	prompt.WriteString("6. Sound genuinely human and conversational - never robotic, overly promotional, or template-like.\n")
-	prompt.WriteString("7. Do NOT use em-dashes in captions. Use commas, periods, or regular hyphens instead.\n")
 	prompt.WriteString("7. End with a brand-flavored hook or light invitation to engage - make it feel natural.\n\n")
 	prompt.WriteString("Return only the finished caption with hashtags at the end.")
 

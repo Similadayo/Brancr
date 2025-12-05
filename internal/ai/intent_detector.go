@@ -58,18 +58,17 @@ func (d *IntentDetector) DetectIntent(ctx context.Context, tenantID uint, messag
 	intentOptionsStr := strings.Join(intentOptions, ", ")
 
 	// Build detection prompt
+	// Template: #10 DetectIntent (structured JSON output)
 	systemPrompt := fmt.Sprintf(`You are an expert at analyzing customer messages for a %s business.
 
 Business: %s
 Niche: %s
 
-Analyze this customer message and determine:
-1. Intent: %s
-2. Tone: positive, neutral, negative, urgent
-3. Confidence: 0.0-1.0
-4. Requires escalation: true if refund, complaint, delivery_issue, or uncertain
+Analyze this customer message and identify the user's main intent.
 
-Return ONLY a JSON object with this exact structure:
+Available intent options: %s
+
+Return ONLY a JSON object with this exact structure (no additional text):
 {
   "intent": "inquiry",
   "tone": "neutral",
@@ -78,9 +77,14 @@ Return ONLY a JSON object with this exact structure:
   "reasoning": "Customer asking about product availability"
 }
 
+Intent should be one of: %s
+Tone should be one of: positive, neutral, negative, urgent
+Confidence should be a number between 0.0 and 1.0
+Requires escalation should be true if intent is refund, complaint, delivery_issue, or if confidence is below 0.3
+
 Message: "%s"
 Platform: %s
-`, biz.Niche, biz.Description, biz.Niche, intentOptionsStr, message, strings.ToUpper(platform))
+`, biz.Niche, biz.Description, biz.Niche, intentOptionsStr, intentOptionsStr, message, strings.ToUpper(platform))
 
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},

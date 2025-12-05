@@ -9,6 +9,7 @@ import (
 )
 
 // GenerateFallbackResponse generates a simple, helpful response when AI fails
+// Template: #21 GenerateFallbackResponse (safe fallback response)
 func GenerateFallbackResponse(ctx context.Context, tenantID uint, userMsg string, isOwner bool) string {
 	lower := strings.ToLower(strings.TrimSpace(userMsg))
 	
@@ -63,6 +64,7 @@ func SanitizePrompt(prompt string) string {
 }
 
 // GenerateSafePrompt creates a safer version of the system prompt
+// Template: #22 GenerateSafePrompt (policy-compliant prompt conversion)
 func GenerateSafePrompt(persona storage.Persona, biz storage.BusinessProfile, isOwner bool) string {
 	if isOwner {
 		return fmt.Sprintf(`You're %s, helping %s manage their social media.

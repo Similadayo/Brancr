@@ -57,10 +57,17 @@ func (r *Responder) GenerateTenantAssistantReply(ctx context.Context, tenantID u
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
 
+	// Template: #5 GenerateTenantAssistantReply (tenant-facing reply generation)
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the latest message from the business team. 
+Task: Generate a helpful assistant response to the business owner's message.
+
+Conversation history: {{history}}
+
+The store owner says: "%s"
+
+Using the brand's voice ({{brand_tone}}) and conversation history, generate a helpful assistant response.
 
 CRITICAL: Write like a real human would - natural, conversational, and authentic. 
 - Vary your sentence length (mix short and long sentences)
@@ -68,10 +75,11 @@ CRITICAL: Write like a real human would - natural, conversational, and authentic
 - Match their energy and tone
 - Don't sound robotic or overly polished
 - Write like you're texting a colleague, not composing a formal message
+- Be helpful, professional, and solution-focused
+- Address the tenant respectfully
+- Provide clear guidance or answers to their request
 
-Use the conversation history above for context.
-
-Latest message: %s`, intro, userMsg)
+Use the conversation history above for context.`, intro, userMsg)
 
 	messages = append(messages, Message{Role: "user", Content: task})
 	reply, err := r.Client.Generate(ctx, messages)
@@ -138,7 +146,8 @@ func (r *Responder) GenerateHumanlikeReply(ctx context.Context, tenantID uint, u
 	return reply, nil
 }
 
-// 🗣️ Adaptive conversational handler
+// GenerateConversationalReply generates a general conversational reply
+// Template: #7 GenerateConversationalReply (general conversational response)
 func (r *Responder) GenerateConversationalReply(ctx context.Context, tenantID uint, userMsg string) (string, error) {
 	intentRes, _ := r.Classifier.Classify(ctx, tenantID, userMsg)
 	emotionRes, _ := r.Emotion.Analyze(ctx, tenantID, userMsg)
@@ -192,10 +201,17 @@ func (r *Responder) GenerateTenantOwnerReply(ctx context.Context, tenantID uint,
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
 
+	// Template: #6 GenerateTenantOwnerReply (owner reply generation)
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the business owner. Help them run operations - think connecting accounts, scheduling posts, checking stats, or answering workflow questions.
+Task: Generate a reply as the business owner.
+
+You are {{owner_name}}, the owner of {{brand_name}}. The assistant said: "{{assistant_message}}".
+
+Conversation history: {{history}}
+
+Write a polite reply as the owner. Be appreciative, concise, and respectful. The owner can be friendly and personal while professional. Address colleagues or assistants politely.
 
 CRITICAL: Write like a real human would - natural, conversational, and helpful.
 - Vary your sentence length and structure naturally

@@ -47,17 +47,22 @@ func (p *ProactiveAssistant) SuggestActions(ctx context.Context, tenantID uint) 
 		Find(&connectedAccounts)
 
 	// Generate suggestions using AI
-	suggestionPrompt := fmt.Sprintf(`You are a helpful business assistant. Based on this context, suggest 2-3 actionable next steps:
+	// Template: #16 SuggestActions (action recommendations)
+	suggestionPrompt := fmt.Sprintf(`You are a helpful business assistant. Based on this scenario, recommend next steps.
 
-Business Context:
+Scenario:
 - Scheduled posts: %d
 - Failed posts (last 7 days): %d
 - Connected social accounts: %d
 
-Return a JSON array of suggestions (max 3), each as a short actionable sentence:
-["Suggestion 1", "Suggestion 2", "Suggestion 3"]
+Return ONLY a JSON array of action suggestions (max 3), each with fields "action" and "reason":
+[
+  {"action": "Suggestion 1", "reason": "Why this helps"},
+  {"action": "Suggestion 2", "reason": "Why this helps"},
+  {"action": "Suggestion 3", "reason": "Why this helps"}
+]
 
-Be concise and actionable.`,
+Be concise, goal-oriented, and actionable.`,
 		len(postsWithoutMedia),
 		len(failedPosts),
 		len(connectedAccounts))

@@ -165,11 +165,21 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		salesGuidance = fmt.Sprintf("\n\nSALES CONVERSATION CONTEXT:\n%s\n\nUse this context to guide your sales approach. Adapt your response based on the sales stage and commitment level.", salesContext)
 	}
 	
+	// Template: #8 GenerateCustomerReply (customer-facing reply generation)
 	task := fmt.Sprintf(`%s
 
 %s
 
-Task: Reply to the latest customer message on %s.
+Task: Generate a reply to the customer's message on %s.
+
+Conversation history: {{history}}
+
+Customer message: "%s"
+
+Detected intent: %s
+Formatting notes: %s
+
+%s%s
 
 CRITICAL: Write like a real human customer service rep would - natural, empathetic, and genuinely helpful.
 - Vary your sentence structure (mix short responses with longer explanations when needed)
@@ -180,37 +190,30 @@ CRITICAL: Write like a real human customer service rep would - natural, empathet
 - Match their energy - if they're casual, be casual; if they're serious, be appropriately serious
 - Don't be overly polished or generic - sound like a real person
 
-NIGERIAN ENGLISH AWARENESS: Many customers may use Nigerian English or Pidgin patterns. 
+Nigerian English Awareness: Many customers may use Nigerian English or Pidgin patterns. 
 
-Style: Casual professional - friendly, approachable, use SIMPLE vocabulary (avoid complex words). Follow Nigerian conversation patterns - direct, warm, natural flow.
+Style: Casual professional - friendly, approachable, use simple vocabulary (avoid complex words). Follow Nigerian conversation patterns - direct, warm, natural flow.
 
 Address customers respectfully - use their name when available (e.g., "Good morning John") or "sir/ma" when you can determine gender. If gender is unclear, use their name directly or neutral friendly language. Understand common phrases like "How far?", "Well done", "I am coming", and that "sorry" means empathy/acknowledgment, not just apology. 
 
 CRITICAL: 
 - NEVER respond in Pidgin English
-- Use SIMPLE, everyday words - keep it easy to understand
+- Use simple, everyday words - keep it easy to understand
 - Casual professional tone - friendly, not stiff
 - Nigerian conversation pattern - direct, warm, natural
 - Do NOT use Pidgin words like "sha", "abi", "na so", "dey", "go come", etc.
 - Use customer's name when available - more personal and respectful
 - If uncertain about gender, use name directly - it's okay to not use sir/ma
 
-Use the conversation history above as context.
-
-%s%s
-
-Detected intent: %s
-Formatting notes: %s
-
-Customer message: %s`,
+Reply courteously and empathetically to address their issue. Acknowledge their feelings and provide solutions.`,
 		intro,
 		brandContext,
 		strings.ToUpper(platform),
-		businessContext,
-		salesGuidance,
+		message,
 		intent,
 		formatHint,
-		message,
+		businessContext,
+		salesGuidance,
 	)
 
 	messages = append(messages, Message{Role: "user", Content: task})
