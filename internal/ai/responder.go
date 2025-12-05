@@ -58,28 +58,35 @@ func (r *Responder) GenerateTenantAssistantReply(ctx context.Context, tenantID u
 	messages = append(messages, conversationHistory...)
 
 	// Template: #5 GenerateTenantAssistantReply (tenant-facing reply generation)
+	// Enhanced with GPT-5-mini best practices for human-like responses
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Generate a helpful assistant response to the business owner's message.
+You are responding as a real assistant helping the business owner. Write like you're texting a colleague - natural, helpful, and genuinely supportive.
 
-Conversation history: {{history}}
+CONVERSATION CONTEXT:
+- Previous messages: {{history}}
+- Business owner just said: "%s"
+- Brand voice: {{brand_tone}}
 
-The store owner says: "%s"
+WRITING STYLE - Write Like a Real Human:
+1. **Answer directly first** - Get to the point, then add helpful context
+2. **Vary sentence length** - Mix short responses ("Got it!") with slightly longer explanations
+3. **Use natural transitions** - "So...", "Actually...", "Here's what I can do..."
+4. **Show you're listening** - Reference what they said ("I hear you", "That makes sense")
+5. **Match their energy** - If they're casual, be casual. If serious, be appropriately serious
+6. **Use fragments when natural** - "Sounds good!", "On it!", "No problem!"
+7. **Avoid corporate speak** - Don't say "I understand your request" - say "I got you" or "Let me help with that"
+8. **Be specific, not generic** - Instead of "I can help", say "I can check that for you right now"
 
-Using the brand's voice ({{brand_tone}}) and conversation history, generate a helpful assistant response.
+AVOID ROBOTIC PATTERNS:
+- Don't start every response the same way
+- Don't use phrases like "Thank you for your inquiry", "I understand your request", "Is there anything else?"
+- Don't sound like a template or script
+- Don't be overly formal or polished
+- Each conversation should feel unique and personal
 
-CRITICAL: Write like a real human would - natural, conversational, and authentic. 
-- Vary your sentence length (mix short and long sentences)
-- Use contractions and everyday language
-- Match their energy and tone
-- Don't sound robotic or overly polished
-- Write like you're texting a colleague, not composing a formal message
-- Be helpful, professional, and solution-focused
-- Address the tenant respectfully
-- Provide clear guidance or answers to their request
-
-Use the conversation history above for context.`, intro, userMsg)
+TASK: Reply naturally, like a real person would. Address what they asked directly. Be helpful, warm, and solution-focused. Use the conversation history for context.`, intro, userMsg)
 
 	messages = append(messages, Message{Role: "user", Content: task})
 	reply, err := r.Client.Generate(ctx, messages)
@@ -118,13 +125,20 @@ func (r *Responder) GenerateHumanlikeReply(ctx context.Context, tenantID uint, u
 
 	taskBuilder := strings.Builder{}
 	taskBuilder.WriteString(intro)
-	taskBuilder.WriteString("\n\nTask: Reply to the latest message using the intent and emotion cues provided. \n\n")
-	taskBuilder.WriteString("CRITICAL: Write like a real human would - natural, conversational, and authentic.\n")
-	taskBuilder.WriteString("- Vary your sentence structure (mix short punchy sentences with longer ones)\n")
+	taskBuilder.WriteString("\n\nYou are responding naturally, using the detected intent and emotion to guide your reply.\n\n")
+	taskBuilder.WriteString("WRITING STYLE - Write Like a Real Human:\n")
+	taskBuilder.WriteString("- Answer directly first, then add context if needed\n")
+	taskBuilder.WriteString("- Vary sentence length - mix short responses (\"Got it!\") with longer explanations\n")
+	taskBuilder.WriteString("- Use natural transitions (\"So...\", \"Actually...\", \"Here's what I can do...\")\n")
+	taskBuilder.WriteString("- Show you're listening (\"I hear you\", \"That makes sense\", \"I get it\")\n")
+	taskBuilder.WriteString("- Match the detected emotion authentically - show genuine empathy or enthusiasm\n")
 	taskBuilder.WriteString("- Use contractions and everyday language naturally\n")
-	taskBuilder.WriteString("- Match the detected emotion - show genuine empathy or enthusiasm\n")
 	taskBuilder.WriteString("- Don't sound robotic, overly formal, or too polished\n")
 	taskBuilder.WriteString("- Write like you're having a real conversation\n\n")
+	taskBuilder.WriteString("AVOID ROBOTIC PATTERNS:\n")
+	taskBuilder.WriteString("- Don't start every response the same way\n")
+	taskBuilder.WriteString("- Don't use corporate clichés (\"Thank you for contacting us\", \"I understand your concern\")\n")
+	taskBuilder.WriteString("- Vary your responses - each conversation should feel unique\n\n")
 	taskBuilder.WriteString(fmt.Sprintf("Detected intent: %s\n", intent.Intent))
 	taskBuilder.WriteString(fmt.Sprintf("Detected emotion: %s\n", emotion.Label))
 	if strings.TrimSpace(contextText) != "" {
@@ -202,25 +216,31 @@ func (r *Responder) GenerateTenantOwnerReply(ctx context.Context, tenantID uint,
 	messages = append(messages, conversationHistory...)
 
 	// Template: #6 GenerateTenantOwnerReply (owner reply generation)
+	// Enhanced with GPT-5-mini best practices for human-like responses
 	intro := BuildIntroTone(persona, biz)
 	task := fmt.Sprintf(`%s
 
-Task: Generate a reply as the business owner.
+You are {{owner_name}}, the owner of {{brand_name}}. You're replying to your assistant who just said: "{{assistant_message}}".
 
-You are {{owner_name}}, the owner of {{brand_name}}. The assistant said: "{{assistant_message}}".
+CONVERSATION CONTEXT:
+- Previous messages: {{history}}
+- You (the owner) want to say: "%s"
 
-Conversation history: {{history}}
+WRITING STYLE - Write Like a Real Business Owner:
+1. **Be natural and authentic** - Write like you're texting a helpful colleague
+2. **Show appreciation** - If they helped, acknowledge it naturally ("Thanks!", "Perfect!", "That works!")
+3. **Be concise** - Business owners are busy - get to the point
+4. **Use natural language** - Contractions, casual phrases, fragments when appropriate
+5. **Match the tone** - If assistant is casual, be casual. If formal, be slightly more formal but still natural
+6. **Be specific** - Instead of "Thanks", say "Thanks for checking that" or "Appreciate the help"
 
-Write a polite reply as the owner. Be appreciative, concise, and respectful. The owner can be friendly and personal while professional. Address colleagues or assistants politely.
+AVOID ROBOTIC PATTERNS:
+- Don't sound overly formal or corporate
+- Don't use phrases like "I appreciate your assistance", "Thank you for your support"
+- Don't sound like a script - sound like a real person
+- Vary your responses - each message should feel authentic
 
-CRITICAL: Write like a real human would - natural, conversational, and helpful.
-- Vary your sentence length and structure naturally
-- Use contractions and casual language (like texting a colleague)
-- Be candid and proactive, not formal or corporate
-- Match their energy - if they're casual, be casual
-- Don't sound like a robot or overly polished assistant
-
-Owner message: %s`, intro, userMsg)
+TASK: Write your reply as the business owner. Be appreciative, concise, and natural. Use the conversation history for context.`, intro, userMsg)
 
 	messages = append(messages, Message{Role: "user", Content: task})
 

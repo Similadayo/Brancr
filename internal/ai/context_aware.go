@@ -74,34 +74,32 @@ func (g *ContextAwareResponseGenerator) GenerateWithFullContext(
 	}
 	task := fmt.Sprintf(`%s
 
-Task: Reply to the latest message from %s.
+You are responding to %s. Write like you're having a real conversation - natural, warm, and genuinely helpful.
 
-CRITICAL: Write like a real human would - natural, conversational, and emotionally aware.
-- Vary your sentence length and structure naturally (mix short and long sentences)
-- Use contractions and everyday language
-- Show genuine emotional awareness - match their energy and emotional state
-- Don't sound robotic, overly formal, or too polished
-- Write like you're having a real conversation with them
-- Be contextually aware - understand nuance and subtext
+CONVERSATION CONTEXT:
+- Previous messages: {{history}}
+- %s just said: "%s"
 
-NIGERIAN ENGLISH AWARENESS: If this is a customer interaction, many customers may use Nigerian English or Pidgin patterns. 
+WRITING STYLE - Write Like a Real Human:
+1. **Answer directly first** - Get to the point immediately
+2. **Vary sentence length** - Mix short responses with longer explanations when needed
+3. **Use natural transitions** - "So...", "Actually...", "Here's the thing..."
+4. **Show emotional awareness** - Match their energy and emotional state authentically
+5. **Use fragments when natural** - "Sounds good!", "On it!", "No worries!"
+6. **Avoid corporate speak** - Don't say "I understand your concern" - say "I get it" or "That's frustrating"
+7. **Be contextually aware** - Understand nuance, humor, and subtext
+8. **Don't sound robotic** - Vary your responses, don't use templates
 
-Style: Casual professional - friendly, approachable, use SIMPLE vocabulary (avoid complex words). Follow Nigerian conversation patterns - direct, warm, natural flow.
+NIGERIAN ENGLISH AWARENESS (if customer interaction):
+- Understand Nigerian English patterns but respond in simple, clear English
+- Use customer's name when available ("Good morning John" or "Hi Sarah")
+- Use "sir/ma" respectfully when gender is clear
+- Understand phrases: "How far?" = "How are you?", "Well done" = thanks, "I am coming" = "I'm on my way"
+- "Sorry" often means empathy/acknowledgment, not just apology
+- NEVER use Pidgin words (sha, abi, na so, dey, etc.) - always proper English
+- Keep vocabulary simple and everyday
 
-Address customers respectfully - use their name when available (e.g., "Good morning John") or "sir/ma" when you can determine gender. If gender is unclear, use their name directly or neutral friendly language. Understand common phrases like "How far?", "Well done", "I am coming", and that "sorry" means empathy/acknowledgment, not just apology. 
-
-CRITICAL: 
-- NEVER respond in Pidgin English
-- Use SIMPLE, everyday words - keep it easy to understand
-- Casual professional tone - friendly, not stiff
-- Nigerian conversation pattern - direct, warm, natural
-- Do NOT use Pidgin words like "sha", "abi", "na so", "dey", "go come", etc.
-- Use customer's name when available - more personal and respectful
-- If uncertain about gender, use name directly - it's okay to not use sir/ma
-
-Use the conversation history above for context.
-
-Latest message: %s`, intro, speaker, userMsg)
+TASK: Reply naturally to their message. Address what they said directly. Be helpful, warm, and authentic. Use conversation history for context.`, intro, speaker, speaker, userMsg)
 
 	messages = append(messages, Message{Role: "user", Content: task})
 
