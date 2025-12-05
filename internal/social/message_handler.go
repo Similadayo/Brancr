@@ -67,6 +67,38 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg interface{}) er
 
 // processMessageInternal contains the actual message processing logic
 func (h *MessageHandler) processMessageInternal(ctx context.Context, msg IncomingMessage) error {
+	// CRITICAL: Validate message content is not empty
+	// Empty messages cause the AI to generate random responses
+	if strings.TrimSpace(msg.Content) == "" {
+		h.Logger.Error("❌ CRITICAL: Received message with empty content - skipping AI processing",
+			zap.Uint("tenant_id", msg.TenantID),
+			zap.String("platform", msg.Platform),
+			zap.String("customer_id", msg.CustomerID),
+			zap.String("message_id", msg.MessageID),
+			zap.String("message_type", msg.MessageType),
+			zap.Any("metadata", msg.Metadata))
+		// Still track customer and create interaction for record-keeping, but don't generate AI reply
+		customer, err := h.trackCustomer(ctx, msg)
+		if err == nil {
+			// Create interaction with empty content for audit trail
+			interaction := storage.Interaction{
+				TenantID:          msg.TenantID,
+				CustomerID:        customer.ID,
+				Platform:          msg.Platform,
+				Direction:         "incoming",
+				MessageType:       msg.MessageType,
+				Content:           "[EMPTY MESSAGE - Content extraction failed]",
+				PlatformMessageID: msg.MessageID,
+				DetectedIntent:    "unknown",
+				ResponseType:      "skipped",
+				ResponseStatus:    "failed",
+				Metadata:          h.metadataToJSON(msg.Metadata),
+			}
+			h.DB.Create(&interaction)
+		}
+		return fmt.Errorf("message content is empty - cannot generate AI response")
+	}
+
 	// Step 1: Track or create customer
 	customer, err := h.trackCustomer(ctx, msg)
 	if err != nil {

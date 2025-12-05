@@ -678,6 +678,13 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	}
 
 	messageData, _ := payload["message"].(map[string]interface{})
+	if messageData == nil {
+		h.Logger.Warn("⚠️ Message data is nil - cannot extract content",
+			zap.Uint("tenant_id", tenantID),
+			zap.Any("payload", payload))
+		return
+	}
+
 	messageType, _ := messageData["type"].(string)
 
 	// Extract sender name if available
@@ -688,13 +695,61 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 
-	// Extract text content
+	// Extract text content - try multiple formats
 	var content string
+	
+	// Method 1: text.body (nested object)
 	if textData, ok := messageData["text"].(map[string]interface{}); ok {
-		content, _ = textData["body"].(string)
-	} else if textStr, ok := messageData["text"].(string); ok {
-		content = textStr
+		if body, ok := textData["body"].(string); ok && body != "" {
+			content = body
+		}
 	}
+	
+	// Method 2: text as direct string
+	if content == "" {
+		if textStr, ok := messageData["text"].(string); ok && textStr != "" {
+			content = textStr
+		}
+	}
+	
+	// Method 3: Check for "body" directly in messageData
+	if content == "" {
+		if body, ok := messageData["body"].(string); ok && body != "" {
+			content = body
+		}
+	}
+	
+	// Method 4: Check for "content" field
+	if content == "" {
+		if contentStr, ok := messageData["content"].(string); ok && contentStr != "" {
+			content = contentStr
+		}
+	}
+	
+	// CRITICAL: Log if content is still empty - this is the bug!
+	if content == "" {
+		h.Logger.Error("❌ CRITICAL: Failed to extract message content from Gupshup webhook",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("source", source),
+			zap.String("message_type", messageType),
+			zap.Any("message_data", messageData),
+			zap.Any("full_payload", payload),
+			zap.String("raw_envelope", fmt.Sprintf("%+v", envelope)))
+		// Don't process empty messages - they'll cause random AI responses
+		return
+	}
+	
+	h.Logger.Info("✅ Successfully extracted message content",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("source", source),
+		zap.String("message_type", messageType),
+		zap.String("content_preview", func() string {
+			if len(content) > 100 {
+				return content[:100] + "..."
+			}
+			return content
+		}()),
+		zap.Int("content_length", len(content)))
 
 	// Extract timestamp
 	timestamp := time.Now()
