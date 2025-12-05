@@ -147,20 +147,40 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 		Path:   "/v2/auth/authorize/",
 	}
 
+	// Validate scopes before proceeding
+	if len(h.Scopes) == 0 {
+		h.Logger.Error("TikTok OAuth failed: no scopes configured",
+			zap.Uint("tenant_id", tenantID))
+		http.Error(w, "TikTok OAuth configuration error: no scopes available", http.StatusInternalServerError)
+		return
+	}
+
+	// TikTok OAuth requires space-separated scopes in the URL parameter
+	scopeString := strings.Join(h.Scopes, " ")
+	if scopeString == "" {
+		h.Logger.Error("TikTok OAuth failed: empty scope string",
+			zap.Uint("tenant_id", tenantID),
+			zap.Strings("scopes", h.Scopes))
+		http.Error(w, "TikTok OAuth configuration error: invalid scopes", http.StatusInternalServerError)
+		return
+	}
+
 	params := url.Values{}
 	params.Set("client_key", h.ClientKey)
-	// TikTok OAuth requires space-separated scopes, not comma-separated
-	params.Set("scope", strings.Join(h.Scopes, " "))
+	params.Set("scope", scopeString)
 	params.Set("redirect_uri", h.RedirectURI)
 	params.Set("response_type", "code")
 	params.Set("state", stateToken)
 	params.Set("code_challenge", codeChallenge)
 	params.Set("code_challenge_method", "S256")
-	
-	// Log scopes for debugging
-	h.Logger.Info("TikTok OAuth scopes",
-		zap.String("scopes", strings.Join(h.Scopes, " ")),
-		zap.Strings("scope_list", h.Scopes))
+
+	// Log scopes for debugging (before URL encoding)
+	h.Logger.Info("TikTok OAuth request",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("scope_string", scopeString),
+		zap.Strings("scope_list", h.Scopes),
+		zap.String("client_key", h.ClientKey),
+		zap.String("redirect_uri", h.RedirectURI))
 
 	authURL.RawQuery = params.Encode()
 
