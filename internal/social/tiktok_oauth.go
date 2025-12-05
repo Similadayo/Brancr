@@ -184,12 +184,14 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Join with single space (TikTok requires space-separated, not comma-separated)
-	scopeString := strings.Join(validScopes, " ")
+	// TikTok Login Kit for Web requires COMMA-SEPARATED scopes, not space-separated
+	// According to official documentation: https://developers.tiktok.com/doc/login-kit-web
+	// "scope: A comma (,) separated string of authorization scope(s)."
+	scopeString := strings.Join(validScopes, ",")
 
 	params := url.Values{}
 	params.Set("client_key", h.ClientKey)
-	// Set scope parameter - url.Values.Encode() will URL-encode spaces as + (valid for query params)
+	// Set scope parameter - comma-separated as per TikTok Login Kit documentation
 	params.Set("scope", scopeString)
 	params.Set("redirect_uri", h.RedirectURI)
 	params.Set("response_type", "code")
