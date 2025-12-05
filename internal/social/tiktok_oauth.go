@@ -41,16 +41,26 @@ func NewTikTokOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config) 
 		return nil
 	}
 
+	// Parse scopes from comma-separated env var
 	scopeParts := strings.Split(cfg.TikTokScopes, ",")
 	scopes := make([]string, 0, len(scopeParts))
 	scopeSet := make(map[string]struct{})
 	for _, raw := range scopeParts {
-		if trimmed := strings.TrimSpace(raw); trimmed != "" {
-			key := strings.ToLower(trimmed)
-			if _, exists := scopeSet[key]; !exists {
-				scopes = append(scopes, trimmed)
-				scopeSet[key] = struct{}{}
-			}
+		// Trim whitespace and validate scope format
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		// Validate scope format (should be lowercase with dots, e.g., "user.info.basic")
+		if !isValidTikTokScope(trimmed) {
+			logger.Warn("Invalid TikTok scope format, skipping",
+				zap.String("scope", trimmed))
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := scopeSet[key]; !exists {
+			scopes = append(scopes, trimmed)
+			scopeSet[key] = struct{}{}
 		}
 	}
 	if len(scopes) == 0 {
@@ -155,18 +165,31 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// TikTok OAuth requires space-separated scopes in the URL parameter
-	scopeString := strings.Join(h.Scopes, " ")
-	if scopeString == "" {
-		h.Logger.Error("TikTok OAuth failed: empty scope string",
+	// TikTok OAuth v2 requires space-separated scopes in the URL parameter
+	// According to TikTok documentation: scopes should be space-separated, not comma-separated
+	// Clean and validate each scope before joining
+	validScopes := make([]string, 0, len(h.Scopes))
+	for _, scope := range h.Scopes {
+		trimmed := strings.TrimSpace(scope)
+		if trimmed != "" && isValidTikTokScope(trimmed) {
+			validScopes = append(validScopes, trimmed)
+		}
+	}
+
+	if len(validScopes) == 0 {
+		h.Logger.Error("TikTok OAuth failed: no valid scopes after validation",
 			zap.Uint("tenant_id", tenantID),
-			zap.Strings("scopes", h.Scopes))
-		http.Error(w, "TikTok OAuth configuration error: invalid scopes", http.StatusInternalServerError)
+			zap.Strings("original_scopes", h.Scopes))
+		http.Error(w, "TikTok OAuth configuration error: no valid scopes available", http.StatusInternalServerError)
 		return
 	}
 
+	// Join with single space (TikTok requires space-separated, not comma-separated)
+	scopeString := strings.Join(validScopes, " ")
+
 	params := url.Values{}
 	params.Set("client_key", h.ClientKey)
+	// Set scope parameter - url.Values will automatically URL-encode spaces as %20
 	params.Set("scope", scopeString)
 	params.Set("redirect_uri", h.RedirectURI)
 	params.Set("response_type", "code")
@@ -175,17 +198,27 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 	params.Set("code_challenge_method", "S256")
 
 	// Log scopes for debugging (before URL encoding)
+	// SECURITY: Do not log sensitive credentials (client_key, client_secret, redirect_uri)
 	h.Logger.Info("TikTok OAuth request",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("scope_string", scopeString),
 		zap.Strings("scope_list", h.Scopes),
-		zap.String("client_key", h.ClientKey),
-		zap.String("redirect_uri", h.RedirectURI))
+		zap.Bool("client_key_set", h.ClientKey != ""),
+		zap.Bool("redirect_uri_set", h.RedirectURI != ""))
 
 	authURL.RawQuery = params.Encode()
 
-	h.Logger.Info("Redirecting to TikTok OAuth", zap.Uint("tenant_id", tenantID))
-	http.Redirect(w, r, authURL.String(), http.StatusFound)
+	// Log the final URL for debugging (without sensitive data)
+	finalURL := authURL.String()
+	// Mask client_key in logged URL for security
+	logURL := strings.ReplaceAll(finalURL, h.ClientKey, "***MASKED***")
+
+	h.Logger.Info("Redirecting to TikTok OAuth",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("auth_url_masked", logURL),
+		zap.String("scope_param", params.Get("scope")))
+
+	http.Redirect(w, r, finalURL, http.StatusFound)
 }
 
 // Callback handles the TikTok OAuth redirect and persists the connected account.
@@ -577,4 +610,20 @@ func generateRandomString(length int) string {
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// isValidTikTokScope validates that a scope string matches TikTok's expected format
+// TikTok scopes are lowercase, dot-separated strings (e.g., "user.info.basic", "video.upload")
+func isValidTikTokScope(scope string) bool {
+	if scope == "" {
+		return false
+	}
+	// Check for valid characters: lowercase letters, numbers, dots, underscores
+	for _, r := range scope {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_') {
+			return false
+		}
+	}
+	// Must contain at least one dot (TikTok scopes are hierarchical)
+	return strings.Contains(scope, ".")
 }
