@@ -345,7 +345,8 @@ type SocialAccount struct {
 	ExternalID         string `gorm:"index"` // Platform-specific external ID used for webhook routing (page_id, instagram_business_account.id, phone_number_id)
 	Connected          bool
 	Mode               string // manual, sandbox, oauth2, provider_owned
-	WebhookVerifyToken string `gorm:"size:100"` // Verification token for webhook setup (Meta requires this)
+	WebhookVerifyToken string `gorm:"size:100"`   // Verification token for webhook setup (Meta requires this)
+	Metadata           string `gorm:"type:jsonb"` // Platform-specific metadata (e.g., TikTok authorized scopes, posting options)
 	CreatedAt          time.Time
 }
 

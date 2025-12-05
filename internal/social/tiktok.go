@@ -103,6 +103,12 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	if asset == nil {
 		return errors.New("tiktok asset payload missing")
 	}
+	
+	// Validate that user has authorized video.upload scope
+	// According to TikTok Content Posting API docs, video.upload scope is required
+	if !t.hasAuthorizedScope(acc, "video.upload") {
+		return fmt.Errorf("tiktok posting requires 'video.upload' scope, but user has not authorized it. Please reconnect your TikTok account and ensure you grant the 'video.upload' permission")
+	}
 
 	// ✅ Check if asset is photo or video
 	// TikTok Business API only supports videos, so we need to convert photos to video
@@ -1947,4 +1953,32 @@ func (t *TikTokConnector) GetEnhancedAnalytics(ctx context.Context, acc *storage
 		zap.Float64("avg_engagement_rate", avgEngagementRate))
 
 	return result, nil
+}
+
+// hasAuthorizedScope checks if the TikTok account has the required scope authorized
+// Scopes are stored in the Metadata field as JSON: {"authorized_scopes": "user.info.basic,video.upload"}
+func (t *TikTokConnector) hasAuthorizedScope(acc *storage.SocialAccount, requiredScope string) bool {
+	if acc == nil || acc.Metadata == "" {
+		return false
+	}
+	
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(acc.Metadata), &metadata); err != nil {
+		return false
+	}
+	
+	scopesStr, ok := metadata["authorized_scopes"].(string)
+	if !ok || scopesStr == "" {
+		return false
+	}
+	
+	// TikTok returns scopes as comma-separated string
+	scopes := strings.Split(scopesStr, ",")
+	for _, scope := range scopes {
+		if strings.TrimSpace(scope) == requiredScope {
+			return true
+		}
+	}
+	
+	return false
 }

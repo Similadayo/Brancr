@@ -506,6 +506,30 @@ func (h *TikTokOAuthHandler) saveTikTokAccount(ctx context.Context, tenantID uin
 			acc.Username = username
 		}
 		acc.ExpiresAt = expiresAt
+
+		// Store authorized scopes in Metadata for later validation
+		// TikTok returns scopes as comma-separated string (e.g., "user.info.basic,video.upload")
+		if tokens.Scope != "" {
+			scopesJSON := fmt.Sprintf(`{"authorized_scopes":"%s"}`, tokens.Scope)
+			if acc.Metadata == "" {
+				acc.Metadata = scopesJSON
+			} else {
+				// Merge with existing metadata
+				var existing map[string]interface{}
+				if err := json.Unmarshal([]byte(acc.Metadata), &existing); err == nil {
+					existing["authorized_scopes"] = tokens.Scope
+					if merged, err := json.Marshal(existing); err == nil {
+						acc.Metadata = string(merged)
+					}
+				} else {
+					// If existing metadata is invalid JSON, replace it
+					acc.Metadata = scopesJSON
+				}
+			}
+			h.Logger.Info("✅ TikTok authorized scopes stored",
+				zap.Uint("tenant_id", tenantID),
+				zap.String("scopes", tokens.Scope))
+		}
 	})
 }
 
