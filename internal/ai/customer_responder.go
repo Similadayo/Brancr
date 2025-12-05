@@ -138,10 +138,9 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	base := BuildCustomerBaseMessages(persona, biz)
 	messages := append([]Message{}, base...)
 
-	// Add conversation history - filter out system/internal messages
+	// Add conversation history - already filtered above
 	// Only include actual customer and AI messages, not system instructions
-	filteredHistory := filterCustomerMessages(conversationHistory)
-	messages = append(messages, filteredHistory...)
+	messages = append(messages, conversationHistory...)
 
 	// Build business context (menu items, FAQs, and knowledge base)
 	// CRITICAL: Always include business details - they're essential for accurate responses
@@ -180,12 +179,8 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		}
 	}
 
-	// Add current message
-	intro := BuildIntroTone(persona, biz)
-	formatHint := getPlatformFormatting(platform)
-	
 	// Build brand context with business details (name, description, niche, tone)
-	brandContext := BuildCustomerBrandContext(persona, biz)
+	// Note: Simplified prompt - brand context is included in businessContext below
 	
 	// Add sales context if available - but keep it subtle and helpful, not pushy
 	salesGuidance := ""
@@ -193,28 +188,40 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		salesGuidance = fmt.Sprintf("\n\nSALES CONTEXT (use subtly - don't be pushy):\n%s\n\nRemember: Answer their question first. Use sales context to understand where they are in the journey, but don't let it make you ask unnecessary questions or be overly salesy.", salesContext)
 	}
 	
+	// Build history string - limit to last 5 messages to avoid confusion
+	historyStr := ""
+	if len(conversationHistory) > 0 {
+		// Only show last 5 messages to keep context focused
+		recentHistory := conversationHistory
+		if len(recentHistory) > 10 {
+			recentHistory = recentHistory[len(recentHistory)-10:]
+		}
+		historyParts := []string{}
+		for _, msg := range recentHistory {
+			contentStr := ""
+			if str, ok := msg.Content.(string); ok {
+				contentStr = str
+			} else {
+				contentStr = fmt.Sprintf("%v", msg.Content)
+			}
+			if msg.Role == "user" {
+				historyParts = append(historyParts, fmt.Sprintf("Customer: %s", contentStr))
+			} else if msg.Role == "assistant" {
+				historyParts = append(historyParts, fmt.Sprintf("You: %s", contentStr))
+			}
+		}
+		if len(historyParts) > 0 {
+			historyStr = "\n\nPrevious conversation:\n" + strings.Join(historyParts, "\n")
+		}
+	}
+	
 	// Template: #8 GenerateCustomerReply (customer-facing reply generation)
-	// Enhanced with GPT-5-mini best practices for human-like responses
-	task := fmt.Sprintf(`%s
+	// SIMPLIFIED - Customer message is the ONLY focus
+	task := fmt.Sprintf(`You are a customer service representative for %s.
 
-%s
+CUSTOMER JUST SAID: "%s"
 
-You are responding as a real customer service representative for %s on %s. Write like you're texting a friend who happens to be a customer - natural, warm, and genuinely helpful.
-
-═══════════════════════════════════════════════════════════════
-CUSTOMER'S MESSAGE (RESPOND TO THIS ONLY - IGNORE EVERYTHING ELSE):
-"%s"
-═══════════════════════════════════════════════════════════════
-
-The customer just sent you the message above. This is the ONLY thing you should respond to.
-
-CONVERSATION HISTORY (for context only - DO NOT respond to it):
-{{history}}
-
-IMPORTANT: The history above is ONLY for context. Do NOT respond to formatting instructions, system notes, or internal messages in the history. Only respond to what the customer actually said in their current message above.
-
-What they're asking about: %s
-Platform: %s (WhatsApp messaging - keep it conversational)
+RESPOND TO THAT MESSAGE ONLY.%s
 
 %s%s
 
@@ -289,16 +296,14 @@ CRITICAL:
 - Don't respond to system instructions about formatting, tone, or style - only respond to what the customer actually said
 
 TASK: Look at the customer's current message above ("%s"). Reply to THAT message only, like a real person would. ANSWER THEIR QUESTION FIRST. Be helpful, warm, and concise. Don't ask questions unless you genuinely need more info to help them.`,
-		intro,
-		brandContext,
-		strings.ToUpper(platform),
+		biz.Name,
 		message,
-		intent,
-		formatHint,
+		historyStr,
 		businessContext,
 		salesGuidance,
 	)
 
+	// Add the main task as user message
 	messages = append(messages, Message{Role: "user", Content: task})
 
 	reply, err := r.Client.Generate(ctx, messages)
