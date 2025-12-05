@@ -85,8 +85,23 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	conversation, err := h.createOrGetConversation(ctx, msg, customer.ID)
 	var conversationID uint
 	if err != nil {
-		h.Logger.Error("failed to create/get conversation", zap.Error(err))
-		// Continue anyway - conversation is not critical for processing
+		h.Logger.Error("failed to create/get conversation, retrying with fallback", zap.Error(err))
+		// CRITICAL: Conversation is required for inbox to work - retry with fallback
+		// Try to create conversation again with more lenient matching
+		if fallbackConv, fallbackErr := h.createConversationFallback(ctx, msg, customer.ID); fallbackErr == nil {
+			conversation = fallbackConv
+			conversationID = conversation.ID
+			h.Logger.Info("✅ Created conversation using fallback method",
+				zap.Uint("conversation_id", conversationID),
+				zap.String("platform", msg.Platform))
+		} else {
+			h.Logger.Error("❌ CRITICAL: Failed to create conversation even with fallback - messages will not appear in inbox",
+				zap.Error(fallbackErr),
+				zap.Uint("tenant_id", msg.TenantID),
+				zap.Uint("customer_id", customer.ID),
+				zap.String("platform", msg.Platform))
+			// Still continue - we'll try to link interaction later
+		}
 	} else {
 		conversationID = conversation.ID
 	}
@@ -111,6 +126,25 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 
 	if err := h.DB.Create(&interaction).Error; err != nil {
 		h.Logger.Error("failed to log interaction", zap.Error(err))
+	} else if interaction.ConversationID == 0 {
+		// CRITICAL: If interaction was created without conversation_id, try to link it now
+		h.Logger.Warn("⚠️ Interaction created without conversation_id - attempting to link",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("tenant_id", msg.TenantID),
+			zap.Uint("customer_id", customer.ID),
+			zap.String("platform", msg.Platform))
+		
+		// Try to find or create conversation again
+		if conv, convErr := h.createOrGetConversation(ctx, msg, customer.ID); convErr == nil && conv != nil {
+			interaction.ConversationID = conv.ID
+			if updateErr := h.DB.Model(&interaction).Update("conversation_id", conv.ID).Error; updateErr == nil {
+				h.Logger.Info("✅ Linked interaction to conversation",
+					zap.Uint("interaction_id", interaction.ID),
+					zap.Uint("conversation_id", conv.ID))
+				conversationID = conv.ID
+				conversation = conv
+			}
+		}
 	}
 
 	// Update conversation last message time
@@ -146,7 +180,6 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			zap.String("intent", intent.Intent),
 			zap.String("tone", intent.Tone),
 			zap.Float64("confidence", intent.Confidence))
-		h.sendEscalationClarityMessage(ctx, msg, customer)
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
@@ -156,7 +189,6 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		h.Logger.Info("⚠️ Confidence too low for auto-reply, escalating",
 			zap.Float64("confidence", intent.Confidence),
 			zap.String("intent", intent.Intent))
-		h.sendEscalationClarityMessage(ctx, msg, customer)
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
@@ -169,7 +201,6 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	if err != nil {
 		h.Logger.Error("failed to generate reply", zap.Error(err))
 		// If reply generation fails, escalate as fallback
-		h.sendEscalationClarityMessage(ctx, msg, customer)
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
@@ -399,6 +430,51 @@ func (h *MessageHandler) createOrGetConversation(ctx context.Context, msg Incomi
 		zap.String("platform", msg.Platform),
 		zap.String("thread_id", platformThreadID))
 
+	return &conversation, nil
+}
+
+// createConversationFallback creates a conversation with more lenient matching (for cases where normal creation fails)
+func (h *MessageHandler) createConversationFallback(ctx context.Context, msg IncomingMessage, customerID uint) (*storage.Conversation, error) {
+	// Try to find existing conversation by tenant + customer + platform (without thread_id matching)
+	var existing storage.Conversation
+	err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?",
+		msg.TenantID, customerID, msg.Platform).
+		Order("created_at DESC").First(&existing).Error
+	
+	if err == nil {
+		// Found existing conversation - update it
+		existing.LastMessageAt = msg.Timestamp
+		existing.Status = "active"
+		// Update platform_thread_id if it's empty or different
+		if existing.PlatformThreadID == "" || existing.PlatformThreadID != msg.ThreadID {
+			existing.PlatformThreadID = msg.ThreadID
+		}
+		h.DB.Save(&existing)
+		return &existing, nil
+	}
+	
+	// Create new conversation with fallback thread ID
+	platformThreadID := msg.ThreadID
+	if platformThreadID == "" {
+		platformThreadID = msg.CustomerID
+	}
+	if platformThreadID == "" {
+		platformThreadID = fmt.Sprintf("%s_%d", msg.Platform, customerID)
+	}
+	
+	conversation := storage.Conversation{
+		TenantID:         msg.TenantID,
+		CustomerID:       customerID,
+		Platform:         msg.Platform,
+		PlatformThreadID: platformThreadID,
+		Status:           "active",
+		LastMessageAt:    msg.Timestamp,
+	}
+	
+	if err := h.DB.Create(&conversation).Error; err != nil {
+		return nil, fmt.Errorf("failed to create conversation (fallback): %w", err)
+	}
+	
 	return &conversation, nil
 }
 

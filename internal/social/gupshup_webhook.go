@@ -283,6 +283,7 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 				PageID:     phoneNumberID,
 				ExternalID: phoneNumberID,
 				Connected:  isConnected,
+				Metadata:   "{}", // Initialize Metadata as empty JSON object (required for JSONB)
 			}
 			if token != "" {
 				encrypted, _ := encryptToken(token)
@@ -306,6 +307,10 @@ func (h *GupshupWebhookHandler) HandleRedirect(w http.ResponseWriter, r *http.Re
 		if token != "" {
 			encrypted, _ := encryptToken(token)
 			account.AccessToken = encrypted
+		}
+		// Ensure Metadata is valid JSON (empty string is invalid for JSONB)
+		if account.Metadata == "" {
+			account.Metadata = "{}"
 		}
 		if err := h.DB.Save(&account).Error; err != nil {
 			h.Logger.Warn("failed to update SocialAccount", zap.Error(err))
@@ -1119,6 +1124,10 @@ func (h *GupshupWebhookHandler) handleAccountEvent(ctx context.Context, tenantID
 			account.PageID = app.PhoneNumberID
 			account.ExternalID = app.PhoneNumberID
 			account.Connected = (app.Status == "live" && app.PhoneNumber != "")
+			// Ensure Metadata is valid JSON (empty string is invalid for JSONB)
+			if account.Metadata == "" {
+				account.Metadata = "{}"
+			}
 			if err := h.DB.Save(&account).Error; err != nil {
 				h.Logger.Warn("failed to update SocialAccount after account event", zap.Error(err))
 			}
@@ -1305,6 +1314,10 @@ func (h *GupshupWebhookHandler) updateAppFromOnboardingEvent(tenantID uint, appI
 			account.PageID = app.PhoneNumberID
 			account.ExternalID = app.PhoneNumberID
 			account.Connected = (app.Status == "live" && app.PhoneNumber != "")
+			// Ensure Metadata is valid JSON (empty string is invalid for JSONB)
+			if account.Metadata == "" {
+				account.Metadata = "{}"
+			}
 			if err := h.DB.Save(&account).Error; err != nil {
 				h.Logger.Warn("failed to update SocialAccount after onboarding event", zap.Error(err))
 			}
@@ -1425,6 +1438,10 @@ func (h *GupshupWebhookHandler) PollPendingApps(ctx context.Context) error {
 						account.PageID = app.PhoneNumberID
 						account.ExternalID = app.PhoneNumberID
 						account.Connected = true
+						// Ensure Metadata is valid JSON (empty string is invalid for JSONB)
+						if account.Metadata == "" {
+							account.Metadata = "{}"
+						}
 						h.DB.Save(&account)
 					}
 				}
