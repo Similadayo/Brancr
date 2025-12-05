@@ -6867,10 +6867,28 @@ func (h *Handler) listTikTokVideos(w http.ResponseWriter, r *http.Request) {
 	// List videos
 	videos, err := tikTokConnector.ListVideos(r.Context(), &acc, maxCount, cursor)
 	if err != nil {
-		h.Logger.Error("failed to list TikTok videos", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": fmt.Sprintf("Failed to list videos: %v", err),
-		})
+		// Extract detailed error information if available
+		errorMsg := err.Error()
+		errorDetails := map[string]any{
+			"error": errorMsg,
+		}
+
+		// Try to extract enhanced error details
+		if enhancedErr, ok := err.(*social.EnhancedTikTokError); ok {
+			errorDetails["code"] = enhancedErr.Code
+			errorDetails["type"] = string(enhancedErr.Type)
+			errorDetails["log_id"] = enhancedErr.LogID
+			if enhancedErr.Message != enhancedErr.UserMessage {
+				errorDetails["details"] = enhancedErr.Message
+			}
+		}
+
+		h.Logger.Error("failed to list TikTok videos",
+			zap.Error(err),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.Any("error_details", errorDetails))
+
+		writeJSON(w, http.StatusInternalServerError, errorDetails)
 		return
 	}
 

@@ -1329,6 +1329,13 @@ func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAcc
 			}
 		}
 		apiErr := parseTikTokError(resp.StatusCode, respBody)
+		// Log the actual TikTok API error for debugging
+		t.Logger.Error("TikTok ListVideos API error",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("error_code", apiErr.Code),
+			zap.String("error_message", apiErr.Message),
+			zap.String("log_id", apiErr.LogID),
+			zap.String("response_body", apiErr.Body))
 		return nil, EnhanceError(apiErr, resp.StatusCode)
 	}
 
