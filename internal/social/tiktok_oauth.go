@@ -189,7 +189,7 @@ func (h *TikTokOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 
 	params := url.Values{}
 	params.Set("client_key", h.ClientKey)
-	// Set scope parameter - url.Values will automatically URL-encode spaces as %20
+	// Set scope parameter - url.Values.Encode() will URL-encode spaces as + (valid for query params)
 	params.Set("scope", scopeString)
 	params.Set("redirect_uri", h.RedirectURI)
 	params.Set("response_type", "code")
