@@ -116,14 +116,14 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	// Add conversation history
 	messages = append(messages, conversationHistory...)
 
-	// Build business context (menu items and FAQs)
+	// Build business context (menu items, FAQs, and knowledge base)
 	var businessContext string
 	if itemsContext != "" {
 		// Use new industry-aware context
-		businessContext = r.buildBusinessContextWithItems(itemsContext, faqs, intent)
+		businessContext = r.buildBusinessContextWithItems(itemsContext, faqs, biz.KnowledgeBase, intent)
 	} else {
 		// Use old BusinessMenuItem context
-		businessContext = r.buildBusinessContext(menuItems, faqs, intent)
+		businessContext = r.buildBusinessContext(menuItems, faqs, biz.KnowledgeBase, intent)
 	}
 
 	// Sales conversation tracking (if enabled)
@@ -156,6 +156,9 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	intro := BuildIntroTone(persona, biz)
 	formatHint := getPlatformFormatting(platform)
 	
+	// Build brand context with business details (name, description, niche, tone)
+	brandContext := BuildCustomerBrandContext(persona, biz)
+	
 	// Add sales context if available
 	salesGuidance := ""
 	if salesContext != "" {
@@ -163,6 +166,8 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	}
 	
 	task := fmt.Sprintf(`%s
+
+%s
 
 Task: Reply to the latest customer message on %s.
 
@@ -199,6 +204,7 @@ Formatting notes: %s
 
 Customer message: %s`,
 		intro,
+		brandContext,
 		strings.ToUpper(platform),
 		businessContext,
 		salesGuidance,
@@ -335,9 +341,21 @@ func (r *CustomerResponder) trackItemsInSalesConversation(ctx context.Context, s
 	// The actual item tracking should happen when AI mentions specific products
 }
 
-// buildBusinessContextWithItems creates context string from industry-aware items and FAQs
-func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, faqs []storage.BusinessFAQ, intent string) string {
+// buildBusinessContextWithItems creates context string from industry-aware items, FAQs, and knowledge base
+func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, faqs []storage.BusinessFAQ, knowledgeBase string, intent string) string {
 	var context strings.Builder
+
+	// Always include knowledge base if available (contains comprehensive business information)
+	if strings.TrimSpace(knowledgeBase) != "" {
+		context.WriteString("\nBUSINESS KNOWLEDGE BASE:\n")
+		// Limit knowledge base to first 2000 characters to avoid token bloat
+		kb := strings.TrimSpace(knowledgeBase)
+		if len(kb) > 2000 {
+			kb = kb[:2000] + "..."
+		}
+		context.WriteString(kb)
+		context.WriteString("\n")
+	}
 
 	// For product/service inquiries, include items
 	if intent == "inquiry" || intent == "order" {
@@ -363,14 +381,26 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 
 	result := context.String()
 	if result != "" {
-		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. If they ask about products/services, reference the items listed. If they ask questions similar to the FAQs, use those answers as a guide (but rephrase naturally).", result)
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. Reference the knowledge base for comprehensive business details, products/services for pricing inquiries, and FAQs for common questions. Always rephrase naturally and conversationally.", result)
 	}
 	return ""
 }
 
-// buildBusinessContext creates context string from menu items and FAQs based on intent (legacy)
-func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, intent string) string {
+// buildBusinessContext creates context string from menu items, FAQs, and knowledge base based on intent (legacy)
+func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, knowledgeBase string, intent string) string {
 	var context strings.Builder
+
+	// Always include knowledge base if available (contains comprehensive business information)
+	if strings.TrimSpace(knowledgeBase) != "" {
+		context.WriteString("\nBUSINESS KNOWLEDGE BASE:\n")
+		// Limit knowledge base to first 2000 characters to avoid token bloat
+		kb := strings.TrimSpace(knowledgeBase)
+		if len(kb) > 2000 {
+			kb = kb[:2000] + "..."
+		}
+		context.WriteString(kb)
+		context.WriteString("\n")
+	}
 
 	// For product/service inquiries, include menu items
 	if intent == "inquiry" || intent == "order" {
@@ -410,7 +440,7 @@ func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMen
 
 	result := context.String()
 	if result != "" {
-		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. If they ask about products/services, reference the menu items. If they ask questions similar to the FAQs, use those answers as a guide (but rephrase naturally).", result)
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. Reference the knowledge base for comprehensive business details, menu items for pricing inquiries, and FAQs for common questions. Always rephrase naturally and conversationally.", result)
 	}
 	return ""
 }
