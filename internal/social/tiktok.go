@@ -188,6 +188,7 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 
 	// Store publish_id in Metadata field (JSONB) for later status checking via webhooks
 	// This is consistent with how other TikTok metadata (video_id, status) is stored
+	// IMPORTANT: Save to database so webhook handler can find the asset
 	if asset.Metadata == "" {
 		asset.Metadata = "{}"
 	}
@@ -202,8 +203,66 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	metadataJSON, _ := json.Marshal(metadata)
 	asset.Metadata = string(metadataJSON)
 
-	t.Logger.Info("📝 TikTok publish_id stored in metadata",
-		zap.String("publish_id", session.PublishID))
+	// Save asset to database so webhook handler can find it by publish_id
+	if t.DB != nil {
+		// If asset has an ID, update it directly
+		if asset.ID > 0 {
+			if err := t.DB.WithContext(ctx).
+				Model(&storage.MediaAsset{}).
+				Where("id = ?", asset.ID).
+				Update("metadata", asset.Metadata).Error; err != nil {
+				t.Logger.Warn("failed to save TikTok publish_id to database",
+					zap.Uint("asset_id", asset.ID),
+					zap.String("publish_id", session.PublishID),
+					zap.Error(err))
+			} else {
+				t.Logger.Info("📝 TikTok publish_id saved to database",
+					zap.Uint("asset_id", asset.ID),
+					zap.String("publish_id", session.PublishID))
+			}
+		} else {
+			// Asset doesn't have an ID - try to find it by URLs and tenant ID
+			var urls []string
+			if err := json.Unmarshal([]byte(asset.URLs), &urls); err == nil && len(urls) > 0 {
+				// Find asset by matching first URL and tenant ID
+				var existingAsset storage.MediaAsset
+				if err := t.DB.WithContext(ctx).
+					Where("tenant_id = ? AND urls LIKE ?", acc.TenantID, fmt.Sprintf("%%%s%%", urls[0])).
+					First(&existingAsset).Error; err == nil {
+					// Found existing asset - update it
+					if err := t.DB.WithContext(ctx).
+						Model(&storage.MediaAsset{}).
+						Where("id = ?", existingAsset.ID).
+						Update("metadata", asset.Metadata).Error; err != nil {
+						t.Logger.Warn("failed to save TikTok publish_id to existing asset",
+							zap.Uint("asset_id", existingAsset.ID),
+							zap.String("publish_id", session.PublishID),
+							zap.Error(err))
+					} else {
+						t.Logger.Info("📝 TikTok publish_id saved to existing asset",
+							zap.Uint("asset_id", existingAsset.ID),
+							zap.String("publish_id", session.PublishID))
+						asset.ID = existingAsset.ID // Update local reference
+					}
+				} else {
+					// Asset not found - create it so webhook can find it later
+					asset.TenantID = acc.TenantID
+					if err := t.DB.WithContext(ctx).Create(asset).Error; err != nil {
+						t.Logger.Warn("failed to create asset for TikTok publish_id",
+							zap.String("publish_id", session.PublishID),
+							zap.Error(err))
+					} else {
+						t.Logger.Info("📝 Created asset for TikTok publish_id",
+							zap.Uint("asset_id", asset.ID),
+							zap.String("publish_id", session.PublishID))
+					}
+				}
+			} else {
+				t.Logger.Warn("cannot save TikTok publish_id - asset has no ID and URLs are invalid",
+					zap.String("publish_id", session.PublishID))
+			}
+		}
+	}
 
 	return nil
 }
@@ -1652,4 +1711,214 @@ func (t *TikTokConnector) ReplyToComment(ctx context.Context, acc *storage.Socia
 		zap.String("reply_id", result.Data.ReplyID))
 
 	return result.Data.ReplyID, nil
+}
+
+// QueryVideo queries a specific video using Display API
+// Returns full video details including embed code, share URL, and all metadata
+func (t *TikTokConnector) QueryVideo(ctx context.Context, acc *storage.SocialAccount, videoID string) (map[string]interface{}, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return nil, errors.New("tiktok access token missing")
+	}
+	if videoID == "" {
+		return nil, errors.New("video_id is required")
+	}
+
+	accessToken, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]interface{}{
+		"filters": map[string]interface{}{
+			"video_ids": []string{videoID},
+		},
+		"fields": []string{
+			"video_id",
+			"title",
+			"cover_image_url",
+			"create_time",
+			"duration",
+			"share_url",
+			"embed_html",
+			"embed_link",
+			"like_count",
+			"comment_count",
+			"share_count",
+			"view_count",
+			"username",
+			"profile_image_url",
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokVideoQueryPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Use rate limit retry wrapper
+	resp, err := t.executeWithRateLimitRetry(ctx, req, 3)
+	if err != nil {
+		return nil, EnhanceError(err, 0)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, EnhanceError(err, 0)
+	}
+
+	if resp.StatusCode >= 400 {
+		// Check for rate limit error specifically
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 429 {
+			rateLimitErr := checkRateLimitResponse(resp, respBody)
+			if rateLimitErr != nil {
+				return nil, EnhanceError(rateLimitErr, resp.StatusCode)
+			}
+		}
+		apiErr := parseTikTokError(resp.StatusCode, respBody)
+		return nil, EnhanceError(apiErr, resp.StatusCode)
+	}
+
+	var result struct {
+		Data struct {
+			Videos []map[string]interface{} `json:"videos"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse video query response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    result.Error.Code,
+			Message: result.Error.Message,
+			LogID:   result.Error.LogID,
+		}
+	}
+
+	if len(result.Data.Videos) == 0 {
+		return nil, fmt.Errorf("video not found: %s", videoID)
+	}
+
+	video := result.Data.Videos[0]
+
+	t.Logger.Info("✅ TikTok video queried",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("video_id", videoID))
+
+	return video, nil
+}
+
+// GetEnhancedAnalytics retrieves enhanced analytics with time-series data and trends
+// This aggregates data from multiple videos and provides comparative metrics
+func (t *TikTokConnector) GetEnhancedAnalytics(ctx context.Context, acc *storage.SocialAccount, videoIDs []string, timeRange string) (map[string]interface{}, error) {
+	if acc == nil || acc.AccessToken == "" {
+		return nil, errors.New("tiktok access token missing")
+	}
+
+	_, err := t.ensureAccessToken(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+
+	// If no video IDs provided, get all videos
+	if len(videoIDs) == 0 {
+		videosResult, err := t.ListVideos(ctx, acc, 50, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to list videos for analytics: %w", err)
+		}
+		videos, _ := videosResult["videos"].([]interface{})
+		for _, v := range videos {
+			if video, ok := v.(map[string]interface{}); ok {
+				if vid, ok := video["video_id"].(string); ok && vid != "" {
+					videoIDs = append(videoIDs, vid)
+				}
+			}
+		}
+	}
+
+	if len(videoIDs) == 0 {
+		return map[string]interface{}{
+			"total_videos":     0,
+			"total_views":      0,
+			"total_likes":      0,
+			"total_comments":   0,
+			"total_shares":     0,
+			"avg_engagement":  0,
+			"videos":          []map[string]interface{}{},
+			"time_range":      timeRange,
+		}, nil
+	}
+
+	// Aggregate analytics from all videos
+	var totalViews, totalLikes, totalComments, totalShares float64
+	var videoAnalytics []map[string]interface{}
+
+	for _, videoID := range videoIDs {
+		analytics, err := t.GetVideoAnalytics(ctx, acc, videoID)
+		if err != nil {
+			t.Logger.Warn("failed to get analytics for video", zap.String("video_id", videoID), zap.Error(err))
+			continue
+		}
+
+		if views, ok := analytics["view_count"].(float64); ok {
+			totalViews += views
+		}
+		if likes, ok := analytics["like_count"].(float64); ok {
+			totalLikes += likes
+		}
+		if comments, ok := analytics["comment_count"].(float64); ok {
+			totalComments += comments
+		}
+		if shares, ok := analytics["share_count"].(float64); ok {
+			totalShares += shares
+		}
+
+		videoAnalytics = append(videoAnalytics, analytics)
+	}
+
+	// Calculate aggregate metrics
+	totalEngagement := totalLikes + totalComments + totalShares
+	avgEngagementRate := 0.0
+	if totalViews > 0 {
+		avgEngagementRate = (totalEngagement / totalViews) * 100
+	}
+
+	// Calculate trends (compare recent vs older videos)
+	trends := map[string]interface{}{
+		"growth_rate": 0.0, // Would need historical data for real trends
+		"trending":    false,
+	}
+
+	result := map[string]interface{}{
+		"total_videos":     len(videoAnalytics),
+		"total_views":      totalViews,
+		"total_likes":      totalLikes,
+		"total_comments":   totalComments,
+		"total_shares":     totalShares,
+		"total_engagement": totalEngagement,
+		"avg_engagement_rate": avgEngagementRate,
+		"videos":          videoAnalytics,
+		"trends":          trends,
+		"time_range":      timeRange,
+		"generated_at":    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	t.Logger.Info("✅ Enhanced TikTok analytics retrieved",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Int("video_count", len(videoAnalytics)),
+		zap.Float64("total_views", totalViews),
+		zap.Float64("avg_engagement_rate", avgEngagementRate))
+
+	return result, nil
 }

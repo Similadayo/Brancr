@@ -406,6 +406,7 @@ func (h *TenantWebhookHandler) handleCustomGroupingInput(bot *tgbotapi.BotAPI, t
 			Status:       "uploaded",
 			Platforms:    "[]",
 			BulkUploadID: bulkSessionID,
+			Metadata:     "{}", // Initialize as empty JSON object (required for JSONB column)
 		}
 
 		if err := bulkManager.DB.Create(&asset).Error; err != nil {
@@ -606,6 +607,7 @@ func (h *TenantWebhookHandler) handleAIGrouping(bot *tgbotapi.BotAPI, tenantID u
 			Status:       "uploaded",
 			Platforms:    "[]",
 			BulkUploadID: bulkSessionID,
+			Metadata:     "{}", // Initialize as empty JSON object (required for JSONB column)
 		}
 
 		if err := bulkManager.DB.Create(&asset).Error; err != nil {

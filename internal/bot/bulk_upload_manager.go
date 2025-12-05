@@ -190,6 +190,7 @@ func (m *BulkUploadManager) SplitIntoCarousels(
 			Status:       "uploaded",
 			Platforms:    "[]",
 			BulkUploadID: bulkSessionID,
+			Metadata:     "{}", // Initialize as empty JSON object (required for JSONB column)
 		}
 
 		if err := m.DB.Create(&asset).Error; err != nil {

@@ -332,7 +332,12 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		s.logPostActivity(p.TenantID, p.ID, platform, "posting", originalCaption, optimizedCaption, "in_progress", "")
 
 		var platformPostID string
-		if err := s.postToPlatform(ctx, p.TenantID, p.ID, platform, urls, optimizedCaption, assetType, &platformPostID); err != nil {
+		// Pass first asset ID so PostMedia can update it with platform-specific metadata (e.g., TikTok publish_id)
+		assetID := uint(0)
+		if len(assets) > 0 {
+			assetID = assets[0].ID
+		}
+		if err := s.postToPlatform(ctx, p.TenantID, p.ID, platform, urls, optimizedCaption, assetType, &platformPostID, assetID); err != nil {
 			s.Logger.Error("post failed",
 				zap.String("platform", platform),
 				zap.Error(err))
@@ -482,7 +487,7 @@ func (s *Scheduler) notifyPostResult(ctx context.Context, tenantID uint, platfor
 	s.PostNotifier(ctx, tenantID, platform, success, message)
 }
 
-func (s *Scheduler) postToPlatform(ctx context.Context, tenantID, scheduledPostID uint, platform string, urls []string, caption string, assetType string, platformPostID *string) error {
+func (s *Scheduler) postToPlatform(ctx context.Context, tenantID, scheduledPostID uint, platform string, urls []string, caption string, assetType string, platformPostID *string, assetID uint) error {
 	// Load tenant's social account for this platform
 	var acc storage.SocialAccount
 	if err := s.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", tenantID, platform, true).
@@ -532,16 +537,42 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID, scheduledPostI
 		return fmt.Errorf("unsupported platform: %s", platform)
 	}
 
-	// Create temporary MediaAsset for posting
+	// Create MediaAsset for posting
+	// If assetID is provided, load the existing asset; otherwise create a temporary one
 	urlsJSON, _ := json.Marshal(urls)
 	if assetType == "" {
 		assetType = inferMediaType("", urls)
 	}
-	asset := &storage.MediaAsset{
-		TenantID: tenantID,
-		Type:     assetType,
-		Caption:  caption,
-		URLs:     string(urlsJSON),
+	
+	var asset *storage.MediaAsset
+	if assetID > 0 {
+		// Load existing asset so we can update it with platform-specific metadata
+		var existingAsset storage.MediaAsset
+		if err := s.DB.First(&existingAsset, assetID).Error; err == nil {
+			asset = &existingAsset
+			// Update URLs and type if needed (in case they changed)
+			asset.URLs = string(urlsJSON)
+			asset.Type = assetType
+			asset.Caption = caption
+		} else {
+			// Asset not found, create temporary one (will be found/created by PostMedia)
+			asset = &storage.MediaAsset{
+				TenantID: tenantID,
+				Type:     assetType,
+				Caption:  caption,
+				URLs:     string(urlsJSON),
+				Metadata: "{}", // Initialize as empty JSON object (required for JSONB column)
+			}
+		}
+	} else {
+		// No asset ID provided, create temporary asset
+		asset = &storage.MediaAsset{
+			TenantID: tenantID,
+			Type:     assetType,
+			Caption:  caption,
+			URLs:     string(urlsJSON),
+			Metadata: "{}", // Initialize as empty JSON object (required for JSONB column)
+		}
 	}
 
 	// Post using platform connector

@@ -274,6 +274,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 		URLs:         string(urlJSON),
 		Status:       "uploaded",
 		Platforms:    "[]",
+		Metadata:     "{}", // Initialize as empty JSON object (required for JSONB column)
 	}
 
 	if err := m.DB.Create(&asset).Error; err != nil {
@@ -361,6 +362,7 @@ func (m *TenantBotManager) ProcessCarouselGroup(ctx context.Context, bot *tgbota
 		URLs:         string(urlJSON),
 		Status:       "uploaded",
 		Platforms:    "[]",
+		Metadata:     "{}", // Initialize as empty JSON object (required for JSONB column)
 	}
 
 	// ✅ Move media from temp_groups to carousels folder
