@@ -75,24 +75,41 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	var menuItems []storage.BusinessMenuItem
 	var itemsContext string
 	
+	// Check if message is about pricing/packages - if so, get ALL items to show complete pricing
+	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") || 
+		strings.Contains(strings.ToLower(message), "price") ||
+		strings.Contains(strings.ToLower(message), "cost") ||
+		strings.Contains(strings.ToLower(message), "package") ||
+		strings.Contains(strings.ToLower(message), "starter") ||
+		strings.Contains(strings.ToLower(message), "plan") ||
+		strings.Contains(strings.ToLower(message), "service") ||
+		strings.Contains(strings.ToLower(message), "what do you offer")
+	
 	// Try to use industry-aware retrieval if available
 	if r.RetrievalService != nil {
-		// Extract query from message for search
-		query := message
-		if len(query) > 50 {
-			query = query[:50] // Limit query length
-		}
-		
-		items, err := r.RetrievalService.SearchItems(ctx, tenantID, query, 10)
-		if err == nil && items != nil {
-			itemsContext = r.RetrievalService.FormatForAI(items)
-		}
-		
-		// If search returned empty, try getting all active items
-		if itemsContext == "" {
-			items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 10)
+		if isPricingQuestion {
+			// For pricing questions, ALWAYS get ALL active items to show complete pricing
+			items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 20) // Get more items for pricing
 			if err == nil && items != nil {
 				itemsContext = r.RetrievalService.FormatForAI(items)
+			}
+		} else {
+			// For other questions, search based on message
+			query := message
+			if len(query) > 50 {
+				query = query[:50] // Limit query length
+			}
+			items, err := r.RetrievalService.SearchItems(ctx, tenantID, query, 10)
+			if err == nil && items != nil {
+				itemsContext = r.RetrievalService.FormatForAI(items)
+			}
+			
+			// If search returned empty, try getting all active items as fallback
+			if itemsContext == "" {
+				items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 10)
+				if err == nil && items != nil {
+					itemsContext = r.RetrievalService.FormatForAI(items)
+				}
 			}
 		}
 	}
@@ -124,13 +141,14 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	messages = append(messages, conversationHistory...)
 
 	// Build business context (menu items, FAQs, and knowledge base)
+	// CRITICAL: Always include business details - they're essential for accurate responses
 	var businessContext string
 	if itemsContext != "" {
 		// Use new industry-aware context
-		businessContext = r.buildBusinessContextWithItems(itemsContext, faqs, biz.KnowledgeBase, intent)
+		businessContext = r.buildBusinessContextWithItems(itemsContext, faqs, biz.KnowledgeBase, intent, message)
 	} else {
 		// Use old BusinessMenuItem context
-		businessContext = r.buildBusinessContext(menuItems, faqs, biz.KnowledgeBase, intent)
+		businessContext = r.buildBusinessContext(menuItems, faqs, biz.KnowledgeBase, intent, message)
 	}
 
 	// Sales conversation tracking (if enabled)
@@ -187,6 +205,13 @@ CONVERSATION CONTEXT:
 - Platform: %s (WhatsApp messaging - keep it conversational)
 
 %s%s
+
+CRITICAL: USE BUSINESS INFORMATION ABOVE
+- The BUSINESS INFORMATION section contains the EXACT menu items, pricing, FAQs, and knowledge base
+- When asked about pricing, use the EXACT prices from menu items (e.g., "Basic Social Media Starter - 50000")
+- When asked about services, reference the knowledge base and FAQs
+- NEVER make up pricing or services - always use what's in the BUSINESS INFORMATION section
+- If they ask "what is your pricing?" or "let me see starter packages", use the menu items/packages listed above
 
 CRITICAL RULES - Answer First, Questions Later:
 1. **ANSWER THEIR QUESTION DIRECTLY FIRST** - If they ask "what is your pricing?", tell them the pricing. If they ask "let me see starter packages", describe or send the packages. Don't ask more questions until you've answered what they asked.
@@ -408,8 +433,25 @@ func (r *CustomerResponder) trackItemsInSalesConversation(ctx context.Context, s
 }
 
 // buildBusinessContextWithItems creates context string from industry-aware items, FAQs, and knowledge base
-func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, faqs []storage.BusinessFAQ, knowledgeBase string, intent string) string {
+func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, faqs []storage.BusinessFAQ, knowledgeBase string, intent string, message string) string {
 	var context strings.Builder
+
+	// Check if message is about pricing/packages/services - if so, ALWAYS include menu items
+	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") || 
+		strings.Contains(strings.ToLower(message), "price") ||
+		strings.Contains(strings.ToLower(message), "cost") ||
+		strings.Contains(strings.ToLower(message), "package") ||
+		strings.Contains(strings.ToLower(message), "starter") ||
+		strings.Contains(strings.ToLower(message), "plan") ||
+		strings.Contains(strings.ToLower(message), "service") ||
+		strings.Contains(strings.ToLower(message), "what do you offer")
+
+	// Always include menu items if available (especially for pricing questions)
+	if itemsContext != "" && (isPricingQuestion || intent == "inquiry" || intent == "order") {
+		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES):\n")
+		context.WriteString(itemsContext)
+		context.WriteString("\n")
+	}
 
 	// Always include knowledge base if available (contains comprehensive business information)
 	if strings.TrimSpace(knowledgeBase) != "" {
@@ -423,38 +465,59 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 		context.WriteString("\n")
 	}
 
-	// For product/service inquiries, include items
-	if intent == "inquiry" || intent == "order" {
-		if itemsContext != "" {
-			context.WriteString("\nAVAILABLE PRODUCTS/SERVICES:\n")
-			context.WriteString(itemsContext)
-			context.WriteString("\n")
-		}
-	}
-
-	// For general inquiries, include relevant FAQs
-	if intent == "inquiry" || intent == "casual" {
-		if len(faqs) > 0 {
-			context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
-			for i, faq := range faqs {
-				if i >= 5 { // Limit to 5 FAQs
-					break
-				}
-				context.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", faq.Question, faq.Answer))
+	// Always include FAQs (they're useful for all inquiries)
+	if len(faqs) > 0 {
+		context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
+		for i, faq := range faqs {
+			if i >= 5 { // Limit to 5 FAQs
+				break
 			}
+			context.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", faq.Question, faq.Answer))
 		}
 	}
 
 	result := context.String()
 	if result != "" {
-		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. Reference the knowledge base for comprehensive business details, products/services for pricing inquiries, and FAQs for common questions. Always rephrase naturally and conversationally.", result)
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nCRITICAL: Use the EXACT pricing, services, and information from above. When asked about pricing, quote the exact prices from AVAILABLE PRODUCTS/SERVICES. When asked about services, reference the knowledge base and FAQs. Never make up pricing or services.", result)
 	}
 	return ""
 }
 
 // buildBusinessContext creates context string from menu items, FAQs, and knowledge base based on intent (legacy)
-func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, knowledgeBase string, intent string) string {
+func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMenuItem, faqs []storage.BusinessFAQ, knowledgeBase string, intent string, message string) string {
 	var context strings.Builder
+
+	// Check if message is about pricing/packages/services - if so, ALWAYS include menu items
+	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") || 
+		strings.Contains(strings.ToLower(message), "price") ||
+		strings.Contains(strings.ToLower(message), "cost") ||
+		strings.Contains(strings.ToLower(message), "package") ||
+		strings.Contains(strings.ToLower(message), "starter") ||
+		strings.Contains(strings.ToLower(message), "plan") ||
+		strings.Contains(strings.ToLower(message), "service") ||
+		strings.Contains(strings.ToLower(message), "what do you offer")
+
+	// Always include menu items if available (especially for pricing questions)
+	if len(menuItems) > 0 && (isPricingQuestion || intent == "inquiry" || intent == "order") {
+		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES):\n")
+		for i, item := range menuItems {
+			if i >= 10 { // Limit to 10 items to avoid token bloat
+				break
+			}
+			context.WriteString(fmt.Sprintf("- %s", item.Name))
+			if item.Category != "" {
+				context.WriteString(fmt.Sprintf(" (%s)", item.Category))
+			}
+			if item.Price != "" {
+				context.WriteString(fmt.Sprintf(" - %s", item.Price))
+			}
+			if item.Description != "" {
+				context.WriteString(fmt.Sprintf(": %s", item.Description))
+			}
+			context.WriteString("\n")
+		}
+		context.WriteString("\n")
+	}
 
 	// Always include knowledge base if available (contains comprehensive business information)
 	if strings.TrimSpace(knowledgeBase) != "" {
@@ -468,45 +531,20 @@ func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMen
 		context.WriteString("\n")
 	}
 
-	// For product/service inquiries, include menu items
-	if intent == "inquiry" || intent == "order" {
-		if len(menuItems) > 0 {
-			context.WriteString("\nAVAILABLE PRODUCTS/SERVICES:\n")
-			for i, item := range menuItems {
-				if i >= 10 { // Limit to 10 items to avoid token bloat
-					break
-				}
-				context.WriteString(fmt.Sprintf("- %s", item.Name))
-				if item.Category != "" {
-					context.WriteString(fmt.Sprintf(" (%s)", item.Category))
-				}
-				if item.Price != "" {
-					context.WriteString(fmt.Sprintf(" - %s", item.Price))
-				}
-				if item.Description != "" {
-					context.WriteString(fmt.Sprintf(": %s", item.Description))
-				}
-				context.WriteString("\n")
+	// Always include FAQs (they're useful for all inquiries)
+	if len(faqs) > 0 {
+		context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
+		for i, faq := range faqs {
+			if i >= 5 { // Limit to 5 FAQs
+				break
 			}
-		}
-	}
-
-	// For general inquiries, include relevant FAQs
-	if intent == "inquiry" || intent == "casual" {
-		if len(faqs) > 0 {
-			context.WriteString("\nFREQUENTLY ASKED QUESTIONS:\n")
-			for i, faq := range faqs {
-				if i >= 5 { // Limit to 5 FAQs
-					break
-				}
-				context.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", faq.Question, faq.Answer))
-			}
+			context.WriteString(fmt.Sprintf("Q: %s\nA: %s\n", faq.Question, faq.Answer))
 		}
 	}
 
 	result := context.String()
 	if result != "" {
-		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nUse this information to answer customer questions accurately. Reference the knowledge base for comprehensive business details, menu items for pricing inquiries, and FAQs for common questions. Always rephrase naturally and conversationally.", result)
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nCRITICAL: Use the EXACT pricing, services, and information from above. When asked about pricing, quote the exact prices from AVAILABLE PRODUCTS/SERVICES. When asked about services, reference the knowledge base and FAQs. Never make up pricing or services.", result)
 	}
 	return ""
 }
