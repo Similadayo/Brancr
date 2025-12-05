@@ -85,11 +85,11 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	// Public OAuth (start/callback)
-	r.Route("/oauth", func(r chi.Router) {
-		r.Get("/{platform}/start", h.oauthStart)
-		r.Get("/{platform}/callback", h.oauthCallback)
-	})
+	// Note: OAuth endpoints are registered in core/router.go:
+	// - GET /api/oauth/meta/start -> MetaOAuthHandler.StartOAuth
+	// - GET /api/oauth/meta/callback -> MetaOAuthHandler.Callback
+	// - GET /api/oauth/tiktok/start -> TikTokOAuthHandler.StartOAuth
+	// - GET /api/oauth/tiktok/callback -> TikTokOAuthHandler.Callback
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/signup", h.signup)
@@ -99,6 +99,13 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Use(middleware.TenantAuth([]byte(h.Config.TenantJWTSecret), SessionCookie))
 			r.Get("/me", h.me)
 		})
+	})
+
+	// Customer Portal (public, token-based access)
+	r.Route("/portal", func(r chi.Router) {
+		r.Get("/order", h.getOrderByPortalToken)
+		r.Get("/receipt", h.getReceiptByPortalToken)
+		r.Get("/orders", h.listCustomerOrders)
 	})
 
 	r.Group(func(r chi.Router) {
@@ -187,12 +194,14 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/orders/{id}", h.getOrder)
 		r.Put("/tenant/orders/{id}", h.updateOrder)
 		r.Put("/tenant/orders/{id}/confirm-payment", h.confirmOrderPayment)
+		r.Get("/tenant/orders/{orderId}/portal-token", h.generatePortalToken)
 		r.Get("/tenant/orders/stats", h.getOrderStats)
 
 		// Payment management
 		r.Get("/tenant/payments", h.listPayments)
 		r.Get("/tenant/payments/{id}", h.getPayment)
 		r.Put("/tenant/payments/{id}/verify", h.verifyPayment)
+		r.Post("/tenant/payments/{id}/generate-receipt", h.generateReceipt)
 		r.Put("/tenant/payments/{id}/dispute", h.disputePayment)
 
 		// WhatsApp provider-owned model (new)
@@ -293,35 +302,12 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	})
 }
 
-// OAuth start: placeholder URL generation
-func (h *Handler) oauthStart(w http.ResponseWriter, r *http.Request) {
-	platform := chi.URLParam(r, "platform")
-	tenantID := r.URL.Query().Get("tenant_id")
-	success := r.URL.Query().Get("success_redirect")
-	if platform == "" || tenantID == "" {
-		http.Error(w, "platform and tenant_id required", http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"platform":         platform,
-		"auth_url":         fmt.Sprintf("https://auth.%s.brancr.com/start?tenant_id=%s", platform, url.QueryEscape(tenantID)),
-		"success_redirect": success,
-	})
-}
-
-// OAuth callback: stub
-func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	platform := chi.URLParam(r, "platform")
-	code := r.URL.Query().Get("code")
-	if platform == "" || code == "" {
-		http.Error(w, "platform and code required", http.StatusBadRequest)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"platform": platform,
-		"message":  "OAuth callback received",
-	})
-}
+// OAuth handlers are implemented in internal/social/meta_oauth.go and internal/social/tiktok_oauth.go
+// and registered in internal/core/router.go as:
+// - GET /api/oauth/meta/start -> MetaOAuthHandler.StartOAuth
+// - GET /api/oauth/meta/callback -> MetaOAuthHandler.Callback
+// - GET /api/oauth/tiktok/start -> TikTokOAuthHandler.StartOAuth
+// - GET /api/oauth/tiktok/callback -> TikTokOAuthHandler.Callback
 
 type signupRequest struct {
 	Name        string `json:"name"`
@@ -762,7 +748,7 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 
 	// Optional status filter from query parameter
 	statusFilter := r.URL.Query().Get("status")
-	
+
 	query := h.DB.Where("tenant_id = ?", claims.TenantID)
 	if statusFilter != "" {
 		query = query.Where("status = ?", statusFilter)
@@ -3704,7 +3690,7 @@ func (h *Handler) createMedia(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	tags := r.FormValue("tags") // Comma-separated
 	campaign := r.FormValue("campaign")
-	
+
 	// Get TikTok posting options (if provided)
 	tiktokDisableDuet := r.FormValue("tiktok_disable_duet") == "true"
 	tiktokDisableStitch := r.FormValue("tiktok_disable_stitch") == "true"
@@ -6198,7 +6184,7 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 		// Don't mark as connected just because subscription is active - that happens during onboarding
 		hasMetadata := gupshupApp.WABAID != "" || gupshupApp.PhoneNumber != ""
 		connected := gupshupApp.Status == "live" && hasMetadata
-		
+
 		h.Logger.Info("📊 WhatsApp connection status check",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("app_id", gupshupApp.GupshupAppID),
@@ -6207,7 +6193,7 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 			zap.Bool("has_phone", gupshupApp.PhoneNumber != ""),
 			zap.Bool("subscription_active", gupshupApp.SubscriptionActive),
 			zap.Bool("connected", connected))
-		
+
 		response := map[string]any{
 			"connected":        connected,
 			"provider":         "gupshup_partner",
@@ -6254,7 +6240,7 @@ func (h *Handler) getWhatsAppConnectionStatus(w http.ResponseWriter, r *http.Req
 	// No connection found
 	writeJSON(w, http.StatusOK, map[string]any{
 		"connected": false,
-		"status":     "not_connected",
+		"status":    "not_connected",
 	})
 }
 
@@ -6417,16 +6403,16 @@ func (h *Handler) refreshWhatsAppStatus(w http.ResponseWriter, r *http.Request) 
 	connected := app.Status == "live" && hasMetadata
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":        true,
-		"message":        "Status refreshed successfully",
-		"connected":      connected,
-		"provider":       "gupshup_partner",
-		"phone_number":   app.PhoneNumber,
-		"status":         app.Status,
-		"waba_id":        app.WABAID,
-		"app_id":         app.GupshupAppID,
-		"updated":       updated,
-		"has_metadata":  hasMetadata,
+		"success":      true,
+		"message":      "Status refreshed successfully",
+		"connected":    connected,
+		"provider":     "gupshup_partner",
+		"phone_number": app.PhoneNumber,
+		"status":       app.Status,
+		"waba_id":      app.WABAID,
+		"app_id":       app.GupshupAppID,
+		"updated":      updated,
+		"has_metadata": hasMetadata,
 	})
 }
 
@@ -7363,9 +7349,9 @@ func (h *Handler) replyToTikTokComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":   "Reply sent successfully",
-		"reply_id":  replyID,
-		"video_id":  videoID,
+		"message":    "Reply sent successfully",
+		"reply_id":   replyID,
+		"video_id":   videoID,
 		"comment_id": commentID,
 	})
 }

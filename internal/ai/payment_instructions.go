@@ -25,7 +25,9 @@ func NewPaymentInstructionGenerator(db *gorm.DB, logger *zap.Logger) *PaymentIns
 }
 
 // GeneratePaymentInstructions generates payment instructions based on tenant's payment accounts
-func (g *PaymentInstructionGenerator) GeneratePaymentInstructions(ctx context.Context, tenantID uint, amount float64, currency string) (string, error) {
+// orderNumber and paymentReference are optional - if provided, they'll be included in instructions
+// portalURL is optional - if provided, it'll be included as a link to track order
+func (g *PaymentInstructionGenerator) GeneratePaymentInstructions(ctx context.Context, tenantID uint, amount float64, currency string, orderNumber string, paymentReference string, portalURL string) (string, error) {
 	// Get tenant's payment accounts
 	var accounts []storage.TenantPaymentAccount
 	if err := g.DB.Where("tenant_id = ? AND is_active = ?", tenantID, true).
@@ -70,7 +72,20 @@ func (g *PaymentInstructionGenerator) GeneratePaymentInstructions(ctx context.Co
 		}
 	}
 
-	instructions.WriteString("\nAfter payment, please send proof of payment (screenshot or transaction reference) for confirmation.")
+	// Add order details if provided
+	if orderNumber != "" {
+		instructions.WriteString(fmt.Sprintf("\n\nOrder Number: %s", orderNumber))
+	}
+	if paymentReference != "" {
+		instructions.WriteString(fmt.Sprintf("\nPayment Reference: %s\nPlease include this reference when making payment.", paymentReference))
+	}
+
+	// Add portal link if provided
+	if portalURL != "" {
+		instructions.WriteString(fmt.Sprintf("\n\n📱 Track your order and download receipt: %s", portalURL))
+	}
+
+	instructions.WriteString("\n\nAfter payment, please send proof of payment (screenshot or transaction reference) for confirmation.")
 
 	return instructions.String(), nil
 }

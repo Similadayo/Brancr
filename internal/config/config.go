@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -51,6 +52,12 @@ type Config struct {
 	// For older accounts: use actual account password
 	GupshupPartnerAppID   string // Gupshup Partner App ID (single app for all tenants, optional)
 	GupshupAPIBaseURL      string // Gupshup API base URL
+	SMTPHost              string // SMTP server host
+	SMTPPort              string // SMTP server port
+	SMTPUser              string // SMTP username
+	SMTPPass              string // SMTP password
+	SMTPFrom              string // SMTP from email address
+	PortalTokenExpiryDays int    // Portal token expiration in days (default: 90)
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -102,6 +109,12 @@ func Load() *Config {
 		GupshupPartnerPassword: os.Getenv("GUPSHUP_PARTNER_PASSWORD"),
 		GupshupPartnerAppID:   os.Getenv("GUPSHUP_PARTNER_APP_ID"),
 		GupshupAPIBaseURL:      getEnv("GUPSHUP_API_BASE_URL", "https://partner.gupshup.io"),
+		SMTPHost:              os.Getenv("SMTP_HOST"),
+		SMTPPort:              getEnv("SMTP_PORT", "587"),
+		SMTPUser:              os.Getenv("SMTP_USER"),
+		SMTPPass:              os.Getenv("SMTP_PASS"),
+		SMTPFrom:              getEnv("SMTP_FROM", "noreply@brancr.com"),
+		PortalTokenExpiryDays: getEnvInt("PORTAL_TOKEN_EXPIRY_DAYS", 90),
 	}
 
 	validateConfig(cfg)
@@ -112,6 +125,17 @@ func Load() *Config {
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// getEnvInt safely reads integer environment variables with fallback.
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		var result int
+		if _, err := fmt.Sscanf(v, "%d", &result); err == nil {
+			return result
+		}
 	}
 	return fallback
 }

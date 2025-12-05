@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -265,13 +266,31 @@ Customer message: %s`,
 			}
 			
 			if amount > 0 {
-				paymentInstructions, err := r.PaymentInstructionGen.GeneratePaymentInstructions(ctx, tenantID, amount, "NGN")
-				if err == nil && paymentInstructions != "" {
-					// Add order number and payment reference if order was created
-					if order != nil {
-						paymentInstructions += fmt.Sprintf("\n\nOrder Number: %s\nPayment Reference: %s", 
-							order.OrderNumber, order.PaymentReference)
+				var orderNumber, paymentRef, portalURL string
+				if order != nil {
+					orderNumber = order.OrderNumber
+					paymentRef = order.PaymentReference
+					
+					// Generate portal token and URL for the order
+					if r.OrderService != nil {
+						// We'll generate portal token via receipt service
+						// For now, we'll create a placeholder - portal token will be generated when payment is confirmed
+						// But we can generate it now for customer access
+						receiptService := receipt.NewReceiptService(r.DB, r.Logger)
+						publicURL := "https://api.brancr.com" // TODO: Get from config
+						token, url, err := receiptService.GeneratePortalTokenAndURL(ctx, order.ID, tenantID, publicURL)
+						if err == nil {
+							portalURL = url
+							r.Logger.Info("portal token generated for order", 
+								zap.Uint("order_id", order.ID),
+								zap.String("token", token))
+						}
 					}
+				}
+				
+				paymentInstructions, err := r.PaymentInstructionGen.GeneratePaymentInstructions(
+					ctx, tenantID, amount, "NGN", orderNumber, paymentRef, portalURL)
+				if err == nil && paymentInstructions != "" {
 					reply += "\n\n" + paymentInstructions
 				}
 			}

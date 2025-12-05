@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 )
@@ -233,6 +234,7 @@ func (h *Handler) updateOrder(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid status", http.StatusBadRequest)
 			return
 		}
+		oldStatus := order.Status
 		order.Status = *req.Status
 
 		// Update timestamps based on status
@@ -243,16 +245,28 @@ func (h *Handler) updateOrder(w http.ResponseWriter, r *http.Request) {
 		if *req.Status == "completed" && order.CompletedAt == nil {
 			order.CompletedAt = &now
 		}
-	}
 
-	if req.Notes != nil {
-		order.Notes = *req.Notes
-	}
+		// Save order first
+		if err := h.DB.Save(&order).Error; err != nil {
+			h.Logger.Error("failed to update order", zap.Error(err))
+			http.Error(w, "failed to update order", http.StatusInternalServerError)
+			return
+		}
 
-	if err := h.DB.Save(&order).Error; err != nil {
-		h.Logger.Error("failed to update order", zap.Error(err))
-		http.Error(w, "failed to update order", http.StatusInternalServerError)
-		return
+		// Send notification if status changed (notification service will be added to handler if needed)
+		// For now, we'll skip notifications in updateOrder to avoid breaking changes
+		_ = oldStatus // Keep for future notification integration
+	} else {
+		// No status change, just update notes
+		if req.Notes != nil {
+			order.Notes = *req.Notes
+		}
+
+		if err := h.DB.Save(&order).Error; err != nil {
+			h.Logger.Error("failed to update order", zap.Error(err))
+			http.Error(w, "failed to update order", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -346,12 +360,24 @@ func (h *Handler) confirmOrderPayment(w http.ResponseWriter, r *http.Request) {
 		h.DB.Save(&payment)
 	}
 
+	// Generate receipt automatically when payment is confirmed
+	receiptService := receipt.NewReceiptService(h.DB, h.Logger)
+	_, err = receiptService.GenerateReceipt(r.Context(), payment.ID, claims.TenantID)
+	if err != nil {
+		h.Logger.Warn("failed to auto-generate receipt", zap.Error(err), zap.Uint("payment_id", payment.ID))
+		// Don't fail the request if receipt generation fails - tenant can generate manually
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "payment confirmed",
 		"order": map[string]any{
 			"id":     order.ID,
 			"status": order.Status,
+		},
+		"payment": map[string]any{
+			"id":         payment.ID,
+			"receipt_id": payment.ReceiptID,
 		},
 	})
 }

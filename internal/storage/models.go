@@ -196,11 +196,12 @@ type Payment struct {
 	ClaimedAt          *time.Time
 	VerifiedBy         *int64 `gorm:"index"` // Tenant's Telegram ID who verified
 	VerifiedAt         *time.Time
-	ReceiptID          string `gorm:"uniqueIndex;size:50"`
-	ReceiptURL         string `gorm:"type:text"`
-	PortalToken        string `gorm:"uniqueIndex;size:100"` // Unique token for customer portal access
-	PortalURL          string `gorm:"type:text"`            // Full portal URL with token
-	Metadata           string `gorm:"type:jsonb"`           // Additional payment data
+	ReceiptID          string     `gorm:"uniqueIndex;size:50"`
+	ReceiptURL         string     `gorm:"type:text"`
+	PortalToken        string     `gorm:"uniqueIndex;size:100"` // Unique token for customer portal access
+	PortalURL          string     `gorm:"type:text"`            // Full portal URL with token
+	TokenExpiresAt     *time.Time `gorm:"index"`                // Token expiration date (optional)
+	Metadata           string     `gorm:"type:jsonb"`           // Additional payment data
 	CreatedAt          time.Time
 	CompletedAt        *time.Time // When payment was fully processed/confirmed
 }
