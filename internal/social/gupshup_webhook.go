@@ -677,15 +677,24 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		waID, _ = payload["gsId"].(string) // Try alternative field name
 	}
 
-	messageData, _ := payload["message"].(map[string]interface{})
-	if messageData == nil {
-		h.Logger.Warn("⚠️ Message data is nil - cannot extract content",
-			zap.Uint("tenant_id", tenantID),
-			zap.Any("payload", payload))
-		return
+	// Extract message type - can be at payload.type or payload.message.type
+	messageType, _ := payload["type"].(string)
+	
+	// Try to get message data - can be at payload.message or payload.payload
+	var messageData map[string]interface{}
+	if msg, ok := payload["message"].(map[string]interface{}); ok {
+		messageData = msg
+		// If message.type exists, use it (overrides payload.type)
+		if msgType, ok := msg["type"].(string); ok && msgType != "" {
+			messageType = msgType
+		}
+	} else if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+		// Some Gupshup formats have nested payload.payload structure
+		messageData = nestedPayload
+		if msgType, ok := nestedPayload["type"].(string); ok && msgType != "" {
+			messageType = msgType
+		}
 	}
-
-	messageType, _ := messageData["type"].(string)
 
 	// Extract sender name if available
 	customerName := ""
@@ -695,34 +704,50 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 
-	// Extract text content - try multiple formats
+	// Extract text content - try multiple formats based on actual Gupshup payload structure
 	var content string
 	
-	// Method 1: text.body (nested object)
-	if textData, ok := messageData["text"].(map[string]interface{}); ok {
-		if body, ok := textData["body"].(string); ok && body != "" {
-			content = body
+	// Method 1: payload.payload.text (nested payload structure - from logs)
+	if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+		if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
+			content = textStr
 		}
 	}
 	
-	// Method 2: text as direct string
-	if content == "" {
+	// Method 2: message.text.body (nested object in message)
+	if content == "" && messageData != nil {
+		if textData, ok := messageData["text"].(map[string]interface{}); ok {
+			if body, ok := textData["body"].(string); ok && body != "" {
+				content = body
+			}
+		}
+	}
+	
+	// Method 3: message.text as direct string
+	if content == "" && messageData != nil {
 		if textStr, ok := messageData["text"].(string); ok && textStr != "" {
 			content = textStr
 		}
 	}
 	
-	// Method 3: Check for "body" directly in messageData
-	if content == "" {
+	// Method 4: Check for "body" directly in messageData
+	if content == "" && messageData != nil {
 		if body, ok := messageData["body"].(string); ok && body != "" {
 			content = body
 		}
 	}
 	
-	// Method 4: Check for "content" field
-	if content == "" {
+	// Method 5: Check for "content" field in messageData
+	if content == "" && messageData != nil {
 		if contentStr, ok := messageData["content"].(string); ok && contentStr != "" {
 			content = contentStr
+		}
+	}
+	
+	// Method 6: Check payload.text directly (fallback)
+	if content == "" {
+		if textStr, ok := payload["text"].(string); ok && textStr != "" {
+			content = textStr
 		}
 	}
 	
@@ -734,6 +759,12 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			zap.String("message_type", messageType),
 			zap.Any("message_data", messageData),
 			zap.Any("full_payload", payload),
+			zap.Any("payload_payload", func() interface{} {
+				if pp, ok := payload["payload"].(map[string]interface{}); ok {
+					return pp
+				}
+				return nil
+			}()),
 			zap.String("raw_envelope", fmt.Sprintf("%+v", envelope)))
 		// Don't process empty messages - they'll cause random AI responses
 		return
