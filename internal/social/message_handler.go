@@ -255,19 +255,35 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	interaction.FinalReply = reply
 	h.DB.Save(&interaction)
 
-	// Step 8.5: Ensure conversation exists for outgoing interaction (retry if needed)
-	if conversationID == 0 {
+	// Step 8.5: CRITICAL - Ensure conversation exists and is the SAME one used for incoming interaction
+	// This is essential to prevent AI responses from appearing in a separate conversation
+	if conversationID == 0 || conversation == nil {
 		// Try to get/create conversation again - it might have been created in the meantime
 		conv, convErr := h.createOrGetConversation(ctx, msg, customer.ID)
 		if convErr == nil && conv != nil {
 			conversationID = conv.ID
 			conversation = conv
+			h.Logger.Info("✅ Retrieved conversation for outgoing interaction",
+				zap.Uint("conversation_id", conversationID),
+				zap.Uint("tenant_id", msg.TenantID),
+				zap.Uint("customer_id", customer.ID))
 		} else {
-			h.Logger.Warn("conversation still missing when creating outgoing interaction - outgoing message will not appear in conversation thread",
+			h.Logger.Error("❌ CRITICAL: Conversation missing when creating outgoing interaction - outgoing message will not appear in conversation thread",
 				zap.Uint("tenant_id", msg.TenantID),
 				zap.Uint("customer_id", customer.ID),
-				zap.String("platform", msg.Platform))
+				zap.String("platform", msg.Platform),
+				zap.Error(convErr))
+			// Still create outgoing interaction but log the error
 		}
+	}
+	
+	// CRITICAL: Verify we're using the same conversation as the incoming interaction
+	// If the incoming interaction has a conversation_id, use that one
+	if interaction.ConversationID > 0 && interaction.ConversationID != conversationID {
+		h.Logger.Warn("⚠️ Conversation ID mismatch - using incoming interaction's conversation_id",
+			zap.Uint("incoming_conversation_id", interaction.ConversationID),
+			zap.Uint("outgoing_conversation_id", conversationID))
+		conversationID = interaction.ConversationID
 	}
 
 	// Step 8.6: Create outgoing interaction record (so it appears in conversation history)
@@ -378,20 +394,31 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 		// Update last message time
 		customer.LastMessageAt = msg.Timestamp
 		
-		// Update customer name if we have a better one from the message
-		if customer.DisplayName == "" {
-			// Try to extract name from message content
+		// Update customer name if we have new information
+		// Always update when we have a name from the message (not just when empty)
+		if msg.CustomerName != "" && msg.CustomerName != customer.DisplayName {
+			customer.DisplayName = msg.CustomerName
+			h.Logger.Info("✅ Updated customer display name",
+				zap.Uint("customer_id", customer.ID),
+				zap.String("old_name", customer.DisplayName),
+				zap.String("new_name", msg.CustomerName))
+		} else if customer.DisplayName == "" {
+			// Try to extract name from message content as fallback
 			extractedName := extractNameFromMessageContent(msg.Content)
 			if extractedName != "" {
 				customer.DisplayName = extractedName
-			} else if msg.CustomerName != "" {
-				customer.DisplayName = msg.CustomerName
+				h.Logger.Info("✅ Extracted customer name from message",
+					zap.Uint("customer_id", customer.ID),
+					zap.String("extracted_name", extractedName))
 			}
 		}
 		
 		// Update username if we have a better one
-		if customer.Username == "" && msg.CustomerUsername != "" {
+		if msg.CustomerUsername != "" && msg.CustomerUsername != customer.Username {
 			customer.Username = msg.CustomerUsername
+			h.Logger.Info("✅ Updated customer username",
+				zap.Uint("customer_id", customer.ID),
+				zap.String("new_username", msg.CustomerUsername))
 		}
 		
 		h.DB.Save(&customer)
@@ -404,12 +431,26 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 		msg.CustomerName = extractedName
 	}
 	
+	// For Instagram: If we don't have a name, use a better fallback than "Instagram User"
+	displayName := msg.CustomerName
+	if displayName == "" && msg.Platform == "instagram" {
+		// Try username first, then fallback to a more descriptive name
+		if msg.CustomerUsername != "" {
+			displayName = msg.CustomerUsername
+		} else if len(msg.CustomerID) >= 8 {
+			// Use a more descriptive fallback that can be updated later
+			displayName = fmt.Sprintf("Instagram Customer (%s)", msg.CustomerID[:8]) // First 8 chars of ID
+		} else {
+			displayName = "Instagram Customer"
+		}
+	}
+	
 	// Create new customer
 	customer = storage.Customer{
 		TenantID:      msg.TenantID,
 		Channel:       msg.Platform,
 		PlatformID:    msg.CustomerID,
-		DisplayName:   msg.CustomerName,
+		DisplayName:   displayName,
 		Username:      msg.CustomerUsername,
 		LastMessageAt: msg.Timestamp,
 	}
