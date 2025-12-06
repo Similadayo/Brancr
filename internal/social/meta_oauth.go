@@ -209,32 +209,67 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if stateRaw == "" {
+		// Check for cancellation or error indicators in various formats
+		errParam := query.Get("error")
+		reasonParam := query.Get("reason")
+		statusParam := query.Get("status")
+		errDesc := query.Get("error_description")
+		
 		// Log all available information for debugging
 		h.Logger.Warn("Meta OAuth callback received without state parameter",
 			zap.String("url", r.URL.String()),
-			zap.String("full_url", r.URL.String()),
 			zap.String("query_params", r.URL.RawQuery),
 			zap.String("referer", r.Referer()),
 			zap.String("user_agent", r.UserAgent()),
-			zap.String("expected_redirect_uri", h.RedirectURI),
-			zap.String("code_param", query.Get("code")),
-			zap.String("error_param", query.Get("error")),
-			zap.String("error_description", query.Get("error_description")))
+			zap.String("error_param", errParam),
+			zap.String("reason_param", reasonParam),
+			zap.String("status_param", statusParam),
+			zap.String("error_description", errDesc))
 		
-		// Check if there's an error from Meta
-		if errParam := query.Get("error"); errParam != "" {
-			errDesc := query.Get("error_description")
-			h.Logger.Error("Meta OAuth returned an error",
-				zap.String("error", errParam),
-				zap.String("error_description", errDesc))
+		// Check if user cancelled or there's an error from Meta
+		// Meta can return errors in different formats:
+		// 1. Standard: error=access_denied&error_description=...
+		// 2. Alternative: reason=...&status=error
+		if errParam != "" || (statusParam == "error" && reasonParam != "") {
+			var errorMsg string
 			
-			errorMsg := fmt.Sprintf("Meta OAuth error: %s", errParam)
-			if errDesc != "" {
-				errorMsg += fmt.Sprintf("\n\nDetails: %s", errDesc)
+			if errParam != "" {
+				// Standard error format
+				h.Logger.Info("Meta OAuth returned an error (standard format)",
+					zap.String("error", errParam),
+					zap.String("error_description", errDesc))
+				
+				errorMsg = fmt.Sprintf("Meta OAuth error: %s", errParam)
+				if errDesc != "" {
+					errorMsg += fmt.Sprintf("\n\nDetails: %s", errDesc)
+				}
+				if errParam == "redirect_uri_mismatch" {
+					errorMsg += fmt.Sprintf("\n\n⚠️ Redirect URI mismatch detected!\n\nExpected: %s\n\nPlease verify this exact URL is in your Meta Developer Console → Facebook Login → Settings → Valid OAuth Redirect URIs", h.RedirectURI)
+				} else if errParam == "access_denied" {
+					errorMsg = "OAuth authorization was cancelled or denied.\n\nYou can try connecting again when you're ready."
+				}
+			} else if reasonParam != "" {
+				// Alternative error format (reason + status)
+				h.Logger.Info("Meta OAuth returned an error (alternative format)",
+					zap.String("reason", reasonParam),
+					zap.String("status", statusParam))
+				
+				// Decode URL-encoded reason
+				if decodedReason, err := url.QueryUnescape(reasonParam); err == nil {
+					reasonParam = decodedReason
+				}
+				
+				if strings.Contains(strings.ToLower(reasonParam), "cancelled") || 
+				   strings.Contains(strings.ToLower(reasonParam), "authorization code missing") {
+					errorMsg = "OAuth authorization was cancelled.\n\nYou can try connecting again when you're ready."
+				} else {
+					errorMsg = fmt.Sprintf("OAuth error: %s", reasonParam)
+				}
+			} else {
+				// Generic error
+				errorMsg = "OAuth authorization failed. Please try connecting again."
 			}
-			if errParam == "redirect_uri_mismatch" {
-				errorMsg += fmt.Sprintf("\n\n⚠️ Redirect URI mismatch detected!\n\nExpected: %s\n\nPlease verify this exact URL is in your Meta Developer Console → Facebook Login → Settings → Valid OAuth Redirect URIs", h.RedirectURI)
-			}
+			
 			h.respondError(w, r, h.getDefaultSuccessURL(), errorMsg)
 			return
 		}

@@ -255,8 +255,10 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				} `json:"recipient"`
 				Timestamp int64 `json:"timestamp"`
 				Message   struct {
-					MID  string `json:"mid"`
-					Text string `json:"text"`
+					MID         string                 `json:"mid"`
+					Text        string                 `json:"text"`
+					Attachments map[string]interface{} `json:"attachments,omitempty"`
+					Reaction    map[string]interface{} `json:"reaction,omitempty"`
 				} `json:"message"`
 			} `json:"messaging"`
 			Changes []struct {
@@ -270,8 +272,10 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 					} `json:"recipient"`
 					Timestamp FlexibleTimestamp `json:"timestamp"` // Can be string or int64
 					Message   struct {
-						MID  string `json:"mid"`
-						Text string `json:"text"`
+						MID         string                 `json:"mid"`
+						Text        string                 `json:"text"`
+						Attachments map[string]interface{} `json:"attachments,omitempty"`
+						Reaction    map[string]interface{} `json:"reaction,omitempty"`
 					} `json:"message"`
 				} `json:"value"`
 			} `json:"changes"`
@@ -370,7 +374,18 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				zap.String("entry_id", entry.ID),
 				zap.String("platform", "instagram"))
 
-			h.processInstagramMessage(ctx, tenantID, igAccountID, msg.Sender.ID, msg.Message.MID, msg.Message.Text, msg.Timestamp, entry.ID)
+			// Extract message content - handle text, media, reactions, etc.
+			messageContent := h.extractInstagramMessageContent(msg.Message)
+			if messageContent == "" {
+				// Skip non-text messages (media, reactions, stickers) - they don't need AI processing
+				h.Logger.Info("⏭️ Skipping non-text Instagram message",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", msg.Message.MID),
+					zap.Bool("has_attachments", len(msg.Message.Attachments) > 0),
+					zap.Bool("has_reaction", len(msg.Message.Reaction) > 0))
+				continue
+			}
+			h.processInstagramMessage(ctx, tenantID, igAccountID, msg.Sender.ID, msg.Message.MID, messageContent, msg.Timestamp, entry.ID)
 		}
 
 		// Process messages from "changes" array (test/newer webhook format)
@@ -419,7 +434,18 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				zap.String("platform", "instagram"))
 
 			timestamp := change.Value.Timestamp.Int64()
-			h.processInstagramMessage(ctx, tenantID, igAccountID, change.Value.Sender.ID, change.Value.Message.MID, change.Value.Message.Text, timestamp, entry.ID)
+			// Extract message content - handle text, media, reactions, etc.
+			messageContent := h.extractInstagramMessageContent(change.Value.Message)
+			if messageContent == "" {
+				// Skip non-text messages (media, reactions, stickers) - they don't need AI processing
+				h.Logger.Info("⏭️ Skipping non-text Instagram message (changes format)",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", change.Value.Message.MID),
+					zap.Bool("has_attachments", len(change.Value.Message.Attachments) > 0),
+					zap.Bool("has_reaction", len(change.Value.Message.Reaction) > 0))
+				continue
+			}
+			h.processInstagramMessage(ctx, tenantID, igAccountID, change.Value.Sender.ID, change.Value.Message.MID, messageContent, timestamp, entry.ID)
 			messagesProcessed++
 		}
 
@@ -503,6 +529,49 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 	return name, ""
 }
 
+// extractInstagramMessageContent extracts text content from an Instagram message
+// Returns empty string for non-text messages (media, reactions, stickers) which should be skipped
+func (h *MetaWebhookHandler) extractInstagramMessageContent(msg struct {
+	MID         string                 `json:"mid"`
+	Text        string                 `json:"text"`
+	Attachments map[string]interface{} `json:"attachments,omitempty"`
+	Reaction    map[string]interface{} `json:"reaction,omitempty"`
+}) string {
+	// If message has text, return it
+	if strings.TrimSpace(msg.Text) != "" {
+		return msg.Text
+	}
+
+	// If message has attachments (media), create a descriptive placeholder
+	if len(msg.Attachments) > 0 {
+		// Check attachment type
+		if attachmentType, ok := msg.Attachments["type"].(string); ok {
+			switch strings.ToLower(attachmentType) {
+			case "image":
+				return "[Image]"
+			case "video":
+				return "[Video]"
+			case "audio":
+				return "[Audio]"
+			case "file":
+				return "[File]"
+			default:
+				return "[Media]"
+			}
+		}
+		return "[Media]"
+	}
+
+	// If message has a reaction, skip it (reactions don't need AI processing)
+	if len(msg.Reaction) > 0 {
+		return "" // Empty string signals to skip this message
+	}
+
+	// If message has no text, attachments, or reactions, it might be a sticker or other non-text content
+	// Return empty to skip it
+	return ""
+}
+
 // processInstagramMessage processes a single Instagram message
 func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenantID uint, igAccountID, senderID, messageID, text string, timestamp int64, entryID string) {
 	h.Logger.Info("💬 Processing Instagram message",
@@ -524,7 +593,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				zap.String("name", customerName),
 				zap.String("username", customerUsername))
 		}
-		
+
 		// Use senderID as ThreadID to ensure all messages from same customer are grouped
 		// For Instagram, ThreadID should be the customer's IGSID (senderID)
 		incomingMsg := IncomingMessage{
@@ -553,7 +622,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		h.Logger.Warn("⚠️ Instagram account not found for profile fetch",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("ig_account_id", igAccountID))
-		
+
 		incomingMsg := IncomingMessage{
 			Platform:         "instagram",
 			TenantID:         tenantID,
