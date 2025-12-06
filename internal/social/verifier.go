@@ -572,6 +572,76 @@ func persistSocialAccount(acc *storage.SocialAccount, plainToken string, db *gor
 	_ = db.Save(acc).Error
 }
 
+// SubscribeInstagramLoginAccount subscribes an Instagram Login account to receive webhook notifications
+// This is for Instagram Login (Business Login for Instagram) - uses graph.instagram.com
+// Endpoint: POST /me/subscribed_apps or /<INSTAGRAM_ACCOUNT_ID>/subscribed_apps
+// According to: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/webhooks
+func SubscribeInstagramLoginAccount(ctx context.Context, client *http.Client, instagramAccountID, accessToken string, fields []string) error {
+	// Decrypt token if needed
+	token := accessToken
+	if decrypted, err := utils.DecryptToken(accessToken); err == nil {
+		token = decrypted
+	}
+
+	if token == "" {
+		return fmt.Errorf("access token is empty")
+	}
+
+	// Use graph.instagram.com for Instagram Login
+	// Can use /me or /<INSTAGRAM_ACCOUNT_ID>
+	// According to docs: POST /me/subscribed_apps?subscribed_fields=<LIST>&access_token=<TOKEN>
+	if len(fields) == 0 {
+		// Default fields for Instagram messaging
+		fields = []string{"messages", "comments"}
+	}
+	
+	// Use query parameters as per Meta documentation
+	endpoint := fmt.Sprintf("https://graph.instagram.com/v24.0/%s/subscribed_apps", instagramAccountID)
+	params := url.Values{}
+	params.Set("subscribed_fields", strings.Join(fields, ","))
+	params.Set("access_token", token)
+	
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"?"+params.Encode(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create subscription request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("subscription request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read subscription response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// Check if already subscribed (some APIs return 200, others might return different codes)
+		if strings.Contains(string(body), "already subscribed") || strings.Contains(string(body), "duplicate") {
+			return nil // Already subscribed, not an error
+		}
+		return fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(body, &result); err == nil {
+		if result.Success {
+			return nil
+		}
+	}
+
+	// If response doesn't have success field, check if body indicates success
+	if strings.Contains(strings.ToLower(string(body)), "success") {
+		return nil
+	}
+
+	return fmt.Errorf("unexpected subscription response: %s", string(body))
+}
+
 // SubscribePageToInstagramMessages subscribes a Facebook Page to receive Instagram message webhooks
 // This is CRITICAL: Without this subscription, Instagram DMs won't trigger webhooks
 // According to Meta documentation: POST /{page-id}/subscribed_apps?subscribed_fields=messages&access_token={page-access-token}

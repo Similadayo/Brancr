@@ -246,6 +246,23 @@ func (h *InstagramLoginOAuthHandler) HandleCallback(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Step 5: Subscribe to webhooks for Instagram Login account
+	// This enables receiving messages, comments, and other webhook events
+	client := &http.Client{Timeout: 15 * time.Second}
+	webhookFields := []string{"messages", "comments"} // Subscribe to messages and comments
+	if subscribeErr := SubscribeInstagramLoginAccount(ctx, client, igAccount.ID, longLivedToken, webhookFields); subscribeErr != nil {
+		// Log warning but don't fail the OAuth flow - subscription can be done later
+		h.Logger.Warn("failed to subscribe Instagram Login account to webhooks",
+			zap.Error(subscribeErr),
+			zap.String("instagram_account_id", igAccount.ID),
+			zap.Uint("tenant_id", state.TenantID))
+	} else {
+		h.Logger.Info("✅ Instagram Login account subscribed to webhooks",
+			zap.String("instagram_account_id", igAccount.ID),
+			zap.Uint("tenant_id", state.TenantID),
+			zap.Strings("webhook_fields", webhookFields))
+	}
+
 	h.Logger.Info("✅ Instagram Login OAuth completed successfully",
 		zap.Uint("tenant_id", state.TenantID),
 		zap.String("instagram_user_id", userID),
