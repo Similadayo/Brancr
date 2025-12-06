@@ -403,8 +403,9 @@ func (h *MetaOAuthHandler) processPlatforms(ctx context.Context, state metaOAuth
 
 	var pageData *metaPageSelection
 	needPageData := false
+	// Only need page data for Facebook (Instagram is now handled separately via Instagram Login)
 	for _, platform := range state.Platforms {
-		if platform == "facebook" || platform == "instagram" {
+		if platform == "facebook" {
 			needPageData = true
 		}
 	}
@@ -444,25 +445,11 @@ func (h *MetaOAuthHandler) processPlatforms(ctx context.Context, state metaOAuth
 			})
 
 		case "instagram":
-			if pageData == nil || pageData.Instagram == nil {
-				result.Warnings = append(result.Warnings, metaPlatformResult{
-					Platform: "instagram",
-					Message: "no Instagram Business Account linked to your Facebook Page. To connect Instagram:\n1. Convert your Instagram account to Business/Creator account in Instagram app settings\n2. Link your Instagram Business Account to your Facebook Page in Instagram app settings → Page\n3. Make sure you're an admin of both the Facebook Page and Instagram Business Account\nThen try connecting again.",
-				})
-				continue
-			}
-
-			if err := h.saveInstagramAccount(ctx, state.TenantID, pageData.Instagram, pageData.Page.ID, pageData.Page.AccessToken, expiresAt); err != nil {
-				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "instagram", Message: err.Error()})
-				continue
-			}
-
-			result.Connected = append(result.Connected, metaPlatformResult{
-				Platform:   "instagram",
-				PageID:     pageData.Page.ID, // Facebook Page ID (for subscription)
-				ExternalID: pageData.Instagram.ID, // Instagram Business Account ID (for messaging)
-				Username:   pageData.Instagram.Username,
-				Message:    "Instagram Business Account connected",
+			// Instagram is no longer supported via Facebook OAuth
+			// Users should use Instagram Login (Business Login for Instagram) instead
+			result.Warnings = append(result.Warnings, metaPlatformResult{
+				Platform: "instagram",
+				Message: "Instagram connection via Facebook OAuth is no longer supported. Please use Instagram Login instead. This allows you to connect Instagram without requiring a Facebook Page.",
 			})
 
 		case "whatsapp":
@@ -542,37 +529,10 @@ func (h *MetaOAuthHandler) selectPage(ctx context.Context, accessToken string, s
 		return nil, fmt.Errorf("page %s missing access token", selected.ID)
 	}
 
-	instaID := strings.TrimSpace(state.InstagramID)
-	var igAccount *metaInstagramAccount
-
-	if selected.Instagram != nil {
-		igAccount = &metaInstagramAccount{
-			ID:       selected.Instagram.ID,
-			Username: selected.Instagram.Username,
-			Token:    selected.AccessToken,
-		}
-	}
-
-	if instaID != "" {
-		// If requested Instagram account differs, search across pages
-		if igAccount == nil || igAccount.ID != instaID {
-			for idx := range pages {
-				ig := pages[idx].Instagram
-				if ig != nil && ig.ID == instaID {
-					selection.Page = &pages[idx]
-					igAccount = &metaInstagramAccount{
-						ID:       ig.ID,
-						Username: ig.Username,
-						Token:    pages[idx].AccessToken,
-					}
-					break
-				}
-			}
-		}
-	}
-
-	// Ensure Instagram account exists if requested platform includes Instagram
-	selection.Instagram = igAccount
+	// Instagram is no longer supported via Facebook OAuth
+	// Users should use Instagram Login (Business Login for Instagram) instead
+	// Skip all Instagram account selection logic
+	selection.Instagram = nil
 
 	return selection, nil
 }
@@ -586,7 +546,8 @@ func (h *MetaOAuthHandler) fetchPages(ctx context.Context, accessToken string) (
 
 	q := req.URL.Query()
 	q.Set("access_token", accessToken)
-	q.Set("fields", "id,name,access_token,instagram_business_account{id,username}")
+	// Only fetch basic page fields - Instagram is no longer supported via Facebook OAuth
+	q.Set("fields", "id,name,access_token")
 	req.URL.RawQuery = q.Encode()
 
 	resp, err := h.HTTPClient.Do(req)
@@ -912,15 +873,9 @@ func (h *MetaOAuthHandler) resolveScopes(platforms []string) []string {
 				"public_profile",
 			)
 		case "instagram":
-			h.addScopes(scopeSet,
-				"instagram_basic",
-				"instagram_manage_messages",
-				"instagram_manage_comments",
-				"instagram_content_publish",
-				"pages_show_list",
-				"pages_messaging", // REQUIRED for Instagram messaging API (uses Page Access Token)
-				"business_management",
-			)
+			// Instagram is no longer supported via Facebook OAuth
+			// Users should use Instagram Login (Business Login for Instagram) instead
+			// Skip Instagram scopes - they're not needed for Facebook-only connections
 		case "whatsapp":
 			h.addScopes(scopeSet,
 				"whatsapp_business_messaging",
@@ -955,7 +910,7 @@ func (h *MetaOAuthHandler) parsePlatforms(primary, fallback string) []string {
 	}
 
 	if input == "" {
-		return []string{"facebook", "instagram"}
+		return []string{"facebook"} // Default to Facebook only (Instagram should use Instagram Login)
 	}
 
 	seen := map[string]struct{}{}
