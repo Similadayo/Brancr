@@ -5758,17 +5758,56 @@ func (h *Handler) sendInstagramReply(ctx context.Context, acc *storage.SocialAcc
 		return fmt.Errorf("Instagram Business Account ID not found")
 	}
 
-	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+	// CRITICAL: Validate that we're not trying to send to ourselves
+	if recipientID == igAccountID {
+		return fmt.Errorf("CRITICAL: Cannot send message - recipient ID matches Instagram account ID")
+	}
+
+	if recipientID == "" {
+		return fmt.Errorf("CRITICAL: Recipient ID is empty - cannot determine recipient for Instagram message")
+	}
+
+	// Determine API base URL and token requirements based on login method
+	var apiURL string
+	if acc.LoginMethod == "instagram_login" {
+		// Instagram Login: Use graph.instagram.com/v24.0 with Instagram User access token
+		// According to: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+		apiURL = fmt.Sprintf("https://graph.instagram.com/v24.0/%s/messages", igAccountID)
+	} else {
+		// Facebook Login: Use graph.facebook.com/v18.0 with Page Access Token
+		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+	}
+
 	payload := map[string]interface{}{
 		"recipient": map[string]string{"id": recipientID},
 		"message":   map[string]interface{}{"text": message},
 	}
 
-	jsonData, _ := json.Marshal(payload)
-	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	// For Instagram Login, use Bearer token in Authorization header (as per documentation)
+	// For Facebook Login, use access_token query parameter (backward compatible)
+	var finalURL string
+	if acc.LoginMethod == "instagram_login" {
+		// Instagram Login: Use Bearer token in header
+		finalURL = apiURL
+	} else {
+		// Facebook Login: Add access token as query parameter (Meta API standard)
+		finalURL = fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", finalURL, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
 	req.Header.Set("Content-Type", "application/json")
+	if acc.LoginMethod == "instagram_login" {
+		req.Header.Set("Authorization", "Bearer "+decryptedToken)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
