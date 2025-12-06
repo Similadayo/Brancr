@@ -67,6 +67,43 @@ func (h *MessageHandler) ProcessMessage(ctx context.Context, msg interface{}) er
 
 // processMessageInternal contains the actual message processing logic
 func (h *MessageHandler) processMessageInternal(ctx context.Context, msg IncomingMessage) error {
+	// CRITICAL: Deduplication - Check if this message has already been processed
+	// This prevents duplicate responses when both Instagram Login and Facebook Login accounts are connected
+	// For Instagram, check across all tenants since the same message might resolve to different tenants
+	// if both Instagram Login and Facebook Login accounts exist
+	if msg.MessageID != "" {
+		var existingInteraction storage.Interaction
+		var err error
+		
+		if msg.Platform == "instagram" {
+			// For Instagram: Check across all tenants to catch duplicates from different account types
+			// This handles the case where both Instagram Login and Facebook Login accounts exist
+			err = h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+				msg.Platform, msg.MessageID, "incoming").First(&existingInteraction).Error
+		} else {
+			// For other platforms: Check within the same tenant
+			err = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ?",
+				msg.TenantID, msg.Platform, msg.MessageID, "incoming").First(&existingInteraction).Error
+		}
+		
+		if err == nil {
+			// Message already processed - skip to prevent duplicate responses
+			h.Logger.Info("⏭️ Skipping duplicate message - already processed",
+				zap.Uint("tenant_id", msg.TenantID),
+				zap.Uint("existing_tenant_id", existingInteraction.TenantID),
+				zap.String("platform", msg.Platform),
+				zap.String("message_id", msg.MessageID),
+				zap.Uint("existing_interaction_id", existingInteraction.ID))
+			return nil // Return nil to indicate "successfully skipped" (not an error)
+		}
+		// If error is not "record not found", log it but continue processing
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.Logger.Warn("⚠️ Error checking for duplicate message, continuing anyway",
+				zap.Error(err),
+				zap.String("message_id", msg.MessageID))
+		}
+	}
+
 	// CRITICAL: Validate message content is not empty
 	// Empty messages cause the AI to generate random responses
 	if strings.TrimSpace(msg.Content) == "" {
