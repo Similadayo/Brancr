@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -205,7 +204,14 @@ func (h *InstagramLoginOAuthHandler) HandleCallback(w http.ResponseWriter, r *ht
 	// Endpoint: https://api.instagram.com/oauth/access_token
 	shortLivedToken, userID, permissions, err := h.exchangeCodeForToken(code)
 	if err != nil {
-		h.Logger.Error("failed to exchange code for token", zap.Error(err))
+		h.Logger.Error("failed to exchange code for token",
+			zap.Error(err),
+			zap.String("code_preview", func() string {
+				if len(code) > 20 {
+					return code[:20] + "..."
+				}
+				return code
+			}()))
 		http.Error(w, fmt.Sprintf("failed to exchange authorization code: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -295,21 +301,56 @@ func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessTo
 	}
 
 	// Response format: {"data": [{"access_token": "...", "user_id": "...", "permissions": "..."}]}
+	// But Instagram API might return different formats, so we'll try multiple formats
 	var tokenResponse struct {
 		Data []struct {
 			AccessToken string `json:"access_token"`
 			UserID      string `json:"user_id"`
 			Permissions string `json:"permissions"`
 		} `json:"data"`
+		// Also try direct fields (in case response is not wrapped in data array)
+		AccessToken string `json:"access_token"`
+		UserID      string `json:"user_id"`
+		Permissions string `json:"permissions"`
 	}
 
 	if err := json.Unmarshal(body, &tokenResponse); err != nil {
-		return "", "", nil, fmt.Errorf("failed to parse token response: %w", err)
+		// Log the actual response for debugging
+		responsePreview := string(body)
+		if len(responsePreview) > 500 {
+			responsePreview = responsePreview[:500] + "..."
+		}
+		return "", "", nil, fmt.Errorf("failed to parse token response: %w (response: %s)", err, responsePreview)
 	}
 
-	if len(tokenResponse.Data) == 0 {
-		return "", "", nil, errors.New("no token data in response")
+	// Check if we have data in the array format
+	if len(tokenResponse.Data) > 0 {
+		data := tokenResponse.Data[0]
+		perms := strings.Split(data.Permissions, ",")
+		for i := range perms {
+			perms[i] = strings.TrimSpace(perms[i])
+		}
+		return data.AccessToken, data.UserID, perms, nil
 	}
+
+	// Check if we have direct fields (alternative response format)
+	if tokenResponse.AccessToken != "" {
+		perms := []string{}
+		if tokenResponse.Permissions != "" {
+			perms = strings.Split(tokenResponse.Permissions, ",")
+			for i := range perms {
+				perms[i] = strings.TrimSpace(perms[i])
+			}
+		}
+		return tokenResponse.AccessToken, tokenResponse.UserID, perms, nil
+	}
+
+	// No token data found - log the actual response for debugging
+	responsePreview := string(body)
+	if len(responsePreview) > 500 {
+		responsePreview = responsePreview[:500] + "..."
+	}
+	return "", "", nil, fmt.Errorf("no token data in response (response body: %s)", responsePreview)
 
 	data := tokenResponse.Data[0]
 	perms := strings.Split(data.Permissions, ",")
