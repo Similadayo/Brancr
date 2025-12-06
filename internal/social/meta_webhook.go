@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -430,6 +432,77 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 	}
 }
 
+// fetchInstagramUserProfile fetches Instagram user profile information
+// For Instagram Login: uses graph.instagram.com/v24.0
+// For Facebook Login: uses graph.facebook.com/v18.0
+func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, senderID string, account *storage.SocialAccount) (name, username string) {
+	if account == nil || account.AccessToken == "" {
+		return "", ""
+	}
+
+	// Decrypt token
+	decryptedToken, err := utils.DecryptToken(account.AccessToken)
+	if err != nil {
+		decryptedToken = account.AccessToken
+	}
+
+	if decryptedToken == "" {
+		return "", ""
+	}
+
+	// Determine API endpoint based on login method
+	var apiURL string
+	if account.LoginMethod == "instagram_login" {
+		// Instagram Login: Use graph.instagram.com/v24.0
+		// Note: Instagram Login API doesn't support fetching user profiles by IGSID directly
+		// We can only get the account owner's profile, not customer profiles
+		// For now, return empty - customer name will need to come from webhook payload or be set manually
+		return "", ""
+	} else {
+		// Facebook Login: Use Messenger Platform API to get user profile
+		// Endpoint: GET /{PSID}?fields=name,first_name,last_name&access_token={PAGE_ACCESS_TOKEN}
+		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=name,first_name,last_name&access_token=%s", senderID, url.QueryEscape(decryptedToken))
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return "", ""
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", ""
+	}
+
+	var profile struct {
+		Name      string `json:"name"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+		return "", ""
+	}
+
+	// Use name if available, otherwise construct from first/last name
+	if profile.Name != "" {
+		name = profile.Name
+	} else if profile.FirstName != "" {
+		name = profile.FirstName
+		if profile.LastName != "" {
+			name += " " + profile.LastName
+		}
+	}
+
+	return name, ""
+}
+
 // processInstagramMessage processes a single Instagram message
 func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenantID uint, igAccountID, senderID, messageID, text string, timestamp int64, entryID string) {
 	h.Logger.Info("💬 Processing Instagram message",
@@ -440,25 +513,63 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		zap.String("message_preview", truncateString(text, 100)),
 		zap.Int64("timestamp", timestamp))
 
-	incomingMsg := IncomingMessage{
-		Platform:         "instagram",
-		TenantID:         tenantID,
-		CustomerID:       senderID,
-		CustomerName:     "",
-		CustomerUsername: "",
-		MessageID:        messageID,
-		Content:          text,
-		MessageType:      "text",
-		ThreadID:         senderID,
-		Timestamp:        time.Unix(timestamp/1000, 0),
-		Metadata:         map[string]interface{}{"entry_id": entryID},
+	// Fetch customer profile information (name, username)
+	// Get the social account to determine login method
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND external_id = ? AND connected = ?", tenantID, "instagram", igAccountID, true).First(&account).Error; err == nil {
+		customerName, customerUsername := h.fetchInstagramUserProfile(ctx, senderID, &account)
+		if customerName != "" || customerUsername != "" {
+			h.Logger.Info("✅ Fetched Instagram customer profile",
+				zap.String("sender_id", senderID),
+				zap.String("name", customerName),
+				zap.String("username", customerUsername))
+		}
+		
+		// Use senderID as ThreadID to ensure all messages from same customer are grouped
+		// For Instagram, ThreadID should be the customer's IGSID (senderID)
+		incomingMsg := IncomingMessage{
+			Platform:         "instagram",
+			TenantID:         tenantID,
+			CustomerID:       senderID,
+			CustomerName:     customerName,
+			CustomerUsername: customerUsername,
+			MessageID:        messageID,
+			Content:          text,
+			MessageType:      "text",
+			ThreadID:         senderID, // Use senderID as ThreadID to group all messages from same customer
+			Timestamp:        time.Unix(timestamp/1000, 0),
+			Metadata:         map[string]interface{}{"entry_id": entryID},
+		}
+
+		h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("customer_id", senderID),
+			zap.String("customer_name", customerName),
+			zap.String("thread_id", senderID))
+
+		go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
+	} else {
+		// Account not found - still process message but without profile info
+		h.Logger.Warn("⚠️ Instagram account not found for profile fetch",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("ig_account_id", igAccountID))
+		
+		incomingMsg := IncomingMessage{
+			Platform:         "instagram",
+			TenantID:         tenantID,
+			CustomerID:       senderID,
+			CustomerName:     "",
+			CustomerUsername: "",
+			MessageID:        messageID,
+			Content:          text,
+			MessageType:      "text",
+			ThreadID:         senderID, // Use senderID as ThreadID to group all messages from same customer
+			Timestamp:        time.Unix(timestamp/1000, 0),
+			Metadata:         map[string]interface{}{"entry_id": entryID},
+		}
+
+		go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
 	}
-
-	h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
-		zap.Uint("tenant_id", tenantID),
-		zap.String("customer_id", senderID))
-
-	go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
 }
 
 // FlexibleTimestamp handles both string and int64 timestamps from Meta webhooks

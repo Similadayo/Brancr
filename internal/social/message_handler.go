@@ -438,8 +438,35 @@ func (h *MessageHandler) createOrGetConversation(ctx context.Context, msg Incomi
 		// Conversation exists, update last message time
 		conversation.LastMessageAt = msg.Timestamp
 		conversation.Status = "active"
+		// Update platform_thread_id if it was empty or different
+		if conversation.PlatformThreadID == "" || conversation.PlatformThreadID != platformThreadID {
+			conversation.PlatformThreadID = platformThreadID
+		}
 		h.DB.Save(&conversation)
 		return &conversation, nil
+	}
+
+	// For Instagram: If not found by thread_id, try to find by tenant + customer + platform
+	// This ensures all messages from the same customer are grouped in one conversation
+	if msg.Platform == "instagram" {
+		var existing storage.Conversation
+		err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?",
+			msg.TenantID, customerID, msg.Platform).
+			Order("created_at DESC").First(&existing).Error
+		
+		if err == nil {
+			// Found existing conversation - update it
+			existing.LastMessageAt = msg.Timestamp
+			existing.Status = "active"
+			existing.PlatformThreadID = platformThreadID // Update thread ID
+			h.DB.Save(&existing)
+			h.Logger.Info("✅ Updated existing Instagram conversation",
+				zap.Uint("conversation_id", existing.ID),
+				zap.Uint("tenant_id", msg.TenantID),
+				zap.Uint("customer_id", customerID),
+				zap.String("thread_id", platformThreadID))
+			return &existing, nil
+		}
 	}
 
 	// Create new conversation
