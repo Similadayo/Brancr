@@ -423,50 +423,45 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 
 // createOrGetConversation creates or gets a conversation for the customer on this platform
 func (h *MessageHandler) createOrGetConversation(ctx context.Context, msg IncomingMessage, customerID uint) (*storage.Conversation, error) {
-	// Use ThreadID as PlatformThreadID (platform-specific conversation/thread ID)
-	platformThreadID := msg.ThreadID
-	if platformThreadID == "" {
-		// If no ThreadID, use CustomerID as thread ID (common for WhatsApp)
+	// For Instagram: ALWAYS use CustomerID (senderID) as PlatformThreadID to ensure all messages from same customer are grouped
+	// This is critical because Instagram doesn't have a consistent thread ID like other platforms
+	var platformThreadID string
+	if msg.Platform == "instagram" {
+		// For Instagram, use CustomerID (which is the sender's IGSID) as the thread ID
+		// This ensures all messages from the same customer are grouped together
 		platformThreadID = msg.CustomerID
+		h.Logger.Info("🔗 Using CustomerID as PlatformThreadID for Instagram",
+			zap.String("customer_id", msg.CustomerID),
+			zap.String("platform_thread_id", platformThreadID))
+	} else {
+		// For other platforms, use ThreadID if available, otherwise fall back to CustomerID
+		platformThreadID = msg.ThreadID
+		if platformThreadID == "" {
+			platformThreadID = msg.CustomerID
+		}
 	}
 
+	// First, try to find conversation by tenant + customer + platform (most reliable for Instagram)
+	// This ensures we always group by customer, regardless of thread ID variations
 	var conversation storage.Conversation
-	err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ? AND platform_thread_id = ?",
-		msg.TenantID, customerID, msg.Platform, platformThreadID).First(&conversation).Error
+	err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?",
+		msg.TenantID, customerID, msg.Platform).
+		Order("created_at DESC").First(&conversation).Error
 
 	if err == nil {
-		// Conversation exists, update last message time
+		// Conversation exists, update it
 		conversation.LastMessageAt = msg.Timestamp
 		conversation.Status = "active"
-		// Update platform_thread_id if it was empty or different
-		if conversation.PlatformThreadID == "" || conversation.PlatformThreadID != platformThreadID {
+		// Update platform_thread_id to ensure consistency
+		if conversation.PlatformThreadID != platformThreadID {
 			conversation.PlatformThreadID = platformThreadID
+			h.Logger.Info("🔄 Updated PlatformThreadID for existing conversation",
+				zap.Uint("conversation_id", conversation.ID),
+				zap.String("old_thread_id", conversation.PlatformThreadID),
+				zap.String("new_thread_id", platformThreadID))
 		}
 		h.DB.Save(&conversation)
 		return &conversation, nil
-	}
-
-	// For Instagram: If not found by thread_id, try to find by tenant + customer + platform
-	// This ensures all messages from the same customer are grouped in one conversation
-	if msg.Platform == "instagram" {
-		var existing storage.Conversation
-		err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?",
-			msg.TenantID, customerID, msg.Platform).
-			Order("created_at DESC").First(&existing).Error
-		
-		if err == nil {
-			// Found existing conversation - update it
-			existing.LastMessageAt = msg.Timestamp
-			existing.Status = "active"
-			existing.PlatformThreadID = platformThreadID // Update thread ID
-			h.DB.Save(&existing)
-			h.Logger.Info("✅ Updated existing Instagram conversation",
-				zap.Uint("conversation_id", existing.ID),
-				zap.Uint("tenant_id", msg.TenantID),
-				zap.Uint("customer_id", customerID),
-				zap.String("thread_id", platformThreadID))
-			return &existing, nil
-		}
 	}
 
 	// Create new conversation

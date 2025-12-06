@@ -623,11 +623,13 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			zap.Uint("tenant_id", tenantID),
 			zap.String("ig_account_id", igAccountID))
 
+		// Still process the message even without account info
+		// The customer name might be available from webhook payload or can be set manually
 		incomingMsg := IncomingMessage{
 			Platform:         "instagram",
 			TenantID:         tenantID,
 			CustomerID:       senderID,
-			CustomerName:     "",
+			CustomerName:     "", // Will be empty, but customer can be updated later
 			CustomerUsername: "",
 			MessageID:        messageID,
 			Content:          text,
@@ -636,6 +638,11 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			Timestamp:        time.Unix(timestamp/1000, 0),
 			Metadata:         map[string]interface{}{"entry_id": entryID},
 		}
+
+		h.Logger.Info("🚀 Sending Instagram message to MessageHandler (without account info)",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("customer_id", senderID),
+			zap.String("thread_id", senderID))
 
 		go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
 	}
