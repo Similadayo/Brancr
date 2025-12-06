@@ -738,9 +738,12 @@ func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, rep
 			recipientID = msg.CustomerID
 		}
 		
-		// Final validation: ensure we have a valid recipient ID
+		// CRITICAL: Final validation - ensure recipient ID is not the account ID
 		if recipientID == "" {
 			return fmt.Errorf("CRITICAL: Cannot send Instagram message - both ThreadID and CustomerID are empty or invalid")
+		}
+		if recipientID == acc.ExternalID || recipientID == acc.PageID {
+			return fmt.Errorf("CRITICAL: Cannot send Instagram message - recipient ID (%s) matches account ID. This is likely an echo message that should have been filtered earlier.", recipientID)
 		}
 		
 		h.Logger.Info("📨 Sending Instagram reply",

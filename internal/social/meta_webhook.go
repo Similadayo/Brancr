@@ -613,6 +613,17 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		zap.String("message_preview", truncateString(text, 100)),
 		zap.Int64("timestamp", timestamp))
 
+	// CRITICAL: Skip echo messages (messages sent by the account itself)
+	// If sender_id == recipient_id (igAccountID), this is an echo message and should be ignored
+	if senderID == igAccountID {
+		h.Logger.Info("⏭️ Skipping echo message - sender is the account itself",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("sender_id", senderID),
+			zap.String("account_id", igAccountID),
+			zap.String("message_id", messageID))
+		return // Skip processing echo messages
+	}
+
 	// CRITICAL: Use atomic transaction to prevent race conditions
 	// Use a combination of identifiers since messageID might be empty for some message types
 	uniqueID := messageID
@@ -646,6 +657,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			PlatformMessageID: uniqueID,
 			ResponseType:      "processing",
 			ResponseStatus:    "processing",
+			Metadata:          "{}", // Empty JSON object to prevent "invalid input syntax for type json" error
 		}
 
 		return tx.Create(&lockInteraction).Error
@@ -749,6 +761,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				PlatformMessageID: uniqueID,
 				ResponseType:      "processing",
 				ResponseStatus:    "processing",
+				Metadata:          "{}", // Empty JSON object to prevent "invalid input syntax for type json" error
 			}
 
 			return tx.Create(&lockInteraction).Error
