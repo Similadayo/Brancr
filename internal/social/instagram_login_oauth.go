@@ -300,18 +300,19 @@ func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessTo
 		return "", "", nil, fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Response format: {"data": [{"access_token": "...", "user_id": "...", "permissions": "..."}]}
-	// But Instagram API might return different formats, so we'll try multiple formats
+	// Response format: {"data": [{"access_token": "...", "user_id": ..., "permissions": [...]}]}
+	// OR direct: {"access_token": "...", "user_id": ..., "permissions": [...]}
+	// Note: user_id can be a number or string, permissions can be array or comma-separated string
 	var tokenResponse struct {
 		Data []struct {
-			AccessToken string `json:"access_token"`
-			UserID      string `json:"user_id"`
-			Permissions string `json:"permissions"`
+			AccessToken interface{} `json:"access_token"` // Can be string
+			UserID      interface{} `json:"user_id"`      // Can be number or string
+			Permissions interface{} `json:"permissions"`  // Can be array or string
 		} `json:"data"`
 		// Also try direct fields (in case response is not wrapped in data array)
-		AccessToken string `json:"access_token"`
-		UserID      string `json:"user_id"`
-		Permissions string `json:"permissions"`
+		AccessToken interface{} `json:"access_token"`
+		UserID      interface{} `json:"user_id"`
+		Permissions interface{} `json:"permissions"`
 	}
 
 	if err := json.Unmarshal(body, &tokenResponse); err != nil {
@@ -323,27 +324,77 @@ func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessTo
 		return "", "", nil, fmt.Errorf("failed to parse token response: %w (response: %s)", err, responsePreview)
 	}
 
+	// Helper function to extract string from interface{} (handles both string and number)
+	extractString := func(v interface{}) string {
+		if v == nil {
+			return ""
+		}
+		switch val := v.(type) {
+		case string:
+			return val
+		case float64:
+			// JSON numbers are unmarshaled as float64
+			return fmt.Sprintf("%.0f", val)
+		case int64:
+			return fmt.Sprintf("%d", val)
+		case int:
+			return fmt.Sprintf("%d", val)
+		default:
+			return fmt.Sprintf("%v", val)
+		}
+	}
+
+	// Helper function to extract permissions array from interface{}
+	extractPermissions := func(v interface{}) []string {
+		if v == nil {
+			return []string{}
+		}
+		// Try array first
+		if arr, ok := v.([]interface{}); ok {
+			perms := make([]string, 0, len(arr))
+			for _, p := range arr {
+				if str, ok := p.(string); ok {
+					perms = append(perms, strings.TrimSpace(str))
+				}
+			}
+			return perms
+		}
+		// Try string (comma-separated)
+		if str, ok := v.(string); ok {
+			parts := strings.Split(str, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			return parts
+		}
+		return []string{}
+	}
+
+	var token, uid string
+	var permissionList []string
+
 	// Check if we have data in the array format
 	if len(tokenResponse.Data) > 0 {
 		data := tokenResponse.Data[0]
-		perms := strings.Split(data.Permissions, ",")
-		for i := range perms {
-			perms[i] = strings.TrimSpace(perms[i])
-		}
-		return data.AccessToken, data.UserID, perms, nil
+		token = extractString(data.AccessToken)
+		uid = extractString(data.UserID)
+		permissionList = extractPermissions(data.Permissions)
+	} else {
+		// Check if we have direct fields (alternative response format)
+		token = extractString(tokenResponse.AccessToken)
+		uid = extractString(tokenResponse.UserID)
+		permissionList = extractPermissions(tokenResponse.Permissions)
 	}
 
-	// Check if we have direct fields (alternative response format)
-	if tokenResponse.AccessToken != "" {
-		perms := []string{}
-		if tokenResponse.Permissions != "" {
-			perms = strings.Split(tokenResponse.Permissions, ",")
-			for i := range perms {
-				perms[i] = strings.TrimSpace(perms[i])
-			}
-		}
-		return tokenResponse.AccessToken, tokenResponse.UserID, perms, nil
+	// Validate we have the required data
+	if token == "" {
+		return "", "", nil, fmt.Errorf("access_token missing in response")
 	}
+	if uid == "" {
+		return "", "", nil, fmt.Errorf("user_id missing in response")
+	}
+
+	return token, uid, permissionList, nil
 
 	// No token data found - log the actual response for debugging
 	responsePreview := string(body)
@@ -351,14 +402,6 @@ func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessTo
 		responsePreview = responsePreview[:500] + "..."
 	}
 	return "", "", nil, fmt.Errorf("no token data in response (response body: %s)", responsePreview)
-
-	data := tokenResponse.Data[0]
-	perms := strings.Split(data.Permissions, ",")
-	for i := range perms {
-		perms[i] = strings.TrimSpace(perms[i])
-	}
-
-	return data.AccessToken, data.UserID, perms, nil
 }
 
 // exchangeForLongLivedToken exchanges short-lived token for long-lived token (60 days)
