@@ -3,7 +3,6 @@ package social
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -642,24 +641,52 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			Metadata:         map[string]interface{}{"entry_id": entryID},
 		}
 
-		// CRITICAL: Check for duplicate message BEFORE processing
-		// This prevents duplicate responses when both Instagram Login and Facebook Login accounts are connected
-		var existingInteraction storage.Interaction
-		err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
-			"instagram", messageID, "incoming").First(&existingInteraction).Error
-		if err == nil {
-			// Message already processed - skip to prevent duplicate responses
-			h.Logger.Info("⏭️ Skipping duplicate Instagram message - already processed",
-				zap.Uint("tenant_id", tenantID),
-				zap.Uint("existing_tenant_id", existingInteraction.TenantID),
-				zap.String("message_id", messageID),
-				zap.Uint("existing_interaction_id", existingInteraction.ID))
-			return // Skip processing this duplicate message
+		// CRITICAL: Create a "lock" interaction record immediately to prevent duplicate processing
+		// This prevents race conditions when both Instagram Login and Facebook Login accounts are connected
+		// and Meta sends the same message through both webhook subscriptions
+		lockInteraction := storage.Interaction{
+			TenantID:          tenantID,
+			Platform:          "instagram",
+			Direction:         "incoming",
+			MessageType:       "text",
+			Content:           text,
+			PlatformMessageID: messageID,
+			ResponseType:      "processing", // Temporary status to indicate processing
+			ResponseStatus:    "processing",
 		}
-		// If error is not "record not found", log it but continue processing
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			h.Logger.Warn("⚠️ Error checking for duplicate Instagram message, continuing anyway",
+
+		// Try to create the lock - if it fails due to duplicate, skip processing
+		if err := h.DB.Create(&lockInteraction).Error; err != nil {
+			// Check if it's a duplicate key error (message already being processed)
+			if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
+				h.Logger.Info("⏭️ Skipping duplicate Instagram message - already being processed",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.Error(err))
+				return // Skip processing this duplicate message
+			}
+
+			// Check if message already exists by querying
+			var existingInteraction storage.Interaction
+			if err2 := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+				"instagram", messageID, "incoming").First(&existingInteraction).Error; err2 == nil {
+				h.Logger.Info("⏭️ Skipping duplicate Instagram message - already processed",
+					zap.Uint("tenant_id", tenantID),
+					zap.Uint("existing_tenant_id", existingInteraction.TenantID),
+					zap.String("message_id", messageID),
+					zap.Uint("existing_interaction_id", existingInteraction.ID))
+				return // Skip processing this duplicate message
+			}
+
+			// If it's not a duplicate error, log and continue (might be a DB issue)
+			h.Logger.Warn("⚠️ Error creating lock interaction, continuing anyway",
 				zap.Error(err),
+				zap.String("message_id", messageID))
+		} else {
+			// Lock created successfully - store the interaction ID for later update
+			incomingMsg.Metadata["lock_interaction_id"] = lockInteraction.ID
+			h.Logger.Info("🔒 Created lock interaction to prevent duplicates",
+				zap.Uint("interaction_id", lockInteraction.ID),
 				zap.String("message_id", messageID))
 		}
 
@@ -693,24 +720,51 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			Metadata:         map[string]interface{}{"entry_id": entryID},
 		}
 
-		// CRITICAL: Check for duplicate message BEFORE processing
-		// This prevents duplicate responses when both Instagram Login and Facebook Login accounts are connected
-		var existingInteraction storage.Interaction
-		err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
-			"instagram", messageID, "incoming").First(&existingInteraction).Error
-		if err == nil {
-			// Message already processed - skip to prevent duplicate responses
-			h.Logger.Info("⏭️ Skipping duplicate Instagram message - already processed (no account info)",
-				zap.Uint("tenant_id", tenantID),
-				zap.Uint("existing_tenant_id", existingInteraction.TenantID),
-				zap.String("message_id", messageID),
-				zap.Uint("existing_interaction_id", existingInteraction.ID))
-			return // Skip processing this duplicate message
+		// CRITICAL: Create a "lock" interaction record immediately to prevent duplicate processing
+		// This prevents race conditions when both Instagram Login and Facebook Login accounts are connected
+		lockInteraction := storage.Interaction{
+			TenantID:          tenantID,
+			Platform:          "instagram",
+			Direction:         "incoming",
+			MessageType:       "text",
+			Content:           text,
+			PlatformMessageID: messageID,
+			ResponseType:      "processing", // Temporary status to indicate processing
+			ResponseStatus:    "processing",
 		}
-		// If error is not "record not found", log it but continue processing
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			h.Logger.Warn("⚠️ Error checking for duplicate Instagram message, continuing anyway",
+
+		// Try to create the lock - if it fails due to duplicate, skip processing
+		if err := h.DB.Create(&lockInteraction).Error; err != nil {
+			// Check if it's a duplicate key error (message already being processed)
+			if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
+				h.Logger.Info("⏭️ Skipping duplicate Instagram message - already being processed (no account info)",
+					zap.Uint("tenant_id", tenantID),
+					zap.String("message_id", messageID),
+					zap.Error(err))
+				return // Skip processing this duplicate message
+			}
+
+			// Check if message already exists by querying
+			var existingInteraction storage.Interaction
+			if err2 := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+				"instagram", messageID, "incoming").First(&existingInteraction).Error; err2 == nil {
+				h.Logger.Info("⏭️ Skipping duplicate Instagram message - already processed (no account info)",
+					zap.Uint("tenant_id", tenantID),
+					zap.Uint("existing_tenant_id", existingInteraction.TenantID),
+					zap.String("message_id", messageID),
+					zap.Uint("existing_interaction_id", existingInteraction.ID))
+				return // Skip processing this duplicate message
+			}
+
+			// If it's not a duplicate error, log and continue (might be a DB issue)
+			h.Logger.Warn("⚠️ Error creating lock interaction, continuing anyway",
 				zap.Error(err),
+				zap.String("message_id", messageID))
+		} else {
+			// Lock created successfully - store the interaction ID for later update
+			incomingMsg.Metadata["lock_interaction_id"] = lockInteraction.ID
+			h.Logger.Info("🔒 Created lock interaction to prevent duplicates (no account info)",
+				zap.Uint("interaction_id", lockInteraction.ID),
 				zap.String("message_id", messageID))
 		}
 

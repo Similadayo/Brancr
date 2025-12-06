@@ -136,10 +136,22 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		return fmt.Errorf("message content is empty - cannot generate AI response")
 	}
 
+	// Step 0: Check if we have a lock interaction (created by webhook handler to prevent duplicates)
+	var lockInteractionID uint
+	if lockID, ok := msg.Metadata["lock_interaction_id"].(float64); ok {
+		lockInteractionID = uint(lockID)
+		h.Logger.Info("🔓 Found lock interaction, will update it",
+			zap.Uint("lock_interaction_id", lockInteractionID))
+	}
+
 	// Step 1: Track or create customer
 	customer, err := h.trackCustomer(ctx, msg)
 	if err != nil {
 		h.Logger.Error("failed to track customer", zap.Error(err))
+		// If we have a lock interaction, delete it since processing failed
+		if lockInteractionID > 0 {
+			h.DB.Delete(&storage.Interaction{}, lockInteractionID)
+		}
 		return err
 	}
 
@@ -175,27 +187,59 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		conversationID = conversation.ID
 	}
 
-	// Step 3: Log interaction
-	interaction := storage.Interaction{
-		TenantID:          msg.TenantID,
-		CustomerID:        customer.ID,
-		ConversationID:    conversationID, // Link to conversation (0 if creation failed)
-		Platform:          msg.Platform,
-		Direction:         "incoming",
-		MessageType:       msg.MessageType,
-		Content:           msg.Content,
-		PlatformMessageID: msg.MessageID,
-		DetectedIntent:    intent.Intent,
-		DetectedTone:      intent.Tone,
-		Confidence:        intent.Confidence,
-		ResponseType:      "auto_reply",
-		ResponseStatus:    "pending",
-		Metadata:          h.metadataToJSON(msg.Metadata),
+	// Step 3: Log interaction (update lock interaction if exists, otherwise create new)
+	var interaction storage.Interaction
+	if lockInteractionID > 0 {
+		// Update the existing lock interaction with full details
+		if err := h.DB.First(&interaction, lockInteractionID).Error; err == nil {
+			interaction.CustomerID = customer.ID
+			interaction.ConversationID = conversationID
+			interaction.DetectedIntent = intent.Intent
+			interaction.DetectedTone = intent.Tone
+			interaction.Confidence = intent.Confidence
+			interaction.ResponseType = "auto_reply"
+			interaction.ResponseStatus = "pending"
+			interaction.Metadata = h.metadataToJSON(msg.Metadata)
+			
+			if err := h.DB.Save(&interaction).Error; err != nil {
+				h.Logger.Error("failed to update lock interaction", zap.Error(err))
+			} else {
+				h.Logger.Info("✅ Updated lock interaction with full details",
+					zap.Uint("interaction_id", interaction.ID))
+			}
+		} else {
+			h.Logger.Warn("⚠️ Lock interaction not found, creating new one",
+				zap.Uint("lock_interaction_id", lockInteractionID),
+				zap.Error(err))
+			lockInteractionID = 0 // Reset to create new interaction
+		}
 	}
+	
+	// If no lock interaction, create new one
+	if lockInteractionID == 0 {
+		interaction = storage.Interaction{
+			TenantID:          msg.TenantID,
+			CustomerID:        customer.ID,
+			ConversationID:    conversationID, // Link to conversation (0 if creation failed)
+			Platform:          msg.Platform,
+			Direction:         "incoming",
+			MessageType:       msg.MessageType,
+			Content:           msg.Content,
+			PlatformMessageID: msg.MessageID,
+			DetectedIntent:    intent.Intent,
+			DetectedTone:      intent.Tone,
+			Confidence:        intent.Confidence,
+			ResponseType:      "auto_reply",
+			ResponseStatus:    "pending",
+			Metadata:          h.metadataToJSON(msg.Metadata),
+		}
 
-	if err := h.DB.Create(&interaction).Error; err != nil {
-		h.Logger.Error("failed to log interaction", zap.Error(err))
-	} else if interaction.ConversationID == 0 {
+		if err := h.DB.Create(&interaction).Error; err != nil {
+			h.Logger.Error("failed to log interaction", zap.Error(err))
+		}
+	}
+	
+	if interaction.ConversationID == 0 {
 		// CRITICAL: If interaction was created without conversation_id, try to link it now
 		h.Logger.Warn("⚠️ Interaction created without conversation_id - attempting to link",
 			zap.Uint("interaction_id", interaction.ID),
