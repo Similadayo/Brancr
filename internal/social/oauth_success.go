@@ -301,17 +301,37 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
                 }, 1000);
             }
         } else if (!isSuccess) {
-            // For errors: Show close button and hint
-            var closeBtn = document.getElementById('closeBtn');
-            if (closeBtn) {
-                closeBtn.style.display = 'inline-block';
-            }
-            var hintText = document.getElementById('hintText');
-            if (hintText) {
-                hintText.textContent = 'You can try again or close this window';
-            }
-            if (countdownEl) {
-                countdownEl.style.display = 'none';
+            // For errors: Auto-close in Telegram, show buttons for others
+            if (isTelegram) {
+                // In Telegram: Hide buttons, show error message briefly, then auto-close
+                var buttonContainer = document.getElementById('buttonContainer');
+                if (buttonContainer) {
+                    buttonContainer.style.display = 'none'; // Hide all buttons
+                }
+                var hintText = document.getElementById('hintText');
+                if (hintText) {
+                    hintText.textContent = 'Connection failed. Returning to Telegram...';
+                }
+                if (countdownEl) {
+                    countdownEl.textContent = 'Closing window...';
+                }
+                // Auto-close after 2 seconds so user sees the error message
+                setTimeout(function() {
+                    closeWindow();
+                }, 2000);
+            } else {
+                // Not in Telegram: Show close button and hint
+                var closeBtn = document.getElementById('closeBtn');
+                if (closeBtn) {
+                    closeBtn.style.display = 'inline-block';
+                }
+                var hintText = document.getElementById('hintText');
+                if (hintText) {
+                    hintText.textContent = 'You can try again or close this window';
+                }
+                if (countdownEl) {
+                    countdownEl.style.display = 'none';
+                }
             }
         } else {
             // Not in popup and success: Hide countdown, show close button
