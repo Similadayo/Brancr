@@ -911,12 +911,22 @@ func (h *MetaOAuthHandler) upsertSocialAccount(ctx context.Context, tenantID uin
 	result := h.DB.WithContext(ctx).Where("tenant_id = ? AND platform = ?", tenantID, platform).First(&account)
 
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-		account = storage.SocialAccount{TenantID: tenantID, Platform: platform, CreatedAt: time.Now()}
+		account = storage.SocialAccount{
+			TenantID: tenantID,
+			Platform: platform,
+			Metadata: "{}", // Initialize with empty JSON object for jsonb field
+			CreatedAt: time.Now(),
+		}
 	} else if result.Error != nil {
 		return result.Error
 	}
 
 	update(&account)
+
+	// Ensure Metadata is valid JSON (empty string is not valid for jsonb)
+	if account.Metadata == "" {
+		account.Metadata = "{}"
+	}
 
 	if err := h.DB.WithContext(ctx).Save(&account).Error; err != nil {
 		return err
