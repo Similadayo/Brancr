@@ -433,12 +433,14 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 		
 		// Update customer name if we have new information
 		// Always update when we have a name from the message (not just when empty)
-		if msg.CustomerName != "" && msg.CustomerName != customer.DisplayName {
-			customer.DisplayName = msg.CustomerName
-			h.Logger.Info("✅ Updated customer display name",
-				zap.Uint("customer_id", customer.ID),
-				zap.String("old_name", customer.DisplayName),
-				zap.String("new_name", msg.CustomerName))
+		if msg.CustomerName != "" {
+			if customer.DisplayName == "" || msg.CustomerName != customer.DisplayName {
+				customer.DisplayName = msg.CustomerName
+				h.Logger.Info("✅ Updated customer display name",
+					zap.Uint("customer_id", customer.ID),
+					zap.String("old_name", customer.DisplayName),
+					zap.String("new_name", msg.CustomerName))
+			}
 		} else if customer.DisplayName == "" {
 			// Try to extract name from message content as fallback
 			extractedName := extractNameFromMessageContent(msg.Content)
@@ -450,12 +452,15 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 			}
 		}
 		
-		// Update username if we have a better one
-		if msg.CustomerUsername != "" && msg.CustomerUsername != customer.Username {
-			customer.Username = msg.CustomerUsername
-			h.Logger.Info("✅ Updated customer username",
-				zap.Uint("customer_id", customer.ID),
-				zap.String("new_username", msg.CustomerUsername))
+		// Update username if we have a better one (always update if we have new username)
+		if msg.CustomerUsername != "" {
+			if customer.Username == "" || msg.CustomerUsername != customer.Username {
+				customer.Username = msg.CustomerUsername
+				h.Logger.Info("✅ Updated customer username",
+					zap.Uint("customer_id", customer.ID),
+					zap.String("old_username", customer.Username),
+					zap.String("new_username", msg.CustomerUsername))
+			}
 		}
 		
 		h.DB.Save(&customer)

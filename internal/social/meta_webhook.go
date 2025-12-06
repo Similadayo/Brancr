@@ -3,6 +3,7 @@ package social
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -479,11 +480,13 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 	// Determine API endpoint based on login method
 	var apiURL string
 	if account.LoginMethod == "instagram_login" {
-		// Instagram Login: Use graph.instagram.com/v24.0
-		// Note: Instagram Login API doesn't support fetching user profiles by IGSID directly
-		// We can only get the account owner's profile, not customer profiles
-		// For now, return empty - customer name will need to come from webhook payload or be set manually
-		return "", ""
+		// Instagram Login: Use graph.instagram.com/v24.0/<IGSID>
+		// According to Instagram API docs, we CAN fetch user profiles using IGSID from webhook notifications
+		// Endpoint: GET /<IGSID>?fields=name,username,profile_pic&access_token=<INSTAGRAM_USER_ACCESS_TOKEN>
+		// User consent is required - set when user sends a message (which they have, since we received a webhook)
+		apiURL = fmt.Sprintf("https://graph.instagram.com/v24.0/%s?fields=name,username,profile_pic&access_token=%s", senderID, url.QueryEscape(decryptedToken))
+		h.Logger.Info("🔍 Fetching Instagram user profile via Instagram Login API",
+			zap.String("igsid", senderID))
 	} else {
 		// Facebook Login: Use Messenger Platform API to get user profile
 		// Endpoint: GET /{PSID}?fields=name,first_name,last_name&access_token={PAGE_ACCESS_TOKEN}
@@ -493,40 +496,69 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
+		h.Logger.Warn("failed to create request for Instagram user profile", zap.Error(err))
 		return "", ""
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		h.Logger.Warn("failed to fetch Instagram user profile", zap.Error(err))
 		return "", ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		h.Logger.Warn("failed to fetch Instagram user profile",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response_body", string(body)),
+			zap.String("sender_id", senderID),
+			zap.String("login_method", account.LoginMethod))
 		return "", ""
 	}
 
-	var profile struct {
-		Name      string `json:"name"`
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		return "", ""
-	}
-
-	// Use name if available, otherwise construct from first/last name
-	if profile.Name != "" {
-		name = profile.Name
-	} else if profile.FirstName != "" {
-		name = profile.FirstName
-		if profile.LastName != "" {
-			name += " " + profile.LastName
+	if account.LoginMethod == "instagram_login" {
+		// Instagram Login API response format
+		var profile struct {
+			Name       string `json:"name"`
+			Username   string `json:"username"`
+			ProfilePic string `json:"profile_pic"`
 		}
-	}
+		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+			h.Logger.Warn("failed to parse Instagram Login user profile response", zap.Error(err))
+			return "", ""
+		}
 
-	return name, ""
+		h.Logger.Info("✅ Fetched Instagram user profile via Instagram Login API",
+			zap.String("sender_id", senderID),
+			zap.String("name", profile.Name),
+			zap.String("username", profile.Username))
+
+		return profile.Name, profile.Username
+	} else {
+		// Facebook Login API response format
+		var profile struct {
+			Name      string `json:"name"`
+			FirstName string `json:"first_name"`
+			LastName  string `json:"last_name"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+			h.Logger.Warn("failed to parse Facebook Login user profile response", zap.Error(err))
+			return "", ""
+		}
+
+		// Use name if available, otherwise construct from first/last name
+		if profile.Name != "" {
+			name = profile.Name
+		} else if profile.FirstName != "" {
+			name = profile.FirstName
+			if profile.LastName != "" {
+				name += " " + profile.LastName
+			}
+		}
+
+		return name, ""
+	}
 }
 
 // extractInstagramMessageContent extracts text content from an Instagram message
@@ -610,10 +642,32 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			Metadata:         map[string]interface{}{"entry_id": entryID},
 		}
 
+		// CRITICAL: Check for duplicate message BEFORE processing
+		// This prevents duplicate responses when both Instagram Login and Facebook Login accounts are connected
+		var existingInteraction storage.Interaction
+		err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+			"instagram", messageID, "incoming").First(&existingInteraction).Error
+		if err == nil {
+			// Message already processed - skip to prevent duplicate responses
+			h.Logger.Info("⏭️ Skipping duplicate Instagram message - already processed",
+				zap.Uint("tenant_id", tenantID),
+				zap.Uint("existing_tenant_id", existingInteraction.TenantID),
+				zap.String("message_id", messageID),
+				zap.Uint("existing_interaction_id", existingInteraction.ID))
+			return // Skip processing this duplicate message
+		}
+		// If error is not "record not found", log it but continue processing
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.Logger.Warn("⚠️ Error checking for duplicate Instagram message, continuing anyway",
+				zap.Error(err),
+				zap.String("message_id", messageID))
+		}
+
 		h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("customer_id", senderID),
 			zap.String("customer_name", customerName),
+			zap.String("customer_username", customerUsername),
 			zap.String("thread_id", senderID))
 
 		go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
@@ -637,6 +691,27 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			ThreadID:         senderID, // Use senderID as ThreadID to group all messages from same customer
 			Timestamp:        time.Unix(timestamp/1000, 0),
 			Metadata:         map[string]interface{}{"entry_id": entryID},
+		}
+
+		// CRITICAL: Check for duplicate message BEFORE processing
+		// This prevents duplicate responses when both Instagram Login and Facebook Login accounts are connected
+		var existingInteraction storage.Interaction
+		err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+			"instagram", messageID, "incoming").First(&existingInteraction).Error
+		if err == nil {
+			// Message already processed - skip to prevent duplicate responses
+			h.Logger.Info("⏭️ Skipping duplicate Instagram message - already processed (no account info)",
+				zap.Uint("tenant_id", tenantID),
+				zap.Uint("existing_tenant_id", existingInteraction.TenantID),
+				zap.String("message_id", messageID),
+				zap.Uint("existing_interaction_id", existingInteraction.ID))
+			return // Skip processing this duplicate message
+		}
+		// If error is not "record not found", log it but continue processing
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.Logger.Warn("⚠️ Error checking for duplicate Instagram message, continuing anyway",
+				zap.Error(err),
+				zap.String("message_id", messageID))
 		}
 
 		h.Logger.Info("🚀 Sending Instagram message to MessageHandler (without account info)",
