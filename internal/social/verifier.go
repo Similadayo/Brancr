@@ -470,7 +470,20 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 			return "", fmt.Errorf("instagram business account id missing; reconnect account")
 		}
 
-		url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,username,name&access_token=%s", igID, token)
+		// For Instagram Login, use graph.instagram.com; for Facebook Login, use graph.facebook.com
+		var apiBase string
+		var fields string
+		if acc.LoginMethod == "instagram_login" {
+			// Instagram Login - use graph.instagram.com
+			apiBase = "https://graph.instagram.com/v24.0"
+			fields = "user_id,username" // Use user_id field for Instagram Login
+		} else {
+			// Facebook Login - use graph.facebook.com
+			apiBase = "https://graph.facebook.com/v18.0"
+			fields = "id,username,name"
+		}
+
+		url := fmt.Sprintf("%s/%s?fields=%s&access_token=%s", apiBase, igID, fields, token)
 		resp, err := client.Get(url)
 		if err != nil {
 			return "", fmt.Errorf("failed to fetch instagram account: %w", err)
@@ -482,26 +495,58 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 			return "", fmt.Errorf("instagram verification failed: %s", string(body))
 		}
 
+		// Handle different response formats
 		var payload struct {
-			ID       string `json:"id"`
+			UserID   string `json:"user_id"`   // Instagram Login format
+			ID       string `json:"id"`        // Facebook Login format
 			Username string `json:"username"`
 			Name     string `json:"name"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return "", fmt.Errorf("invalid instagram response: %w", err)
+			// Try data array format (Instagram Login might return this)
+			var dataWrapper struct {
+				Data []struct {
+					UserID   string `json:"user_id"`
+					ID       string `json:"id"`
+					Username string `json:"username"`
+					Name     string `json:"name"`
+				} `json:"data"`
+			}
+			if err2 := json.Unmarshal(body, &dataWrapper); err2 == nil && len(dataWrapper.Data) > 0 {
+				payload = dataWrapper.Data[0]
+			} else {
+				return "", fmt.Errorf("invalid instagram response: %w", err)
+			}
 		}
 
-		acc.ExternalID = payload.ID
-		acc.PageID = payload.ID
+		// Use user_id if available (Instagram Login), otherwise use id (Facebook Login)
+		accountID := payload.UserID
+		if accountID == "" {
+			accountID = payload.ID
+		}
+
+		acc.ExternalID = accountID
+		acc.PageID = accountID // For Instagram Login, PageID is also the Instagram User ID
 		acc.Username = payload.Username
 
-		// CRITICAL: Subscribe the connected Facebook Page to receive Instagram message webhooks
-		// Try to use stored PageID first, fallback to querying pages
-		storedPageID := acc.PageID
-		pageID, pageSubscribeErr := FindAndSubscribeInstagramPage(ctx, client, payload.ID, token, storedPageID)
-		if pageSubscribeErr != nil {
-			// Log warning but don't fail verification - subscription might already exist
-			fmt.Printf("⚠️ Failed to subscribe Page for Instagram messages (may already be subscribed): %v\n", pageSubscribeErr)
+		// Subscribe to webhooks based on login method
+		if acc.LoginMethod == "instagram_login" {
+			// Instagram Login - subscribe using Instagram Graph API
+			webhookFields := []string{"messages", "comments"}
+			if subscribeErr := SubscribeInstagramLoginAccount(ctx, client, accountID, token, webhookFields); subscribeErr != nil {
+				fmt.Printf("⚠️ Failed to subscribe Instagram Login account to webhooks (may already be subscribed): %v\n", subscribeErr)
+			} else {
+				fmt.Printf("✅ Instagram Login account subscribed to webhooks\n")
+			}
+		} else {
+			// Facebook Login - subscribe using Facebook Graph API
+			storedPageID := acc.PageID
+			pageID, pageSubscribeErr := FindAndSubscribeInstagramPage(ctx, client, accountID, token, storedPageID)
+			if pageSubscribeErr != nil {
+				fmt.Printf("⚠️ Failed to subscribe Page for Instagram messages (may already be subscribed): %v\n", pageSubscribeErr)
+			} else {
+				fmt.Printf("✅ Page %s subscribed to receive Instagram message webhooks\n", pageID)
+			}
 		}
 
 		persistSocialAccount(acc, token, db)
@@ -509,10 +554,18 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 		if label == "" {
 			label = payload.Name
 		}
+		
+		loginMethod := "Facebook Login"
+		if acc.LoginMethod == "instagram_login" {
+			loginMethod = "Instagram Login"
+		}
 
-		msg := fmt.Sprintf("✅ Instagram Business Account verified: @%s", label)
-		if pageID != "" && pageSubscribeErr == nil {
-			msg += fmt.Sprintf("\n📨 Page (ID: %s) subscribed to receive Instagram message webhooks", pageID)
+		msg := fmt.Sprintf("✅ Instagram account verified (%s): @%s (ID: %s)", loginMethod, label, accountID)
+		if acc.LoginMethod == "instagram_login" {
+			msg += "\n📨 Instagram Login account subscribed to webhooks"
+		} else {
+			// For Facebook Login, we tried to subscribe but don't have pageID here
+			msg += "\n📨 Page subscription attempted"
 		}
 		return msg, nil
 
