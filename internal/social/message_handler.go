@@ -687,12 +687,14 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 	// Determine API base URL and token requirements based on login method
 	var apiURL string
 	if acc.LoginMethod == "instagram_login" {
-		// Instagram Login: Use graph.instagram.com with Instagram User access token
+		// Instagram Login: Use graph.instagram.com/v24.0 with Instagram User access token
 		// According to: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
-		apiURL = fmt.Sprintf("https://graph.instagram.com/%s/messages", igAccountID)
+		// Endpoint: POST /<IG_ID>/messages or /me/messages
+		apiURL = fmt.Sprintf("https://graph.instagram.com/v24.0/%s/messages", igAccountID)
 		h.Logger.Info("📱 Using Instagram Login messaging API",
 			zap.String("instagram_account_id", igAccountID),
-			zap.String("login_method", "instagram_login"))
+			zap.String("login_method", "instagram_login"),
+			zap.String("api_url", apiURL))
 	} else {
 		// Facebook Login: Verify token type - Instagram messaging REQUIRES a Page Access Token
 		tokenType, pageID, err := h.verifyTokenType(ctx, decryptedToken)
@@ -726,11 +728,12 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		}()))
 
 	// Instagram messaging payload format according to Meta's Send Message API
-	// https://developers.facebook.com/docs/messenger-platform/instagram/feature-reference/send-message
-	// recipient.id must be the Instagram user's PSID (Page-Scoped ID) received from webhook
+	// For Instagram Login: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+	// For Facebook Login: https://developers.facebook.com/docs/messenger-platform/instagram/feature-reference/send-message
+	// recipient.id must be the Instagram user's IGSID (Instagram-scoped ID) for Instagram Login, or PSID for Facebook Login
 	payload := map[string]interface{}{
 		"recipient": map[string]string{
-			"id": threadID, // PSID (Page-Scoped ID) of the Instagram user
+			"id": threadID, // IGSID (Instagram-scoped ID) for Instagram Login, PSID for Facebook Login
 		},
 		"message": map[string]interface{}{
 			"text": reply,
@@ -742,15 +745,26 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	// Add access token as query parameter (Meta API standard)
-	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+	// For Instagram Login, use Bearer token in Authorization header (as per documentation)
+	// For Facebook Login, use access_token query parameter (backward compatible)
+	var finalURL string
+	if acc.LoginMethod == "instagram_login" {
+		// Instagram Login: Use Bearer token in header
+		finalURL = apiURL
+	} else {
+		// Facebook Login: Add access token as query parameter (Meta API standard)
+		finalURL = fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	req, err := http.NewRequestWithContext(ctx, "POST", finalURL, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if acc.LoginMethod == "instagram_login" {
+		req.Header.Set("Authorization", "Bearer "+decryptedToken)
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

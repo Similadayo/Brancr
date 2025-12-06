@@ -31,10 +31,10 @@ func (i *InstagramConnector) SetDBAndLogger(db *gorm.DB, logger *zap.Logger) {
 }
 
 // getInstagramAPIBase returns the correct API base URL based on login method
-// Instagram Login uses graph.instagram.com (no version), Facebook Login uses graph.facebook.com/v18.0
+// Instagram Login uses graph.instagram.com/v24.0, Facebook Login uses graph.facebook.com/v18.0
 func (i *InstagramConnector) getInstagramAPIBase(acc *storage.SocialAccount) string {
 	if acc != nil && acc.LoginMethod == "instagram_login" {
-		return "https://graph.instagram.com"
+		return "https://graph.instagram.com/v24.0"
 	}
 	// Default to Facebook Graph API (backward compatible)
 	return "https://graph.facebook.com/v18.0"
