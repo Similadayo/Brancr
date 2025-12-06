@@ -71,19 +71,21 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	// This prevents duplicate responses when both Instagram Login and Facebook Login accounts are connected
 	// For Instagram, check across all tenants since the same message might resolve to different tenants
 	// if both Instagram Login and Facebook Login accounts exist
+	// NOTE: Exclude "processing" interactions (lock interactions) from duplicate check
 	if msg.MessageID != "" {
 		var existingInteraction storage.Interaction
 		var err error
 		
 		if msg.Platform == "instagram" {
 			// For Instagram: Check across all tenants to catch duplicates from different account types
-			// This handles the case where both Instagram Login and Facebook Login accounts exist
-			err = h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
-				msg.Platform, msg.MessageID, "incoming").First(&existingInteraction).Error
+			// Exclude "processing" interactions (lock interactions that haven't been fully processed yet)
+			err = h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ? AND response_type != ?",
+				msg.Platform, msg.MessageID, "incoming", "processing").First(&existingInteraction).Error
 		} else {
 			// For other platforms: Check within the same tenant
-			err = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ?",
-				msg.TenantID, msg.Platform, msg.MessageID, "incoming").First(&existingInteraction).Error
+			// Exclude "processing" interactions (lock interactions that haven't been fully processed yet)
+			err = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ? AND response_type != ?",
+				msg.TenantID, msg.Platform, msg.MessageID, "incoming", "processing").First(&existingInteraction).Error
 		}
 		
 		if err == nil {
