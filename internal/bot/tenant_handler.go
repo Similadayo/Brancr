@@ -1074,7 +1074,14 @@ func (h *TenantWebhookHandler) sendConnectionStatus(bot *tgbotapi.BotAPI, chatID
 			if !acc.UpdatedAt.IsZero() {
 				timestamp = acc.UpdatedAt.Format("Jan 2 15:04")
 			}
-			status[acc.Platform] = fmt.Sprintf("✅ Connected · updated %s", timestamp)
+			// Show login method for Instagram accounts
+			if acc.Platform == "instagram" && acc.LoginMethod == "instagram_login" {
+				status[acc.Platform] = fmt.Sprintf("✅ Connected (Instagram Login) · updated %s", timestamp)
+			} else if acc.Platform == "instagram" && acc.LoginMethod == "facebook_login" {
+				status[acc.Platform] = fmt.Sprintf("✅ Connected (Facebook Login) · updated %s", timestamp)
+			} else {
+				status[acc.Platform] = fmt.Sprintf("✅ Connected · updated %s", timestamp)
+			}
 		} else {
 			status[acc.Platform] = "⚠️ Needs attention"
 		}

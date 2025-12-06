@@ -482,6 +482,7 @@ func (h *InstagramLoginOAuthHandler) RefreshAccessToken(ctx context.Context, acc
 	
 	params := url.Values{}
 	params.Set("grant_type", "ig_refresh_token")
+	params.Set("client_secret", h.AppSecret) // Required for token refresh
 	params.Set("access_token", accessToken)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"?"+params.Encode(), nil)

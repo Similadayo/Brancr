@@ -150,6 +150,14 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 		return fmt.Errorf("failed to ensure valid access token: %w", err)
 	}
 
+	// Decrypt token if needed (ensureAccessToken may return early without decrypting)
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		// If decryption fails, try using as-is (might already be decrypted)
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken // Update account object with decrypted token
+
 	// Validate access token
 	if acc.AccessToken == "" || strings.TrimSpace(acc.AccessToken) == "" {
 		return fmt.Errorf("Instagram access token is empty or invalid")
@@ -785,6 +793,7 @@ func refreshInstagramLoginToken(ctx context.Context, accessToken string) (newTok
 	endpoint := "https://graph.instagram.com/refresh_access_token"
 	params := url.Values{}
 	params.Set("grant_type", "ig_refresh_token")
+	params.Set("client_secret", appSecret) // Required for token refresh
 	params.Set("access_token", accessToken)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"?"+params.Encode(), nil)
@@ -825,6 +834,14 @@ func (i *InstagramConnector) HealthCheck(ctx context.Context, acc *storage.Socia
 	if err := i.ensureAccessToken(ctx, acc); err != nil {
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
+
+	// Decrypt token if needed (ensureAccessToken may return early without decrypting)
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		// If decryption fails, try using as-is (might already be decrypted)
+		decryptedToken = acc.AccessToken
+	}
+	acc.AccessToken = decryptedToken // Update account object with decrypted token
 
 	if acc.AccessToken == "" {
 		return fmt.Errorf("access token is empty")

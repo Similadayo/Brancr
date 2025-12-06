@@ -36,10 +36,15 @@ func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID
 
 	switch platform {
 	case "instagram":
+		// Try Instagram Login first (Business Login for Instagram - no Facebook Page required)
+		if m.sendInstagramLoginOAuthLink(bot, tenantID, chatID) {
+			return
+		}
+		// Fallback to Facebook Login (requires Facebook Page)
 		if m.sendMetaOAuthLink(bot, tenantID, chatID, platform, []string{"instagram"}) {
 			return
 		}
-		sendPlain(bot, chatID, fmt.Sprintf("Meta OAuth is temporarily unavailable, so I'll fall back to manual setup. Please send a current %s page token from the Meta Graph API.", strings.Title(platform)))
+		sendPlain(bot, chatID, fmt.Sprintf("OAuth is temporarily unavailable. Please send a current %s page token from the Meta Graph API.", strings.Title(platform)))
 		tenantsession := &PostSession{Step: 99, Name: platform}
 		tenantSessions[chatID] = tenantsession
 
@@ -210,6 +215,68 @@ func (m *TenantBotManager) buildTikTokOAuthURL(tenantID uint) (string, error) {
 	}
 
 	return fmt.Sprintf("%s/api/oauth/tiktok/start?%s", baseURL, params.Encode()), nil
+}
+
+// sendInstagramLoginOAuthLink sends the Instagram Login (Business Login for Instagram) OAuth link
+// This is separate from Facebook Login and doesn't require a Facebook Page
+func (m *TenantBotManager) sendInstagramLoginOAuthLink(bot *tgbotapi.BotAPI, tenantID uint, chatID int64) bool {
+	oauthURL, err := m.buildInstagramLoginOAuthURL(tenantID)
+	if err != nil {
+		if m.Logger != nil {
+			m.Logger.Warn("instagram login oauth link unavailable", zap.Error(err))
+		}
+		return false
+	}
+
+	connectMsg := "Let's connect your *Instagram* account using *Instagram Login*.\n\n" +
+		"✨ *No Facebook Page Required*\n" +
+		"This method connects directly to Instagram without needing a Facebook Page.\n\n" +
+		"1️⃣ Open the secure link below\n" +
+		"2️⃣ Approve Brancr in the Instagram consent screen\n" +
+		"3️⃣ Come back and tap *Verify* so I can confirm the connection"
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("🔗 Open Instagram Login", oauthURL),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✔️ Verify now", "verify:instagram"),
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to menu", "menu:main"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, connectMsg)
+	msg.ParseMode = "Markdown"
+	msg.DisableWebPagePreview = true
+	msg.ReplyMarkup = keyboard
+	bot.Send(msg)
+	return true
+}
+
+// buildInstagramLoginOAuthURL builds the Instagram Login OAuth URL
+func (m *TenantBotManager) buildInstagramLoginOAuthURL(tenantID uint) (string, error) {
+	// Check if Instagram Login is configured
+	if m.Config == nil || m.Config.InstagramAppID == "" || m.Config.InstagramRedirectURI == "" {
+		return "", fmt.Errorf("Instagram Login not configured (missing INSTAGRAM_APP_ID or INSTAGRAM_REDIRECT_URI)")
+	}
+
+	baseURL, err := utils.GetPublicURL()
+	if err != nil {
+		return "", err
+	}
+
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return "", fmt.Errorf("public URL not configured")
+	}
+
+	params := url.Values{}
+	params.Set("tenant_id", fmt.Sprintf("%d", tenantID))
+	if m.Config.MetaSuccessURL != "" {
+		params.Set("success_redirect", m.Config.MetaSuccessURL)
+	}
+
+	return fmt.Sprintf("%s/api/oauth/instagram/start?%s", baseURL, params.Encode()), nil
 }
 
 func (m *TenantBotManager) sendMetaEmbeddedSignup(bot *tgbotapi.BotAPI, tenantID uint, chatID int64) bool {

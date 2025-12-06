@@ -14,23 +14,23 @@ import (
 
 // CustomerResponder generates AI replies for customer conversations
 type CustomerResponder struct {
-	Client                   *AIClient
-	Memory                   *MemoryService
-	DB                       *gorm.DB
-	Logger                   *zap.Logger
-	RetrievalService         interface { // Industry-aware retrieval service (optional)
+	Client           *AIClient
+	Memory           *MemoryService
+	DB               *gorm.DB
+	Logger           *zap.Logger
+	RetrievalService interface { // Industry-aware retrieval service (optional)
 		SearchItems(ctx context.Context, tenantID uint, query string, limit int) (interface{}, error)
 		GetAllActive(ctx context.Context, tenantID uint, limit int) (interface{}, error)
 		FormatForAI(items interface{}) string
 	}
-	SalesConversationManager *SalesConversationManager      // Sales conversation tracking
-	PaymentInstructionGen    *PaymentInstructionGenerator   // Payment instruction generator
-	OrderService             interface { // Order service for creating orders
+	SalesConversationManager *SalesConversationManager    // Sales conversation tracking
+	PaymentInstructionGen    *PaymentInstructionGenerator // Payment instruction generator
+	OrderService             interface {                  // Order service for creating orders
 		CreateOrderFromSalesConversation(ctx context.Context, tenantID, customerID, conversationID uint, salesConv *storage.SalesConversation, customerName, customerPhone, customerEmail, platform string) (*storage.Order, error)
 	}
-	CustomerExtractor         *CustomerInfoExtractor         // Customer info extraction
-         // Customer info extraction
-	IndustryService          interface { // Industry service (optional)
+	CustomerExtractor *CustomerInfoExtractor // Customer info extraction
+	// Customer info extraction
+	IndustryService interface { // Industry service (optional)
 		GetTenantIndustry(ctx context.Context, tenantID uint) (interface{}, error)
 		GetIndustrySettings(ctx context.Context, tenantID uint) (map[string]interface{}, error)
 	}
@@ -75,9 +75,9 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	// Fallback to old BusinessMenuItem for backward compatibility
 	var menuItems []storage.BusinessMenuItem
 	var itemsContext string
-	
+
 	// Check if message is about pricing/packages - if so, get ALL items to show complete pricing
-	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") || 
+	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") ||
 		strings.Contains(strings.ToLower(message), "price") ||
 		strings.Contains(strings.ToLower(message), "cost") ||
 		strings.Contains(strings.ToLower(message), "package") ||
@@ -85,7 +85,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		strings.Contains(strings.ToLower(message), "plan") ||
 		strings.Contains(strings.ToLower(message), "service") ||
 		strings.Contains(strings.ToLower(message), "what do you offer")
-	
+
 	// Try to use industry-aware retrieval if available
 	if r.RetrievalService != nil {
 		if isPricingQuestion {
@@ -104,7 +104,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 			if err == nil && items != nil {
 				itemsContext = r.RetrievalService.FormatForAI(items)
 			}
-			
+
 			// If search returned empty, try getting all active items as fallback
 			if itemsContext == "" {
 				items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 10)
@@ -152,7 +152,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		// Use old BusinessMenuItem context
 		businessContext = r.buildBusinessContext(menuItems, faqs, biz.KnowledgeBase, intent, message)
 	}
-	
+
 	// Add business profile details (name, description, niche) at the top of context
 	if businessContext != "" {
 		businessProfileInfo := ""
@@ -169,7 +169,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 			businessContext = businessProfileInfo + "\n" + businessContext
 		}
 	}
-	
+
 	// Add payment account information to business context (so AI can reference it when answering payment questions)
 	if r.PaymentInstructionGen != nil {
 		var paymentAccounts []storage.TenantPaymentAccount
@@ -195,7 +195,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 				}
 			}
 			paymentInfo += "\nCRITICAL: When customers ask about payment methods, payment details, or how to pay, use the EXACT account numbers, bank names, and phone numbers from above. Never make up payment details.\n"
-			
+
 			if businessContext != "" {
 				businessContext += paymentInfo
 			} else {
@@ -232,13 +232,13 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 
 	// Build brand context with business details (name, description, niche, tone)
 	// Note: Simplified prompt - brand context is included in businessContext below
-	
+
 	// Add sales context if available - but keep it subtle and helpful, not pushy
 	salesGuidance := ""
 	if salesContext != "" {
 		salesGuidance = fmt.Sprintf("\n\nSALES CONTEXT (use subtly - don't be pushy):\n%s\n\nRemember: Answer their question first. Use sales context to understand where they are in the journey, but don't let it make you ask unnecessary questions or be overly salesy.", salesContext)
 	}
-	
+
 	// Build history string - limit to last 5 messages to avoid confusion
 	historyStr := ""
 	if len(conversationHistory) > 0 {
@@ -265,7 +265,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 			historyStr = "\n\nPrevious conversation:\n" + strings.Join(historyParts, "\n")
 		}
 	}
-	
+
 	// Template: #8 GenerateCustomerReply (customer-facing reply generation)
 	// SIMPLIFIED - Customer message is the ONLY focus
 	task := fmt.Sprintf(`You are a customer service representative for %s.
@@ -369,10 +369,10 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 	}
 
 	reply = strings.TrimSpace(reply)
-	
+
 	// Remove any signatures or names at the end (e.g., "— Fred", "— Assistant", "— [name]")
 	reply = removeSignature(reply)
-	
+
 	// Enforce maximum length for WhatsApp (keep responses concise)
 	// Split by sentences to avoid cutting mid-sentence
 	maxLength := 500 // characters (roughly 100 words)
@@ -449,13 +449,13 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 					}
 				}
 			}
-			
+
 			if amount > 0 {
 				var orderNumber, paymentRef, portalURL string
 				if order != nil {
 					orderNumber = order.OrderNumber
 					paymentRef = order.PaymentReference
-					
+
 					// Generate portal token and URL for the order
 					if r.OrderService != nil {
 						// We'll generate portal token via receipt service
@@ -467,13 +467,13 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 						token, url, err := receiptService.GeneratePortalTokenAndURL(ctx, order.ID, tenantID, publicURL)
 						if err == nil {
 							portalURL = url
-							r.Logger.Info("portal token generated for order", 
+							r.Logger.Info("portal token generated for order",
 								zap.Uint("order_id", order.ID),
 								zap.String("token", token))
 						}
 					}
 				}
-				
+
 				paymentInstructions, err := r.PaymentInstructionGen.GeneratePaymentInstructions(
 					ctx, tenantID, amount, "NGN", orderNumber, paymentRef, portalURL)
 				if err == nil && paymentInstructions != "" {
@@ -609,13 +609,13 @@ func removeSignature(text string) string {
 	if text == "" {
 		return text
 	}
-	
+
 	// Common signature patterns (em dash, en dash, regular dash)
 	patterns := []string{
 		" — ", " -- ", " - ", " —", " --", " -",
 		"— ", "-- ", "- ", "—", "--", "-",
 	}
-	
+
 	// Check if message ends with a signature pattern followed by a name
 	for _, pattern := range patterns {
 		// Look for pattern near the end (last 50 characters)
@@ -642,7 +642,7 @@ func removeSignature(text string) string {
 			}
 		}
 	}
-	
+
 	return text
 }
 
@@ -662,7 +662,7 @@ func filterCustomerMessages(history []Message) []Message {
 				// If not string, convert to string
 				contentStr = fmt.Sprintf("%v", msg.Content)
 			}
-			
+
 			// Check if message looks like a system instruction (contains formatting instructions, etc.)
 			content := strings.ToLower(contentStr)
 			isSystemMessage := strings.Contains(content, "keep things casual") ||
@@ -680,7 +680,7 @@ func filterCustomerMessages(history []Message) []Message {
 				(strings.Contains(content, "we'll use") && strings.Contains(content, "tone")) ||
 				(strings.Contains(content, "casual tone") && strings.Contains(content, "bold")) ||
 				strings.Contains(content, "want me to draft") && strings.Contains(content, "caption")
-			
+
 			// Only include if it's not a system message
 			if !isSystemMessage {
 				filtered = append(filtered, msg)
