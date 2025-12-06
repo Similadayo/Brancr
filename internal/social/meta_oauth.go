@@ -462,14 +462,28 @@ func (h *MetaOAuthHandler) processPlatforms(ctx context.Context, state metaOAuth
 		switch platform {
 		case "facebook":
 			if pageData == nil || pageData.Page == nil {
-				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "facebook", Message: "no Facebook page available"})
+				errMsg := "no Facebook page available. Please ensure:\n1. You have created a Facebook Page\n2. You are an admin of the Page\n3. The Page is not restricted or unpublished"
+				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "facebook", Message: errMsg})
+				h.Logger.Warn("Facebook OAuth: no page available",
+					zap.Uint("tenant_id", state.TenantID),
+					zap.Bool("page_data_nil", pageData == nil))
 				continue
 			}
 
 			if err := h.saveFacebookAccount(ctx, state.TenantID, pageData.Page, expiresAt); err != nil {
-				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "facebook", Message: err.Error()})
+				errMsg := fmt.Sprintf("failed to save Facebook account: %v", err)
+				result.Warnings = append(result.Warnings, metaPlatformResult{Platform: "facebook", Message: errMsg})
+				h.Logger.Error("Facebook OAuth: failed to save account",
+					zap.Uint("tenant_id", state.TenantID),
+					zap.String("page_id", pageData.Page.ID),
+					zap.Error(err))
 				continue
 			}
+
+			h.Logger.Info("✅ Facebook account saved successfully",
+				zap.Uint("tenant_id", state.TenantID),
+				zap.String("page_id", pageData.Page.ID),
+				zap.String("page_name", pageData.Page.Name))
 
 			result.Connected = append(result.Connected, metaPlatformResult{
 				Platform:   "facebook",
@@ -797,8 +811,14 @@ func (h *MetaOAuthHandler) fetchWhatsAppPhone(ctx context.Context, accessToken, 
 }
 
 func (h *MetaOAuthHandler) saveFacebookAccount(ctx context.Context, tenantID uint, page *metaPage, expiresAt *time.Time) error {
+	if page == nil {
+		return errors.New("page data is nil")
+	}
 	if page.AccessToken == "" {
 		return errors.New("page access token missing")
+	}
+	if page.ID == "" {
+		return errors.New("page ID missing")
 	}
 
 	encrypted, err := utils.EncryptToken(page.AccessToken)
@@ -806,7 +826,7 @@ func (h *MetaOAuthHandler) saveFacebookAccount(ctx context.Context, tenantID uin
 		return fmt.Errorf("failed to encrypt page token: %w", err)
 	}
 
-	return h.upsertSocialAccount(ctx, tenantID, "facebook", func(acc *storage.SocialAccount) {
+	err = h.upsertSocialAccount(ctx, tenantID, "facebook", func(acc *storage.SocialAccount) {
 		acc.AccessToken = encrypted
 		acc.RefreshToken = ""
 		acc.PageID = page.ID
@@ -816,6 +836,21 @@ func (h *MetaOAuthHandler) saveFacebookAccount(ctx context.Context, tenantID uin
 		acc.Connected = true
 		acc.ExpiresAt = expiresAt
 	})
+	
+	if err != nil {
+		h.Logger.Error("❌ Failed to upsert Facebook account",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("page_id", page.ID),
+			zap.Error(err))
+		return err
+	}
+	
+	h.Logger.Info("✅ Facebook account upserted successfully",
+		zap.Uint("tenant_id", tenantID),
+		zap.String("page_id", page.ID),
+		zap.String("page_name", page.Name))
+	
+	return nil
 }
 
 func (h *MetaOAuthHandler) saveInstagramAccount(ctx context.Context, tenantID uint, ig *metaInstagramAccount, facebookPageID, pageToken string, expiresAt *time.Time) error {
