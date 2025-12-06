@@ -577,7 +577,29 @@ func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, rep
 	// This will be implemented per platform
 	switch msg.Platform {
 	case "instagram":
-		return h.sendInstagramReply(ctx, &acc, msg.ThreadID, reply)
+		// For Instagram, use ThreadID (which should be the customer's IGSID)
+		// If ThreadID is empty or matches account ID, fallback to CustomerID
+		recipientID := msg.ThreadID
+		if recipientID == "" || recipientID == acc.ExternalID || recipientID == acc.PageID {
+			h.Logger.Warn("⚠️ ThreadID is empty or matches account ID, using CustomerID as fallback",
+				zap.String("thread_id", msg.ThreadID),
+				zap.String("customer_id", msg.CustomerID),
+				zap.String("account_external_id", acc.ExternalID),
+				zap.String("account_page_id", acc.PageID))
+			recipientID = msg.CustomerID
+		}
+		
+		// Final validation: ensure we have a valid recipient ID
+		if recipientID == "" {
+			return fmt.Errorf("CRITICAL: Cannot send Instagram message - both ThreadID and CustomerID are empty or invalid")
+		}
+		
+		h.Logger.Info("📨 Sending Instagram reply",
+			zap.String("recipient_id", recipientID),
+			zap.String("thread_id", msg.ThreadID),
+			zap.String("customer_id", msg.CustomerID))
+		
+		return h.sendInstagramReply(ctx, &acc, recipientID, reply)
 	case "facebook":
 		return h.sendFacebookReply(ctx, &acc, msg.ThreadID, reply)
 	case "whatsapp":
@@ -714,6 +736,16 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 		// Endpoint: https://graph.facebook.com/v18.0/{instagram-business-account-id}/messages
 		// This requires a Page Access Token with instagram_manage_messages permission
 		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+	}
+
+	// CRITICAL: Validate that we're not trying to send to ourselves
+	// threadID should be the customer's IGSID, not the Instagram account ID
+	if threadID == igAccountID {
+		return fmt.Errorf("CRITICAL: Cannot send message - recipient ID (%s) matches Instagram account ID. This indicates the ThreadID was incorrectly set to the account ID instead of the customer's IGSID. Please check webhook processing.", threadID)
+	}
+
+	if threadID == "" {
+		return fmt.Errorf("CRITICAL: ThreadID is empty - cannot determine recipient for Instagram message")
 	}
 
 	h.Logger.Info("📤 Attempting to send Instagram DM",
