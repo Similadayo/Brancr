@@ -364,11 +364,12 @@ func (h *InstagramLoginOAuthHandler) exchangeForLongLivedToken(shortLivedToken s
 }
 
 // getInstagramAccount gets Instagram account information using /me endpoint
-// Endpoint: https://graph.instagram.com/me
+// Endpoint: https://graph.instagram.com/v24.0/me
+// According to: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/get-started
 func (h *InstagramLoginOAuthHandler) getInstagramAccount(ctx context.Context, accessToken string) (*instagramAccountInfo, error) {
-	endpoint := "https://graph.instagram.com/me"
+	endpoint := "https://graph.instagram.com/v24.0/me"
 	params := url.Values{}
-	params.Set("fields", "id,username")
+	params.Set("fields", "user_id,username") // Use user_id field as per documentation
 	params.Set("access_token", accessToken)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"?"+params.Encode(), nil)
@@ -391,17 +392,43 @@ func (h *InstagramLoginOAuthHandler) getInstagramAccount(ctx context.Context, ac
 		return nil, fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Handle response format - Instagram API may return direct object or wrapped in data array
+	// Try direct object first (most common)
 	var account struct {
-		ID       string `json:"id"`
+		UserID   string `json:"user_id"`   // Instagram professional account ID
+		ID       string `json:"id"`        // App-scoped ID (fallback)
 		Username string `json:"username"`
 	}
 
 	if err := json.Unmarshal(body, &account); err != nil {
-		return nil, fmt.Errorf("failed to parse account response: %w", err)
+		// Try data array format
+		var dataWrapper struct {
+			Data []struct {
+				UserID   string `json:"user_id"`
+				ID       string `json:"id"`
+				Username string `json:"username"`
+			} `json:"data"`
+		}
+		if err2 := json.Unmarshal(body, &dataWrapper); err2 != nil {
+			return nil, fmt.Errorf("failed to parse account response: %w (also tried data wrapper: %v)", err, err2)
+		}
+		if len(dataWrapper.Data) == 0 {
+			return nil, fmt.Errorf("no account data in response")
+		}
+		account = dataWrapper.Data[0]
+	}
+
+	// Use user_id if available, otherwise fall back to id (app-scoped ID)
+	igID := account.UserID
+	if igID == "" {
+		igID = account.ID
+	}
+	if igID == "" {
+		return nil, fmt.Errorf("no user ID found in response")
 	}
 
 	return &instagramAccountInfo{
-		ID:       account.ID,
+		ID:       igID, // This is the Instagram professional account ID (IG_ID)
 		Username: account.Username,
 	}, nil
 }
