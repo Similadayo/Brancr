@@ -485,6 +485,15 @@ func (s *Services) initIndustry() {
 		}
 		s.CustomerResponder.IndustryService = industryAdapter
 		s.Logger.Info("✅ Industry service linked to CustomerResponder")
+		
+		// Link TenantBotManager for order notifications
+		if s.BotManager != nil {
+			tenantNotifierAdapter := &tenantNotifierAdapter{
+				botManager: s.BotManager,
+			}
+			s.CustomerResponder.TenantNotifier = tenantNotifierAdapter
+			s.Logger.Info("✅ Tenant notifier linked to CustomerResponder")
+		}
 	}
 }
 
@@ -540,6 +549,17 @@ func (s *Services) initEmail() {
 	} else {
 		s.EmailService = emailService
 		s.Logger.Info("✅ Email service initialized")
+	}
+}
+
+// tenantNotifierAdapter adapts TenantBotManager to CustomerResponder interface
+type tenantNotifierAdapter struct {
+	botManager *bot.TenantBotManager
+}
+
+func (a *tenantNotifierAdapter) NotifyOwnerWithMarkdown(tenantID uint, message string) {
+	if a.botManager != nil {
+		a.botManager.NotifyOwnerWithMarkdown(tenantID, message)
 	}
 }
 

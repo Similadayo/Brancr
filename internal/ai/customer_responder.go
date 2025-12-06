@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
@@ -29,6 +30,9 @@ type CustomerResponder struct {
 		CreateOrderFromSalesConversation(ctx context.Context, tenantID, customerID, conversationID uint, salesConv *storage.SalesConversation, customerName, customerPhone, customerEmail, platform string) (*storage.Order, error)
 	}
 	CustomerExtractor *CustomerInfoExtractor // Customer info extraction
+	TenantNotifier    interface {            // Tenant notification service (optional)
+		NotifyOwnerWithMarkdown(tenantID uint, message string)
+	}
 	// Customer info extraction
 	IndustryService interface { // Industry service (optional)
 		GetTenantIndustry(ctx context.Context, tenantID uint) (interface{}, error)
@@ -358,6 +362,7 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 		historyStr,
 		businessContext,
 		salesGuidance,
+		message,
 	)
 
 	// Add the main task as user message
@@ -401,37 +406,93 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 		}
 	}
 
-	// If customer is committed and ready for payment, create order and append payment instructions
-	if r.SalesConversationManager != nil && conversationID > 0 && r.PaymentInstructionGen != nil {
+	// Check if order should be created - either when committed OR when all order details are collected
+	var order *storage.Order
+	var orderCreated bool
+	if r.SalesConversationManager != nil && conversationID > 0 && r.OrderService != nil && r.CustomerExtractor != nil {
 		salesConv, err := r.SalesConversationManager.GetOrCreateSalesConversation(ctx, tenantID, customerID, conversationID)
-		if err == nil && salesConv.CommitmentLevel == "committed" && salesConv.Stage == "payment_instructions" {
-			// Create order if not already created
-			var order *storage.Order
-			if r.OrderService != nil && r.CustomerExtractor != nil {
-				// Extract customer info
-				customerName, customerPhone, customerEmail, _ := r.CustomerExtractor.ExtractCustomerInfo(
-					ctx, tenantID, customerID, conversationID, platform)
+		if err == nil {
+			// Extract customer info first
+			customerName, customerPhone, customerEmail, _ := r.CustomerExtractor.ExtractCustomerInfo(
+				ctx, tenantID, customerID, conversationID, platform)
 
-				// Create order
-				order, err = r.OrderService.CreateOrderFromSalesConversation(
-					ctx,
-					tenantID,
-					customerID,
-					conversationID,
-					salesConv,
-					customerName,
-					customerPhone,
-					customerEmail,
-					platform,
-				)
-				if err != nil {
-					r.Logger.Error("failed to create order", zap.Error(err))
+			// Check if order details are complete OR customer is committed
+			detailsComplete := r.SalesConversationManager.DetectCompleteOrderDetails(ctx, salesConv, message, customerPhone)
+			isCommitted := salesConv.CommitmentLevel == "committed" && salesConv.Stage == "payment_instructions"
+
+			// Create order if details are complete OR customer is committed
+			if detailsComplete || isCommitted {
+				// Check if order already exists for this conversation (prevent duplicates)
+				var existingOrder storage.Order
+				recentOrderExists := r.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?", tenantID, customerID, platform).
+					Where("created_at > ?", time.Now().Add(-10*time.Minute)). // Within last 10 minutes
+					Order("created_at DESC").
+					First(&existingOrder).Error == nil
+
+				if !recentOrderExists {
+					// Create order
+					order, err = r.OrderService.CreateOrderFromSalesConversation(
+						ctx,
+						tenantID,
+						customerID,
+						conversationID,
+						salesConv,
+						customerName,
+						customerPhone,
+						customerEmail,
+						platform,
+					)
+					if err != nil {
+						r.Logger.Error("failed to create order", zap.Error(err))
+					} else {
+						orderCreated = true
+						r.Logger.Info("✅ Order created automatically - all details collected",
+							zap.Uint("order_id", order.ID),
+							zap.String("order_number", order.OrderNumber),
+							zap.Uint("tenant_id", tenantID),
+							zap.Uint("customer_id", customerID),
+							zap.Bool("details_complete", detailsComplete),
+							zap.Bool("is_committed", isCommitted))
+
+						// Notify tenant about new order
+						if r.TenantNotifier != nil {
+							orderSummary := fmt.Sprintf(
+								"🛒 *New Order Created*\n\n"+
+									"📦 Order: *%s*\n"+
+									"👤 Customer: *%s*\n"+
+									"📱 Phone: %s\n"+
+									"💰 Amount: *₦%.2f*\n"+
+									"📱 Platform: %s\n\n"+
+									"View order in your dashboard.",
+								order.OrderNumber,
+								customerName,
+								customerPhone,
+								order.TotalAmount,
+								strings.ToUpper(platform),
+							)
+							r.TenantNotifier.NotifyOwnerWithMarkdown(tenantID, orderSummary)
+						}
+
+						// Update sales conversation to committed if not already
+						if !isCommitted {
+							r.SalesConversationManager.UpdateCommitmentLevel(ctx, salesConv.ID, "committed")
+							r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, "payment_instructions")
+						}
+					}
 				} else {
-					r.Logger.Info("order created from sales conversation",
-						zap.Uint("order_id", order.ID),
-						zap.String("order_number", order.OrderNumber))
+					r.Logger.Info("⏭️ Order already exists for recent conversation, skipping duplicate",
+						zap.Uint("existing_order_id", existingOrder.ID),
+						zap.String("existing_order_number", existingOrder.OrderNumber))
+					order = &existingOrder
 				}
 			}
+		}
+	}
+
+	// If customer is committed and ready for payment, append payment instructions
+	if r.SalesConversationManager != nil && conversationID > 0 && r.PaymentInstructionGen != nil {
+		salesConv, err := r.SalesConversationManager.GetOrCreateSalesConversation(ctx, tenantID, customerID, conversationID)
+		if err == nil && (salesConv.CommitmentLevel == "committed" || orderCreated) {
 
 			// Generate payment instructions
 			amount := salesConv.PriceDiscussed

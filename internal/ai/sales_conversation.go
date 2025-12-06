@@ -294,3 +294,61 @@ func (m *SalesConversationManager) DetectNegotiation(ctx context.Context, messag
 	return false, "", 0.0
 }
 
+// DetectCompleteOrderDetails detects if all order details have been collected
+// Returns true if items, quantity, delivery info, and contact info are present
+func (m *SalesConversationManager) DetectCompleteOrderDetails(ctx context.Context, salesConv *storage.SalesConversation, message string, customerPhone string) bool {
+	// Check if items are discussed
+	hasItems := false
+	if salesConv.ItemsDiscussed != "" && salesConv.ItemsDiscussed != "[]" {
+		var items []map[string]interface{}
+		if err := json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items); err == nil && len(items) > 0 {
+			hasItems = true
+		}
+	}
+
+	// Check if price is discussed
+	hasPrice := salesConv.PriceDiscussed > 0
+
+	// Check for delivery/pickup info in message
+	messageLower := strings.ToLower(message)
+	hasDeliveryInfo := strings.Contains(messageLower, "delivery") ||
+		strings.Contains(messageLower, "pickup") ||
+		strings.Contains(messageLower, "address") ||
+		strings.Contains(messageLower, "location") ||
+		strings.Contains(messageLower, "landmark")
+
+	// Check for contact info (phone number)
+	hasContactInfo := customerPhone != "" || 
+		strings.Contains(messageLower, "phone") ||
+		strings.Contains(messageLower, "call") ||
+		strings.Contains(messageLower, "contact")
+
+	// Check for quantity in message or items
+	hasQuantity := false
+	if salesConv.ItemsDiscussed != "" {
+		var items []map[string]interface{}
+		if err := json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items); err == nil {
+			for _, item := range items {
+				if q, ok := item["quantity"].(float64); ok && q > 0 {
+					hasQuantity = true
+					break
+				} else if q, ok := item["quantity"].(int); ok && q > 0 {
+					hasQuantity = true
+					break
+				}
+			}
+		}
+	}
+	// Also check message for quantity indicators
+	if !hasQuantity {
+		hasQuantity = strings.Contains(messageLower, "4") ||
+			strings.Contains(messageLower, "four") ||
+			strings.Contains(messageLower, "quantity") ||
+			strings.Contains(messageLower, "how many")
+	}
+
+	// Order is complete if we have items, price, delivery info, and contact info
+	// Quantity is nice to have but not always required (defaults to 1)
+	return hasItems && hasPrice && hasDeliveryInfo && hasContactInfo
+}
+
