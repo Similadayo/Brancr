@@ -6,14 +6,58 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
-type InstagramConnector struct{}
+type InstagramConnector struct {
+	DB     *gorm.DB
+	Logger *zap.Logger
+}
+
+// SetDBAndLogger sets the database and logger for the Instagram connector
+// This allows the connector to refresh tokens when needed
+func (i *InstagramConnector) SetDBAndLogger(db *gorm.DB, logger *zap.Logger) {
+	i.DB = db
+	i.Logger = logger
+}
+
+// getInstagramAPIBase returns the correct API base URL based on login method
+// Instagram Login uses graph.instagram.com (no version), Facebook Login uses graph.facebook.com/v18.0
+func (i *InstagramConnector) getInstagramAPIBase(acc *storage.SocialAccount) string {
+	if acc != nil && acc.LoginMethod == "instagram_login" {
+		return "https://graph.instagram.com"
+	}
+	// Default to Facebook Graph API (backward compatible)
+	return "https://graph.facebook.com/v18.0"
+}
+
+// getInstagramAccountIDForPosting gets the Instagram account ID for posting
+// For Instagram Login: account ID is in ExternalID or PageID (it's the Instagram User ID)
+// For Facebook Login: need to get from Facebook Page's instagram_business_account
+func (i *InstagramConnector) getInstagramAccountIDForPosting(ctx context.Context, acc *storage.SocialAccount) (string, error) {
+	// If using Instagram Login, the account ID is already stored
+	if acc.LoginMethod == "instagram_login" {
+		if acc.ExternalID != "" {
+			return acc.ExternalID, nil
+		}
+		if acc.PageID != "" {
+			return acc.PageID, nil
+		}
+		return "", fmt.Errorf("Instagram account ID not found for Instagram Login account")
+	}
+
+	// For Facebook Login, use existing logic (get from Facebook Page)
+	return i.getInstagramAccountID(ctx, acc)
+}
 
 // PostResult holds the result of posting media to Instagram
 type PostResult struct {
@@ -101,6 +145,11 @@ func (i *InstagramConnector) PostMedia(ctx context.Context, acc *storage.SocialA
 
 // PostMediaWithResult posts media and optionally returns the platform post ID
 func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *storage.SocialAccount, asset *storage.MediaAsset, caption string, result *PostResult) error {
+	// Ensure access token is valid and refreshed if needed (for Instagram Login)
+	if err := i.ensureAccessToken(ctx, acc); err != nil {
+		return fmt.Errorf("failed to ensure valid access token: %w", err)
+	}
+
 	// Validate access token
 	if acc.AccessToken == "" || strings.TrimSpace(acc.AccessToken) == "" {
 		return fmt.Errorf("Instagram access token is empty or invalid")
@@ -113,7 +162,7 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 	}
 
 	// Step 1: Get Instagram Business Account ID
-	igAccountID, err := i.getInstagramAccountID(ctx, acc)
+	igAccountID, err := i.getInstagramAccountIDForPosting(ctx, acc)
 	if err != nil {
 		return fmt.Errorf("failed to get Instagram account ID: %w", err)
 	}
@@ -124,35 +173,36 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 
 	switch {
 	case len(urls) > 1:
-		creationID, err = i.createCarousel(ctx, igAccountID, acc.AccessToken, urls, caption)
+		creationID, err = i.createCarousel(ctx, igAccountID, acc.AccessToken, urls, caption, acc)
 		if err != nil {
 			return fmt.Errorf("failed to create carousel: %w", err)
 		}
 	case resolvedType == "reel":
-		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS")
+		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS", acc)
 		if err != nil {
 			return fmt.Errorf("failed to create reel media: %w", err)
 		}
 	case resolvedType == "video":
 		// Instagram deprecated plain VIDEO uploads; treat feed videos as reels shared to feed.
-		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS")
+		creationID, err = i.createVideoMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, "REELS", acc)
 		if err != nil {
 			return fmt.Errorf("failed to create video media: %w", err)
 		}
 	default:
-		creationID, err = i.createImageMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption)
+		creationID, err = i.createImageMedia(ctx, igAccountID, acc.AccessToken, urls[0], caption, acc)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Step 3: Wait for media to be ready (Instagram needs time to process)
-	if err := i.waitForMediaReady(ctx, creationID, acc.AccessToken); err != nil {
+	if err := i.waitForMediaReady(ctx, creationID, acc.AccessToken, acc); err != nil {
 		return fmt.Errorf("media not ready: %w", err)
 	}
 
 	// Step 4: Publish the media
-	publishURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media_publish", igAccountID)
+	apiBase := i.getInstagramAPIBase(acc)
+	publishURL := fmt.Sprintf("%s/%s/media_publish", apiBase, igAccountID)
 	publishPayload := map[string]string{
 		"creation_id":  creationID,
 		"access_token": acc.AccessToken,
@@ -209,7 +259,7 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 				// For rate limit errors, wait briefly and verify if post actually succeeded
 				// Instagram sometimes returns rate limit errors even when the post succeeds
 				time.Sleep(2 * time.Second) // Brief wait for Instagram to process
-				if verified, err := i.verifyPostPublished(ctx, igAccountID, acc.AccessToken, creationID); err == nil && verified {
+				if verified, err := i.verifyPostPublished(ctx, igAccountID, acc.AccessToken, creationID, acc); err == nil && verified {
 					fmt.Printf("✅ [Instagram] Posted successfully to account ID=%s (verified after rate limit warning)\n", igAccountID)
 					// Note: We can't retrieve the exact media ID here, but post succeeded
 					return nil
@@ -232,8 +282,9 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 	return nil
 }
 
-func (i *InstagramConnector) createImageMedia(ctx context.Context, igAccountID, accessToken, imageURL, caption string) (string, error) {
-	createURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
+func (i *InstagramConnector) createImageMedia(ctx context.Context, igAccountID, accessToken, imageURL, caption string, acc *storage.SocialAccount) (string, error) {
+	apiBase := i.getInstagramAPIBase(acc)
+	createURL := fmt.Sprintf("%s/%s/media", apiBase, igAccountID)
 	payload := map[string]string{
 		"image_url":    imageURL,
 		"caption":      caption,
@@ -274,12 +325,13 @@ func (i *InstagramConnector) createImageMedia(ctx context.Context, igAccountID, 
 
 // createCarousel creates an Instagram carousel post
 // Instagram carousels require: 1) Create individual media containers, 2) Wait for each to be ready, 3) Create carousel container, 4) Publish
-func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, accessToken string, urls []string, caption string) (string, error) {
+func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, accessToken string, urls []string, caption string, acc *storage.SocialAccount) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	// Step 1: Create individual media containers for each image
 	var mediaIDs []string
-	createURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
+	apiBase := i.getInstagramAPIBase(acc)
+	createURL := fmt.Sprintf("%s/%s/media", apiBase, igAccountID)
 
 	for _, url := range urls {
 		payload := map[string]string{
@@ -329,7 +381,7 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 		}
 
 		// Wait for this media to be ready
-		if err := i.waitForMediaReady(ctx, mediaID, accessToken); err != nil {
+		if err := i.waitForMediaReady(ctx, mediaID, accessToken, acc); err != nil {
 			return "", fmt.Errorf("media not ready: %w", err)
 		}
 
@@ -337,7 +389,7 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 	}
 
 	// Step 2: Create carousel container with all media IDs
-	carouselURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
+	carouselURL := fmt.Sprintf("%s/%s/media", apiBase, igAccountID)
 
 	// Build children parameter (comma-separated media IDs)
 	children := strings.Join(mediaIDs, ",")
@@ -380,9 +432,10 @@ func (i *InstagramConnector) createCarousel(ctx context.Context, igAccountID, ac
 	return carouselID, nil
 }
 
-func (i *InstagramConnector) createVideoMedia(ctx context.Context, igAccountID, accessToken, videoURL, caption, mediaType string) (string, error) {
+func (i *InstagramConnector) createVideoMedia(ctx context.Context, igAccountID, accessToken, videoURL, caption, mediaType string, acc *storage.SocialAccount) (string, error) {
 	client := &http.Client{Timeout: 45 * time.Second}
-	createURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media", igAccountID)
+	apiBase := i.getInstagramAPIBase(acc)
+	createURL := fmt.Sprintf("%s/%s/media", apiBase, igAccountID)
 
 	payload := map[string]string{
 		"video_url":    videoURL,
@@ -432,8 +485,9 @@ func (i *InstagramConnector) createVideoMedia(ctx context.Context, igAccountID, 
 
 // waitForMediaReady polls Instagram to check if the media container is ready for publishing
 // Instagram requires media to be processed before publishing (status must be "FINISHED")
-func (i *InstagramConnector) waitForMediaReady(ctx context.Context, creationID, accessToken string) error {
-	statusURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=status_code&access_token=%s", creationID, accessToken)
+func (i *InstagramConnector) waitForMediaReady(ctx context.Context, creationID, accessToken string, acc *storage.SocialAccount) error {
+		apiBase := i.getInstagramAPIBase(acc)
+		statusURL := fmt.Sprintf("%s/%s?fields=status_code&access_token=%s", apiBase, creationID, accessToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	maxAttempts := 15 // 15 attempts * 2 seconds = 30 seconds max wait (reduced to avoid rate limits)
@@ -590,12 +644,13 @@ func (i *InstagramConnector) getInstagramAccountID(ctx context.Context, acc *sto
 
 // verifyPostPublished checks if a creation_id was actually published despite an error response
 // This handles cases where Instagram's API returns an error but the post actually succeeded
-func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountID, accessToken, creationID string) (bool, error) {
+func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountID, accessToken, creationID string, acc *storage.SocialAccount) (bool, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
+	apiBase := i.getInstagramAPIBase(acc)
 	
 	// Try to query the creation_id as if it were published media
 	// Once published, Instagram converts creation_id to media_id which can be queried
-	mediaURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,timestamp&access_token=%s", creationID, accessToken)
+	mediaURL := fmt.Sprintf("%s/%s?fields=id,timestamp&access_token=%s", apiBase, creationID, accessToken)
 	resp, err := client.Get(mediaURL)
 	if err != nil {
 		return false, err
@@ -615,7 +670,7 @@ func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountI
 	
 	// Alternative: Check account's recent media (limit to most recent 5 to avoid rate limits)
 	// Look for a post created in the last few minutes
-	recentMediaURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media?fields=id,timestamp&limit=5&access_token=%s", igAccountID, accessToken)
+	recentMediaURL := fmt.Sprintf("%s/%s/media?fields=id,timestamp&limit=5&access_token=%s", apiBase, igAccountID, accessToken)
 	resp2, err := client.Get(recentMediaURL)
 	if err != nil {
 		return false, nil // Don't treat verification failure as error
@@ -642,7 +697,135 @@ func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountI
 	return false, nil // Couldn't verify - assume it failed
 }
 
+// ensureAccessToken refreshes Instagram Login tokens if they're about to expire
+func (i *InstagramConnector) ensureAccessToken(ctx context.Context, acc *storage.SocialAccount) error {
+	if acc.LoginMethod != "instagram_login" {
+		return nil
+	}
+
+	if acc.ExpiresAt == nil {
+		return nil
+	}
+
+	timeUntilExpiry := time.Until(*acc.ExpiresAt)
+	if timeUntilExpiry > 7*24*time.Hour {
+		return nil
+	}
+
+	if i.DB == nil || i.Logger == nil {
+		return nil
+	}
+
+	i.Logger.Info("🔄 Refreshing Instagram Login access token",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Uint("account_id", acc.ID),
+		zap.Duration("time_until_expiry", timeUntilExpiry))
+
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+
+	newToken, expiresIn, err := refreshInstagramLoginToken(ctx, decryptedToken)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "expired") ||
+			strings.Contains(strings.ToLower(err.Error()), "invalid") {
+			updates := map[string]interface{}{"connected": false}
+			if updateErr := i.DB.WithContext(ctx).
+				Model(&storage.SocialAccount{}).
+				Where("id = ?", acc.ID).
+				Updates(updates).Error; updateErr != nil {
+				i.Logger.Warn("failed to mark Instagram account as disconnected", zap.Error(updateErr))
+			} else {
+				acc.Connected = false
+				i.Logger.Warn("🔴 Instagram Login account marked as disconnected",
+					zap.Uint("tenant_id", acc.TenantID),
+					zap.Uint("account_id", acc.ID))
+			}
+		}
+		return fmt.Errorf("instagram login token refresh failed: %w", err)
+	}
+
+	encryptedToken, err := utils.EncryptToken(newToken)
+	if err != nil {
+		return fmt.Errorf("encrypt access token: %w", err)
+	}
+
+	expiry := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	updates := map[string]interface{}{
+		"access_token": encryptedToken,
+		"expires_at":   &expiry,
+	}
+
+	if err := i.DB.WithContext(ctx).
+		Model(&storage.SocialAccount{}).
+		Where("id = ?", acc.ID).
+		Updates(updates).Error; err != nil {
+		i.Logger.Warn("failed to persist refreshed Instagram Login token", zap.Error(err))
+		return fmt.Errorf("failed to save refreshed token: %w", err)
+	}
+
+	acc.AccessToken = newToken
+	acc.ExpiresAt = &expiry
+
+	i.Logger.Info("✅ Instagram Login token refreshed successfully",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Uint("account_id", acc.ID))
+
+	return nil
+}
+
+// refreshInstagramLoginToken refreshes an Instagram Login token
+func refreshInstagramLoginToken(ctx context.Context, accessToken string) (newToken string, expiresIn int, err error) {
+	appSecret := os.Getenv("INSTAGRAM_APP_SECRET")
+	if appSecret == "" {
+		return "", 0, fmt.Errorf("INSTAGRAM_APP_SECRET not configured")
+	}
+
+	endpoint := "https://graph.instagram.com/refresh_access_token"
+	params := url.Values{}
+	params.Set("grant_type", "ig_refresh_token")
+	params.Set("access_token", accessToken)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint+"?"+params.Encode(), nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResponse struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+
+	if err := json.Unmarshal(body, &tokenResponse); err != nil {
+		return "", 0, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	return tokenResponse.AccessToken, tokenResponse.ExpiresIn, nil
+}
+
 func (i *InstagramConnector) HealthCheck(ctx context.Context, acc *storage.SocialAccount) error {
+	if err := i.ensureAccessToken(ctx, acc); err != nil {
+		return fmt.Errorf("token refresh failed: %w", err)
+	}
+
 	if acc.AccessToken == "" {
 		return fmt.Errorf("access token is empty")
 	}
@@ -653,7 +836,8 @@ func (i *InstagramConnector) HealthCheck(ctx context.Context, acc *storage.Socia
 	}
 
 	// Test by fetching account info
-	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=id,username&access_token=%s", igID, acc.AccessToken)
+	apiBase := i.getInstagramAPIBase(acc)
+	url := fmt.Sprintf("%s/%s?fields=id,username&access_token=%s", apiBase, igID, acc.AccessToken)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -639,6 +639,16 @@ func (h *MessageHandler) sendTelegramReply(ctx context.Context, msg IncomingMess
 // sendInstagramReply sends a reply via Instagram Messaging API
 // According to Meta's official documentation: https://developers.facebook.com/docs/messenger-platform/instagram/feature-reference/send-message
 func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.SocialAccount, threadID, reply string) error {
+	// Ensure access token is valid and refreshed if needed (for Instagram Login)
+	if acc.LoginMethod == "instagram_login" {
+		if err := h.ensureInstagramLoginToken(ctx, acc); err != nil {
+			h.Logger.Warn("⚠️ Failed to refresh Instagram Login token, attempting to use existing token",
+				zap.Error(err),
+				zap.Uint("tenant_id", acc.TenantID))
+			// Continue with existing token - might still work
+		}
+	}
+
 	// Decrypt token
 	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
 	if err != nil {
@@ -674,29 +684,40 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.Uint("tenant_id", acc.TenantID))
 	}
 
-	// Verify token type - Instagram messaging REQUIRES a Page Access Token
-	tokenType, pageID, err := h.verifyTokenType(ctx, decryptedToken)
-	if err != nil {
-		h.Logger.Warn("⚠️ Could not verify token type", zap.Error(err))
+	// Determine API base URL and token requirements based on login method
+	var apiURL string
+	if acc.LoginMethod == "instagram_login" {
+		// Instagram Login: Use graph.instagram.com with Instagram User access token
+		// According to: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api
+		apiURL = fmt.Sprintf("https://graph.instagram.com/%s/messages", igAccountID)
+		h.Logger.Info("📱 Using Instagram Login messaging API",
+			zap.String("instagram_account_id", igAccountID),
+			zap.String("login_method", "instagram_login"))
 	} else {
-		h.Logger.Info("🔑 Token type verified",
-			zap.String("token_type", tokenType),
-			zap.String("page_id", pageID))
+		// Facebook Login: Verify token type - Instagram messaging REQUIRES a Page Access Token
+		tokenType, pageID, err := h.verifyTokenType(ctx, decryptedToken)
+		if err != nil {
+			h.Logger.Warn("⚠️ Could not verify token type", zap.Error(err))
+		} else {
+			h.Logger.Info("🔑 Token type verified",
+				zap.String("token_type", tokenType),
+				zap.String("page_id", pageID))
 
-		if tokenType != "PAGE" {
-			return fmt.Errorf("Instagram messaging requires a Page Access Token, but you're using a %s token. Please generate a Page Access Token from Meta Developer Console → Tools → Graph API Explorer → Select your Page → Generate Token with 'instagram_manage_messages' and 'pages_messaging' permissions", tokenType)
+			if tokenType != "PAGE" {
+				return fmt.Errorf("Instagram messaging requires a Page Access Token, but you're using a %s token. Please generate a Page Access Token from Meta Developer Console → Tools → Graph API Explorer → Select your Page → Generate Token with 'instagram_manage_messages' and 'pages_messaging' permissions", tokenType)
+			}
 		}
-	}
 
-	// Instagram Messaging API endpoint according to Meta's official documentation
-	// Endpoint: https://graph.facebook.com/v18.0/{instagram-business-account-id}/messages
-	// This requires a Page Access Token with instagram_manage_messages permission
-	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+		// Instagram Messaging API endpoint according to Meta's official documentation
+		// Endpoint: https://graph.facebook.com/v18.0/{instagram-business-account-id}/messages
+		// This requires a Page Access Token with instagram_manage_messages permission
+		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+	}
 
 	h.Logger.Info("📤 Attempting to send Instagram DM",
 		zap.String("instagram_account_id", igAccountID),
 		zap.String("recipient_id", threadID),
-		zap.String("page_id", pageID),
+		zap.String("login_method", acc.LoginMethod),
 		zap.String("message_preview", func() string {
 			if len(reply) > 50 {
 				return reply[:50] + "..."
@@ -1447,4 +1468,78 @@ func (h *MessageHandler) verifyTokenType(ctx context.Context, token string) (str
 	// But for Instagram messaging, we need the actual Page Access Token
 	// So we return USER here to indicate they need to generate a Page token
 	return "USER", pages.Data[0].ID, nil
+}
+
+// ensureInstagramLoginToken refreshes Instagram Login tokens if they're about to expire
+func (h *MessageHandler) ensureInstagramLoginToken(ctx context.Context, acc *storage.SocialAccount) error {
+	if acc.LoginMethod != "instagram_login" {
+		return nil
+	}
+
+	if acc.ExpiresAt == nil {
+		return nil
+	}
+
+	timeUntilExpiry := time.Until(*acc.ExpiresAt)
+	if timeUntilExpiry > 7*24*time.Hour {
+		return nil
+	}
+
+	h.Logger.Info("🔄 Refreshing Instagram Login access token",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Uint("account_id", acc.ID),
+		zap.Duration("time_until_expiry", timeUntilExpiry))
+
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+
+	newToken, expiresIn, err := refreshInstagramLoginToken(ctx, decryptedToken)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "expired") ||
+			strings.Contains(strings.ToLower(err.Error()), "invalid") {
+			updates := map[string]interface{}{"connected": false}
+			if updateErr := h.DB.WithContext(ctx).
+				Model(&storage.SocialAccount{}).
+				Where("id = ?", acc.ID).
+				Updates(updates).Error; updateErr != nil {
+				h.Logger.Warn("failed to mark Instagram account as disconnected", zap.Error(updateErr))
+			} else {
+				acc.Connected = false
+				h.Logger.Warn("🔴 Instagram Login account marked as disconnected",
+					zap.Uint("tenant_id", acc.TenantID),
+					zap.Uint("account_id", acc.ID))
+			}
+		}
+		return fmt.Errorf("instagram login token refresh failed: %w", err)
+	}
+
+	encryptedToken, err := utils.EncryptToken(newToken)
+	if err != nil {
+		return fmt.Errorf("encrypt access token: %w", err)
+	}
+
+	expiry := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	updates := map[string]interface{}{
+		"access_token": encryptedToken,
+		"expires_at":   &expiry,
+	}
+
+	if err := h.DB.WithContext(ctx).
+		Model(&storage.SocialAccount{}).
+		Where("id = ?", acc.ID).
+		Updates(updates).Error; err != nil {
+		h.Logger.Warn("failed to persist refreshed Instagram Login token", zap.Error(err))
+		return fmt.Errorf("failed to save refreshed token: %w", err)
+	}
+
+	acc.AccessToken = newToken
+	acc.ExpiresAt = &expiry
+
+	h.Logger.Info("✅ Instagram Login token refreshed successfully",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.Uint("account_id", acc.ID))
+
+	return nil
 }

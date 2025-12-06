@@ -26,6 +26,9 @@ type Config struct {
 	MetaAppSecret        string
 	MetaRedirectURI      string
 	MetaSuccessURL       string
+	InstagramAppID       string // Instagram App ID for Business Login (separate from Meta App ID)
+	InstagramAppSecret  string // Instagram App Secret for Business Login (separate from Meta App Secret)
+	InstagramRedirectURI string // Instagram OAuth redirect URI (can be same as MetaRedirectURI)
 	MetaEmbeddedConfigID string
 	MetaEmbeddedExtras   string
 	MetaSystemUserToken  string
@@ -85,6 +88,9 @@ func Load() *Config {
 		MetaAppSecret:        os.Getenv("META_APP_SECRET"),
 		MetaRedirectURI:      os.Getenv("META_REDIRECT_URI"),
 		MetaSuccessURL:       os.Getenv("META_SUCCESS_REDIRECT"),
+		InstagramAppID:       os.Getenv("INSTAGRAM_APP_ID"),
+		InstagramAppSecret:   os.Getenv("INSTAGRAM_APP_SECRET"),
+		InstagramRedirectURI: getEnv("INSTAGRAM_REDIRECT_URI", os.Getenv("META_REDIRECT_URI")), // Defaults to MetaRedirectURI if not set
 		MetaEmbeddedConfigID: os.Getenv("META_WHATSAPP_CONFIG_ID"),
 		MetaEmbeddedExtras:   os.Getenv("META_WHATSAPP_EXTRAS"),
 		MetaSystemUserToken:  getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),

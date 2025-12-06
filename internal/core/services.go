@@ -60,6 +60,7 @@ type Services struct {
 	RespondIOWebhookHandler *social.RespondIOWebhookHandler
 	GupshupWebhookHandler   *social.GupshupWebhookHandler
 	MetaOAuthHandler        *social.MetaOAuthHandler
+	InstagramLoginOAuthHandler *social.InstagramLoginOAuthHandler // Instagram Login (Business Login for Instagram)
 	Scheduler               *social.Scheduler
 	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
 	TikTokOAuthHandler      *social.TikTokOAuthHandler
@@ -313,6 +314,14 @@ func (s *Services) initSocial() error {
 		s.Logger.Warn("failed to initialize Meta OAuth handler", zap.Error(err))
 	} else {
 		s.MetaOAuthHandler = oauthHandler
+	}
+
+	// Initialize Instagram Login OAuth handler (Business Login for Instagram)
+	if instagramOAuthHandler, err := social.NewInstagramLoginOAuthHandler(s.DB, s.Logger, s.Config); err != nil {
+		s.Logger.Warn("failed to initialize Instagram Login OAuth handler", zap.Error(err))
+	} else if instagramOAuthHandler != nil {
+		s.InstagramLoginOAuthHandler = instagramOAuthHandler
+		s.Logger.Info("✅ Instagram Login OAuth handler initialized")
 	}
 
 	if tikTokHandler := social.NewTikTokOAuthHandler(s.DB, s.Logger, s.Config); tikTokHandler != nil {

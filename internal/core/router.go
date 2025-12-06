@@ -99,6 +99,12 @@ func SetupRouter(app *App) http.Handler {
 		r.Get("/api/oauth/meta/callback", app.Services.MetaOAuthHandler.Callback)
 	}
 
+	// Instagram Login OAuth (Business Login for Instagram)
+	if app.Services.InstagramLoginOAuthHandler != nil {
+		r.Get("/api/oauth/instagram/start", app.Services.InstagramLoginOAuthHandler.StartOAuth)
+		r.Get("/api/oauth/instagram/callback", app.Services.InstagramLoginOAuthHandler.HandleCallback)
+	}
+
 	if app.Services.TikTokOAuthHandler != nil {
 		r.Get("/api/oauth/tiktok/start", app.Services.TikTokOAuthHandler.StartOAuth)
 		r.Get("/api/oauth/tiktok/callback", app.Services.TikTokOAuthHandler.Callback)
