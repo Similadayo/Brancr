@@ -45,6 +45,7 @@ type IncomingMessage struct {
 	CustomerID       string // Platform-specific customer ID
 	CustomerName     string
 	CustomerUsername string
+	CustomerProfilePic string // Profile picture URL
 	MessageID        string // Platform-specific message ID
 	Content          string
 	MessageType      string // text, image, video, comment
@@ -509,6 +510,16 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 			}
 		}
 		
+		// Update profile picture if we have a new one (always update when available)
+		if msg.CustomerProfilePic != "" {
+			if customer.ProfilePicURL == "" || msg.CustomerProfilePic != customer.ProfilePicURL {
+				customer.ProfilePicURL = msg.CustomerProfilePic
+				h.Logger.Info("✅ Updated customer profile picture",
+					zap.Uint("customer_id", customer.ID),
+					zap.String("profile_pic_url", msg.CustomerProfilePic))
+			}
+		}
+		
 		h.DB.Save(&customer)
 		return &customer, nil
 	}
@@ -540,6 +551,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 		PlatformID:    msg.CustomerID,
 		DisplayName:   displayName,
 		Username:      msg.CustomerUsername,
+		ProfilePicURL: msg.CustomerProfilePic,
 		LastMessageAt: msg.Timestamp,
 	}
 

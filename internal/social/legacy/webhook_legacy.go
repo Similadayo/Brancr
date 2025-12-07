@@ -120,17 +120,18 @@ func (h *WebhookHandler) HandleInstagramWebhook(w http.ResponseWriter, r *http.R
 	for _, entry := range payload.Entry {
 		for _, msg := range entry.Messaging {
 			incomingMsg := IncomingMessage{
-				Platform:         "instagram",
-				TenantID:         tenantID,
-				CustomerID:       msg.Sender.ID,
-				CustomerName:     "", // Will be fetched or set
-				CustomerUsername: "",
-				MessageID:        msg.Message.MID,
-				Content:          msg.Message.Text,
-				MessageType:      "text",
-				ThreadID:         msg.Sender.ID,
-				Timestamp:        time.Unix(msg.Timestamp/1000, 0),
-				Metadata:         map[string]interface{}{"entry_id": entry.ID},
+				Platform:          "instagram",
+				TenantID:          tenantID,
+				CustomerID:        msg.Sender.ID,
+				CustomerName:      "", // Will be fetched or set
+				CustomerUsername:  "",
+				CustomerProfilePic: "",
+				MessageID:         msg.Message.MID,
+				Content:           msg.Message.Text,
+				MessageType:       "text",
+				ThreadID:          msg.Sender.ID,
+				Timestamp:         time.Unix(msg.Timestamp/1000, 0),
+				Metadata:          map[string]interface{}{"entry_id": entry.ID},
 			}
 
 			go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
@@ -235,16 +236,17 @@ func (h *WebhookHandler) HandleWhatsAppWebhook(w http.ResponseWriter, r *http.Re
 				timestamp, _ := strconv.ParseInt(msg.Timestamp, 10, 64)
 
 				incomingMsg := IncomingMessage{
-					Platform:         "whatsapp",
-					TenantID:         tenantID,
-					CustomerID:       msg.From,
-					CustomerName:     "",
-					CustomerUsername: "",
-					MessageID:        msg.ID,
-					Content:          msg.Text.Body,
-					MessageType:      msg.Type,
-					ThreadID:         msg.From,
-					Timestamp:        time.Unix(timestamp, 0),
+					Platform:          "whatsapp",
+					TenantID:          tenantID,
+					CustomerID:        msg.From,
+					CustomerName:      "",
+					CustomerUsername:  "",
+					CustomerProfilePic: "",
+					MessageID:         msg.ID,
+					Content:           msg.Text.Body,
+					MessageType:       msg.Type,
+					ThreadID:          msg.From,
+					Timestamp:         time.Unix(timestamp, 0),
 					Metadata: map[string]interface{}{
 						"phone_number_id": change.Value.Metadata.PhoneNumberID,
 					},

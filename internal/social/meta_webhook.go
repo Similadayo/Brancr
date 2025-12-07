@@ -461,9 +461,10 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 // fetchInstagramUserProfile fetches Instagram user profile information
 // For Instagram Login: uses graph.instagram.com/v24.0
 // For Facebook Login: uses graph.facebook.com/v18.0
-func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, senderID string, account *storage.SocialAccount) (name, username string) {
+// Returns: name, username, profilePicURL
+func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, senderID string, account *storage.SocialAccount) (name, username, profilePicURL string) {
 	if account == nil || account.AccessToken == "" {
-		return "", ""
+		return "", "", ""
 	}
 
 	// Decrypt token
@@ -473,7 +474,7 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 	}
 
 	if decryptedToken == "" {
-		return "", ""
+		return "", "", ""
 	}
 
 	// Determine API endpoint based on login method
@@ -488,21 +489,21 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 			zap.String("igsid", senderID))
 	} else {
 		// Facebook Login: Use Messenger Platform API to get user profile
-		// Endpoint: GET /{PSID}?fields=name,first_name,last_name&access_token={PAGE_ACCESS_TOKEN}
-		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=name,first_name,last_name&access_token=%s", senderID, url.QueryEscape(decryptedToken))
+		// Endpoint: GET /{PSID}?fields=name,first_name,last_name,profile_pic&access_token={PAGE_ACCESS_TOKEN}
+		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s?fields=name,first_name,last_name,profile_pic&access_token=%s", senderID, url.QueryEscape(decryptedToken))
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		h.Logger.Warn("failed to create request for Instagram user profile", zap.Error(err))
-		return "", ""
+		return "", "", ""
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
 		h.Logger.Warn("failed to fetch Instagram user profile", zap.Error(err))
-		return "", ""
+		return "", "", ""
 	}
 	defer resp.Body.Close()
 
@@ -513,7 +514,7 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 			zap.String("response_body", string(body)),
 			zap.String("sender_id", senderID),
 			zap.String("login_method", account.LoginMethod))
-		return "", ""
+		return "", "", ""
 	}
 
 	if account.LoginMethod == "instagram_login" {
@@ -525,25 +526,27 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
 			h.Logger.Warn("failed to parse Instagram Login user profile response", zap.Error(err))
-			return "", ""
+			return "", "", ""
 		}
 
 		h.Logger.Info("✅ Fetched Instagram user profile via Instagram Login API",
 			zap.String("sender_id", senderID),
 			zap.String("name", profile.Name),
-			zap.String("username", profile.Username))
+			zap.String("username", profile.Username),
+			zap.String("profile_pic", profile.ProfilePic))
 
-		return profile.Name, profile.Username
+		return profile.Name, profile.Username, profile.ProfilePic
 	} else {
 		// Facebook Login API response format
 		var profile struct {
-			Name      string `json:"name"`
-			FirstName string `json:"first_name"`
-			LastName  string `json:"last_name"`
+			Name       string `json:"name"`
+			FirstName  string `json:"first_name"`
+			LastName   string `json:"last_name"`
+			ProfilePic string `json:"profile_pic"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
 			h.Logger.Warn("failed to parse Facebook Login user profile response", zap.Error(err))
-			return "", ""
+			return "", "", ""
 		}
 
 		// Use name if available, otherwise construct from first/last name
@@ -556,7 +559,12 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 			}
 		}
 
-		return name, ""
+		h.Logger.Info("✅ Fetched Facebook user profile",
+			zap.String("sender_id", senderID),
+			zap.String("name", name),
+			zap.String("profile_pic", profile.ProfilePic))
+
+		return name, "", profile.ProfilePic
 	}
 }
 
@@ -681,32 +689,34 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		// Don't return - continue processing without lock (fallback)
 	}
 
-	// Fetch customer profile information (name, username)
+	// Fetch customer profile information (name, username, profile picture)
 	// Get the social account to determine login method
 	var account storage.SocialAccount
 	if err := h.DB.Where("tenant_id = ? AND platform = ? AND external_id = ? AND connected = ?", tenantID, "instagram", igAccountID, true).First(&account).Error; err == nil {
-		customerName, customerUsername := h.fetchInstagramUserProfile(ctx, senderID, &account)
-		if customerName != "" || customerUsername != "" {
+		customerName, customerUsername, customerProfilePic := h.fetchInstagramUserProfile(ctx, senderID, &account)
+		if customerName != "" || customerUsername != "" || customerProfilePic != "" {
 			h.Logger.Info("✅ Fetched Instagram customer profile",
 				zap.String("sender_id", senderID),
 				zap.String("name", customerName),
-				zap.String("username", customerUsername))
+				zap.String("username", customerUsername),
+				zap.String("profile_pic", customerProfilePic))
 		}
 
 		// Use senderID as ThreadID to ensure all messages from same customer are grouped
 		// For Instagram, ThreadID should be the customer's IGSID (senderID)
 		incomingMsg := IncomingMessage{
-			Platform:         "instagram",
-			TenantID:         tenantID,
-			CustomerID:       senderID,
-			CustomerName:     customerName,
-			CustomerUsername: customerUsername,
-			MessageID:        uniqueID, // Use uniqueID (messageID or fallback)
-			Content:          text,
-			MessageType:      "text",
-			ThreadID:         senderID, // Use senderID as ThreadID to group all messages from same customer
-			Timestamp:        time.Unix(timestamp/1000, 0),
-			Metadata:         map[string]interface{}{"entry_id": entryID, "original_message_id": messageID},
+			Platform:           "instagram",
+			TenantID:           tenantID,
+			CustomerID:         senderID,
+			CustomerName:       customerName,
+			CustomerUsername:   customerUsername,
+			CustomerProfilePic: customerProfilePic,
+			MessageID:          uniqueID, // Use uniqueID (messageID or fallback)
+			Content:            text,
+			MessageType:        "text",
+			ThreadID:           senderID, // Use senderID as ThreadID to group all messages from same customer
+			Timestamp:          time.Unix(timestamp/1000, 0),
+			Metadata:           map[string]interface{}{"entry_id": entryID, "original_message_id": messageID},
 		}
 
 		// Lock was created successfully in transaction above - store the interaction ID for later update
@@ -786,17 +796,18 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		// Still process the message even without account info
 		// The customer name might be available from webhook payload or can be set manually
 		incomingMsg := IncomingMessage{
-			Platform:         "instagram",
-			TenantID:         tenantID,
-			CustomerID:       senderID,
-			CustomerName:     "", // Will be empty, but customer can be updated later
-			CustomerUsername: "",
-			MessageID:        uniqueID, // Use uniqueID
-			Content:          text,
-			MessageType:      "text",
-			ThreadID:         senderID, // Use senderID as ThreadID to group all messages from same customer
-			Timestamp:        time.Unix(timestamp/1000, 0),
-			Metadata:         map[string]interface{}{"entry_id": entryID, "original_message_id": messageID},
+			Platform:           "instagram",
+			TenantID:           tenantID,
+			CustomerID:         senderID,
+			CustomerName:       "", // Will be empty, but customer can be updated later
+			CustomerUsername:   "",
+			CustomerProfilePic: "",
+			MessageID:          uniqueID, // Use uniqueID
+			Content:            text,
+			MessageType:        "text",
+			ThreadID:           senderID, // Use senderID as ThreadID to group all messages from same customer
+			Timestamp:          time.Unix(timestamp/1000, 0),
+			Metadata:           map[string]interface{}{"entry_id": entryID, "original_message_id": messageID},
 		}
 
 		// Lock was created successfully in transaction above - store the interaction ID for later update
@@ -922,17 +933,18 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 				zap.String("message_preview", truncateString(msg.Message.Text, 100)))
 
 			incomingMsg := IncomingMessage{
-				Platform:         "facebook",
-				TenantID:         tenantID,
-				CustomerID:       msg.Sender.ID,
-				CustomerName:     "",
-				CustomerUsername: "",
-				MessageID:        msg.Message.MID,
-				Content:          msg.Message.Text,
-				MessageType:      "text",
-				ThreadID:         msg.Sender.ID,
-				Timestamp:        time.Unix(msg.Timestamp.Int64()/1000, 0),
-				Metadata:         map[string]interface{}{"entry_id": entry.ID},
+				Platform:           "facebook",
+				TenantID:           tenantID,
+				CustomerID:         msg.Sender.ID,
+				CustomerName:       "",
+				CustomerUsername:   "",
+				CustomerProfilePic: "",
+				MessageID:          msg.Message.MID,
+				Content:            msg.Message.Text,
+				MessageType:        "text",
+				ThreadID:           msg.Sender.ID,
+				Timestamp:          time.Unix(msg.Timestamp.Int64()/1000, 0),
+				Metadata:           map[string]interface{}{"entry_id": entry.ID},
 			}
 
 			go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
@@ -1016,16 +1028,17 @@ func (h *MetaWebhookHandler) processWhatsAppWebhook(ctx context.Context, body []
 				timestamp, _ := strconv.ParseInt(msg.Timestamp, 10, 64)
 
 				incomingMsg := IncomingMessage{
-					Platform:         "whatsapp",
-					TenantID:         tenantID,
-					CustomerID:       msg.From,
-					CustomerName:     "",
-					CustomerUsername: "",
-					MessageID:        msg.ID,
-					Content:          msg.Text.Body,
-					MessageType:      msg.Type,
-					ThreadID:         msg.From,
-					Timestamp:        time.Unix(timestamp, 0),
+					Platform:           "whatsapp",
+					TenantID:           tenantID,
+					CustomerID:         msg.From,
+					CustomerName:       "",
+					CustomerUsername:   "",
+					CustomerProfilePic: "",
+					MessageID:          msg.ID,
+					Content:            msg.Text.Body,
+					MessageType:        msg.Type,
+					ThreadID:           msg.From,
+					Timestamp:          time.Unix(timestamp, 0),
 					Metadata: map[string]interface{}{
 						"phone_number_id": phoneNumberID,
 					},

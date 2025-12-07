@@ -801,16 +801,17 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	// 4. Send to AI for intent detection
 	// 5. Generate and send reply
 	msg := IncomingMessage{
-		Platform:         "whatsapp",
-		TenantID:         tenantID,
-		CustomerID:       source, // Phone number in E.164 format
-		CustomerName:     customerName,
+		Platform:          "whatsapp",
+		TenantID:          tenantID,
+		CustomerID:        source, // Phone number in E.164 format
+		CustomerName:      customerName,
 		CustomerUsername: "",
-		MessageID:        waID,
-		Content:          content,
-		MessageType:      messageType,
-		ThreadID:         source, // Use phone number as thread ID
-		Timestamp:        timestamp,
+		CustomerProfilePic: "",
+		MessageID:         waID,
+		Content:           content,
+		MessageType:       messageType,
+		ThreadID:          source, // Use phone number as thread ID
+		Timestamp:         timestamp,
 		Metadata: map[string]interface{}{
 			"gupshup_app_id": envelope["appId"],
 			"raw_payload":    payload,

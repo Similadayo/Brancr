@@ -141,16 +141,17 @@ func (h *RespondIOWebhookHandler) handleIncomingMessage(ctx context.Context, dat
 	}
 
 	incomingMsg := IncomingMessage{
-		Platform:         "whatsapp",
-		TenantID:         tenantID,
-		CustomerID:       msg.ContactID, // Use contact ID as customer ID
-		CustomerName:     customerName,
-		CustomerUsername: msg.From, // Phone number
-		MessageID:        msg.MessageID,
-		Content:          msg.Text,
-		MessageType:      "text",
-		ThreadID:         msg.ContactID,
-		Timestamp:        time.Unix(msg.Timestamp/1000, 0), // Convert milliseconds to seconds
+		Platform:          "whatsapp",
+		TenantID:          tenantID,
+		CustomerID:        msg.ContactID, // Use contact ID as customer ID
+		CustomerName:      customerName,
+		CustomerUsername:  msg.From, // Phone number
+		CustomerProfilePic: "",
+		MessageID:         msg.MessageID,
+		Content:           msg.Text,
+		MessageType:       "text",
+		ThreadID:          msg.ContactID,
+		Timestamp:         time.Unix(msg.Timestamp/1000, 0), // Convert milliseconds to seconds
 		Metadata: map[string]interface{}{
 			"channel_id": msg.ChannelID,
 			"from":       msg.From,
