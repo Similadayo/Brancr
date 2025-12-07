@@ -240,7 +240,20 @@ func (s *InstagramInsightsService) GetAccountInsights(ctx context.Context, accou
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+		errorMsg := fmt.Sprintf("Instagram API error %d: %s", resp.StatusCode, string(body))
+
+		// Provide helpful error message for permission issues
+		if resp.StatusCode == http.StatusForbidden {
+			if account.LoginMethod == "instagram_login" {
+				errorMsg += "\n\n💡 Solution: Your Instagram account needs the 'instagram_business_manage_insights' permission. " +
+					"Please disconnect and reconnect your Instagram account to grant this permission."
+			} else {
+				errorMsg += "\n\n💡 Solution: Your Facebook account needs the 'instagram_manage_insights' and 'pages_read_engagement' permissions. " +
+					"Please disconnect and reconnect your Instagram account via Facebook Login to grant these permissions."
+			}
+		}
+
+		return nil, fmt.Errorf(errorMsg)
 	}
 
 	var insights AccountInsightsResponse
@@ -310,7 +323,15 @@ func (s *InstagramInsightsService) GetMediaInsights(ctx context.Context, account
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+		errorMsg := fmt.Sprintf("Instagram API error %d: %s", resp.StatusCode, string(body))
+
+		// Provide helpful error message for permission issues
+		if resp.StatusCode == http.StatusForbidden {
+			errorMsg += "\n\n💡 Solution: Your Instagram account needs the 'instagram_business_manage_insights' permission for media insights. " +
+				"Please disconnect and reconnect your Instagram account to grant this permission."
+		}
+
+		return nil, fmt.Errorf(errorMsg)
 	}
 
 	var insights MediaInsightsResponse

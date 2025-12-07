@@ -131,6 +131,7 @@ func (h *InstagramLoginOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.R
 		"instagram_business_content_publish",    // For publishing - replaces business_content_publish
 		"instagram_business_manage_messages",   // For messaging - replaces business_manage_messages
 		"instagram_business_manage_comments",   // For comment moderation - replaces business_manage_comments
+		"instagram_business_manage_insights",   // For insights/analytics - REQUIRED for insights API
 	}
 	params.Set("scope", strings.Join(scopes, ","))
 	params.Set("state", stateToken)
