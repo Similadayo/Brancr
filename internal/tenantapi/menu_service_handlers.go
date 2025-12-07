@@ -151,10 +151,16 @@ func (h *Handler) createMenuItem(w http.ResponseWriter, r *http.Request) {
 	if req.DietaryInfo != nil {
 		dietaryJSON, _ := json.Marshal(req.DietaryInfo)
 		item.DietaryInfo = string(dietaryJSON)
+	} else {
+		// Initialize as empty JSON array for JSONB field
+		item.DietaryInfo = "[]"
 	}
 	if req.Images != nil {
 		imagesJSON, _ := json.Marshal(req.Images)
 		item.Images = string(imagesJSON)
+	} else {
+		// Initialize as empty JSON array for JSONB field
+		item.Images = "[]"
 	}
 
 	if item.Currency == "" {
