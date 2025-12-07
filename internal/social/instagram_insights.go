@@ -16,6 +16,103 @@ import (
 	"gorm.io/gorm"
 )
 
+// BusinessAllowedMetrics are valid metrics for Facebook Login API (graph.facebook.com)
+// These are the full set of business account metrics
+var BusinessAllowedMetrics = map[string]bool{
+	"reach":              true,
+	"follower_count":     true,
+	"website_clicks":     true,
+	"profile_views":      true,
+	"online_followers":   true,
+	"accounts_engaged":   true,
+	"total_interactions": true,
+	"likes":              true,
+	"comments":           true,
+	"shares":             true,
+	"saves":              true,
+	"replies":            true,
+}
+
+// InstagramLoginMetrics are the ONLY 3 metrics allowed for Instagram Login API (graph.instagram.com)
+// Instagram Login API has very limited support - only these 3 metrics work
+var InstagramLoginMetrics = map[string]bool{
+	"impressions":   true,
+	"reach":         true,
+	"profile_views": true,
+}
+
+// MediaAllowedMetrics are valid metrics for media-level insights (posts, reels)
+var MediaAllowedMetrics = map[string]bool{
+	"likes":              true,
+	"comments":           true,
+	"shares":             true,
+	"saves":              true,
+	"profile_links_taps": true,
+	"views":              true,
+	"impressions":        true,
+	"reach":              true,
+	// Threads metrics are separate and should not be mixed with Instagram metrics
+}
+
+// validateAccountMetrics validates metrics for account-level insights
+// Returns error if any metric is invalid for the given login method
+func validateAccountMetrics(metrics []string, loginMethod string) error {
+	var allowedMetrics map[string]bool
+
+	if loginMethod == "instagram_login" {
+		allowedMetrics = InstagramLoginMetrics
+	} else {
+		allowedMetrics = BusinessAllowedMetrics
+	}
+
+	for _, m := range metrics {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+
+		// Filter out Threads metrics (they should be separate)
+		if strings.HasPrefix(m, "threads_") {
+			return fmt.Errorf("metric %s is a Threads metric and cannot be used with Instagram account insights", m)
+		}
+
+		if !allowedMetrics[m] {
+			if loginMethod == "instagram_login" {
+				return fmt.Errorf("metric %s is not allowed for instagram_login accounts. Only 'impressions', 'reach', and 'profile_views' are supported", m)
+			}
+			return fmt.Errorf("metric %s is not a valid business account metric", m)
+		}
+	}
+
+	return nil
+}
+
+// validateMediaMetrics validates metrics for media-level insights
+func validateMediaMetrics(metrics []string) error {
+	for _, m := range metrics {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+
+		// Filter out Threads metrics
+		if strings.HasPrefix(m, "threads_") {
+			return fmt.Errorf("metric %s is a Threads metric and cannot be used with Instagram media insights", m)
+		}
+
+		// Filter out invalid metrics
+		if m == "engagement" {
+			return fmt.Errorf("metric 'engagement' is not valid. Use 'likes', 'comments', 'shares', 'saves' instead")
+		}
+
+		if !MediaAllowedMetrics[m] {
+			return fmt.Errorf("metric %s is not a valid media metric", m)
+		}
+	}
+
+	return nil
+}
+
 // InstagramInsightsService handles fetching and storing Instagram insights
 type InstagramInsightsService struct {
 	DB     *gorm.DB
@@ -32,11 +129,11 @@ func NewInstagramInsightsService(db *gorm.DB, logger *zap.Logger) *InstagramInsi
 
 // AccountInsightMetric represents a single account insight metric
 type AccountInsightMetric struct {
-	Name        string    `json:"name"`
-	Period      string    `json:"period"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	ID          string    `json:"id"`
+	Name        string `json:"name"`
+	Period      string `json:"period"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ID          string `json:"id"`
 	Values      []struct {
 		Value   int64  `json:"value"`
 		EndTime string `json:"end_time"`
@@ -45,11 +142,11 @@ type AccountInsightMetric struct {
 
 // MediaInsightMetric represents a single media insight metric
 type MediaInsightMetric struct {
-	Name        string    `json:"name"`
-	Period      string    `json:"period"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	ID          string    `json:"id"`
+	Name        string `json:"name"`
+	Period      string `json:"period"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ID          string `json:"id"`
 	Values      []struct {
 		Value int64 `json:"value"`
 	} `json:"values"`
@@ -66,15 +163,20 @@ type MediaInsightsResponse struct {
 }
 
 // GetAccountInsights fetches account-level insights for an Instagram account
-// Valid account-level metrics (for BOTH Instagram Login and Facebook Login):
-// reach, follower_count, website_clicks, profile_views, online_followers,
-// accounts_engaged, total_interactions, likes, comments, shares, saves, replies
-// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
+// Valid metrics depend on login method:
+// - Instagram Login (graph.instagram.com): ONLY "impressions", "reach", "profile_views" (3 metrics)
+// - Facebook Login (graph.facebook.com): reach, follower_count, profile_views, total_interactions, etc.
 // NOTE: Do NOT mix account-level and media-level metrics
+// NOTE: Threads metrics must be filtered out (they're separate)
 // period: day, week, days_28, lifetime
 func (s *InstagramInsightsService) GetAccountInsights(ctx context.Context, account *storage.SocialAccount, metrics []string, period string) (*AccountInsightsResponse, error) {
 	if account.AccessToken == "" {
 		return nil, fmt.Errorf("access token missing")
+	}
+
+	// Validate metrics before making API call
+	if err := validateAccountMetrics(metrics, account.LoginMethod); err != nil {
+		return nil, fmt.Errorf("invalid metrics: %w", err)
 	}
 
 	// Decrypt token
@@ -149,6 +251,11 @@ func (s *InstagramInsightsService) GetMediaInsights(ctx context.Context, account
 		return nil, fmt.Errorf("access token missing")
 	}
 
+	// Validate metrics before making API call
+	if err := validateMediaMetrics(metrics); err != nil {
+		return nil, fmt.Errorf("invalid metrics: %w", err)
+	}
+
 	// Decrypt token
 	decryptedToken, err := utils.DecryptToken(account.AccessToken)
 	if err != nil {
@@ -207,8 +314,9 @@ func (s *InstagramInsightsService) GetMediaInsights(ctx context.Context, account
 }
 
 // SaveAccountInsights saves account insights to the database
-// Valid account-level metrics: reach, follower_count, profile_views, total_interactions, etc.
-// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
+// Valid account-level metrics vary by login method:
+// - Instagram Login: impressions, reach, profile_views (ONLY 3 metrics)
+// - Facebook Login: reach, follower_count, profile_views, total_interactions, etc.
 // NOTE: Do NOT mix account-level and media-level metrics
 func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tenantID uint, accountID string, insights *AccountInsightsResponse) error {
 	// Store insights in PlatformMetricsSnapshot
@@ -244,18 +352,22 @@ func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tena
 			if err == gorm.ErrRecordNotFound {
 				// Create new snapshot
 				snapshot = storage.PlatformMetricsSnapshot{
-					TenantID:   tenantID,
-					Platform:   "instagram",
+					TenantID:     tenantID,
+					Platform:     "instagram",
 					SnapshotDate: endTime,
-					PeriodType: metric.Period,
+					PeriodType:   metric.Period,
 				}
 			}
 
 			// Update metrics based on metric name
-			// Valid account-level metrics: reach, follower_count, profile_views, total_interactions, etc.
-			// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
+			// Valid account-level metrics vary by login method:
+			// - Instagram Login: impressions, reach, profile_views (ONLY 3 metrics)
+			// - Facebook Login: reach, follower_count, profile_views, total_interactions, etc.
 			// NOTE: Do NOT mix account-level and media-level metrics
 			switch metric.Name {
+			case "impressions":
+				// Only valid for Instagram Login account insights
+				snapshot.TotalImpressions = value.Value
 			case "reach":
 				snapshot.TotalReach = value.Value
 			case "profile_views":
@@ -326,10 +438,10 @@ func (s *InstagramInsightsService) SaveMediaInsights(ctx context.Context, tenant
 	if err == gorm.ErrRecordNotFound {
 		// Create new analytics record
 		analytics = storage.PostAnalytics{
-			TenantID:      tenantID,
-			Platform:      "instagram",
+			TenantID:       tenantID,
+			Platform:       "instagram",
 			PlatformPostID: mediaID,
-			CollectedAt:   time.Now(),
+			CollectedAt:    time.Now(),
 		}
 	} else {
 		analytics.CollectedAt = time.Now()
@@ -371,7 +483,8 @@ func (s *InstagramInsightsService) SaveMediaInsights(ctx context.Context, tenant
 			if len(metric.Values) > 0 {
 				analytics.Comments = metric.Values[0].Value
 			}
-		case "saved":
+		case "saves":
+			// Fixed: metric name is "saves" not "saved"
 			if len(metric.Values) > 0 {
 				analytics.Saves = metric.Values[0].Value
 			}
@@ -396,4 +509,3 @@ func (s *InstagramInsightsService) SaveMediaInsights(ctx context.Context, tenant
 
 	return nil
 }
-

@@ -7637,12 +7637,16 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 	// Parse query parameters
 	metricsParam := r.URL.Query().Get("metrics")
 	if metricsParam == "" {
-		// Valid Instagram account-level metrics (for BOTH Instagram Login and Facebook Login):
-		// reach, follower_count, website_clicks, profile_views, online_followers,
-		// accounts_engaged, total_interactions, likes, comments, shares, saves, replies
-		// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
-		// NOTE: Do NOT mix account-level and media-level metrics
-		metricsParam = "reach,profile_views,follower_count" // Default account-level metrics
+		// Default metrics depend on login method:
+		// - Instagram Login: ONLY "impressions,reach,profile_views" (3 metrics supported)
+		// - Facebook Login: "reach,profile_views,follower_count" (full business metrics)
+		if account.LoginMethod == "instagram_login" {
+			// Instagram Login API only supports 3 metrics
+			metricsParam = "impressions,reach,profile_views"
+		} else {
+			// Facebook Login API supports full business metrics
+			metricsParam = "reach,profile_views,follower_count"
+		}
 	}
 	metrics := strings.Split(metricsParam, ",")
 	for i := range metrics {
