@@ -80,21 +80,31 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	var menuItems []storage.BusinessMenuItem
 	var itemsContext string
 
-	// Check if message is about pricing/packages - if so, get ALL items to show complete pricing
-	isPricingQuestion := strings.Contains(strings.ToLower(message), "pricing") ||
-		strings.Contains(strings.ToLower(message), "price") ||
-		strings.Contains(strings.ToLower(message), "cost") ||
-		strings.Contains(strings.ToLower(message), "package") ||
-		strings.Contains(strings.ToLower(message), "starter") ||
-		strings.Contains(strings.ToLower(message), "plan") ||
-		strings.Contains(strings.ToLower(message), "service") ||
-		strings.Contains(strings.ToLower(message), "what do you offer")
+	// Check if message is about pricing/packages/menu - if so, get ALL items to show complete pricing
+	messageLower := strings.ToLower(message)
+	isPricingQuestion := strings.Contains(messageLower, "pricing") ||
+		strings.Contains(messageLower, "price") ||
+		strings.Contains(messageLower, "cost") ||
+		strings.Contains(messageLower, "package") ||
+		strings.Contains(messageLower, "starter") ||
+		strings.Contains(messageLower, "plan") ||
+		strings.Contains(messageLower, "service") ||
+		strings.Contains(messageLower, "what do you offer") ||
+		strings.Contains(messageLower, "menu") ||
+		strings.Contains(messageLower, "what do you have") ||
+		strings.Contains(messageLower, "what can i get") ||
+		strings.Contains(messageLower, "what's available") ||
+		strings.Contains(messageLower, "show me") ||
+		strings.Contains(messageLower, "list") ||
+		strings.Contains(messageLower, "catalog") ||
+		strings.Contains(messageLower, "products") ||
+		strings.Contains(messageLower, "items")
 
 	// Try to use industry-aware retrieval if available
 	if r.RetrievalService != nil {
 		if isPricingQuestion {
-			// For pricing questions, ALWAYS get ALL active items to show complete pricing
-			items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 20) // Get more items for pricing
+			// For pricing/menu questions, ALWAYS get ALL active items to show complete pricing
+			items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 50) // Get all items for menu/pricing
 			if err == nil && items != nil {
 				itemsContext = r.RetrievalService.FormatForAI(items)
 			}
@@ -110,8 +120,8 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 			}
 
 			// If search returned empty, try getting all active items as fallback
-			if itemsContext == "" {
-				items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 10)
+			if itemsContext == "" || itemsContext == "No items available." {
+				items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 20)
 				if err == nil && items != nil {
 					itemsContext = r.RetrievalService.FormatForAI(items)
 				}
@@ -149,12 +159,15 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	// Build business context (menu items, FAQs, and knowledge base)
 	// CRITICAL: Always include business details - they're essential for accurate responses
 	var businessContext string
-	if itemsContext != "" {
+	if itemsContext != "" && itemsContext != "No items available." {
 		// Use new industry-aware context
 		businessContext = r.buildBusinessContextWithItems(itemsContext, faqs, biz.KnowledgeBase, intent, message)
-	} else {
-		// Use old BusinessMenuItem context
+	} else if len(menuItems) > 0 {
+		// Use old BusinessMenuItem context as fallback
 		businessContext = r.buildBusinessContext(menuItems, faqs, biz.KnowledgeBase, intent, message)
+	} else {
+		// Even if no items, still include FAQs and knowledge base
+		businessContext = r.buildBusinessContextWithItems("", faqs, biz.KnowledgeBase, intent, message)
 	}
 
 	// Add business profile details (name, description, niche) at the top of context
@@ -297,15 +310,16 @@ BUSINESS INFORMATION (USE THIS TO ANSWER QUESTIONS):
 ═══════════════════════════════════════════════════════════════
 %s%s
 
-CRITICAL: USE BUSINESS INFORMATION ABOVE
-- The BUSINESS INFORMATION section contains the business name, description, niche, EXACT menu items, pricing, FAQs, and knowledge base
-- This is your PRIMARY source of information about the business - use it to answer ALL questions
-- When asked about pricing, use the EXACT prices from AVAILABLE PRODUCTS/SERVICES (e.g., "Basic Social Media Starter - 50000")
+CRITICAL: USE BUSINESS INFORMATION ABOVE - THIS IS YOUR ONLY SOURCE OF TRUTH
+- The BUSINESS INFORMATION section contains the business name, description, niche, EXACT menu items/products/services, pricing, FAQs, and knowledge base
+- This is your PRIMARY and ONLY source of information about the business - use it to answer ALL questions
+- When asked about menu, pricing, or what you offer, use the EXACT items and prices from AVAILABLE PRODUCTS/SERVICES section
 - When asked about services, reference the knowledge base and FAQs
 - When asked about the business, use the business name, description, and niche from above
-- NEVER make up pricing, services, or business details - always use what's in the BUSINESS INFORMATION section
-- If they ask "what is your pricing?" or "let me see starter packages", use the menu items/packages listed above
+- NEVER make up pricing, services, menu items, or business details - ALWAYS use what's in the BUSINESS INFORMATION section
+- If they ask "what is your pricing?" or "let me see starter packages" or "what's on your menu", use the menu items/packages listed above
 - If they ask "what do you do?" or "tell me about your business", use the description and niche from above
+- If the BUSINESS INFORMATION section is empty or says "No items available", tell the customer you'll check with the business owner
 
 CRITICAL RULES - Answer First, Questions Later:
 1. **ANSWER THEIR QUESTION DIRECTLY FIRST** - If they ask "what is your pricing?", tell them the pricing. If they ask "let me see starter packages", describe or send the packages. Don't ask more questions until you've answered what they asked.
@@ -585,10 +599,11 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 	var context strings.Builder
 
 	// ALWAYS include menu items if available (not conditional - business needs to know what they offer)
-	if itemsContext != "" {
-		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES):\n")
+	if itemsContext != "" && itemsContext != "No items available." {
+		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES - DO NOT MAKE UP PRICES):\n")
 		context.WriteString(itemsContext)
 		context.WriteString("\n")
+		context.WriteString("IMPORTANT: When customers ask about menu, pricing, or what you offer, use ONLY the items listed above with their EXACT prices. Never invent prices or items.\n")
 	}
 
 	// ALWAYS include knowledge base if available (contains comprehensive business information)
