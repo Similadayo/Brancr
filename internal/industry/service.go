@@ -80,14 +80,21 @@ func (s *Service) SetTenantIndustry(ctx context.Context, tenantID uint, industry
 		return fmt.Errorf("industry not found: %w", err)
 	}
 
-	// Update tenant
-	tenant, err := s.tenantRepo.GetByID(ctx, tenantID)
-	if err != nil {
-		return fmt.Errorf("failed to get tenant: %w", err)
+	// Update only the IndustryID field to avoid relationship issues
+	// Use Updates() instead of Save() to only update specific fields
+	result := s.db.WithContext(ctx).Model(&storage.Tenant{}).
+		Where("id = ?", tenantID).
+		Update("industry_id", industryID)
+	
+	if result.Error != nil {
+		return fmt.Errorf("failed to update tenant industry: %w", result.Error)
+	}
+	
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("tenant not found")
 	}
 
-	tenant.IndustryID = industryID
-	return s.tenantRepo.Update(ctx, tenant)
+	return nil
 }
 
 // GetIndustrySettings retrieves industry settings for a tenant
