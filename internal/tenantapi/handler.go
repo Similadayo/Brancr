@@ -7637,15 +7637,15 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 	// Parse query parameters
 	metricsParam := r.URL.Query().Get("metrics")
 	if metricsParam == "" {
-		// Default metrics depend on login method:
-		// - Instagram Login: ONLY "impressions,reach,profile_views" (3 metrics supported)
-		// - Facebook Login: "reach,profile_views,follower_count" (full business metrics)
+		// Default metrics depend on login method (updated for 2025 deprecations):
+		// - Instagram Login: ONLY "impressions,reach" (profile_views deprecated)
+		// - Facebook Login: "reach,follower_count,impressions" (profile_views deprecated)
 		if account.LoginMethod == "instagram_login" {
-			// Instagram Login API only supports 3 metrics
-			metricsParam = "impressions,reach,profile_views"
+			// Instagram Login API - profile_views was deprecated in 2025
+			metricsParam = "impressions,reach"
 		} else {
-			// Facebook Login API supports full business metrics
-			metricsParam = "reach,profile_views,follower_count"
+			// Facebook Login API - removed deprecated metrics (profile_views, website_clicks)
+			metricsParam = "reach,follower_count,impressions"
 		}
 	}
 	metrics := strings.Split(metricsParam, ",")

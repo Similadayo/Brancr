@@ -17,12 +17,16 @@ import (
 )
 
 // BusinessAllowedMetrics are valid metrics for Facebook Login API (graph.facebook.com)
-// These are the full set of business account metrics
+// Updated for 2025 - removed deprecated metrics:
+// - profile_views (deprecated)
+// - website_clicks (deprecated)
+// - email_contacts (deprecated)
+// - get_directions_clicks (deprecated)
+// - phone_call_clicks (deprecated)
+// - text_message_clicks (deprecated)
 var BusinessAllowedMetrics = map[string]bool{
 	"reach":              true,
 	"follower_count":     true,
-	"website_clicks":     true,
-	"profile_views":      true,
 	"online_followers":   true,
 	"accounts_engaged":   true,
 	"total_interactions": true,
@@ -31,14 +35,19 @@ var BusinessAllowedMetrics = map[string]bool{
 	"shares":             true,
 	"saves":              true,
 	"replies":            true,
+	"impressions":        true, // Still valid for Facebook Login API
+	// Deprecated and removed in 2025:
+	// "profile_views":     false,
+	// "website_clicks":     false,
 }
 
-// InstagramLoginMetrics are the ONLY 3 metrics allowed for Instagram Login API (graph.instagram.com)
-// Instagram Login API has very limited support - only these 3 metrics work
+// InstagramLoginMetrics are the ONLY metrics allowed for Instagram Login API (graph.instagram.com)
+// Updated for 2025 - profile_views was deprecated
+// Instagram Login API has very limited support - only 2 metrics after deprecations
 var InstagramLoginMetrics = map[string]bool{
-	"impressions":   true,
-	"reach":         true,
-	"profile_views": true,
+	"impressions": true,
+	"reach":       true,
+	// "profile_views": false, // Deprecated 2025 - removed
 }
 
 // MediaAllowedMetrics are valid metrics for media-level insights (posts, reels)
@@ -78,7 +87,19 @@ func validateAccountMetrics(metrics []string, loginMethod string) error {
 
 		if !allowedMetrics[m] {
 			if loginMethod == "instagram_login" {
-				return fmt.Errorf("metric %s is not allowed for instagram_login accounts. Only 'impressions', 'reach', and 'profile_views' are supported", m)
+				return fmt.Errorf("metric %s is not allowed for instagram_login accounts. Only 'impressions' and 'reach' are supported (profile_views was deprecated in 2025)", m)
+			}
+			// Check if it's a deprecated metric
+			deprecatedMetrics := map[string]string{
+				"profile_views":         "deprecated in 2025",
+				"website_clicks":        "deprecated in 2025",
+				"email_contacts":        "deprecated in 2025",
+				"get_directions_clicks": "deprecated in 2025",
+				"phone_call_clicks":     "deprecated in 2025",
+				"text_message_clicks":   "deprecated in 2025",
+			}
+			if reason, isDeprecated := deprecatedMetrics[m]; isDeprecated {
+				return fmt.Errorf("metric %s is %s and no longer supported", m, reason)
 			}
 			return fmt.Errorf("metric %s is not a valid business account metric", m)
 		}
@@ -360,18 +381,19 @@ func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tena
 			}
 
 			// Update metrics based on metric name
-			// Valid account-level metrics vary by login method:
-			// - Instagram Login: impressions, reach, profile_views (ONLY 3 metrics)
-			// - Facebook Login: reach, follower_count, profile_views, total_interactions, etc.
+			// Valid account-level metrics vary by login method (updated for 2025):
+			// - Instagram Login: impressions, reach (profile_views deprecated)
+			// - Facebook Login: reach, follower_count, impressions, total_interactions, etc.
 			// NOTE: Do NOT mix account-level and media-level metrics
 			switch metric.Name {
 			case "impressions":
-				// Only valid for Instagram Login account insights
+				// Valid for both Instagram Login and Facebook Login account insights
 				snapshot.TotalImpressions = value.Value
 			case "reach":
 				snapshot.TotalReach = value.Value
 			case "profile_views":
-				// Store in metadata as it's not a standard field
+				// Deprecated in 2025, but handle if API still returns it for backward compatibility
+				// Store in metadata with deprecation flag
 				if snapshot.Metadata == "" {
 					snapshot.Metadata = "{}"
 				}
@@ -381,6 +403,7 @@ func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tena
 					metadata = make(map[string]interface{})
 				}
 				metadata["profile_views"] = value.Value
+				metadata["profile_views_deprecated"] = true // Mark as deprecated
 				metadataBytes, _ := json.Marshal(metadata)
 				snapshot.Metadata = string(metadataBytes)
 			case "follower_count":
