@@ -263,9 +263,33 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 			if len(query) > 50 {
 				query = query[:50]
 			}
+			r.logger.Info("🔍 Searching for items with query",
+				zap.String("query", query),
+				zap.Uint("tenant_id", tenantID),
+				zap.String("original_message", message))
 			results, err = r.SearchItems(ctx, tenantID, query, 5)
+			if err != nil {
+				r.logger.Warn("Search failed, falling back to GetAllActive", zap.Error(err))
+				results, err = r.GetAllActive(ctx, tenantID, 10)
+			}
+			r.logger.Info("🔍 Search results",
+				zap.Int("result_count", len(results)),
+				zap.String("query", query))
+			
+			// If search returned no results, try getting all active items as fallback
+			if len(results) == 0 {
+				r.logger.Info("⚠️ Search returned no results, trying GetAllActive as fallback")
+				results, err = r.GetAllActive(ctx, tenantID, 10)
+				if err != nil {
+					r.logger.Warn("GetAllActive also failed", zap.Error(err))
+				} else {
+					r.logger.Info("📋 Fallback GetAllActive returned items",
+						zap.Int("count", len(results)))
+				}
+			}
 		} else {
 			// Get all items if asking about menu or general
+			r.logger.Info("📋 Getting all active items (menu question or generic request)")
 			results, err = r.GetAllActive(ctx, tenantID, 10)
 		}
 	} else if isMenuQuestion {
@@ -288,10 +312,21 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 	var imageURLs []string
 	messageLower = strings.ToLower(message)
 	
+	r.logger.Info("🔍 Processing search results for images",
+		zap.Int("result_count", len(results)),
+		zap.String("original_message", message))
+	
 	// If customer asks for specific item, only return that item's images
 	// Otherwise, return images from all matching items
-	for _, item := range results {
+	for i, item := range results {
+		r.logger.Info("🔍 Checking item",
+			zap.Int("item_index", i),
+			zap.String("item_name", item.Name),
+			zap.Int("image_count", len(item.ImageURLs)))
+		
 		if len(item.ImageURLs) == 0 {
+			r.logger.Info("⚠️ Item has no images, skipping",
+				zap.String("item_name", item.Name))
 			continue
 		}
 		
@@ -300,52 +335,95 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 		itemDescLower := strings.ToLower(item.Description)
 		
 		// If customer asked for specific item (e.g., "picture of banana bread")
-		// Only include images from items that match
+		// Since we already searched for the item, if it's in results, it matches
+		// Only do additional filtering if we got ALL items (not a specific search)
 		matchesQuery := true
-		if wantsImages {
-			// Extract what customer is asking for - be more aggressive in extraction
-			query := messageLower
-			// Remove common picture-related words to get the item name
-			query = strings.ReplaceAll(query, "can i see", "")
-			query = strings.ReplaceAll(query, "i want to see", "")
-			query = strings.ReplaceAll(query, "show me", "")
-			query = strings.ReplaceAll(query, "picture", "")
-			query = strings.ReplaceAll(query, "image", "")
-			query = strings.ReplaceAll(query, "photo", "")
-			query = strings.ReplaceAll(query, "pic", "")
-			query = strings.ReplaceAll(query, "of", "")
-			query = strings.ReplaceAll(query, "the", "")
-			query = strings.ReplaceAll(query, "a", "")
-			query = strings.ReplaceAll(query, "an", "")
-			query = strings.ReplaceAll(query, "?", "")
-			query = strings.ReplaceAll(query, ".", "")
-			query = strings.TrimSpace(query)
+		extractedQuery := ""
+		if wantsImages && len(results) < 10 {
+			// We did a specific search, so all results should match
+			// But let's still verify the item name matches what customer asked for
+			extractedQuery = messageLower
+			extractedQuery = strings.ReplaceAll(extractedQuery, "can i see", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "i want to see", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "show me", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "picture", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "image", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "photo", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "pic", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "of", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "the", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "a", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "an", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, "?", "")
+			extractedQuery = strings.ReplaceAll(extractedQuery, ".", "")
+			extractedQuery = strings.TrimSpace(extractedQuery)
 			
-			// If query is specific (more than just "show me" or "picture"), match it
-			if len(query) > 3 && !strings.Contains(messageLower, "menu") {
-				// Check if item name or description contains the query
-				queryWords := strings.Fields(query)
+			// If we have a specific query, verify at least one word matches
+			if len(extractedQuery) > 3 {
+				queryWords := strings.Fields(extractedQuery)
 				matches := 0
 				for _, word := range queryWords {
-					if len(word) > 2 && (strings.Contains(itemNameLower, word) || strings.Contains(itemDescLower, word)) {
-						matches++
+					if len(word) > 2 {
+						if strings.Contains(itemNameLower, word) || strings.Contains(itemDescLower, word) {
+							matches++
+						}
 					}
 				}
-				// Require at least one significant word match
-				matchesQuery = matches > 0
-			} else if len(query) <= 3 {
-				// If query is too short, include all items (customer asked generically)
-				matchesQuery = true
+				// If no words match, this might be a false positive from search
+				// But be lenient - if search found it, probably it's relevant
+				matchesQuery = matches > 0 || len(queryWords) == 0
+				r.logger.Info("🔍 Verifying match",
+					zap.String("item_name", item.Name),
+					zap.String("query", extractedQuery),
+					zap.Int("matches", matches),
+					zap.Bool("matches_query", matchesQuery))
 			}
 		}
 		
 		if matchesQuery {
 			// Add first image from matching item
 			imageURLs = append(imageURLs, item.ImageURLs[0])
+			r.logger.Info("✅ Matched item for image",
+				zap.String("item_name", item.Name),
+				zap.String("image_url", item.ImageURLs[0]))
 			if len(imageURLs) >= 5 {
 				break
 			}
+		} else {
+			r.logger.Info("❌ Item did not match query",
+				zap.String("item_name", item.Name),
+				zap.String("extracted_query", extractedQuery))
 		}
+	}
+	
+	r.logger.Info("📸 Final image URLs extracted",
+		zap.Int("count", len(imageURLs)),
+		zap.Strings("urls", imageURLs),
+		zap.String("original_message", message))
+	
+	// Final fallback: if no images found but we have results, just return first item with images
+	if len(imageURLs) == 0 && len(results) > 0 {
+		r.logger.Warn("⚠️ No images extracted from search results, trying fallback",
+			zap.Int("search_result_count", len(results)),
+			zap.String("message", message))
+		
+		// Just return the first item that has images (no filtering)
+		for _, item := range results {
+			if len(item.ImageURLs) > 0 {
+				imageURLs = append(imageURLs, item.ImageURLs[0])
+				r.logger.Info("✅ Fallback: Using first item with images",
+					zap.String("item_name", item.Name),
+					zap.String("image_url", item.ImageURLs[0]))
+				break
+			}
+		}
+	}
+	
+	if len(imageURLs) == 0 {
+		r.logger.Warn("⚠️ No images found at all",
+			zap.Int("search_result_count", len(results)),
+			zap.String("message", message),
+			zap.Uint("tenant_id", tenantID))
 	}
 	
 	return imageURLs, nil

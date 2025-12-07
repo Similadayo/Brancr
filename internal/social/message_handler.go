@@ -930,7 +930,8 @@ func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *stora
 	var payload map[string]interface{}
 	
 	if len(imageURLs) == 1 {
-		// Single image - use attachment (not attachments array)
+		// Single image - use attachment (singular, not attachments array)
+		// According to Instagram API docs: for single image, use "attachment" (singular)
 		payload = map[string]interface{}{
 			"recipient": map[string]string{
 				"id": threadID,
@@ -944,6 +945,9 @@ func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *stora
 				},
 			},
 		}
+		h.Logger.Info("📤 Preparing single image payload",
+			zap.String("image_url", imageURLs[0]),
+			zap.String("recipient_id", threadID))
 	} else {
 		// Multiple images - use attachments array
 		attachments := make([]map[string]interface{}, len(imageURLs))
