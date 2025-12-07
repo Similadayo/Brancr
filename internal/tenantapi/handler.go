@@ -7653,6 +7653,41 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 		metrics[i] = strings.TrimSpace(metrics[i])
 	}
 
+	// Filter out deprecated metrics automatically (even if explicitly requested)
+	// This makes the API more resilient - silently remove deprecated metrics
+	deprecatedMetrics := map[string]bool{
+		"profile_views":         true,
+		"website_clicks":        true,
+		"email_contacts":        true,
+		"get_directions_clicks": true,
+		"phone_call_clicks":     true,
+		"text_message_clicks":   true,
+	}
+	
+	filteredMetrics := make([]string, 0, len(metrics))
+	for _, m := range metrics {
+		if m != "" && !deprecatedMetrics[m] {
+			filteredMetrics = append(filteredMetrics, m)
+		} else if deprecatedMetrics[m] {
+			h.Logger.Warn("removed deprecated metric from request",
+				zap.String("metric", m),
+				zap.String("login_method", account.LoginMethod))
+		}
+	}
+	
+	// If all metrics were filtered out, use defaults
+	if len(filteredMetrics) == 0 {
+		if account.LoginMethod == "instagram_login" {
+			filteredMetrics = []string{"impressions", "reach"}
+		} else {
+			filteredMetrics = []string{"reach", "follower_count", "impressions"}
+		}
+		h.Logger.Info("all requested metrics were deprecated, using defaults",
+			zap.Strings("default_metrics", filteredMetrics))
+	}
+	
+	metrics = filteredMetrics
+
 	period := r.URL.Query().Get("period")
 	if period == "" {
 		period = "day" // Default period
