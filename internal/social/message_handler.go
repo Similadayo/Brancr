@@ -320,8 +320,24 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
-	// Step 7: Send reply to platform
-	if err := h.sendReply(ctx, msg, reply); err != nil {
+	// Step 6.5: Extract image URLs if customer asked about items
+	var imageURLs []string
+	if h.Responder != nil && h.Responder.RetrievalService != nil {
+		if imageGetter, ok := h.Responder.RetrievalService.(interface {
+			GetItemsWithImages(ctx context.Context, tenantID uint, message string) ([]string, error)
+		}); ok {
+			urls, err := imageGetter.GetItemsWithImages(ctx, msg.TenantID, msg.Content)
+			if err == nil && len(urls) > 0 {
+				imageURLs = urls
+				h.Logger.Info("📸 Found images to send with reply",
+					zap.Int("image_count", len(imageURLs)),
+					zap.String("platform", msg.Platform))
+			}
+		}
+	}
+
+	// Step 7: Send reply to platform (with images if available)
+	if err := h.sendReplyWithImages(ctx, msg, reply, imageURLs); err != nil {
 		h.Logger.Error("❌ Failed to send reply to customer",
 			zap.Error(err),
 			zap.String("platform", msg.Platform),
@@ -713,6 +729,209 @@ func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessa
 	)
 
 	return nil
+}
+
+// sendReplyWithImages sends a reply with optional images to the customer on the platform
+func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMessage, reply string, imageURLs []string) error {
+	// First send the text reply
+	if err := h.sendReply(ctx, msg, reply); err != nil {
+		return err
+	}
+	
+	// Then send images if available
+	if len(imageURLs) > 0 {
+		// Limit to 5 images per message
+		maxImages := 5
+		if len(imageURLs) > maxImages {
+			imageURLs = imageURLs[:maxImages]
+		}
+		
+		for _, imageURL := range imageURLs {
+			if err := h.sendImageReply(ctx, msg, imageURL); err != nil {
+				h.Logger.Warn("Failed to send image",
+					zap.String("image_url", imageURL),
+					zap.Error(err))
+				// Continue with other images even if one fails
+			}
+		}
+	}
+	
+	return nil
+}
+
+// sendImageReply sends an image to the customer on the platform
+func (h *MessageHandler) sendImageReply(ctx context.Context, msg IncomingMessage, imageURL string) error {
+	// Handle Telegram differently - it doesn't use social accounts
+	if msg.Platform == "telegram" {
+		return h.sendTelegramImageReply(ctx, msg, imageURL)
+	}
+
+	// Get social account
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?",
+		msg.TenantID, msg.Platform, true).First(&acc).Error; err != nil {
+		return fmt.Errorf("no connected %s account", msg.Platform)
+	}
+
+	// Platform-specific image sending
+	switch msg.Platform {
+	case "instagram":
+		recipientID := msg.ThreadID
+		if recipientID == "" || recipientID == acc.ExternalID || recipientID == acc.PageID {
+			recipientID = msg.CustomerID
+		}
+		return h.sendInstagramImageReply(ctx, &acc, recipientID, imageURL)
+	case "facebook":
+		return h.sendFacebookImageReply(ctx, &acc, msg.ThreadID, imageURL)
+	case "whatsapp":
+		return h.sendWhatsAppImageReply(ctx, &acc, msg.CustomerID, imageURL)
+	default:
+		return fmt.Errorf("image sending not implemented for %s", msg.Platform)
+	}
+}
+
+// sendTelegramImageReply sends an image via Telegram bot
+func (h *MessageHandler) sendTelegramImageReply(ctx context.Context, msg IncomingMessage, imageURL string) error {
+	if h.BotGetter == nil {
+		return fmt.Errorf("telegram bot not available")
+	}
+
+	botInterface, ok := h.BotGetter.GetBot(msg.TenantID)
+	if !ok {
+		return fmt.Errorf("telegram bot not found for tenant %d", msg.TenantID)
+	}
+
+	bot, ok := botInterface.(*tgbotapi.BotAPI)
+	if !ok {
+		return fmt.Errorf("invalid bot type")
+	}
+
+	chatID, err := strconv.ParseInt(msg.ThreadID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid telegram chat ID: %w", err)
+	}
+
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(imageURL))
+	if _, err := bot.Send(photo); err != nil {
+		return fmt.Errorf("failed to send telegram image: %w", err)
+	}
+
+	return nil
+}
+
+// sendInstagramImageReply sends an image via Instagram Messaging API
+func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *storage.SocialAccount, threadID, imageURL string) error {
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+
+	igAccountID := acc.ExternalID
+	if igAccountID == "" {
+		igAccountID = acc.PageID
+	}
+
+	var apiURL string
+	if acc.LoginMethod == "instagram_login" {
+		apiURL = fmt.Sprintf("https://graph.instagram.com/v24.0/%s/messages", igAccountID)
+	} else {
+		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
+	}
+
+	payload := map[string]interface{}{
+		"recipient": map[string]string{
+			"id": threadID,
+		},
+		"message": map[string]interface{}{
+			"attachment": map[string]interface{}{
+				"type": "image",
+				"payload": map[string]string{
+					"url": imageURL,
+				},
+			},
+		},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	req, _ := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
+	req.Header.Set("Content-Type", "application/json")
+	if acc.LoginMethod == "instagram_login" {
+		req.Header.Set("Authorization", "Bearer "+decryptedToken)
+	} else {
+		apiURL = fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(decryptedToken))
+		req.URL, _ = url.Parse(apiURL)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// sendFacebookImageReply sends an image via Facebook Messenger API
+func (h *MessageHandler) sendFacebookImageReply(ctx context.Context, acc *storage.SocialAccount, threadID, imageURL string) error {
+	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
+	if err != nil {
+		decryptedToken = acc.AccessToken
+	}
+
+	apiURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/messages?access_token=%s", url.QueryEscape(decryptedToken))
+	payload := map[string]interface{}{
+		"recipient": map[string]string{
+			"id": threadID,
+		},
+		"message": map[string]interface{}{
+			"attachment": map[string]interface{}{
+				"type": "image",
+				"payload": map[string]string{
+					"url": imageURL,
+				},
+			},
+		},
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	req, _ := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Facebook API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// sendWhatsAppImageReply sends an image via WhatsApp Business API
+func (h *MessageHandler) sendWhatsAppImageReply(ctx context.Context, acc *storage.SocialAccount, customerID, imageURL string) error {
+	if h.GupshupClient == nil {
+		return fmt.Errorf("gupshup client not configured")
+	}
+
+	appID := acc.PageID
+	if appID == "" {
+		appID = acc.ExternalID
+	}
+
+	// For now, send as text with image URL (Gupshup image API can be added later)
+	_, err := h.GupshupClient.SendSessionMessage(appID, customerID, imageURL)
+	return err
 }
 
 // sendReply sends a reply to the customer on the platform

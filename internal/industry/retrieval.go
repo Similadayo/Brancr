@@ -33,14 +33,15 @@ func NewRetrievalService(industryService *Service, productRepo *repositories.Pro
 
 // RetrievalResult represents a retrieved item (product, menu item, or service)
 type RetrievalResult struct {
-	Type        string  // "product", "menu_item", "service"
+	Type        string   // "product", "menu_item", "service"
 	Name        string
 	Description string
-	Price       float64
-	Currency    string
-	Category    string
-	Available   bool
-	Metadata    map[string]interface{} // Additional fields (variants, dietary info, etc.)
+	Price        float64
+	Currency     string
+	Category     string
+	Available    bool
+	ImageURLs    []string // Image URLs for the item
+	Metadata     map[string]interface{} // Additional fields (variants, dietary info, etc.)
 }
 
 // SearchItems searches for items based on tenant's industry and query
@@ -205,6 +206,59 @@ func (r *RetrievalService) GetAllActive(ctx context.Context, tenantID uint, limi
 	return results, nil
 }
 
+// GetItemsWithImages returns image URLs for items that match the customer's message
+func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint, message string) ([]string, error) {
+	messageLower := strings.ToLower(message)
+	
+	// Check if customer wants to see images
+	wantsImages := strings.Contains(messageLower, "image") ||
+		strings.Contains(messageLower, "picture") ||
+		strings.Contains(messageLower, "photo") ||
+		strings.Contains(messageLower, "show me") ||
+		strings.Contains(messageLower, "see") ||
+		strings.Contains(messageLower, "menu") ||
+		strings.Contains(messageLower, "what do you have") ||
+		strings.Contains(messageLower, "what's available")
+	
+	if !wantsImages {
+		return nil, nil
+	}
+	
+	// Get items based on message
+	var results []RetrievalResult
+	var err error
+	
+	if strings.Contains(messageLower, "menu") || strings.Contains(messageLower, "what") || strings.Contains(messageLower, "list") {
+		// Get all items for menu questions
+		results, err = r.GetAllActive(ctx, tenantID, 10)
+	} else {
+		// Search for specific items
+		query := message
+		if len(query) > 50 {
+			query = query[:50]
+		}
+		results, err = r.SearchItems(ctx, tenantID, query, 5)
+	}
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	// Extract image URLs (limit to first 5 images)
+	var imageURLs []string
+	for _, item := range results {
+		if len(item.ImageURLs) > 0 {
+			// Add first image from each item
+			imageURLs = append(imageURLs, item.ImageURLs[0])
+			if len(imageURLs) >= 5 {
+				break
+			}
+		}
+	}
+	
+	return imageURLs, nil
+}
+
 // FormatForAI formats retrieval results as a string for AI context
 func (r *RetrievalService) FormatForAI(items []RetrievalResult) string {
 	if len(items) == 0 {
@@ -219,6 +273,11 @@ func (r *RetrievalService) FormatForAI(items []RetrievalResult) string {
 		}
 
 		line := fmt.Sprintf("- %s (%s): %s - %s", item.Name, item.Category, priceStr, item.Description)
+		
+		// Add image URLs if available (for AI context - images will be sent separately)
+		if len(item.ImageURLs) > 0 {
+			line += fmt.Sprintf(" [Has %d image(s)]", len(item.ImageURLs))
+		}
 		
 		// Add metadata if available
 		if len(item.Metadata) > 0 {
@@ -292,6 +351,14 @@ func (r *RetrievalService) productToResult(p storage.Product) RetrievalResult {
 	result.Metadata["stock"] = p.StockCount
 	result.Metadata["availability"] = p.Availability
 
+	// Parse images
+	if p.Images != "" {
+		var images []string
+		if err := json.Unmarshal([]byte(p.Images), &images); err == nil && len(images) > 0 {
+			result.ImageURLs = images
+		}
+	}
+
 	return result
 }
 
@@ -326,6 +393,14 @@ func (r *RetrievalService) menuItemToResult(m storage.MenuItem) RetrievalResult 
 	}
 
 	result.Metadata["availability"] = m.Availability
+
+	// Parse images
+	if m.Images != "" {
+		var images []string
+		if err := json.Unmarshal([]byte(m.Images), &images); err == nil && len(images) > 0 {
+			result.ImageURLs = images
+		}
+	}
 
 	return result
 }

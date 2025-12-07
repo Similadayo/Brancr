@@ -23,6 +23,7 @@ type CustomerResponder struct {
 		SearchItems(ctx context.Context, tenantID uint, query string, limit int) (interface{}, error)
 		GetAllActive(ctx context.Context, tenantID uint, limit int) (interface{}, error)
 		FormatForAI(items interface{}) string
+		GetItemsWithImages(ctx context.Context, tenantID uint, message string) ([]string, error) // Get image URLs for items matching message
 	}
 	SalesConversationManager *SalesConversationManager    // Sales conversation tracking
 	PaymentInstructionGen    *PaymentInstructionGenerator // Payment instruction generator

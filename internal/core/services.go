@@ -545,6 +545,10 @@ func (a *retrievalServiceAdapter) FormatForAI(items interface{}) string {
 	return ""
 }
 
+func (a *retrievalServiceAdapter) GetItemsWithImages(ctx context.Context, tenantID uint, message string) ([]string, error) {
+	return a.retrieval.GetItemsWithImages(ctx, tenantID, message)
+}
+
 func (s *Services) initEmail() {
 	// Initialize Email Service (optional - will be nil if SMTP not configured)
 	emailService := email.NewEmailService(s.Logger)
