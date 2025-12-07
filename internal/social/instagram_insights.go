@@ -66,9 +66,11 @@ type MediaInsightsResponse struct {
 }
 
 // GetAccountInsights fetches account-level insights for an Instagram account
-// Valid metrics depend on login method:
-// - Instagram Login: reach, follower_count, profile_views, total_interactions, etc. (NO impressions)
-// - Facebook Login: impressions, reach, profile_views (impressions IS valid)
+// Valid account-level metrics (for BOTH Instagram Login and Facebook Login):
+// reach, follower_count, website_clicks, profile_views, online_followers,
+// accounts_engaged, total_interactions, likes, comments, shares, saves, replies
+// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
+// NOTE: Do NOT mix account-level and media-level metrics
 // period: day, week, days_28, lifetime
 func (s *InstagramInsightsService) GetAccountInsights(ctx context.Context, account *storage.SocialAccount, metrics []string, period string) (*AccountInsightsResponse, error) {
 	if account.AccessToken == "" {
@@ -205,9 +207,9 @@ func (s *InstagramInsightsService) GetMediaInsights(ctx context.Context, account
 }
 
 // SaveAccountInsights saves account insights to the database
-// Note: Different metrics are available based on login method:
-// - Instagram Login: reach, follower_count, profile_views, total_interactions (NO impressions)
-// - Facebook Login: impressions, reach, profile_views (impressions IS valid)
+// Valid account-level metrics: reach, follower_count, profile_views, total_interactions, etc.
+// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
+// NOTE: Do NOT mix account-level and media-level metrics
 func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tenantID uint, accountID string, insights *AccountInsightsResponse) error {
 	// Store insights in PlatformMetricsSnapshot
 	for _, metric := range insights.Data {
@@ -250,14 +252,10 @@ func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tena
 			}
 
 			// Update metrics based on metric name
-			// Note: "impressions" is only available for Facebook Login account insights, not Instagram Login
-			// Valid account metrics vary by login method:
-			// - Instagram Login: reach, follower_count, profile_views, total_interactions (NO impressions)
-			// - Facebook Login: impressions, reach, profile_views (impressions IS valid)
+			// Valid account-level metrics: reach, follower_count, profile_views, total_interactions, etc.
+			// NOTE: "impressions" was REMOVED from account insights (only available for media insights)
+			// NOTE: Do NOT mix account-level and media-level metrics
 			switch metric.Name {
-			case "impressions":
-				// Only valid for Facebook Login account insights
-				snapshot.TotalImpressions = value.Value
 			case "reach":
 				snapshot.TotalReach = value.Value
 			case "profile_views":
