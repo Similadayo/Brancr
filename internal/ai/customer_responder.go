@@ -214,6 +214,20 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	if r.SalesConversationManager != nil && conversationID > 0 {
 		salesConv, err := r.SalesConversationManager.GetOrCreateSalesConversation(ctx, tenantID, customerID, conversationID)
 		if err == nil {
+			// Extract order details from message (items, quantity, price)
+			// This populates ItemsDiscussed and PriceDiscussed
+			if intent == "order" || strings.Contains(strings.ToLower(message), "want") ||
+				strings.Contains(strings.ToLower(message), "need") ||
+				strings.Contains(strings.ToLower(message), "cupcake") ||
+				strings.Contains(strings.ToLower(message), "order") {
+				if extractErr := r.SalesConversationManager.ExtractOrderDetailsFromMessage(ctx, tenantID, message, salesConv); extractErr != nil {
+					r.Logger.Warn("failed to extract order details", zap.Error(extractErr))
+				} else {
+					// Reload sales conversation to get updated items
+					r.SalesConversationManager.DB.First(salesConv, salesConv.ID)
+				}
+			}
+
 			// Detect commitment
 			isCommitted, _ = r.SalesConversationManager.DetectCommitment(ctx, message, salesConv)
 			if isCommitted {

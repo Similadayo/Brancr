@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/similadayo/brancr/internal/industry"
@@ -292,6 +293,235 @@ func (m *SalesConversationManager) DetectNegotiation(ctx context.Context, messag
 	}
 	
 	return false, "", 0.0
+}
+
+// ExtractOrderDetailsFromMessage extracts order details (items, quantity, price) from customer message using AI
+func (m *SalesConversationManager) ExtractOrderDetailsFromMessage(ctx context.Context, tenantID uint, message string, salesConv *storage.SalesConversation) error {
+	// Only extract if intent is order-related or if message contains order indicators
+	messageLower := strings.ToLower(message)
+	orderIndicators := []string{
+		"i want", "i need", "i'll take", "i'll get", "i'll buy",
+		"cupcake", "order", "delivery", "pickup", "quantity", "how many",
+		"4", "five", "six", "one", "two", "three",
+	}
+	
+	hasOrderIndicators := false
+	for _, indicator := range orderIndicators {
+		if strings.Contains(messageLower, indicator) {
+			hasOrderIndicators = true
+			break
+		}
+	}
+	
+	if !hasOrderIndicators {
+		return nil // Skip extraction if no order indicators
+	}
+
+	// Use AI to extract structured order details
+	prompt := fmt.Sprintf(`Extract order details from this customer message. Return ONLY valid JSON (no additional text):
+
+{
+  "items": [
+    {
+      "name": "item name",
+      "quantity": 1,
+      "price": 0.0
+    }
+  ],
+  "total_price": 0.0
+}
+
+If items, quantities, or prices are mentioned, extract them. If not mentioned, use null or 0.
+If quantity is not mentioned, default to 1.
+If price is not mentioned, use 0 (will be filled from product catalog later).
+
+Customer message: "%s"`, message)
+
+	// Use a simple AI client to extract
+	// We'll use the industry service's context if available
+	aiClient := NewAIClient()
+	messages := []Message{
+		{Role: "system", Content: "You are an order detail extractor. Extract items, quantities, and prices from customer messages. Return ONLY valid JSON."},
+		{Role: "user", Content: prompt},
+	}
+
+	rawReply, err := aiClient.Generate(ctx, messages)
+	if err != nil {
+		m.Logger.Warn("failed to extract order details with AI, using fallback", zap.Error(err))
+		return m.extractOrderDetailsFallback(ctx, message, salesConv)
+	}
+
+	var extracted struct {
+		Items      []map[string]interface{} `json:"items"`
+		TotalPrice float64                  `json:"total_price"`
+	}
+
+	if err := json.Unmarshal([]byte(rawReply), &extracted); err != nil {
+		m.Logger.Warn("failed to parse extracted order details, using fallback", zap.Error(err))
+		return m.extractOrderDetailsFallback(ctx, message, salesConv)
+	}
+
+	// Update sales conversation with extracted items
+	if len(extracted.Items) > 0 {
+		// Merge with existing items
+		var existingItems []map[string]interface{}
+		if salesConv.ItemsDiscussed != "" && salesConv.ItemsDiscussed != "[]" {
+			json.Unmarshal([]byte(salesConv.ItemsDiscussed), &existingItems)
+		}
+
+		// Add new items (avoid duplicates by name)
+		for _, newItem := range extracted.Items {
+			itemName, _ := newItem["name"].(string)
+			if itemName == "" {
+				continue
+			}
+
+			// Check if item already exists
+			exists := false
+			for i, existing := range existingItems {
+				if existingName, ok := existing["name"].(string); ok && existingName == itemName {
+					// Update existing item with new quantity/price if provided
+					if q, ok := newItem["quantity"].(float64); ok && q > 0 {
+						existingItems[i]["quantity"] = q
+					}
+					if p, ok := newItem["price"].(float64); ok && p > 0 {
+						existingItems[i]["price"] = p
+					}
+					exists = true
+					break
+				}
+			}
+
+			if !exists {
+				// Ensure quantity defaults to 1
+				if q, ok := newItem["quantity"].(float64); !ok || q == 0 {
+					newItem["quantity"] = 1.0
+				}
+				existingItems = append(existingItems, newItem)
+			}
+		}
+
+		itemsJSON, _ := json.Marshal(existingItems)
+		salesConv.ItemsDiscussed = string(itemsJSON)
+	}
+
+	// Update price discussed if total price is available
+	if extracted.TotalPrice > 0 {
+		salesConv.PriceDiscussed = extracted.TotalPrice
+	} else if len(extracted.Items) > 0 {
+		// Calculate total from items if total_price not provided
+		total := 0.0
+		for _, item := range extracted.Items {
+			if p, ok := item["price"].(float64); ok {
+				q := 1.0
+				if qty, ok := item["quantity"].(float64); ok {
+					q = qty
+				}
+				total += p * q
+			}
+		}
+		if total > 0 {
+			salesConv.PriceDiscussed = total
+		}
+	}
+
+	// Save updated sales conversation
+	return m.DB.Save(salesConv).Error
+}
+
+// extractOrderDetailsFallback uses simple pattern matching as fallback
+func (m *SalesConversationManager) extractOrderDetailsFallback(ctx context.Context, message string, salesConv *storage.SalesConversation) error {
+	messageLower := strings.ToLower(message)
+	
+	// Simple extraction: look for numbers followed by item names
+	// This is a basic fallback - AI extraction is preferred
+	
+	// Extract quantity (look for numbers at start or after "i want", "i need", etc.)
+	quantity := 1
+	words := strings.Fields(messageLower)
+	for i, word := range words {
+		if word == "i" && i+1 < len(words) && (words[i+1] == "want" || words[i+1] == "need" || words[i+1] == "take") {
+			// Look for number after "i want/need/take"
+			if i+2 < len(words) {
+				if q, err := strconv.Atoi(words[i+2]); err == nil && q > 0 && q < 100 {
+					quantity = q
+					break
+				}
+			}
+		}
+		// Direct number at start
+		if i == 0 {
+			if q, err := strconv.Atoi(word); err == nil && q > 0 && q < 100 {
+				quantity = q
+			}
+		}
+	}
+
+	// Try to extract item name (look for common product words)
+	itemName := ""
+	productKeywords := []string{"cupcake", "cake", "item", "product", "order"}
+	for _, keyword := range productKeywords {
+		if strings.Contains(messageLower, keyword) {
+			// Extract surrounding context as item name
+			idx := strings.Index(messageLower, keyword)
+			start := maxInt(0, idx-20)
+			end := minInt(len(messageLower), idx+len(keyword)+20)
+			itemName = strings.TrimSpace(messageLower[start:end])
+			// Clean up
+			itemName = strings.Trim(itemName, ".,!?;:")
+			if len(itemName) > 50 {
+				itemName = itemName[:50]
+			}
+			break
+		}
+	}
+
+	if itemName == "" {
+		itemName = "Order Item"
+	}
+
+	// Add to items discussed
+	var existingItems []map[string]interface{}
+	if salesConv.ItemsDiscussed != "" && salesConv.ItemsDiscussed != "[]" {
+		json.Unmarshal([]byte(salesConv.ItemsDiscussed), &existingItems)
+	}
+
+	// Check if item already exists
+	exists := false
+	for i, existing := range existingItems {
+		if existingName, ok := existing["name"].(string); ok && strings.Contains(strings.ToLower(existingName), strings.ToLower(itemName)) {
+			existingItems[i]["quantity"] = float64(quantity)
+			exists = true
+			break
+		}
+	}
+
+	if !exists {
+		existingItems = append(existingItems, map[string]interface{}{
+			"name":     itemName,
+			"quantity": float64(quantity),
+			"price":    0.0, // Will be filled from product catalog
+		})
+	}
+
+	itemsJSON, _ := json.Marshal(existingItems)
+	salesConv.ItemsDiscussed = string(itemsJSON)
+
+	return m.DB.Save(salesConv).Error
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // DetectCompleteOrderDetails detects if all order details have been collected
