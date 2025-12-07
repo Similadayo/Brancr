@@ -65,6 +65,7 @@ type Handler struct {
 	AIClient             *ai.AIClient
 	MessageHandler       *social.MessageHandler // For sending replies via MessageHandler
 	IndustryService      *industry.Service      // Industry service for industry-aware features
+	InstagramInsights    *social.InstagramInsightsService // Instagram insights service
 	EmailService         interface {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
 	} // Optional email service for sending receipts
@@ -73,7 +74,7 @@ type Handler struct {
 	tokenCache  sync.Map
 }
 
-func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service, emailService interface {
+func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service, instagramInsights *social.InstagramInsightsService, emailService interface {
 	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
 }) *Handler {
 	return &Handler{
@@ -86,6 +87,7 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 		AIClient:             aiClient,
 		MessageHandler:       messageHandler,
 		IndustryService:      industryService,
+		InstagramInsights:    instagramInsights,
 		EmailService:         emailService,
 	}
 }
@@ -153,6 +155,10 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/integrations/{platform}/debug", h.debugIntegration) // Debug endpoint to check account details
 		// Manual Page subscription endpoint (for Instagram)
 		r.Post("/tenant/integrations/instagram/subscribe", h.subscribeInstagramPage)
+
+		// Instagram Insights
+		r.Get("/tenant/instagram/insights/account", h.getInstagramAccountInsights)
+		r.Get("/tenant/instagram/insights/media/{mediaId}", h.getInstagramMediaInsights)
 
 		// Scheduled posts CRUD
 		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
@@ -7462,4 +7468,149 @@ func generateRandomString(length int) string {
 		bytes[i] = charset[b%byte(len(charset))]
 	}
 	return string(bytes)
+}
+
+// =======================
+// INSTAGRAM INSIGHTS API
+// =======================
+
+// getInstagramAccountInsights fetches account-level insights for Instagram
+// Query params: metrics (comma-separated), period (day, week, days_28, lifetime)
+func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.InstagramInsights == nil {
+		http.Error(w, "Instagram insights service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get Instagram account
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, "instagram", true).
+		First(&account).Error; err != nil {
+		http.Error(w, "Instagram account not connected", http.StatusNotFound)
+		return
+	}
+
+	// Parse query parameters
+	metricsParam := r.URL.Query().Get("metrics")
+	if metricsParam == "" {
+		metricsParam = "impressions,reach,profile_views" // Default metrics
+	}
+	metrics := strings.Split(metricsParam, ",")
+	for i := range metrics {
+		metrics[i] = strings.TrimSpace(metrics[i])
+	}
+
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "day" // Default period
+	}
+
+	// Fetch insights
+	ctx := r.Context()
+	insights, err := h.InstagramInsights.GetAccountInsights(ctx, &account, metrics, period)
+	if err != nil {
+		h.Logger.Error("failed to fetch Instagram account insights", zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to fetch insights: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Optionally save to database
+	saveParam := r.URL.Query().Get("save")
+	if saveParam == "true" {
+		igAccountID := account.ExternalID
+		if igAccountID == "" {
+			igAccountID = account.PageID
+		}
+		if err := h.InstagramInsights.SaveAccountInsights(ctx, claims.TenantID, igAccountID, insights); err != nil {
+			h.Logger.Warn("failed to save account insights", zap.Error(err))
+			// Continue - don't fail the request
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":  true,
+		"insights": insights.Data,
+		"account_id": func() string {
+			if account.ExternalID != "" {
+				return account.ExternalID
+			}
+			return account.PageID
+		}(),
+		"period": period,
+	})
+}
+
+// getInstagramMediaInsights fetches media-level insights for a specific Instagram post
+// Query params: metrics (comma-separated), period (day, week, days_28, lifetime)
+func (h *Handler) getInstagramMediaInsights(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if h.InstagramInsights == nil {
+		http.Error(w, "Instagram insights service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	mediaID := chi.URLParam(r, "mediaId")
+	if mediaID == "" {
+		http.Error(w, "media ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Get Instagram account
+	var account storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, "instagram", true).
+		First(&account).Error; err != nil {
+		http.Error(w, "Instagram account not connected", http.StatusNotFound)
+		return
+	}
+
+	// Parse query parameters
+	metricsParam := r.URL.Query().Get("metrics")
+	if metricsParam == "" {
+		metricsParam = "engagement,impressions,reach" // Default metrics
+	}
+	metrics := strings.Split(metricsParam, ",")
+	for i := range metrics {
+		metrics[i] = strings.TrimSpace(metrics[i])
+	}
+
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "lifetime" // Default period for media
+	}
+
+	// Fetch insights
+	ctx := r.Context()
+	insights, err := h.InstagramInsights.GetMediaInsights(ctx, &account, mediaID, metrics, period)
+	if err != nil {
+		h.Logger.Error("failed to fetch Instagram media insights", zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to fetch insights: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Optionally save to database
+	saveParam := r.URL.Query().Get("save")
+	if saveParam == "true" {
+		if err := h.InstagramInsights.SaveMediaInsights(ctx, claims.TenantID, mediaID, insights); err != nil {
+			h.Logger.Warn("failed to save media insights", zap.Error(err))
+			// Continue - don't fail the request
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":  true,
+		"insights": insights.Data,
+		"media_id": mediaID,
+		"period":   period,
+	})
 }

@@ -124,6 +124,9 @@ type PlatformMetricsSnapshot struct {
 	SnapshotDate   time.Time `gorm:"index:idx_tenant_platform_time"`
 	PeriodType     string    `gorm:"size:20"` // daily, weekly, monthly
 	
+	// Metadata for additional metrics (profile_views, etc.)
+	Metadata       string    `gorm:"type:jsonb"`
+	
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

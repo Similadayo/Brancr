@@ -61,6 +61,7 @@ type Services struct {
 	GupshupWebhookHandler   *social.GupshupWebhookHandler
 	MetaOAuthHandler        *social.MetaOAuthHandler
 	InstagramLoginOAuthHandler *social.InstagramLoginOAuthHandler // Instagram Login (Business Login for Instagram)
+	InstagramInsights       *social.InstagramInsightsService
 	Scheduler               *social.Scheduler
 	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
 	TikTokOAuthHandler      *social.TikTokOAuthHandler
@@ -345,6 +346,11 @@ func (s *Services) initSocial() error {
 	if embeddedHandler := social.NewEmbeddedSignupHandler(s.DB, s.Logger, s.Config); embeddedHandler != nil {
 		s.EmbeddedSignupHandler = embeddedHandler
 	}
+
+	// Initialize Instagram Insights Service
+	instagramInsights := social.NewInstagramInsightsService(s.DB, s.Logger)
+	s.InstagramInsights = instagramInsights
+	s.Logger.Info("✅ Instagram Insights service initialized")
 
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
