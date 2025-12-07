@@ -336,6 +336,25 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		}
 	}
 
+	// Step 6.6: Check if customer mentioned a post and find relevant Instagram post to share
+	var postIDToShare string
+	if msg.Platform == "instagram" {
+		postIDToShare = h.findMentionedPost(ctx, msg.TenantID, msg.Content)
+		if postIDToShare != "" {
+			h.Logger.Info("📱 Found post to share",
+				zap.String("post_id", postIDToShare),
+				zap.String("platform", msg.Platform))
+		}
+	}
+
+	// Step 6.7: Check if we should send a sticker (positive sentiment, appreciation)
+	shouldSendSticker := h.shouldSendSticker(intent, msg.Content)
+	if shouldSendSticker && msg.Platform == "instagram" {
+		h.Logger.Info("❤️ Positive sentiment detected - will send sticker",
+			zap.String("tone", intent.Tone),
+			zap.String("platform", msg.Platform))
+	}
+
 	// Step 7: Send reply to platform (with images if available)
 	if err := h.sendReplyWithImages(ctx, msg, reply, imageURLs); err != nil {
 		h.Logger.Error("❌ Failed to send reply to customer",
@@ -740,18 +759,40 @@ func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMe
 	
 	// Then send images if available
 	if len(imageURLs) > 0 {
-		// Limit to 5 images per message
-		maxImages := 5
-		if len(imageURLs) > maxImages {
-			imageURLs = imageURLs[:maxImages]
-		}
-		
-		for _, imageURL := range imageURLs {
-			if err := h.sendImageReply(ctx, msg, imageURL); err != nil {
-				h.Logger.Warn("Failed to send image",
-					zap.String("image_url", imageURL),
-					zap.Error(err))
-				// Continue with other images even if one fails
+		// For Instagram, send all images in one request (up to 10)
+		// For other platforms, send individually (up to 5)
+		if msg.Platform == "instagram" {
+			// Limit to 10 images for Instagram (API limit)
+			maxImages := 10
+			if len(imageURLs) > maxImages {
+				imageURLs = imageURLs[:maxImages]
+			}
+			
+			var acc storage.SocialAccount
+			if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?",
+				msg.TenantID, msg.Platform, true).First(&acc).Error; err == nil {
+				recipientID := msg.ThreadID
+				if recipientID == "" || recipientID == acc.ExternalID || recipientID == acc.PageID {
+					recipientID = msg.CustomerID
+				}
+				if err := h.sendInstagramImageReply(ctx, &acc, recipientID, imageURLs...); err != nil {
+					h.Logger.Warn("Failed to send Instagram images", zap.Error(err))
+				}
+			}
+		} else {
+			// For other platforms, send images individually
+			maxImages := 5
+			if len(imageURLs) > maxImages {
+				imageURLs = imageURLs[:maxImages]
+			}
+			
+			for _, imageURL := range imageURLs {
+				if err := h.sendImageReply(ctx, msg, imageURL); err != nil {
+					h.Logger.Warn("Failed to send image",
+						zap.String("image_url", imageURL),
+						zap.Error(err))
+					// Continue with other images even if one fails
+				}
 			}
 		}
 	}
@@ -819,11 +860,27 @@ func (h *MessageHandler) sendTelegramImageReply(ctx context.Context, msg Incomin
 	return nil
 }
 
-// sendInstagramImageReply sends an image via Instagram Messaging API
-func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *storage.SocialAccount, threadID, imageURL string) error {
+// sendInstagramImageReply sends one or more images via Instagram Messaging API
+// Supports single image (attachment) or multiple images (attachments array, up to 10)
+func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *storage.SocialAccount, threadID string, imageURLs ...string) error {
+	if len(imageURLs) == 0 {
+		return fmt.Errorf("no image URLs provided")
+	}
+
+	// Ensure access token is valid
+	if acc.LoginMethod == "instagram_login" {
+		if err := h.ensureInstagramLoginToken(ctx, acc); err != nil {
+			h.Logger.Warn("⚠️ Failed to refresh Instagram Login token, attempting to use existing token", zap.Error(err))
+		}
+	}
+
 	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
 	if err != nil {
 		decryptedToken = acc.AccessToken
+	}
+
+	if decryptedToken == "" {
+		return fmt.Errorf("Instagram access token is empty")
 	}
 
 	igAccountID := acc.ExternalID
@@ -838,22 +895,59 @@ func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *stora
 		apiURL = fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", igAccountID)
 	}
 
-	payload := map[string]interface{}{
-		"recipient": map[string]string{
-			"id": threadID,
-		},
-		"message": map[string]interface{}{
-			"attachment": map[string]interface{}{
-				"type": "image",
-				"payload": map[string]string{
-					"url": imageURL,
-				},
-			},
-		},
+	// Limit to 10 images max
+	if len(imageURLs) > 10 {
+		imageURLs = imageURLs[:10]
 	}
 
-	jsonData, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
+	var payload map[string]interface{}
+	
+	if len(imageURLs) == 1 {
+		// Single image - use attachment (not attachments array)
+		payload = map[string]interface{}{
+			"recipient": map[string]string{
+				"id": threadID,
+			},
+			"message": map[string]interface{}{
+				"attachment": map[string]interface{}{
+					"type": "image",
+					"payload": map[string]string{
+						"url": imageURLs[0],
+					},
+				},
+			},
+		}
+	} else {
+		// Multiple images - use attachments array
+		attachments := make([]map[string]interface{}, len(imageURLs))
+		for i, url := range imageURLs {
+			attachments[i] = map[string]interface{}{
+				"type": "image",
+				"payload": map[string]string{
+					"url": url,
+				},
+			}
+		}
+		payload = map[string]interface{}{
+			"recipient": map[string]string{
+				"id": threadID,
+			},
+			"message": map[string]interface{}{
+				"attachments": attachments,
+			},
+		}
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
 	req.Header.Set("Content-Type", "application/json")
 	if acc.LoginMethod == "instagram_login" {
 		req.Header.Set("Authorization", "Bearer "+decryptedToken)
@@ -869,10 +963,39 @@ func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *stora
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		// Check for multi-image beta feature error
+		var apiError struct {
+			Error struct {
+				Message   string `json:"message"`
+				Type      string `json:"type"`
+				Code      int    `json:"code"`
+				SubCode   int    `json:"error_subcode"`
+				FbtraceID string `json:"fbtrace_id"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &apiError); err == nil {
+			if apiError.Error.SubCode == 2534068 {
+				// Multi-image feature not available yet - fallback to sending images one by one
+				h.Logger.Warn("⚠️ Multi-image feature not available, sending images individually",
+					zap.Int("image_count", len(imageURLs)))
+				for _, url := range imageURLs {
+					if err := h.sendInstagramImageReply(ctx, acc, threadID, url); err != nil {
+						h.Logger.Warn("Failed to send individual image", zap.String("url", url), zap.Error(err))
+					}
+					// Small delay between images
+					time.Sleep(500 * time.Millisecond)
+				}
+				return nil
+			}
+		}
 		return fmt.Errorf("Instagram API error %d: %s", resp.StatusCode, string(body))
 	}
+
+	h.Logger.Info("✅ Instagram image(s) sent successfully",
+		zap.String("recipient_id", threadID),
+		zap.Int("image_count", len(imageURLs)))
 
 	return nil
 }
@@ -1973,4 +2096,159 @@ func (h *MessageHandler) ensureInstagramLoginToken(ctx context.Context, acc *sto
 		zap.Uint("account_id", acc.ID))
 
 	return nil
+}
+
+// shouldSendSticker determines if a sticker should be sent based on intent and message content
+func (h *MessageHandler) shouldSendSticker(intent *ai.DetectedIntent, message string) bool {
+	messageLower := strings.ToLower(message)
+	
+	// Check for positive tone
+	if intent.Tone == "positive" && intent.Confidence > 0.6 {
+		return true
+	}
+	
+	// Check for appreciation keywords
+	appreciationKeywords := []string{
+		"thank", "thanks", "thank you", "appreciate", "grateful",
+		"love it", "love this", "amazing", "great", "perfect",
+		"wonderful", "excellent", "fantastic", "awesome", "brilliant",
+		"best", "favorite", "favourite", "happy", "pleased",
+		"delighted", "satisfied", "impressed",
+	}
+	
+	for _, keyword := range appreciationKeywords {
+		if strings.Contains(messageLower, keyword) {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// findMentionedPost searches for Instagram posts that match what the customer mentioned
+func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, message string) string {
+	messageLower := strings.ToLower(message)
+	
+	// Check if customer is talking about a post
+	mentionsPost := strings.Contains(messageLower, "post") ||
+		strings.Contains(messageLower, "photo you posted") ||
+		strings.Contains(messageLower, "picture you posted") ||
+		strings.Contains(messageLower, "video you posted") ||
+		strings.Contains(messageLower, "that post") ||
+		strings.Contains(messageLower, "your post") ||
+		strings.Contains(messageLower, "the post") ||
+		strings.Contains(messageLower, "reel") ||
+		strings.Contains(messageLower, "story")
+	
+	if !mentionsPost {
+		return ""
+	}
+	
+	// Search for recent Instagram posts from this tenant
+	// Look in PostAnalytics table for published posts with PlatformPostID
+	var postAnalytics []storage.PostAnalytics
+	if err := h.DB.Where("tenant_id = ? AND platform = ? AND platform_post_id != ?",
+		tenantID, "instagram", "").
+		Order("posted_at DESC").
+		Limit(20).
+		Find(&postAnalytics).Error; err != nil {
+		h.Logger.Warn("Failed to search for posts", zap.Error(err))
+		return ""
+	}
+	
+	if len(postAnalytics) == 0 {
+		// Fallback: search ScheduledPost table
+		var posts []storage.ScheduledPost
+		if err := h.DB.Where("tenant_id = ? AND platforms LIKE ? AND status = ?",
+			tenantID, "%instagram%", "posted").
+			Order("created_at DESC").
+			Limit(20).
+			Find(&posts).Error; err == nil && len(posts) > 0 {
+			// Try to get PlatformPostID from PostAnalytics for these posts
+			for _, post := range posts {
+				var analytics storage.PostAnalytics
+				if err := h.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ? AND platform_post_id != ?",
+					tenantID, post.ID, "instagram", "").
+					First(&analytics).Error; err == nil {
+					postAnalytics = append(postAnalytics, analytics)
+				}
+			}
+		}
+	}
+	
+	if len(postAnalytics) == 0 {
+		return ""
+	}
+	
+	// If customer mentions "recent", "latest", "newest", return the most recent post
+	if strings.Contains(messageLower, "recent") || strings.Contains(messageLower, "latest") ||
+		strings.Contains(messageLower, "newest") || strings.Contains(messageLower, "last") {
+		if len(postAnalytics) > 0 && postAnalytics[0].PlatformPostID != "" {
+			return postAnalytics[0].PlatformPostID
+		}
+	}
+	
+	// Try to match post by caption keywords
+	// Get ScheduledPost captions for matching
+	var scheduledPostIDs []uint
+	for _, analytics := range postAnalytics {
+		scheduledPostIDs = append(scheduledPostIDs, analytics.ScheduledPostID)
+	}
+	
+	var posts []storage.ScheduledPost
+	if len(scheduledPostIDs) > 0 {
+		h.DB.Where("id IN ?", scheduledPostIDs).Find(&posts)
+	}
+	
+	// Extract keywords from message (remove common words)
+	messageWords := strings.Fields(messageLower)
+	keywords := []string{}
+	for _, word := range messageWords {
+		// Skip common words
+		if word != "the" && word != "a" && word != "an" && word != "is" &&
+			word != "are" && word != "was" && word != "were" && word != "post" &&
+			word != "photo" && word != "picture" && word != "video" && word != "you" &&
+			word != "your" && word != "that" && word != "this" && word != "about" &&
+			word != "with" && word != "from" && len(word) > 2 {
+			keywords = append(keywords, word)
+		}
+	}
+	
+	// Search for post with matching keywords in caption
+	for _, analytics := range postAnalytics {
+		if analytics.PlatformPostID == "" {
+			continue
+		}
+		
+		// Find corresponding ScheduledPost for caption
+		var postCaption string
+		for _, post := range posts {
+			if post.ID == analytics.ScheduledPostID {
+				postCaption = strings.ToLower(post.Caption)
+				break
+			}
+		}
+		
+		if postCaption == "" {
+			continue
+		}
+		
+		matches := 0
+		for _, keyword := range keywords {
+			if strings.Contains(postCaption, keyword) {
+				matches++
+			}
+		}
+		// If at least 2 keywords match, or 1 keyword matches and it's a significant word, return this post
+		if matches >= 2 || (matches >= 1 && len(keywords) == 1) {
+			return analytics.PlatformPostID
+		}
+	}
+	
+	// If no specific match, return the most recent post
+	if len(postAnalytics) > 0 && postAnalytics[0].PlatformPostID != "" {
+		return postAnalytics[0].PlatformPostID
+	}
+	
+	return ""
 }
