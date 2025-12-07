@@ -557,7 +557,6 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 
 	if err == nil {
 		// Update existing account
-		existing.AccessToken = accessToken
 		existing.ExpiresAt = &expiresAt
 		existing.Username = account.Username
 		existing.ExternalID = account.ID
@@ -567,9 +566,9 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 		existing.LoginMethod = "instagram_login"
 		existing.Metadata = string(metadataJSON)
 		
-		if err := h.DB.Save(&existing).Error; err != nil {
-			return fmt.Errorf("failed to update instagram account: %w", err)
-		}
+		// Use persistSocialAccount to encrypt and save the token properly
+		persistSocialAccount(&existing, accessToken, h.DB)
+		
 		h.Logger.Info("✅ Updated existing Instagram account",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("instagram_id", account.ID))
@@ -580,7 +579,6 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 	newAccount := storage.SocialAccount{
 		TenantID:   tenantID,
 		Platform:   "instagram",
-		AccessToken: accessToken,
 		ExpiresAt:  &expiresAt,
 		Username:   account.Username,
 		ExternalID: account.ID,
@@ -591,9 +589,14 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 		Metadata:   string(metadataJSON),
 	}
 
+	// Set the token first, then persistSocialAccount will encrypt and save it
+	newAccount.AccessToken = accessToken
 	if err := h.DB.WithContext(ctx).Create(&newAccount).Error; err != nil {
 		return fmt.Errorf("failed to create instagram account: %w", err)
 	}
+	
+	// Now encrypt the token using persistSocialAccount (it will update the account)
+	persistSocialAccount(&newAccount, accessToken, h.DB)
 
 	h.Logger.Info("✅ Created new Instagram account",
 		zap.Uint("tenant_id", tenantID),

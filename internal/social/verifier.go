@@ -366,7 +366,14 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 	// Decrypt token if it's encrypted
 	rawToken := strings.TrimSpace(acc.AccessToken)
 	if rawToken == "" {
-		return "", fmt.Errorf("access token missing")
+		// Provide helpful error message based on platform
+		if acc.Platform == "instagram" {
+			if acc.LoginMethod == "instagram_login" {
+				return "", fmt.Errorf("access token missing - please reconnect your Instagram account via Instagram Login to refresh the token")
+			}
+			return "", fmt.Errorf("access token missing - Instagram via Facebook OAuth is no longer supported. Please reconnect using Instagram Login (Business Login for Instagram) instead")
+		}
+		return "", fmt.Errorf("access token missing - please reconnect your %s account via OAuth to get a fresh access token", acc.Platform)
 	}
 
 	// Try to decrypt the token

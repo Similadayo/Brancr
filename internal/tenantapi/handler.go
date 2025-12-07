@@ -1008,7 +1008,17 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 			strings.Contains(errorMessage, "Invalid OAuth access token") {
 			hint = "Your access token appears to be invalid or encrypted incorrectly. Please reconnect your account via OAuth to refresh the token."
 		} else if strings.Contains(errorMessage, "missing") {
-			hint = "Your integration is missing required information. Please reconnect your account via OAuth."
+			if platform == "instagram" {
+				if account.LoginMethod == "instagram_login" {
+					hint = "Your Instagram account is missing an access token. Please reconnect via Instagram Login to refresh the token."
+				} else {
+					hint = "Instagram via Facebook OAuth is no longer supported. Please reconnect using Instagram Login (Business Login for Instagram) instead."
+				}
+			} else {
+				hint = "Your integration is missing required information. Please reconnect your account via OAuth."
+			}
+		} else if strings.Contains(errorMessage, "Instagram via Facebook OAuth is no longer supported") {
+			hint = "Instagram via Facebook OAuth is no longer supported. Please reconnect using Instagram Login (Business Login for Instagram) instead."
 		}
 
 		writeJSON(w, http.StatusBadRequest, map[string]any{
