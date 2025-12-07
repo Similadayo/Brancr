@@ -327,13 +327,25 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			GetItemsWithImages(ctx context.Context, tenantID uint, message string) ([]string, error)
 		}); ok {
 			urls, err := imageGetter.GetItemsWithImages(ctx, msg.TenantID, msg.Content)
-			if err == nil && len(urls) > 0 {
+			if err != nil {
+				h.Logger.Warn("Failed to get images", zap.Error(err), zap.String("message", msg.Content))
+			} else if len(urls) > 0 {
 				imageURLs = urls
 				h.Logger.Info("📸 Found images to send with reply",
 					zap.Int("image_count", len(imageURLs)),
-					zap.String("platform", msg.Platform))
+					zap.Strings("image_urls", imageURLs),
+					zap.String("platform", msg.Platform),
+					zap.String("customer_message", msg.Content))
+			} else {
+				h.Logger.Info("⚠️ No images found for customer request",
+					zap.String("message", msg.Content),
+					zap.Uint("tenant_id", msg.TenantID))
 			}
+		} else {
+			h.Logger.Warn("RetrievalService does not implement GetItemsWithImages")
 		}
+	} else {
+		h.Logger.Warn("Responder or RetrievalService is nil, cannot get images")
 	}
 
 	// Step 6.6: Check if customer mentioned a post and find relevant Instagram post to share
@@ -775,9 +787,24 @@ func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMe
 				if recipientID == "" || recipientID == acc.ExternalID || recipientID == acc.PageID {
 					recipientID = msg.CustomerID
 				}
+				h.Logger.Info("📤 Sending Instagram images",
+					zap.Int("image_count", len(imageURLs)),
+					zap.String("recipient_id", recipientID),
+					zap.Strings("image_urls", imageURLs))
 				if err := h.sendInstagramImageReply(ctx, &acc, recipientID, imageURLs...); err != nil {
-					h.Logger.Warn("Failed to send Instagram images", zap.Error(err))
+					h.Logger.Error("❌ Failed to send Instagram images",
+						zap.Error(err),
+						zap.Int("image_count", len(imageURLs)),
+						zap.String("recipient_id", recipientID))
+				} else {
+					h.Logger.Info("✅ Successfully sent Instagram images",
+						zap.Int("image_count", len(imageURLs)))
 				}
+			} else {
+				h.Logger.Warn("⚠️ No connected Instagram account found for sending images",
+					zap.Uint("tenant_id", msg.TenantID),
+					zap.String("platform", msg.Platform),
+					zap.Error(err))
 			}
 		} else {
 			// For other platforms, send images individually

@@ -216,8 +216,11 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 		strings.Contains(messageLower, "photo") ||
 		strings.Contains(messageLower, "pic") ||
 		strings.Contains(messageLower, "show me") ||
+		strings.Contains(messageLower, "show") && (strings.Contains(messageLower, "picture") || strings.Contains(messageLower, "image") || strings.Contains(messageLower, "photo")) ||
 		(strings.Contains(messageLower, "see") && (strings.Contains(messageLower, "picture") || strings.Contains(messageLower, "image") || strings.Contains(messageLower, "photo"))) ||
-		strings.Contains(messageLower, "send") && (strings.Contains(messageLower, "picture") || strings.Contains(messageLower, "image") || strings.Contains(messageLower, "photo"))
+		(strings.Contains(messageLower, "send") && (strings.Contains(messageLower, "picture") || strings.Contains(messageLower, "image") || strings.Contains(messageLower, "photo"))) ||
+		strings.Contains(messageLower, "can i see") ||
+		strings.Contains(messageLower, "i want to see")
 	
 	// Also check for menu questions that would benefit from images
 	isMenuQuestion := strings.Contains(messageLower, "menu") ||
@@ -291,18 +294,26 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 		// Only include images from items that match
 		matchesQuery := true
 		if wantsImages {
-			// Extract what customer is asking for
+			// Extract what customer is asking for - be more aggressive in extraction
 			query := messageLower
+			// Remove common picture-related words to get the item name
+			query = strings.ReplaceAll(query, "can i see", "")
+			query = strings.ReplaceAll(query, "i want to see", "")
+			query = strings.ReplaceAll(query, "show me", "")
 			query = strings.ReplaceAll(query, "picture", "")
 			query = strings.ReplaceAll(query, "image", "")
 			query = strings.ReplaceAll(query, "photo", "")
+			query = strings.ReplaceAll(query, "pic", "")
 			query = strings.ReplaceAll(query, "of", "")
 			query = strings.ReplaceAll(query, "the", "")
 			query = strings.ReplaceAll(query, "a", "")
+			query = strings.ReplaceAll(query, "an", "")
+			query = strings.ReplaceAll(query, "?", "")
+			query = strings.ReplaceAll(query, ".", "")
 			query = strings.TrimSpace(query)
 			
 			// If query is specific (more than just "show me" or "picture"), match it
-			if len(query) > 5 && !strings.Contains(messageLower, "menu") {
+			if len(query) > 3 && !strings.Contains(messageLower, "menu") {
 				// Check if item name or description contains the query
 				queryWords := strings.Fields(query)
 				matches := 0
@@ -313,6 +324,9 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 				}
 				// Require at least one significant word match
 				matchesQuery = matches > 0
+			} else if len(query) <= 3 {
+				// If query is too short, include all items (customer asked generically)
+				matchesQuery = true
 			}
 		}
 		
