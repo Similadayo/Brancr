@@ -5661,12 +5661,140 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Calculate response time distribution (< 1 min, 1-5 min, 5-15 min, > 15 min)
+	// Get all incoming interactions with their first response time
+	type responseTimeStats struct {
+		Under1Min   int64 `json:"under_1_min"`
+		OneTo5Min   int64 `json:"1_to_5_min"`
+		FiveTo15Min int64 `json:"5_to_15_min"`
+		Over15Min   int64 `json:"over_15_min"`
+	}
+	
+	var responseTimeDist responseTimeStats
+	var responseTimeInteractions []struct {
+		IncomingTime time.Time
+		OutgoingTime time.Time
+	}
+	
+	// Get conversations with their first incoming and outgoing interactions
+	// This calculates REAL response times by finding the time between each incoming message
+	// and the first outgoing response in the same conversation
+	rows, err := h.DB.Raw(`
+		SELECT 
+			i1.created_at as incoming_time,
+			MIN(i2.created_at) as outgoing_time
+		FROM interactions i1
+		INNER JOIN interactions i2 ON 
+			i2.conversation_id = i1.conversation_id 
+			AND i2.direction = 'outgoing' 
+			AND i2.created_at > i1.created_at
+		WHERE i1.tenant_id = ? 
+			AND i1.direction = 'incoming'
+			AND i1.created_at >= ? 
+			AND i1.created_at <= ?
+		GROUP BY i1.id, i1.created_at
+	`, claims.TenantID, start, end).Rows()
+	
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var rt struct {
+				IncomingTime time.Time
+				OutgoingTime time.Time
+			}
+			if err := rows.Scan(&rt.IncomingTime, &rt.OutgoingTime); err == nil {
+				duration := rt.OutgoingTime.Sub(rt.IncomingTime)
+				minutes := duration.Minutes()
+				
+				if minutes < 1 {
+					responseTimeDist.Under1Min++
+				} else if minutes < 5 {
+					responseTimeDist.OneTo5Min++
+				} else if minutes < 15 {
+					responseTimeDist.FiveTo15Min++
+				} else {
+					responseTimeDist.Over15Min++
+				}
+			}
+		}
+	}
+	
+	for _, rt := range responseTimeInteractions {
+		duration := rt.OutgoingTime.Sub(rt.IncomingTime)
+		minutes := duration.Minutes()
+		
+		if minutes < 1 {
+			responseTimeDist.Under1Min++
+		} else if minutes < 5 {
+			responseTimeDist.OneTo5Min++
+		} else if minutes < 15 {
+			responseTimeDist.FiveTo15Min++
+		} else {
+			responseTimeDist.Over15Min++
+		}
+	}
+	
+	var totalResponseTimes = responseTimeDist.Under1Min + responseTimeDist.OneTo5Min + responseTimeDist.FiveTo15Min + responseTimeDist.Over15Min
+	var responseTimeDistribution map[string]any
+	if totalResponseTimes > 0 {
+		responseTimeDistribution = map[string]any{
+			"under_1_min": map[string]any{
+				"count":      responseTimeDist.Under1Min,
+				"percentage": float64(responseTimeDist.Under1Min) / float64(totalResponseTimes) * 100,
+			},
+			"1_to_5_min": map[string]any{
+				"count":      responseTimeDist.OneTo5Min,
+				"percentage": float64(responseTimeDist.OneTo5Min) / float64(totalResponseTimes) * 100,
+			},
+			"5_to_15_min": map[string]any{
+				"count":      responseTimeDist.FiveTo15Min,
+				"percentage": float64(responseTimeDist.FiveTo15Min) / float64(totalResponseTimes) * 100,
+			},
+			"over_15_min": map[string]any{
+				"count":      responseTimeDist.Over15Min,
+				"percentage": float64(responseTimeDist.Over15Min) / float64(totalResponseTimes) * 100,
+			},
+		}
+	} else {
+		responseTimeDistribution = map[string]any{
+			"under_1_min": map[string]any{"count": 0, "percentage": 0},
+			"1_to_5_min":  map[string]any{"count": 0, "percentage": 0},
+			"5_to_15_min": map[string]any{"count": 0, "percentage": 0},
+			"over_15_min": map[string]any{"count": 0, "percentage": 0},
+		}
+	}
+
+	// Calculate volume by channel (percentage distribution)
+	var totalChannelVolume int64
+	for _, p := range platformBreakdown {
+		totalChannelVolume += p.Conversations
+	}
+	
+	var volumeByChannel []map[string]any
+	for _, p := range platformBreakdown {
+		var percentage float64
+		if totalChannelVolume > 0 {
+			percentage = float64(p.Conversations) / float64(totalChannelVolume) * 100
+		}
+		volumeByChannel = append(volumeByChannel, map[string]any{
+			"platform":   p.Platform,
+			"count":     p.Conversations,
+			"percentage": percentage,
+		})
+	}
+
+	// Determine if data is available (not just zeros)
+	hasData := scheduledCount > 0 || postedCount > 0 || conversationsCount > 0 || interactionsCount > 0
+	hasPlatformData := totalChannelVolume > 0
+	hasResponseTimeData := totalResponseTimes > 0
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"summary": map[string]any{
 			"scheduled_posts": scheduledCount,
 			"posted":          postedCount,
 			"conversations":   conversationsCount,
 			"interactions":    interactionsCount,
+			"has_data":        hasData,
 		},
 		"engagement": map[string]any{
 			"total_impressions":    totalImpressions,
@@ -5678,7 +5806,17 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			"posts_with_analytics": analyticsCount,
 		},
 		"response_distribution": responseDistribution,
-		"platforms":             platformBreakdown,
+		"response_time_distribution": map[string]any{
+			"data":      responseTimeDistribution,
+			"has_data":  hasResponseTimeData,
+			"total":     totalResponseTimes,
+		},
+		"volume_by_channel": map[string]any{
+			"data":     volumeByChannel,
+			"has_data": hasPlatformData,
+			"total":    totalChannelVolume,
+		},
+		"platforms": platformBreakdown,
 		"date_range": map[string]string{
 			"start": start.Format("2006-01-02"),
 			"end":   end.Format("2006-01-02"),
