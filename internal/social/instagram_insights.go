@@ -66,7 +66,9 @@ type MediaInsightsResponse struct {
 }
 
 // GetAccountInsights fetches account-level insights for an Instagram account
-// metrics: comma-separated list (e.g., "impressions,reach,profile_views")
+// Valid metrics: reach, follower_count, website_clicks, profile_views, online_followers,
+// accounts_engaged, total_interactions, likes, comments, shares, saves, replies, etc.
+// Note: "impressions" is NOT valid for account insights (only for media insights)
 // period: day, week, days_28, lifetime
 func (s *InstagramInsightsService) GetAccountInsights(ctx context.Context, account *storage.SocialAccount, metrics []string, period string) (*AccountInsightsResponse, error) {
 	if account.AccessToken == "" {
@@ -245,9 +247,9 @@ func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tena
 			}
 
 			// Update metrics based on metric name
+			// Note: "impressions" is not available for account insights (only for media insights)
+			// Valid account metrics: reach, follower_count, profile_views, total_interactions, etc.
 			switch metric.Name {
-			case "impressions":
-				snapshot.TotalImpressions = value.Value
 			case "reach":
 				snapshot.TotalReach = value.Value
 			case "profile_views":
@@ -261,6 +263,32 @@ func (s *InstagramInsightsService) SaveAccountInsights(ctx context.Context, tena
 					metadata = make(map[string]interface{})
 				}
 				metadata["profile_views"] = value.Value
+				metadataBytes, _ := json.Marshal(metadata)
+				snapshot.Metadata = string(metadataBytes)
+			case "follower_count":
+				// Store follower count in metadata
+				if snapshot.Metadata == "" {
+					snapshot.Metadata = "{}"
+				}
+				var metadata map[string]interface{}
+				json.Unmarshal([]byte(snapshot.Metadata), &metadata)
+				if metadata == nil {
+					metadata = make(map[string]interface{})
+				}
+				metadata["follower_count"] = value.Value
+				metadataBytes, _ := json.Marshal(metadata)
+				snapshot.Metadata = string(metadataBytes)
+			case "total_interactions":
+				// Store total interactions in metadata
+				if snapshot.Metadata == "" {
+					snapshot.Metadata = "{}"
+				}
+				var metadata map[string]interface{}
+				json.Unmarshal([]byte(snapshot.Metadata), &metadata)
+				if metadata == nil {
+					metadata = make(map[string]interface{})
+				}
+				metadata["total_interactions"] = value.Value
 				metadataBytes, _ := json.Marshal(metadata)
 				snapshot.Metadata = string(metadataBytes)
 			}

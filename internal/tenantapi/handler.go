@@ -7637,7 +7637,11 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 	// Parse query parameters
 	metricsParam := r.URL.Query().Get("metrics")
 	if metricsParam == "" {
-		metricsParam = "impressions,reach,profile_views" // Default metrics
+		// Valid Instagram account insights metrics (Instagram Login API):
+		// reach, follower_count, website_clicks, profile_views, online_followers,
+		// accounts_engaged, total_interactions, likes, comments, shares, saves, replies
+		// Note: "impressions" is NOT valid for account insights (only for media insights)
+		metricsParam = "reach,profile_views,follower_count" // Default metrics
 	}
 	metrics := strings.Split(metricsParam, ",")
 	for i := range metrics {
