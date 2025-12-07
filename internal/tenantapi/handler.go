@@ -4992,6 +4992,7 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 		ResponseType:   "manual",
 		ResponseStatus: "sent",
 		FinalReply:     req.Message,
+		Metadata:       "{}", // Initialize as empty JSON object to prevent "invalid input syntax for type json" error
 	}
 
 	if err := h.DB.Create(&interaction).Error; err != nil {
