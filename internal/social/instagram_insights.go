@@ -17,16 +17,13 @@ import (
 )
 
 // BusinessAllowedMetrics are valid metrics for Facebook Login API (graph.facebook.com)
-// Updated for 2025 - removed deprecated metrics:
-// - profile_views (deprecated)
-// - website_clicks (deprecated)
-// - email_contacts (deprecated)
-// - get_directions_clicks (deprecated)
-// - phone_call_clicks (deprecated)
-// - text_message_clicks (deprecated)
+// Based on actual Instagram API error messages - these are the valid account-level metrics
+// NOTE: "impressions" is NOT valid for account insights (only for media insights)
 var BusinessAllowedMetrics = map[string]bool{
 	"reach":              true,
 	"follower_count":     true,
+	"website_clicks":     true,
+	"profile_views":      true,
 	"online_followers":   true,
 	"accounts_engaged":   true,
 	"total_interactions": true,
@@ -35,19 +32,26 @@ var BusinessAllowedMetrics = map[string]bool{
 	"shares":             true,
 	"saves":              true,
 	"replies":            true,
-	"impressions":        true, // Still valid for Facebook Login API
-	// Deprecated and removed in 2025:
-	// "profile_views":     false,
-	// "website_clicks":     false,
+	// "impressions": false, // NOT valid for account insights (only for media)
 }
 
-// InstagramLoginMetrics are the ONLY metrics allowed for Instagram Login API (graph.instagram.com)
-// Updated for 2025 - profile_views was deprecated
-// Instagram Login API has very limited support - only 2 metrics after deprecations
+// InstagramLoginMetrics are metrics allowed for Instagram Login API (graph.instagram.com)
+// NOTE: "impressions" is NOT valid for account insights (only for media insights)
+// Based on actual Instagram API error messages, these are the valid account-level metrics
 var InstagramLoginMetrics = map[string]bool{
-	"impressions": true,
-	"reach":       true,
-	// "profile_views": false, // Deprecated 2025 - removed
+	"reach":              true,
+	"follower_count":     true,
+	"website_clicks":     true,
+	"profile_views":      true,
+	"online_followers":   true,
+	"accounts_engaged":   true,
+	"total_interactions": true,
+	"likes":              true,
+	"comments":           true,
+	"shares":             true,
+	"saves":              true,
+	"replies":            true,
+	// "impressions": false, // NOT valid for account insights (only for media)
 }
 
 // MediaAllowedMetrics are valid metrics for media-level insights (posts, reels)
@@ -86,20 +90,9 @@ func validateAccountMetrics(metrics []string, loginMethod string) error {
 		}
 
 		if !allowedMetrics[m] {
-			if loginMethod == "instagram_login" {
-				return fmt.Errorf("metric %s is not allowed for instagram_login accounts. Only 'impressions' and 'reach' are supported (profile_views was deprecated in 2025)", m)
-			}
-			// Check if it's a deprecated metric
-			deprecatedMetrics := map[string]string{
-				"profile_views":         "deprecated in 2025",
-				"website_clicks":        "deprecated in 2025",
-				"email_contacts":        "deprecated in 2025",
-				"get_directions_clicks": "deprecated in 2025",
-				"phone_call_clicks":     "deprecated in 2025",
-				"text_message_clicks":   "deprecated in 2025",
-			}
-			if reason, isDeprecated := deprecatedMetrics[m]; isDeprecated {
-				return fmt.Errorf("metric %s is %s and no longer supported", m, reason)
+			// Check if it's an invalid metric for account insights
+			if m == "impressions" {
+				return fmt.Errorf("metric 'impressions' is not valid for account insights (only valid for media insights). Use 'reach', 'follower_count', 'profile_views', etc. for account insights")
 			}
 			return fmt.Errorf("metric %s is not a valid business account metric", m)
 		}

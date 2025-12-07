@@ -7637,15 +7637,18 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 	// Parse query parameters
 	metricsParam := r.URL.Query().Get("metrics")
 	if metricsParam == "" {
-		// Default metrics depend on login method (updated for 2025 deprecations):
-		// - Instagram Login: ONLY "impressions,reach" (profile_views deprecated)
-		// - Facebook Login: "reach,follower_count,impressions" (profile_views deprecated)
+		// Default metrics depend on login method:
+		// - Instagram Login: "reach,profile_views,follower_count"
+		// - Facebook Login: "reach,follower_count,profile_views"
+		// NOTE: "impressions" is NOT valid for account insights (only for media insights)
 		if account.LoginMethod == "instagram_login" {
-			// Instagram Login API - profile_views was deprecated in 2025
-			metricsParam = "impressions,reach"
+			// Instagram Login API - use valid account-level metrics
+			// NOTE: "impressions" is NOT valid for account insights (only for media)
+			metricsParam = "reach,profile_views,follower_count"
 		} else {
-			// Facebook Login API - removed deprecated metrics (profile_views, website_clicks)
-			metricsParam = "reach,follower_count,impressions"
+			// Facebook Login API - use valid account-level metrics
+			// NOTE: "impressions" is NOT valid for account insights (only for media)
+			metricsParam = "reach,follower_count,profile_views"
 		}
 	}
 	metrics := strings.Split(metricsParam, ",")
@@ -7653,23 +7656,18 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 		metrics[i] = strings.TrimSpace(metrics[i])
 	}
 
-	// Filter out deprecated metrics automatically (even if explicitly requested)
-	// This makes the API more resilient - silently remove deprecated metrics
-	deprecatedMetrics := map[string]bool{
-		"profile_views":         true,
-		"website_clicks":        true,
-		"email_contacts":        true,
-		"get_directions_clicks": true,
-		"phone_call_clicks":     true,
-		"text_message_clicks":   true,
+	// Filter out invalid metrics automatically
+	// "impressions" is NOT valid for account insights (only for media insights)
+	invalidAccountMetrics := map[string]bool{
+		"impressions": true, // Only valid for media insights, not account insights
 	}
 	
 	filteredMetrics := make([]string, 0, len(metrics))
 	for _, m := range metrics {
-		if m != "" && !deprecatedMetrics[m] {
+		if m != "" && !invalidAccountMetrics[m] {
 			filteredMetrics = append(filteredMetrics, m)
-		} else if deprecatedMetrics[m] {
-			h.Logger.Warn("removed deprecated metric from request",
+		} else if invalidAccountMetrics[m] {
+			h.Logger.Warn("removed invalid metric from account insights request (impressions is only for media insights)",
 				zap.String("metric", m),
 				zap.String("login_method", account.LoginMethod))
 		}
@@ -7678,9 +7676,9 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 	// If all metrics were filtered out, use defaults
 	if len(filteredMetrics) == 0 {
 		if account.LoginMethod == "instagram_login" {
-			filteredMetrics = []string{"impressions", "reach"}
+			filteredMetrics = []string{"reach", "profile_views", "follower_count"}
 		} else {
-			filteredMetrics = []string{"reach", "follower_count", "impressions"}
+			filteredMetrics = []string{"reach", "follower_count", "profile_views"}
 		}
 		h.Logger.Info("all requested metrics were deprecated, using defaults",
 			zap.Strings("default_metrics", filteredMetrics))
