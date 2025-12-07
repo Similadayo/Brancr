@@ -238,15 +238,24 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 	
 	// If customer asks for picture of specific item, search for that item
 	if wantsImages {
-		// Extract item name from message (e.g., "picture of banana bread" -> "banana bread")
-		query := message
-		// Remove common picture-related words to get the item name
+		// Extract item name from message (e.g., "can i see the image of the banana bread?" -> "banana bread")
+		query := messageLower
+		// Remove common picture-related phrases and words to get the item name
+		query = strings.ReplaceAll(query, "can i see", "")
+		query = strings.ReplaceAll(query, "i want to see", "")
+		query = strings.ReplaceAll(query, "show me", "")
 		query = strings.ReplaceAll(query, "picture", "")
 		query = strings.ReplaceAll(query, "image", "")
 		query = strings.ReplaceAll(query, "photo", "")
+		query = strings.ReplaceAll(query, "pic", "")
 		query = strings.ReplaceAll(query, "of", "")
 		query = strings.ReplaceAll(query, "the", "")
 		query = strings.ReplaceAll(query, "a", "")
+		query = strings.ReplaceAll(query, "an", "")
+		query = strings.ReplaceAll(query, "?", "")
+		query = strings.ReplaceAll(query, ".", "")
+		// Remove multiple spaces
+		query = strings.Join(strings.Fields(query), " ")
 		query = strings.TrimSpace(query)
 		
 		if len(query) > 3 && !strings.Contains(messageLower, "menu") {
