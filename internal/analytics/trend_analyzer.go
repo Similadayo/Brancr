@@ -325,12 +325,7 @@ func (t *TrendAnalyzer) analyzePlatformSpecificPatterns(analytics []storage.Post
 			}
 		}
 		
-		// TikTok-specific patterns
-		if platform == "tiktok" {
-			if insight := t.analyzeTikTokPatterns(platformData); insight != nil {
-				insights = append(insights, insight)
-			}
-		}
+		// TikTok analytics removed - skip TikTok pattern analysis
 	}
 	
 	return insights

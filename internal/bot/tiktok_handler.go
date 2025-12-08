@@ -38,8 +38,9 @@ func (r *IntentRouter) handleTikTokCommand(bot *tgbotapi.BotAPI, tenantID uint, 
 	case "list_videos", "videos":
 		return r.handleTikTokListVideos(bot, tenantID, chatID)
 	case "analytics", "stats":
-		videoID := intent.Parameters["video_id"]
-		return r.handleTikTokAnalytics(bot, tenantID, chatID, videoID)
+		// TikTok analytics removed
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ TikTok analytics functionality has been removed. Analytics collection for TikTok is no longer supported."))
+		return true, nil
 	case "comments":
 		videoID := intent.Parameters["video_id"]
 		return r.handleTikTokComments(bot, tenantID, chatID, videoID)
@@ -67,7 +68,7 @@ func (r *IntentRouter) showTikTokMenu(bot *tgbotapi.BotAPI, chatID int64, tenant
 	connected := r.Manager.DB.Where("tenant_id = ? AND platform = ?", tenantID, "tiktok").First(&acc).Error == nil && acc.Connected
 
 	if !connected {
-		msg := tgbotapi.NewMessage(chatID, "⚠️ TikTok account not connected.\n\nConnect your TikTok account first to manage videos, view analytics, and reply to comments.")
+		msg := tgbotapi.NewMessage(chatID, "⚠️ TikTok account not connected.\n\nConnect your TikTok account first to manage videos and reply to comments.")
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData("🔗 Connect TikTok", "connect:tiktok"),
@@ -83,7 +84,7 @@ func (r *IntentRouter) showTikTokMenu(bot *tgbotapi.BotAPI, chatID int64, tenant
 What would you like to do?
 
 • List videos: "tiktok videos" or "show my tiktok videos"
-• Video analytics: "tiktok analytics [video_id]" or "tiktok stats"
+• Video management: List, view, and delete videos
 • View comments: "tiktok comments [video_id]"
 • Check status: "tiktok status [publish_id]"
 • Reply to comment: "tiktok reply [video_id] [comment_id] [text]"
@@ -94,7 +95,7 @@ Or just say "tiktok" for quick stats!`
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📹 List Videos", "tiktok:list"),
-			tgbotapi.NewInlineKeyboardButtonData("📊 Analytics", "tiktok:analytics"),
+			// Analytics button removed - TikTok analytics disabled
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("💬 Comments", "tiktok:comments"),
@@ -199,103 +200,10 @@ func (r *IntentRouter) handleTikTokListVideos(bot *tgbotapi.BotAPI, tenantID uin
 	return true, nil
 }
 
-// handleTikTokAnalytics shows TikTok analytics
+// handleTikTokAnalytics - REMOVED: TikTok analytics functionality disabled
+// This function has been removed. TikTok analytics collection is no longer supported.
 func (r *IntentRouter) handleTikTokAnalytics(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, videoID string) (bool, error) {
-	connector, acc, err := r.getTikTokConnector(tenantID)
-	if err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ %s", err.Error())))
-		return true, nil
-	}
-
-	if videoID == "" {
-		// Get account-wide analytics - list all videos and aggregate
-		videos, err := connector.ListVideos(context.Background(), acc, 50, "")
-		if err != nil {
-			r.Manager.Logger.Error("failed to list videos for analytics", zap.Error(err))
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Failed to fetch analytics."))
-			return true, nil
-		}
-
-		videosList, _ := videos["videos"].([]interface{})
-		var totalViews, totalLikes, totalComments, totalShares float64
-		videoCount := 0
-
-		for _, v := range videosList {
-			video, ok := v.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if vid, ok := video["video_id"].(string); ok && vid != "" {
-				analytics, err := connector.GetVideoAnalytics(context.Background(), acc, vid)
-				if err != nil {
-					continue
-				}
-				if views, ok := analytics["view_count"].(float64); ok {
-					totalViews += views
-				}
-				if likes, ok := analytics["like_count"].(float64); ok {
-					totalLikes += likes
-				}
-				if comments, ok := analytics["comment_count"].(float64); ok {
-					totalComments += comments
-				}
-				if shares, ok := analytics["share_count"].(float64); ok {
-					totalShares += shares
-				}
-				videoCount++
-			}
-		}
-
-		avgEngagement := 0.0
-		if totalViews > 0 {
-			avgEngagement = ((totalLikes + totalComments + totalShares) / totalViews) * 100
-		}
-
-		totalVideos := float64(videoCount)
-
-		text := fmt.Sprintf(`📊 *TikTok Account Analytics*
-
-📹 Videos: %.0f
-👁️ Total Views: %.0f
-❤️ Total Likes: %.0f
-💬 Total Comments: %.0f
-📈 Avg Engagement: %.2f%%
-
-Use "tiktok analytics [video_id]" for specific video stats.`,
-			totalVideos, totalViews, totalLikes, totalComments, avgEngagement)
-
-		msg := tgbotapi.NewMessage(chatID, text)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
-		return true, nil
-	}
-
-	// Get specific video analytics
-	result, err := connector.GetVideoAnalytics(context.Background(), acc, videoID)
-	if err != nil {
-		r.Manager.Logger.Error("failed to get video analytics", zap.Error(err))
-		bot.Send(tgbotapi.NewMessage(chatID, "❌ Video not found or analytics unavailable."))
-		return true, nil
-	}
-
-	views, _ := result["view_count"].(float64)
-	likes, _ := result["like_count"].(float64)
-	comments, _ := result["comment_count"].(float64)
-	shares, _ := result["share_count"].(float64)
-	engagement, _ := result["engagement_rate"].(float64)
-
-	text := fmt.Sprintf(`📊 *Video Analytics*
-
-👁️ Views: %.0f
-❤️ Likes: %.0f
-💬 Comments: %.0f
-📤 Shares: %.0f
-📈 Engagement Rate: %.2f%%`,
-		views, likes, comments, shares, engagement)
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = "Markdown"
-	bot.Send(msg)
+	bot.Send(tgbotapi.NewMessage(chatID, "❌ TikTok analytics functionality has been removed. Analytics collection for TikTok is no longer supported."))
 	return true, nil
 }
 

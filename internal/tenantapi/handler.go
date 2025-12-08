@@ -324,9 +324,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Get("/videos/status/{publish_id}", h.getTikTokVideoStatus)
 			r.Delete("/videos/{video_id}", h.deleteTikTokVideo)
 
-			// Analytics
-			r.Get("/videos/{video_id}/analytics", h.getTikTokVideoAnalytics)
-			r.Get("/analytics", h.getTikTokAnalytics)
+			// Analytics endpoints removed - TikTok analytics functionality disabled
 
 			// Comment management
 			r.Get("/videos/{video_id}/comments", h.listTikTokComments)
@@ -7589,164 +7587,21 @@ func (h *Handler) deleteTikTokVideo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getTikTokVideoAnalytics gets analytics for a specific video
+// getTikTokVideoAnalytics - REMOVED: TikTok analytics functionality disabled
+// This endpoint has been removed. TikTok analytics collection is no longer supported.
 func (h *Handler) getTikTokVideoAnalytics(w http.ResponseWriter, r *http.Request) {
-	claims, ok := middleware.TenantFromContext(r.Context())
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	videoID := chi.URLParam(r, "video_id")
-	if videoID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": "video_id is required",
-		})
-		return
-	}
-
-	// Get TikTok account
-	var acc storage.SocialAccount
-	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error": "TikTok account not connected",
-		})
-		return
-	}
-
-	// Get TikTok connector
-	connector, ok := social.Connectors["tiktok"]
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "TikTok connector not available",
-		})
-		return
-	}
-
-	tikTokConnector, ok := connector.(*social.TikTokConnector)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "TikTok connector type assertion failed",
-		})
-		return
-	}
-
-	// Decrypt token
-	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
-	if err != nil {
-		decryptedToken = acc.AccessToken
-	}
-	acc.AccessToken = decryptedToken
-
-	// Get analytics
-	analytics, err := tikTokConnector.GetVideoAnalytics(r.Context(), &acc, videoID)
-	if err != nil {
-		h.Logger.Error("failed to get TikTok video analytics", zap.Error(err), zap.String("video_id", videoID))
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": fmt.Sprintf("Failed to get analytics: %v", err),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, analytics)
+	writeJSON(w, http.StatusGone, map[string]any{
+		"error": "TikTok analytics functionality has been removed",
+		"message": "TikTok analytics collection is no longer supported",
+	})
 }
 
-// getTikTokAnalytics gets account-wide TikTok analytics
+// getTikTokAnalytics - REMOVED: TikTok analytics functionality disabled
+// This endpoint has been removed. TikTok analytics collection is no longer supported.
 func (h *Handler) getTikTokAnalytics(w http.ResponseWriter, r *http.Request) {
-	claims, ok := middleware.TenantFromContext(r.Context())
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Get TikTok account
-	var acc storage.SocialAccount
-	if err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, "tiktok").First(&acc).Error; err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"error": "TikTok account not connected",
-		})
-		return
-	}
-
-	// Get TikTok connector
-	connector, ok := social.Connectors["tiktok"]
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "TikTok connector not available",
-		})
-		return
-	}
-
-	tikTokConnector, ok := connector.(*social.TikTokConnector)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": "TikTok connector type assertion failed",
-		})
-		return
-	}
-
-	// Decrypt token
-	decryptedToken, err := utils.DecryptToken(acc.AccessToken)
-	if err != nil {
-		decryptedToken = acc.AccessToken
-	}
-	acc.AccessToken = decryptedToken
-
-	// List all videos to aggregate analytics
-	maxCount := 50
-	videos, err := tikTokConnector.ListVideos(r.Context(), &acc, maxCount, "")
-	if err != nil {
-		h.Logger.Error("failed to list TikTok videos for analytics", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": fmt.Sprintf("Failed to get videos: %v", err),
-		})
-		return
-	}
-
-	// Aggregate analytics from all videos
-	var totalViews, totalLikes, totalComments, totalShares float64
-	var videoCount int
-
-	videosList, ok := videos["videos"].([]map[string]interface{})
-	if ok {
-		for _, video := range videosList {
-			if videoID, ok := video["video_id"].(string); ok && videoID != "" {
-				analytics, err := tikTokConnector.GetVideoAnalytics(r.Context(), &acc, videoID)
-				if err != nil {
-					h.Logger.Warn("failed to get analytics for video", zap.String("video_id", videoID), zap.Error(err))
-					continue
-				}
-
-				if views, ok := analytics["view_count"].(float64); ok {
-					totalViews += views
-				}
-				if likes, ok := analytics["like_count"].(float64); ok {
-					totalLikes += likes
-				}
-				if comments, ok := analytics["comment_count"].(float64); ok {
-					totalComments += comments
-				}
-				if shares, ok := analytics["share_count"].(float64); ok {
-					totalShares += shares
-				}
-				videoCount++
-			}
-		}
-	}
-
-	avgEngagementRate := 0.0
-	if totalViews > 0 {
-		avgEngagementRate = ((totalLikes + totalComments + totalShares) / totalViews) * 100
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total_videos":        videoCount,
-		"total_views":         totalViews,
-		"total_likes":         totalLikes,
-		"total_comments":      totalComments,
-		"total_shares":        totalShares,
-		"total_engagement":    totalLikes + totalComments + totalShares,
-		"avg_engagement_rate": avgEngagementRate,
+	writeJSON(w, http.StatusGone, map[string]any{
+		"error": "TikTok analytics functionality has been removed",
+		"message": "TikTok analytics collection is no longer supported",
 	})
 }
 

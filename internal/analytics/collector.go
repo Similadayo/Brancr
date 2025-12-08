@@ -161,6 +161,14 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 		platforms := c.parsePlatforms(post.Platforms)
 		
 		for _, platform := range platforms {
+			// Skip TikTok analytics collection
+			if platform == "tiktok" {
+				c.Logger.Debug("Skipping TikTok analytics collection",
+					zap.Uint("post_id", post.ID),
+					zap.String("platform", platform))
+				continue
+			}
+
 			// Get platform post ID from PostLog or metadata
 			platformPostID := c.getPlatformPostID(tenantID, post.ID, platform)
 			if platformPostID == "" {

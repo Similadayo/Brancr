@@ -458,7 +458,7 @@ func (r *IntentRouter) fallbackIntentDetection(text string) *TenantIntent {
 			if strings.Contains(lower, "video") {
 				intent.Parameters["tiktok_action"] = "list_videos"
 			} else if strings.Contains(lower, "analytics") || strings.Contains(lower, "stats") {
-				intent.Parameters["tiktok_action"] = "analytics"
+				// TikTok analytics removed - no longer supported
 			} else if strings.Contains(lower, "comment") {
 				intent.Parameters["tiktok_action"] = "comments"
 			} else if strings.Contains(lower, "status") {

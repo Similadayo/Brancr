@@ -1856,7 +1856,8 @@ func (h *TenantWebhookHandler) handleTikTokCallback(bot *tgbotapi.BotAPI, tenant
 	case "list":
 		intentRouter.handleTikTokListVideos(bot, tenantID, chatID)
 	case "analytics":
-		intentRouter.handleTikTokAnalytics(bot, tenantID, chatID, "")
+		// TikTok analytics removed
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ TikTok analytics functionality has been removed."))
 	case "comments":
 		bot.Send(tgbotapi.NewMessage(chatID, "💬 Please provide a video ID.\n\nExample: `tiktok comments video_123`"))
 	case "status":

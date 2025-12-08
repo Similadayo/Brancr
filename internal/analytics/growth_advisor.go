@@ -183,19 +183,8 @@ func (g *GrowthAdvisor) analyzePlatformExpansion(profile storage.BusinessProfile
 	
 	// Check which platforms are missing
 	hasFacebook := platforms["facebook"] > 0
-	hasTikTok := platforms["tiktok"] > 0
 	
-	if !hasTikTok && profile.Niche != "" {
-		suggestedPlatform = "TikTok"
-		title = "Expand to TikTok"
-		description = "TikTok offers massive growth potential, especially for " + profile.Niche + " businesses. Short-form video content can reach new audiences."
-		actionItems = []string{
-			"Create a TikTok business account",
-			"Repurpose your best Instagram Reels for TikTok",
-			"Post 3-5 times per week with trending sounds",
-			"Engage with comments within the first hour",
-		}
-	} else if !hasFacebook {
+	if !hasFacebook {
 		suggestedPlatform = "Facebook"
 		title = "Expand to Facebook"
 		description = "Facebook's older demographic and community features can complement your Instagram presence."
