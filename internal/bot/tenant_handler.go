@@ -739,8 +739,15 @@ func (h *TenantWebhookHandler) handleVerifyCommand(bot *tgbotapi.BotAPI, tenantI
 
 func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantID uint, cq *tgbotapi.CallbackQuery) {
 	if cq == nil {
+		h.Manager.Logger.Warn("handleCallbackQuery called with nil callback query",
+			zap.Uint("tenant_id", tenantID))
 		return
 	}
+
+	h.Manager.Logger.Debug("Callback query received",
+		zap.String("callback_data", cq.Data),
+		zap.Uint("tenant_id", tenantID),
+		zap.Int64("chat_id", cq.Message.Chat.ID))
 
 	// Handle bulk upload callbacks
 	if strings.HasPrefix(cq.Data, "bulk:") {
@@ -749,10 +756,19 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	}
 
 	// Acknowledge callback to avoid "button spinning"
-	_, _ = bot.Request(tgbotapi.NewCallback(cq.ID, ""))
+	callback := tgbotapi.NewCallback(cq.ID, "")
+	if _, err := bot.Request(callback); err != nil {
+		h.Manager.Logger.Error("failed to acknowledge callback",
+			zap.Error(err),
+			zap.String("callback_data", cq.Data),
+			zap.Uint("tenant_id", tenantID))
+		// Continue anyway - callback might still work
+	}
 
 	data := strings.TrimSpace(cq.Data)
 	if data == "" {
+		h.Manager.Logger.Warn("Empty callback data",
+			zap.Uint("tenant_id", tenantID))
 		return
 	}
 
@@ -764,6 +780,12 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	if len(parts) > 1 {
 		arg = strings.Join(parts[1:], ":")
 	}
+
+	h.Manager.Logger.Debug("Processing callback",
+		zap.String("action", action),
+		zap.String("arg", arg),
+		zap.Uint("tenant_id", tenantID),
+		zap.Int64("chat_id", chatID))
 
 	switch action {
 	case "posting":
@@ -779,6 +801,9 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 		case "business":
 			h.sendBusinessMenu(bot, chatID, tenantID)
 		case "analytics":
+			h.Manager.Logger.Info("Analytics button tapped",
+				zap.Uint("tenant_id", tenantID),
+				zap.Int64("chat_id", chatID))
 			h.sendAnalyticsPeek(bot, chatID, tenantID)
 		case "ai":
 			var tenant storage.Tenant
@@ -1119,18 +1144,42 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 }
 
 func (h *TenantWebhookHandler) sendAnalyticsPeek(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
+	h.Manager.Logger.Info("sendAnalyticsPeek called",
+		zap.Uint("tenant_id", tenantID),
+		zap.Int64("chat_id", chatID),
+		zap.Bool("has_analytics_handler", h.Manager.AnalyticsHandler != nil))
+
 	if h.Manager.AnalyticsHandler == nil {
 		h.Manager.Logger.Warn("AnalyticsHandler not initialized",
 			zap.Uint("tenant_id", tenantID))
-		bot.Send(tgbotapi.NewMessage(chatID, "Analytics aren't ready just yet. Check back soon."))
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Analytics aren't ready just yet. Check back soon.")
+		if _, err := bot.Send(msg); err != nil {
+			h.Manager.Logger.Error("failed to send analytics error message",
+				zap.Error(err),
+				zap.Uint("tenant_id", tenantID))
+		}
 		return
 	}
+
+	// Send typing indicator to show we're working
+	bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
+
 	ctx := context.Background()
 	if err := h.Manager.AnalyticsHandler.SendQuickSummary(ctx, bot, tenantID, chatID); err != nil {
 		h.Manager.Logger.Error("failed to send analytics summary",
 			zap.Error(err),
-			zap.Uint("tenant_id", tenantID))
-		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("I couldn't pull analytics right now: %v. Try again shortly.", err)))
+			zap.Uint("tenant_id", tenantID),
+			zap.String("error_type", fmt.Sprintf("%T", err)))
+		errorMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⚠️ I couldn't pull analytics right now: %v\n\nTry again shortly or type 'analytics' to retry.", err))
+		if _, sendErr := bot.Send(errorMsg); sendErr != nil {
+			h.Manager.Logger.Error("failed to send analytics error message",
+				zap.Error(sendErr),
+				zap.Uint("tenant_id", tenantID))
+		}
+	} else {
+		h.Manager.Logger.Info("Analytics summary sent successfully",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int64("chat_id", chatID))
 	}
 }
 
