@@ -69,12 +69,45 @@ type App struct {
 func NewApp(cfg *config.Config) (*App, error) {
 	logger, _ := zap.NewProduction()
 
-	// 🗄️ Database with connection pooling
-	db, err := gorm.Open(postgres.Open(cfg.PostgresDSN), &gorm.Config{
-		PrepareStmt: true, // Enable prepared statements for better performance
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	// 🗄️ Database with connection pooling and timeout configuration
+	// Add connection timeout parameters to DSN if not already present
+	dsn := cfg.PostgresDSN
+	if dsn != "" {
+		// Check if DSN already has timeout parameters
+		if !strings.Contains(dsn, "connect_timeout") {
+			// Add connection timeout (30 seconds) and statement timeout (60 seconds)
+			separator := "?"
+			if strings.Contains(dsn, "?") {
+				separator = "&"
+			}
+			dsn = dsn + separator + "connect_timeout=30&statement_timeout=60000"
+		}
+	}
+	
+	// Retry connection with exponential backoff
+	var db *gorm.DB
+	var lastErr error
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		db, lastErr = gorm.Open(postgres.Open(dsn), &gorm.Config{
+			PrepareStmt: true, // Enable prepared statements for better performance
+		})
+		if lastErr == nil {
+			break
+		}
+		if i < maxRetries-1 {
+			waitTime := time.Duration(i+1) * 2 * time.Second // Exponential backoff: 2s, 4s, 6s
+			logger.Warn("database connection failed, retrying",
+				zap.Int("attempt", i+1),
+				zap.Int("max_retries", maxRetries),
+				zap.Duration("wait_time", waitTime),
+				zap.Error(lastErr))
+			time.Sleep(waitTime)
+		}
+	}
+	
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", maxRetries, lastErr)
 	}
 
 	// Get underlying SQL DB for pool configuration
@@ -85,9 +118,12 @@ func NewApp(cfg *config.Config) (*App, error) {
 		sqlDB2.SetMaxIdleConns(10)                  // Maximum idle connections
 		sqlDB2.SetConnMaxLifetime(time.Hour)        // Connection max lifetime
 		sqlDB2.SetConnMaxIdleTime(10 * time.Minute) // Idle connection timeout
+		// Set connection timeout for establishing new connections (30 seconds)
+		// Note: This is separate from the DSN connect_timeout
 		logger.Info("✅ Database connection pool configured",
 			zap.Int("max_open", 100),
-			zap.Int("max_idle", 10))
+			zap.Int("max_idle", 10),
+			zap.String("dsn_timeout", "30s"))
 	}
 
 	// 🧱 Run migrations

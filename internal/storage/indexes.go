@@ -97,6 +97,18 @@ func CreateIndexes(db *gorm.DB) error {
 		{"idx_post_log_status", "post_logs", "status", false},
 		{"idx_post_log_created", "post_logs", "created_at", false},
 		{"idx_post_log_platform", "post_logs", "platform", false},
+
+		// Menu Item indexes (for fast tenant queries with soft deletes)
+		{"idx_menu_item_tenant", "menu_items", "tenant_id", false},
+		{"idx_menu_item_category", "menu_items", "category", false},
+		{"idx_menu_item_tenant_deleted", "menu_items", "tenant_id, deleted_at", false},
+		{"idx_menu_item_tenant_category_created", "menu_items", "tenant_id, deleted_at, category, created_at", false},
+
+		// Product indexes (for fast tenant queries with soft deletes)
+		{"idx_product_tenant", "products", "tenant_id", false},
+		{"idx_product_category", "products", "category", false},
+		{"idx_product_tenant_deleted", "products", "tenant_id, deleted_at", false},
+		{"idx_product_tenant_category_created", "products", "tenant_id, deleted_at, category, created_at", false},
 	}
 
 	for _, idx := range indexes {
