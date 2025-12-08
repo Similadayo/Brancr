@@ -80,7 +80,10 @@ Return ONLY a JSON object with this exact structure (no additional text):
 Intent should be one of: %s
 Tone should be one of: positive, neutral, negative, urgent
 Confidence should be a number between 0.0 and 1.0
-Requires escalation should be true if intent is refund, complaint, delivery_issue, or if confidence is below 0.3
+Requires escalation should be true ONLY if:
+  - Confidence is below 0.25 (very uncertain), OR
+  - Intent is refund/complaint/delivery_issue AND confidence > 0.85 AND tone is negative/urgent (real issue needing human judgment)
+Do NOT set requires_escalation=true for routine questions like "What's your refund policy?" or "How do I return something?" - those should be false even if intent is refund.
 
 Message: "%s"
 Platform: %s
@@ -125,16 +128,28 @@ func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 	// Intent detection
 	if strings.Contains(lower, "refund") || strings.Contains(lower, "return") || strings.Contains(lower, "money back") {
 		intent = "refund"
-		requiresEscalation = true
-		tone = "negative"
+		// Only escalate if it's clearly negative/urgent, not just asking about policy
+		if strings.Contains(lower, "want") || strings.Contains(lower, "need") || strings.Contains(lower, "demand") || 
+		   strings.Contains(lower, "terrible") || strings.Contains(lower, "angry") || strings.Contains(lower, "disappointed") {
+			requiresEscalation = true
+			tone = "negative"
+		} else {
+			tone = "neutral" // Routine question about refund policy
+		}
 	} else if strings.Contains(lower, "complaint") || strings.Contains(lower, "wrong") || strings.Contains(lower, "bad") || strings.Contains(lower, "terrible") {
 		intent = "complaint"
 		requiresEscalation = true
 		tone = "negative"
 	} else if strings.Contains(lower, "delivery") || strings.Contains(lower, "ship") || strings.Contains(lower, "where is") || strings.Contains(lower, "not received") {
 		intent = "delivery_issue"
-		requiresEscalation = true
-		tone = "urgent"
+		// Only escalate if urgent/negative, not just asking "when will it arrive?"
+		if strings.Contains(lower, "not received") || strings.Contains(lower, "missing") || strings.Contains(lower, "lost") ||
+		   strings.Contains(lower, "urgent") || strings.Contains(lower, "asap") {
+			requiresEscalation = true
+			tone = "urgent"
+		} else {
+			tone = "neutral" // Routine delivery inquiry
+		}
 	} else if strings.Contains(lower, "order") || strings.Contains(lower, "buy") || strings.Contains(lower, "purchase") {
 		intent = "order"
 	} else if strings.Contains(lower, "pay") || strings.Contains(lower, "price") || strings.Contains(lower, "cost") || strings.Contains(lower, "how much") {

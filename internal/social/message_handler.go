@@ -753,20 +753,22 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		}
 	}
 	
-	// 3. Critical intents that always need human judgment
-	if intent.Intent == "refund" && intent.Tone == "negative" {
-		return true, "refund_with_negative_tone"
+	// 3. Very low confidence - can't understand the message (escalate to human)
+	if intent.Confidence < 0.25 {
+		return true, fmt.Sprintf("very_low_confidence_%.2f", intent.Confidence)
 	}
 	
-	if intent.Intent == "complaint" && intent.Confidence > 0.7 {
-		return true, "high_confidence_complaint"
+	// 4. High confidence + Critical intent + Negative/Urgent tone → Escalate
+	// Only escalate if we're VERY confident it's a real issue that needs human judgment
+	// This allows AI to handle routine questions like "What's your refund policy?"
+	isCriticalIntent := intent.Intent == "refund" || intent.Intent == "complaint" || intent.Intent == "delivery_issue"
+	isNegativeTone := intent.Tone == "negative" || intent.Tone == "urgent"
+	
+	if isCriticalIntent && intent.Confidence > 0.85 && isNegativeTone {
+		return true, fmt.Sprintf("high_confidence_critical_intent_%s_%s", intent.Intent, intent.Tone)
 	}
 	
-	if intent.Intent == "delivery_issue" && intent.Tone == "urgent" {
-		return true, "urgent_delivery_issue"
-	}
-	
-	// 4. Payment-related messages - but be smart about it
+	// 5. Payment-related messages - but be smart about it
 	// Only escalate if it's about actual payment processing, not just asking about prices
 	isPaymentProcessing := strings.Contains(messageLower, "paid") ||
 		strings.Contains(messageLower, "transaction") ||
@@ -788,27 +790,18 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return true, "payment_processing_issue"
 	}
 	
-	// 5. Very low confidence - can't understand the message
-	if intent.Confidence < 0.3 {
-		return true, fmt.Sprintf("low_confidence_%.2f", intent.Confidence)
-	}
-	
 	// 6. Intent detector explicitly says it requires escalation
-	if intent.RequiresEscalation {
+	// But only if confidence is reasonable (not a false positive)
+	if intent.RequiresEscalation && intent.Confidence > 0.4 {
 		return true, "intent_detector_flagged_escalation"
 	}
 	
 	// 7. Complex/ambiguous messages that need human judgment
 	// Check message length and complexity
 	wordCount := len(strings.Fields(msg.Content))
-	if wordCount > 100 && intent.Confidence < 0.6 {
+	if wordCount > 100 && intent.Confidence < 0.5 {
 		// Very long message with low confidence - likely complex issue
 		return true, "complex_message_low_confidence"
-	}
-	
-	// 8. Negative tone with high confidence - customer is clearly upset
-	if intent.Tone == "negative" && intent.Confidence > 0.8 {
-		return true, "high_confidence_negative_tone"
 	}
 	
 	// Default: don't escalate, let AI handle it
