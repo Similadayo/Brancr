@@ -63,10 +63,20 @@ func (h *AnalyticsHandler) HandleAnalyticsRequest(ctx context.Context, tenantID 
 func (h *AnalyticsHandler) sendWeeklySummary(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64) error {
 	if h.TelegramReporter == nil {
 		// Fallback if reporter not initialized
+		h.Manager.Logger.Warn("TelegramReporter not initialized, using basic stats",
+			zap.Uint("tenant_id", tenantID))
 		return h.sendBasicStats(ctx, bot, tenantID, chatID)
 	}
 
-	return h.TelegramReporter.GenerateWeeklySummary(ctx, tenantID, bot, chatID)
+	if err := h.TelegramReporter.GenerateWeeklySummary(ctx, tenantID, bot, chatID); err != nil {
+		h.Manager.Logger.Error("failed to generate weekly summary",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		// Fallback to basic stats on error
+		return h.sendBasicStats(ctx, bot, tenantID, chatID)
+	}
+
+	return nil
 }
 
 // sendTrendInsights sends AI-generated trend insights with production-grade formatting

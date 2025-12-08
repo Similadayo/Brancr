@@ -295,6 +295,22 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 
 		// Fallback to explicit commands (for backward compatibility)
 		switch {
+		// Analytics commands - handle directly before intent router
+		case strings.Contains(textLower, "analytics") || strings.Contains(textLower, "weekly summary") || 
+			 strings.Contains(textLower, "insights") || strings.Contains(textLower, "growth suggestions") ||
+			 strings.Contains(textLower, "stats") || strings.Contains(textLower, "performance"):
+			if h.Manager.AnalyticsHandler != nil {
+				ctx := context.Background()
+				if err := h.Manager.AnalyticsHandler.HandleAnalyticsRequest(ctx, uint(tenantID), chatID, text); err != nil {
+					h.Manager.Logger.Error("analytics request failed", zap.Error(err), zap.Uint("tenant_id", uint(tenantID)))
+					bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Couldn't fetch analytics right now. Try again in a moment."))
+				}
+				return
+			} else {
+				h.Manager.Logger.Warn("analytics handler not available", zap.Uint("tenant_id", uint(tenantID)))
+				bot.Send(tgbotapi.NewMessage(chatID, "📊 Analytics aren't ready just yet. Check back soon."))
+				return
+			}
 		case text == "/webhook" || strings.HasPrefix(strings.ToLower(text), "webhook info") || strings.HasPrefix(strings.ToLower(text), "webhook"):
 			h.showWebhookInfo(bot, chatID, uint(tenantID))
 			return
@@ -1104,12 +1120,17 @@ func (h *TenantWebhookHandler) sendOwnerMenu(bot *tgbotapi.BotAPI, chatID int64,
 
 func (h *TenantWebhookHandler) sendAnalyticsPeek(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
 	if h.Manager.AnalyticsHandler == nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "Analytics aren’t ready just yet. Check back soon."))
+		h.Manager.Logger.Warn("AnalyticsHandler not initialized",
+			zap.Uint("tenant_id", tenantID))
+		bot.Send(tgbotapi.NewMessage(chatID, "Analytics aren't ready just yet. Check back soon."))
 		return
 	}
 	ctx := context.Background()
 	if err := h.Manager.AnalyticsHandler.SendQuickSummary(ctx, bot, tenantID, chatID); err != nil {
-		bot.Send(tgbotapi.NewMessage(chatID, "I couldn’t pull analytics right now. Try again shortly."))
+		h.Manager.Logger.Error("failed to send analytics summary",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("I couldn't pull analytics right now: %v. Try again shortly.", err)))
 	}
 }
 

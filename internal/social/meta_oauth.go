@@ -116,7 +116,8 @@ func (h *MetaOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store state in cookie as backup in case Meta strips the state parameter
+	// Store state in cookie as backup in case Meta/Instagram strips the state parameter
+	// Instagram Login (1.instagram.com) sometimes strips query parameters, so cookie backup is critical
 	// Cookie expires in 10 minutes (OAuth flow should complete much faster)
 	stateCookie := &http.Cookie{
 		Name:     "oauth_state_backup",
@@ -125,9 +126,24 @@ func (h *MetaOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   600, // 10 minutes
 		HttpOnly: true,
 		Secure:   strings.HasPrefix(h.RedirectURI, "https://"), // Secure only for HTTPS
-		SameSite: http.SameSiteLaxMode,
+		// Use SameSite=None for cross-site redirects (Instagram redirects from 1.instagram.com)
+		// But only if Secure is true (HTTPS)
+		SameSite: func() http.SameSite {
+			if strings.HasPrefix(h.RedirectURI, "https://") {
+				// For HTTPS, use None to allow cross-site cookie access (Instagram redirects)
+				return http.SameSiteNoneMode
+			}
+			// For HTTP, use Lax (None requires Secure)
+			return http.SameSiteLaxMode
+		}(),
 	}
 	http.SetCookie(w, stateCookie)
+	
+	h.Logger.Debug("✅ OAuth state cookie set as backup",
+		zap.String("cookie_name", "oauth_state_backup"),
+		zap.Int("cookie_value_length", len(stateToken)),
+		zap.Bool("secure", stateCookie.Secure),
+		zap.Int("same_site", int(stateCookie.SameSite)))
 
 	scopes := h.resolveScopes(platforms)
 	if len(scopes) == 0 {
@@ -189,10 +205,14 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	stateRaw := query.Get("state")
 	if stateRaw == "" {
 		// Try to recover state from cookie (backup mechanism)
+		// Instagram Login sometimes strips the state parameter, so cookie backup is critical
 		stateCookie, err := r.Cookie("oauth_state_backup")
 		if err == nil && stateCookie != nil && stateCookie.Value != "" {
 			h.Logger.Info("⚠️ State parameter missing from URL, recovering from cookie backup",
-				zap.String("url", r.URL.String()))
+				zap.String("url", r.URL.String()),
+				zap.String("referer", r.Referer()),
+				zap.Bool("cookie_found", true),
+				zap.String("cookie_value_length", fmt.Sprintf("%d", len(stateCookie.Value))))
 			stateRaw = stateCookie.Value
 			// Clear the cookie after use
 			clearCookie := &http.Cookie{
@@ -205,6 +225,28 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				SameSite: http.SameSiteLaxMode,
 			}
 			http.SetCookie(w, clearCookie)
+		} else {
+			// Log why cookie recovery failed for debugging
+			h.Logger.Warn("⚠️ State parameter missing and cookie backup not available",
+				zap.String("url", r.URL.String()),
+				zap.String("referer", r.Referer()),
+				zap.Bool("cookie_error", err != nil),
+				zap.String("cookie_error_msg", func() string {
+					if err != nil {
+						return err.Error()
+					}
+					return "none"
+				}()),
+				zap.Bool("cookie_nil", stateCookie == nil),
+				zap.Bool("cookie_empty", stateCookie != nil && stateCookie.Value == ""),
+				zap.String("all_cookies", func() string {
+					cookies := r.Cookies()
+					names := make([]string, len(cookies))
+					for i, c := range cookies {
+						names[i] = c.Name
+					}
+					return strings.Join(names, ", ")
+				}()))
 		}
 	}
 
