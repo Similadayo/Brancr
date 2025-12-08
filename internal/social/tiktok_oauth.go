@@ -64,18 +64,21 @@ func NewTikTokOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config) 
 		}
 	}
 	if len(scopes) == 0 {
-		// Default to only the scopes that are typically available in TikTok apps
-		// These match what's commonly configured: user.info.basic and video.upload
-		scopes = []string{"user.info.basic", "video.upload"}
+		// Default to scopes needed for posting content to TikTok
+		// video.publish is required for direct posting (preferred)
+		// video.upload is for inbox uploads (fallback)
+		scopes = []string{"user.info.basic", "video.publish", "video.upload"}
 		scopeSet = map[string]struct{}{
 			"user.info.basic": {},
+			"video.publish":  {},
 			"video.upload":    {},
 		}
 	}
 
 	// Ensure essential scopes are always present for basic functionality.
-	// Only include scopes that are commonly available and don't require special approval.
-	essentialScopes := []string{"user.info.basic", "video.upload"}
+	// video.publish is required for direct posting (photos and videos)
+	// video.upload is kept for backward compatibility and inbox uploads
+	essentialScopes := []string{"user.info.basic", "video.publish", "video.upload"}
 	for _, s := range essentialScopes {
 		key := strings.ToLower(s)
 		if _, exists := scopeSet[key]; !exists {

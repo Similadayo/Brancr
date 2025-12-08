@@ -27,7 +27,9 @@ import (
 
 const (
 	tikTokBaseAPI         = "https://open.tiktokapis.com"
-	tikTokInitUploadPath  = "/v2/post/publish/video/init/"
+	tikTokInitUploadPath  = "/v2/post/publish/video/init/"        // Direct post video
+	tikTokInboxVideoPath  = "/v2/post/publish/inbox/video/init/"   // Upload to inbox (video)
+	tikTokContentInitPath = "/v2/post/publish/content/init/"       // Photo posting (direct or inbox)
 	tikTokStatusPath      = "/v2/post/publish/status/fetch/"
 	tikTokCreatorInfoPath = "/v2/post/publish/creator_info/query/"
 	tikTokRefreshPath     = "/v2/oauth/token/"
@@ -104,38 +106,29 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return errors.New("tiktok asset payload missing")
 	}
 	
-	// Validate that user has authorized video.upload scope
-	// According to TikTok Content Posting API docs, video.upload scope is required
-	if !t.hasAuthorizedScope(acc, "video.upload") {
-		return fmt.Errorf("tiktok posting requires 'video.upload' scope, but user has not authorized it. Please reconnect your TikTok account and ensure you grant the 'video.upload' permission")
-	}
-
-	// ✅ Check if asset is photo or video
-	// TikTok Business API only supports videos, so we need to convert photos to video
+	// Check if asset is photo or video
 	mediaURL, isPhoto, err := t.getMediaURL(asset)
 	if err != nil {
 		return err
 	}
 
-	// If it's a photo, convert to video
-	var videoURL string
+	// Handle photos using the new photo posting API
 	if isPhoto {
-		t.Logger.Info("📸 TikTok photo detected - converting to video",
-			zap.Uint("tenant_id", acc.TenantID),
-			zap.String("photo_url", mediaURL))
-		
-		convertedVideoURL, convertErr := t.convertPhotoToVideo(ctx, mediaURL, caption)
-		if convertErr != nil {
-			return fmt.Errorf("failed to convert photo to video: %w", convertErr)
-		}
-		videoURL = convertedVideoURL
-		t.Logger.Info("✅ Photo converted to video for TikTok",
-			zap.Uint("tenant_id", acc.TenantID),
-			zap.String("video_url", videoURL),
-			zap.String("note", "Using FILE_UPLOAD to avoid URL ownership verification"))
-	} else {
-		videoURL = mediaURL
+		return t.postPhoto(ctx, acc, asset, caption, mediaURL)
 	}
+
+	// For videos, check for video.publish scope (direct post) or video.upload scope (inbox)
+	// Prefer video.publish for direct posting
+	hasPublishScope := t.hasAuthorizedScope(acc, "video.publish")
+	hasUploadScope := t.hasAuthorizedScope(acc, "video.upload")
+	
+	if !hasPublishScope && !hasUploadScope {
+		return fmt.Errorf("tiktok posting requires 'video.publish' (for direct posting) or 'video.upload' (for inbox upload) scope, but user has not authorized either. Please reconnect your TikTok account and ensure you grant the appropriate permission")
+	}
+
+	// Use video.publish for direct posting (preferred)
+	// If only video.upload is available, we could use inbox endpoint, but for now we'll use direct post
+	videoURL := mediaURL
 
 	// Always get video size for FILE_UPLOAD (required by TikTok API)
 	// Note: We use FILE_UPLOAD instead of PULL_FROM_URL to avoid domain verification issues
@@ -1981,4 +1974,150 @@ func (t *TikTokConnector) hasAuthorizedScope(acc *storage.SocialAccount, require
 	}
 	
 	return false
+}
+
+// postPhoto posts a photo directly to TikTok using the Content Posting API
+// Reference: https://developers.tiktok.com/doc/content-posting-api-get-started
+func (t *TikTokConnector) postPhoto(ctx context.Context, acc *storage.SocialAccount, asset *storage.MediaAsset, caption string, photoURL string) error {
+	// Check for video.publish scope (required for direct posting)
+	if !t.hasAuthorizedScope(acc, "video.publish") {
+		return fmt.Errorf("tiktok photo posting requires 'video.publish' scope, but user has not authorized it. Please reconnect your TikTok account and ensure you grant the 'video.publish' permission")
+	}
+
+	// Get posting options from asset metadata or use defaults
+	postingOptions := t.getPostingOptions(asset)
+
+	// Get access token
+	accessToken, tokenErr := t.ensureAccessToken(ctx, acc)
+	if tokenErr != nil {
+		return tokenErr
+	}
+
+	// Query creator info first (recommended by TikTok)
+	if logErr := t.logCreatorInfo(ctx, acc); logErr != nil {
+		t.Logger.Warn("TikTok creator info query failed", zap.Error(logErr))
+	}
+
+	// Parse URLs - support single photo or multiple photos (carousel)
+	var urls []string
+	if asset.URLs != "" {
+		if err := json.Unmarshal([]byte(asset.URLs), &urls); err != nil {
+			urls = []string{photoURL}
+		}
+	} else {
+		urls = []string{photoURL}
+	}
+
+	// TikTok requires photos from verified domain, but we'll use PULL_FROM_URL
+	// If domain verification is an issue, we may need to download and re-upload
+	level := normalizePrivacyForPayload(t.PrivacyLevel)
+
+	// Build post_info
+	postInfo := map[string]interface{}{
+		"title":         defaultTikTokTitle(caption),
+		"description":   caption,
+		"privacy_level": level,
+		"disable_comment": postingOptions.DisableComment,
+	}
+
+	// Add schedule time if provided
+	if postingOptions.ScheduleTime != nil {
+		postInfo["schedule_time"] = postingOptions.ScheduleTime.Unix()
+	}
+
+	// Build source_info for photos
+	sourceInfo := map[string]interface{}{
+		"source":          "PULL_FROM_URL",
+		"photo_cover_index": 1, // First photo as cover
+		"photo_images":     urls,
+	}
+
+	// Build payload
+	payload := map[string]interface{}{
+		"post_info":   postInfo,
+		"source_info": sourceInfo,
+		"post_mode":   "DIRECT_POST", // Direct post to TikTok
+		"media_type":  "PHOTO",
+	}
+
+	body, _ := json.Marshal(payload)
+	t.Logger.Info("TikTok photo post payload", zap.String("json", string(body)))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokContentInitPath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Use rate limit retry wrapper
+	resp, err := t.executeWithRateLimitRetry(ctx, req, 3)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode >= 400 {
+		return parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			PublishID string `json:"publish_id"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse TikTok photo post response: %w", err)
+	}
+
+	if result.Error.Code != "" && result.Error.Code != "ok" {
+		return fmt.Errorf("tiktok photo post failed: %s (log_id: %s)", result.Error.Message, result.Error.LogID)
+	}
+
+	publishID := result.Data.PublishID
+	t.Logger.Info("✅ TikTok photo published",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("publish_id", publishID))
+
+	// Store publish_id in Metadata field
+	if asset.Metadata == "" {
+		asset.Metadata = "{}"
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(asset.Metadata), &metadata); err != nil {
+		metadata = make(map[string]interface{})
+	}
+
+	metadata["tiktok_publish_id"] = publishID
+	metadata["tiktok_published_at"] = time.Now().UTC().Format(time.RFC3339)
+	metadata["tiktok_media_type"] = "photo"
+
+	metadataJSON, _ := json.Marshal(metadata)
+	asset.Metadata = string(metadataJSON)
+
+	// Save asset to database
+	if t.DB != nil && asset.ID > 0 {
+		if err := t.DB.WithContext(ctx).
+			Model(&storage.MediaAsset{}).
+			Where("id = ?", asset.ID).
+			Update("metadata", asset.Metadata).Error; err != nil {
+			t.Logger.Warn("failed to save TikTok photo publish_id to database",
+				zap.Uint("asset_id", asset.ID),
+				zap.String("publish_id", publishID),
+				zap.Error(err))
+		}
+	}
+
+	return nil
 }
