@@ -99,7 +99,7 @@ func (h *InstagramLoginOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Store state in cookie as backup
+	// Store state in cookie as backup (for cross-site redirects from Instagram)
 	stateCookie := &http.Cookie{
 		Name:     "instagram_oauth_state_backup",
 		Value:    stateToken,
@@ -107,9 +107,20 @@ func (h *InstagramLoginOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.R
 		MaxAge:   600, // 10 minutes
 		HttpOnly: true,
 		Secure:   strings.HasPrefix(h.RedirectURI, "https://"),
-		SameSite: http.SameSiteLaxMode,
+		// Use SameSite=None for cross-site redirects (Instagram redirects from instagram.com)
+		// But only if Secure is true (HTTPS)
+		SameSite: func() http.SameSite {
+			if strings.HasPrefix(h.RedirectURI, "https://") {
+				return http.SameSiteNoneMode
+			}
+			return http.SameSiteLaxMode
+		}(),
 	}
 	http.SetCookie(w, stateCookie)
+	h.Logger.Debug("Set Instagram OAuth state backup cookie",
+		zap.String("cookie_name", stateCookie.Name),
+		zap.Bool("secure", stateCookie.Secure),
+		zap.Int("same_site", int(stateCookie.SameSite)))
 
 	// Build authorization URL
 	// Endpoint: https://www.instagram.com/oauth/authorize
@@ -180,13 +191,36 @@ func (h *InstagramLoginOAuthHandler) HandleCallback(w http.ResponseWriter, r *ht
 	// Get and verify state
 	stateToken := query.Get("state")
 	if stateToken == "" {
-		// Try to get from cookie
+		// Try to get from cookie (backup mechanism for cross-site redirects)
 		cookie, err := r.Cookie("instagram_oauth_state_backup")
 		if err != nil {
+			h.Logger.Warn("Instagram OAuth callback received without state parameter and no backup cookie",
+				zap.String("url", r.URL.String()),
+				zap.String("referer", r.Referer()),
+				zap.Error(err))
 			http.Error(w, "state parameter missing", http.StatusBadRequest)
 			return
 		}
+		h.Logger.Info("⚠️ State parameter missing from URL, recovering from cookie backup",
+			zap.String("url", r.URL.String()),
+			zap.String("referer", r.Referer()))
 		stateToken = cookie.Value
+		// Clear the cookie after use
+		clearCookie := &http.Cookie{
+			Name:     "instagram_oauth_state_backup",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   strings.HasPrefix(h.RedirectURI, "https://"),
+			SameSite: func() http.SameSite {
+				if strings.HasPrefix(h.RedirectURI, "https://") {
+					return http.SameSiteNoneMode
+				}
+				return http.SameSiteLaxMode
+			}(),
+		}
+		http.SetCookie(w, clearCookie)
 	}
 
 	state, err := h.decodeState(stateToken)
@@ -407,20 +441,23 @@ func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessTo
 
 	// Validate we have the required data
 	if token == "" {
-		return "", "", nil, fmt.Errorf("access_token missing in response")
+		// Log the actual response for debugging
+		responsePreview := string(body)
+		if len(responsePreview) > 500 {
+			responsePreview = responsePreview[:500] + "..."
+		}
+		return "", "", nil, fmt.Errorf("access_token missing in response (response body: %s)", responsePreview)
 	}
 	if uid == "" {
-		return "", "", nil, fmt.Errorf("user_id missing in response")
+		// Log the actual response for debugging
+		responsePreview := string(body)
+		if len(responsePreview) > 500 {
+			responsePreview = responsePreview[:500] + "..."
+		}
+		return "", "", nil, fmt.Errorf("user_id missing in response (response body: %s)", responsePreview)
 	}
 
 	return token, uid, permissionList, nil
-
-	// No token data found - log the actual response for debugging
-	responsePreview := string(body)
-	if len(responsePreview) > 500 {
-		responsePreview = responsePreview[:500] + "..."
-	}
-	return "", "", nil, fmt.Errorf("no token data in response (response body: %s)", responsePreview)
 }
 
 // exchangeForLongLivedToken exchanges short-lived token for long-lived token (60 days)
