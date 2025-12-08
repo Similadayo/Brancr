@@ -325,3 +325,243 @@ func suggestPostingTime(platform string) string {
 		return "Post when your audience is most active"
 	}
 }
+
+// GenerateCaptionFromKeywords generates a caption from keywords provided by the tenant
+func (o *CaptionOptimizer) GenerateCaptionFromKeywords(ctx context.Context, tenantID uint, keywords string, platform string, mediaType string, imageURLs []string) (string, error) {
+	// Load tenant's brand profile and persona
+	var persona storage.Persona
+	if err := o.DB.First(&persona, "tenant_id = ?", tenantID).Error; err != nil {
+		persona.Tone = "friendly"
+	}
+
+	var biz storage.BusinessProfile
+	if err := o.DB.First(&biz, "tenant_id = ?", tenantID).Error; err != nil {
+		biz.Description = ""
+	}
+
+	// Load business details for context
+	var menuItems []storage.BusinessMenuItem
+	o.DB.Where("tenant_id = ?", tenantID).Find(&menuItems)
+
+	// Analyze image if URLs provided
+	var imageAnalysis string
+	if len(imageURLs) > 0 && (mediaType == "image" || mediaType == "carousel") {
+		if analysis, err := o.Client.AnalyzeImage(ctx, imageURLs[0]); err == nil {
+			imageAnalysis = analysis
+		}
+	}
+
+	// Build business context
+	businessContext := buildBusinessContext(biz, menuItems, []storage.BusinessFAQ{})
+
+	// Get platform-specific guidance
+	platformGuide := getPlatformCaptionGuidance(platform)
+
+	// Build base messages
+	base := BuildBaseMessages(persona, biz)
+	intro := BuildIntroTone(persona, biz)
+
+	// Build prompt for keyword-based generation
+	var prompt strings.Builder
+	prompt.WriteString(intro)
+	prompt.WriteString("\n\n")
+	prompt.WriteString(fmt.Sprintf("Task: Generate a social media caption for %s based on keywords provided by the business owner.\n\n", strings.ToUpper(platform)))
+	
+	prompt.WriteString(fmt.Sprintf("Keywords provided: %s\n\n", keywords))
+	
+	if imageAnalysis != "" {
+		prompt.WriteString("Image Analysis:\n")
+		prompt.WriteString(imageAnalysis)
+		prompt.WriteString("\n\n")
+		prompt.WriteString("Important: Reference what's actually in the image in your caption. Make it relevant to what you see.\n\n")
+	}
+
+	if businessContext != "" {
+		prompt.WriteString("Business Context:\n")
+		prompt.WriteString(businessContext)
+		prompt.WriteString("\n\n")
+	}
+
+	prompt.WriteString("Context:\n")
+	prompt.WriteString(fmt.Sprintf("- Platform: %s\n", strings.ToUpper(platform)))
+	prompt.WriteString(fmt.Sprintf("- Media type: %s\n", strings.ToLower(mediaType)))
+	prompt.WriteString(fmt.Sprintf("- Keywords to incorporate: %s\n", keywords))
+
+	prompt.WriteString("\n")
+	prompt.WriteString("Guidance:\n")
+	prompt.WriteString(platformGuide)
+
+	prompt.WriteString("\n\n")
+	prompt.WriteString("Generate a caption that:\n")
+	prompt.WriteString("1. Incorporates the provided keywords naturally\n")
+	prompt.WriteString("2. Reflects the brand's voice and personality\n")
+	prompt.WriteString("3. References the image content when relevant\n")
+	prompt.WriteString("4. Is engaging and platform-appropriate\n")
+	prompt.WriteString("5. Sounds like a real human wrote it (not robotic or template-like)\n\n")
+	
+	prompt.WriteString("CRITICAL - Write like a REAL HUMAN would write this caption:\n")
+	prompt.WriteString("- Vary your sentence length naturally\n")
+	prompt.WriteString("- Use conversational language\n")
+	prompt.WriteString("- Avoid overly formal or corporate phrasing\n")
+	prompt.WriteString("- Use contractions naturally\n")
+	prompt.WriteString("- Do NOT use em-dashes. Use commas, periods, or regular hyphens instead.\n\n")
+	
+	prompt.WriteString("Return only the finished caption with hashtags at the end.")
+
+	// Use vision API if images available, otherwise text generation
+	var caption string
+	var err error
+
+	if len(imageURLs) > 0 && (mediaType == "image" || mediaType == "carousel") {
+		systemPrompt := buildSystemPromptFromBase(base, persona, biz)
+		caption, err = o.Client.GenerateWithVision(ctx, systemPrompt, prompt.String(), imageURLs)
+	} else {
+		messages := append(base, Message{Role: "user", Content: prompt.String()})
+		caption, err = o.Client.Generate(ctx, messages)
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("failed to generate caption: %w", err)
+	}
+
+	return strings.TrimSpace(caption), nil
+}
+
+// RephraseCaption rephrases an existing caption while keeping the same meaning
+func (o *CaptionOptimizer) RephraseCaption(ctx context.Context, tenantID uint, originalCaption string, platform string, mediaType string, imageURLs []string) (string, error) {
+	// Load tenant's brand profile and persona
+	var persona storage.Persona
+	if err := o.DB.First(&persona, "tenant_id = ?", tenantID).Error; err != nil {
+		persona.Tone = "friendly"
+	}
+
+	var biz storage.BusinessProfile
+	if err := o.DB.First(&biz, "tenant_id = ?", tenantID).Error; err != nil {
+		biz.Description = ""
+	}
+
+	// Get platform-specific guidance
+	platformGuide := getPlatformCaptionGuidance(platform)
+
+	// Build base messages
+	base := BuildBaseMessages(persona, biz)
+	intro := BuildIntroTone(persona, biz)
+
+	// Build prompt for rephrasing
+	var prompt strings.Builder
+	prompt.WriteString(intro)
+	prompt.WriteString("\n\n")
+	prompt.WriteString(fmt.Sprintf("Task: Rephrase this social media caption for %s while keeping the same meaning and message.\n\n", strings.ToUpper(platform)))
+	
+	prompt.WriteString(fmt.Sprintf("Original caption: \"%s\"\n\n", originalCaption))
+	
+	prompt.WriteString("Context:\n")
+	prompt.WriteString(fmt.Sprintf("- Platform: %s\n", strings.ToUpper(platform)))
+	prompt.WriteString(fmt.Sprintf("- Media type: %s\n", strings.ToLower(mediaType)))
+
+	prompt.WriteString("\n")
+	prompt.WriteString("Guidance:\n")
+	prompt.WriteString(platformGuide)
+
+	prompt.WriteString("\n\n")
+	prompt.WriteString("Rephrase the caption to:\n")
+	prompt.WriteString("1. Keep the same core message and meaning\n")
+	prompt.WriteString("2. Use different words and phrasing\n")
+	prompt.WriteString("3. Make it more engaging if possible\n")
+	prompt.WriteString("4. Maintain the brand voice\n")
+	prompt.WriteString("5. Sound natural and human (not robotic)\n")
+	prompt.WriteString("6. Do NOT use em-dashes. Use commas, periods, or regular hyphens instead.\n\n")
+	
+	prompt.WriteString("Return only the rephrased caption with hashtags at the end.")
+
+	messages := append(base, Message{Role: "user", Content: prompt.String()})
+	caption, err := o.Client.Generate(ctx, messages)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to rephrase caption: %w", err)
+	}
+
+	return strings.TrimSpace(caption), nil
+}
+
+// FineTuneCaption fine-tunes an existing caption to improve it
+func (o *CaptionOptimizer) FineTuneCaption(ctx context.Context, tenantID uint, originalCaption string, platform string, mediaType string, imageURLs []string) (string, error) {
+	// Load tenant's brand profile and persona
+	var persona storage.Persona
+	if err := o.DB.First(&persona, "tenant_id = ?", tenantID).Error; err != nil {
+		persona.Tone = "friendly"
+	}
+
+	var biz storage.BusinessProfile
+	if err := o.DB.First(&biz, "tenant_id = ?", tenantID).Error; err != nil {
+		biz.Description = ""
+	}
+
+	// Analyze image if URLs provided
+	var imageAnalysis string
+	if len(imageURLs) > 0 && (mediaType == "image" || mediaType == "carousel") {
+		if analysis, err := o.Client.AnalyzeImage(ctx, imageURLs[0]); err == nil {
+			imageAnalysis = analysis
+		}
+	}
+
+	// Get platform-specific guidance
+	platformGuide := getPlatformCaptionGuidance(platform)
+
+	// Build base messages
+	base := BuildBaseMessages(persona, biz)
+	intro := BuildIntroTone(persona, biz)
+
+	// Build prompt for fine-tuning
+	var prompt strings.Builder
+	prompt.WriteString(intro)
+	prompt.WriteString("\n\n")
+	prompt.WriteString(fmt.Sprintf("Task: Fine-tune and improve this social media caption for %s.\n\n", strings.ToUpper(platform)))
+	
+	prompt.WriteString(fmt.Sprintf("Current caption: \"%s\"\n\n", originalCaption))
+	
+	if imageAnalysis != "" {
+		prompt.WriteString("Image Analysis:\n")
+		prompt.WriteString(imageAnalysis)
+		prompt.WriteString("\n\n")
+	}
+
+	prompt.WriteString("Context:\n")
+	prompt.WriteString(fmt.Sprintf("- Platform: %s\n", strings.ToUpper(platform)))
+	prompt.WriteString(fmt.Sprintf("- Media type: %s\n", strings.ToLower(mediaType)))
+
+	prompt.WriteString("\n")
+	prompt.WriteString("Guidance:\n")
+	prompt.WriteString(platformGuide)
+
+	prompt.WriteString("\n\n")
+	prompt.WriteString("Fine-tune the caption to:\n")
+	prompt.WriteString("1. Keep the same message but make it more engaging\n")
+	prompt.WriteString("2. Improve clarity and flow\n")
+	prompt.WriteString("3. Optimize for the platform's best practices\n")
+	prompt.WriteString("4. Enhance readability and impact\n")
+	prompt.WriteString("5. Maintain brand voice and personality\n")
+	prompt.WriteString("6. Reference image content when relevant\n")
+	prompt.WriteString("7. Sound natural and human (not robotic)\n")
+	prompt.WriteString("8. Do NOT use em-dashes. Use commas, periods, or regular hyphens instead.\n\n")
+	
+	prompt.WriteString("Return only the fine-tuned caption with hashtags at the end.")
+
+	// Use vision API if images available, otherwise text generation
+	var caption string
+	var err error
+
+	if len(imageURLs) > 0 && (mediaType == "image" || mediaType == "carousel") {
+		systemPrompt := buildSystemPromptFromBase(base, persona, biz)
+		caption, err = o.Client.GenerateWithVision(ctx, systemPrompt, prompt.String(), imageURLs)
+	} else {
+		messages := append(base, Message{Role: "user", Content: prompt.String()})
+		caption, err = o.Client.Generate(ctx, messages)
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("failed to fine-tune caption: %w", err)
+	}
+
+	return strings.TrimSpace(caption), nil
+}

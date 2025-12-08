@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
@@ -22,6 +23,7 @@ type PostSession struct {
 	Name           string
 	Caption        string
 	UseAICaption   bool
+	CaptionMode    string // "write", "keywords", "ai", "" (empty for backward compat)
 	Platforms      []string // Selected platforms
 	ScheduleInput  string
 	BatchSchedule  bool     // Batch scheduling multiple posts
@@ -148,24 +150,67 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			sess.Name = text
 		}
 		sess.Step = 3
-		bot.Send(tgbotapi.NewMessage(chatID, "Want me to spin a caption, or do you have something in mind? (Reply 'AI caption', type yours, or say 'skip')."))
+		// Show options with inline keyboard
+		msg := tgbotapi.NewMessage(chatID, "How would you like to handle the caption?")
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✍️ Write my own", "caption:write"),
+				tgbotapi.NewInlineKeyboardButtonData("🔑 Keywords → AI", "caption:keywords"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🤖 AI generate", "caption:ai"),
+				tgbotapi.NewInlineKeyboardButtonData("⏭️ Skip", "caption:skip"),
+			),
+		)
+		bot.Send(msg)
 
 	case 3:
-		if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
+		// Handle caption input based on mode
+		if sess.CaptionMode == "write" {
+			// User is writing their own caption
+			if lower == "skip" || text == "" {
+				sess.Caption = ""
+			} else {
+				sess.Caption = text
+			}
+			sess.Step = 4
+			bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+			return
+		} else if sess.CaptionMode == "keywords" {
+			// User provided keywords - generate caption
+			if lower == "skip" || text == "" {
+				sess.Caption = ""
+				sess.Step = 4
+				bot.Send(tgbotapi.NewMessage(chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+				return
+			}
+			// Generate caption from keywords
+			m.generateCaptionFromKeywords(bot, tenantID, chatID, sess, text)
+			return
+		} else if sess.CaptionMode == "ai" {
+			// AI caption mode - will be handled after platform selection
 			sess.UseAICaption = true
 			sess.Step = 4
 			bot.Send(tgbotapi.NewMessage(chatID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all')."))
 			return
-		}
-		if lower == "skip" || text == "" {
-			sess.Caption = ""
+		} else {
+			// Fallback to old behavior for backward compatibility
+			if strings.EqualFold(lower, "ai caption") || strings.EqualFold(lower, "ai") || strings.EqualFold(lower, "generate") {
+				sess.UseAICaption = true
+				sess.Step = 4
+				bot.Send(tgbotapi.NewMessage(chatID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all')."))
+				return
+			}
+			if lower == "skip" || text == "" {
+				sess.Caption = ""
+				sess.Step = 4
+				bot.Send(tgbotapi.NewMessage(chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+				return
+			}
+			sess.Caption = text
 			sess.Step = 4
-			bot.Send(tgbotapi.NewMessage(chatID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
-			return
+			bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 		}
-		sess.Caption = text
-		sess.Step = 4
-		bot.Send(tgbotapi.NewMessage(chatID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 
 	case 4:
 		// Check if we're in TikTok options mode (after platforms selected)
@@ -1028,4 +1073,60 @@ func (m *TenantBotManager) generateConfirmationMessageWithTimezone(ma storage.Me
 	}
 
 	return strings.Join(parts, "\n") + "\n\nI'll handle it from here! 🚀"
+}
+
+// generateCaptionFromKeywords generates a caption from keywords and updates the session
+func (m *TenantBotManager) generateCaptionFromKeywords(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sess *PostSession, keywords string) {
+	// Get media asset to extract image URLs
+	var ma storage.MediaAsset
+	if err := m.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find that media anymore—try re-uploading."))
+		delete(tenantSessions, chatID)
+		return
+	}
+
+	// Extract image URLs
+	var imageURLs []string
+	if ma.URLs != "" {
+		_ = json.Unmarshal([]byte(ma.URLs), &imageURLs)
+	}
+
+	// Determine platform (use first platform if available, otherwise default to instagram)
+	platform := "instagram"
+	if len(sess.Platforms) > 0 {
+		platform = sess.Platforms[0]
+	}
+
+	// Create caption optimizer
+	optimizer := &ai.CaptionOptimizer{
+		Client: m.AIClient,
+		DB:     m.DB,
+	}
+
+	ctx := context.Background()
+	caption, err := optimizer.GenerateCaptionFromKeywords(ctx, tenantID, keywords, platform, sess.MediaType, imageURLs)
+	if err != nil {
+		m.Logger.Error("failed to generate caption from keywords", zap.Error(err))
+		bot.Send(tgbotapi.NewMessage(chatID, "Sorry, I couldn't generate a caption right now. Try typing your own or say 'skip'."))
+		sess.Step = 3
+		return
+	}
+
+	sess.Caption = caption
+	sess.Step = 3 // Keep at step 3 to show caption and allow rephrase/fine-tune
+
+	// Show generated caption with options
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✨ *Generated Caption:*\n\n%s\n\n", caption))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Use This", "caption:use"),
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Rephrase", "caption:rephrase"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✨ Fine-tune", "caption:fine_tune"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Edit Manually", "caption:edit"),
+		),
+	)
+	bot.Send(msg)
 }

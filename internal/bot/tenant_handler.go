@@ -817,6 +817,65 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	case "ai":
 		// TODO: Implement AI customization flow
 		bot.Send(tgbotapi.NewMessage(chatID, "AI customization is coming soon!"))
+	case "caption":
+		// Handle caption mode selection and actions
+		if arg == "use" {
+			// User accepted the generated caption, continue to platform selection
+			sess, ok := getTenantSession(cq.Message.Chat.ID)
+			if ok {
+				sess.Step = 4
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+			}
+		} else if arg == "edit" {
+			// User wants to edit manually
+			sess, ok := getTenantSession(cq.Message.Chat.ID)
+			if ok {
+				sess.CaptionMode = "write"
+				sess.Step = 3
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Perfect! Type your caption, or say 'skip' to leave it blank."))
+			}
+		} else {
+			// Handle other caption actions (rephrase, fine_tune, write, keywords, ai, skip)
+			sess, ok := getTenantSession(cq.Message.Chat.ID)
+			if !ok {
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Session expired. Please start over."))
+				return
+			}
+
+			switch arg {
+			case "write":
+				sess.CaptionMode = "write"
+				sess.Step = 3
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Perfect! Type your caption, or say 'skip' to leave it blank."))
+			case "keywords":
+				sess.CaptionMode = "keywords"
+				sess.Step = 3
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Great! Drop some keywords or phrases, and I'll spin a caption for you. (e.g., 'new product launch, exciting, limited time')"))
+			case "ai":
+				sess.CaptionMode = "ai"
+				sess.UseAICaption = true
+				sess.Step = 4
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Love it. Where are we posting? (Instagram, Facebook, TikTok, etc., or just say 'all')."))
+			case "skip":
+				sess.Caption = ""
+				sess.Step = 4
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "No worries. Which platforms should we hit? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+			case "rephrase":
+				if sess.Caption == "" {
+					bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "No caption to rephrase. Please provide a caption first."))
+					return
+				}
+				h.rephraseCaptionInSession(bot, tenantID, cq.Message.Chat.ID, sess)
+			case "fine_tune":
+				if sess.Caption == "" {
+					bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "No caption to fine-tune. Please provide a caption first."))
+					return
+				}
+				h.fineTuneCaptionInSession(bot, tenantID, cq.Message.Chat.ID, sess)
+			default:
+				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Invalid option. Please try again."))
+			}
+		}
 	case "postflow":
 		// Check if it's a preview action or regular postflow
 		previewActions := map[string]bool{
@@ -1936,4 +1995,102 @@ func (h *TenantWebhookHandler) handlePostingWorkflowCallback(bot *tgbotapi.BotAP
 	} else {
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Workflow orchestrator not properly configured."))
 	}
+}
+
+// rephraseCaptionInSession rephrases the caption in the current session
+func (h *TenantWebhookHandler) rephraseCaptionInSession(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sess *PostSession) {
+	// Get media asset to extract image URLs
+	var ma storage.MediaAsset
+	if err := h.Manager.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find that media anymore."))
+		return
+	}
+
+	var imageURLs []string
+	if ma.URLs != "" {
+		_ = json.Unmarshal([]byte(ma.URLs), &imageURLs)
+	}
+
+	platform := "instagram"
+	if len(sess.Platforms) > 0 {
+		platform = sess.Platforms[0]
+	}
+
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.Manager.AIClient,
+		DB:     h.Manager.DB,
+	}
+
+	ctx := context.Background()
+	caption, err := optimizer.RephraseCaption(ctx, tenantID, sess.Caption, platform, sess.MediaType, imageURLs)
+	if err != nil {
+		h.Manager.Logger.Error("failed to rephrase caption", zap.Error(err))
+		bot.Send(tgbotapi.NewMessage(chatID, "Sorry, I couldn't rephrase the caption right now. Try again later."))
+		return
+	}
+
+	sess.Caption = caption
+
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✨ *Rephrased Caption:*\n\n%s\n\n", caption))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Use This", "caption:use"),
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Rephrase Again", "caption:rephrase"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✨ Fine-tune", "caption:fine_tune"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Edit Manually", "caption:edit"),
+		),
+	)
+	bot.Send(msg)
+}
+
+// fineTuneCaptionInSession fine-tunes the caption in the current session
+func (h *TenantWebhookHandler) fineTuneCaptionInSession(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sess *PostSession) {
+	// Get media asset to extract image URLs
+	var ma storage.MediaAsset
+	if err := h.Manager.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find that media anymore."))
+		return
+	}
+
+	var imageURLs []string
+	if ma.URLs != "" {
+		_ = json.Unmarshal([]byte(ma.URLs), &imageURLs)
+	}
+
+	platform := "instagram"
+	if len(sess.Platforms) > 0 {
+		platform = sess.Platforms[0]
+	}
+
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.Manager.AIClient,
+		DB:     h.Manager.DB,
+	}
+
+	ctx := context.Background()
+	caption, err := optimizer.FineTuneCaption(ctx, tenantID, sess.Caption, platform, sess.MediaType, imageURLs)
+	if err != nil {
+		h.Manager.Logger.Error("failed to fine-tune caption", zap.Error(err))
+		bot.Send(tgbotapi.NewMessage(chatID, "Sorry, I couldn't fine-tune the caption right now. Try again later."))
+		return
+	}
+
+	sess.Caption = caption
+
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✨ *Fine-tuned Caption:*\n\n%s\n\n", caption))
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✅ Use This", "caption:use"),
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Rephrase", "caption:rephrase"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✨ Fine-tune Again", "caption:fine_tune"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Edit Manually", "caption:edit"),
+		),
+	)
+	bot.Send(msg)
 }

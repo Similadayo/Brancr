@@ -276,6 +276,11 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		
 		// Campaigns/Posts Stats API
 		r.Get("/tenant/campaigns/stats", h.getCampaignStats)
+		
+		// Caption AI Suggestions API
+		r.Post("/tenant/captions/generate-from-keywords", h.generateCaptionFromKeywords)
+		r.Post("/tenant/captions/rephrase", h.rephraseCaption)
+		r.Post("/tenant/captions/fine-tune", h.fineTuneCaption)
 		r.Post("/tenant/escalations/{id}/approve", h.approveEscalation)
 		r.Post("/tenant/escalations/{id}/reply", h.replyToEscalation)
 		r.Post("/tenant/escalations/{id}/ignore", h.ignoreEscalation)
@@ -5513,6 +5518,184 @@ func (h *Handler) getCampaignStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// =======================
+// CAPTION AI SUGGESTIONS API
+// =======================
+
+// generateCaptionFromKeywords generates a caption from keywords provided by tenant
+func (h *Handler) generateCaptionFromKeywords(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Keywords   string   `json:"keywords"`   // Keywords to generate caption from
+		Platform   string   `json:"platform"`   // instagram, facebook, tiktok, etc.
+		MediaType  string   `json:"media_type"` // image, video, carousel
+		ImageURLs  []string `json:"image_urls"` // Optional: URLs of images to analyze
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Keywords == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "keywords required",
+			"message": "Please provide keywords to generate a caption",
+		})
+		return
+	}
+
+	if req.Platform == "" {
+		req.Platform = "instagram" // Default platform
+	}
+
+	if req.MediaType == "" {
+		req.MediaType = "image" // Default media type
+	}
+
+	// Create caption optimizer
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.AIClient,
+		DB:     h.DB,
+	}
+
+	ctx := r.Context()
+	caption, err := optimizer.GenerateCaptionFromKeywords(ctx, claims.TenantID, req.Keywords, req.Platform, req.MediaType, req.ImageURLs)
+	if err != nil {
+		h.Logger.Error("failed to generate caption from keywords", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "failed to generate caption",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"caption": caption,
+	})
+}
+
+// rephraseCaption rephrases an existing caption
+func (h *Handler) rephraseCaption(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Caption    string   `json:"caption"`    // Original caption to rephrase
+		Platform   string   `json:"platform"`   // instagram, facebook, tiktok, etc.
+		MediaType  string   `json:"media_type"` // image, video, carousel
+		ImageURLs  []string `json:"image_urls"` // Optional: URLs of images
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Caption == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "caption required",
+			"message": "Please provide a caption to rephrase",
+		})
+		return
+	}
+
+	if req.Platform == "" {
+		req.Platform = "instagram" // Default platform
+	}
+
+	if req.MediaType == "" {
+		req.MediaType = "image" // Default media type
+	}
+
+	// Create caption optimizer
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.AIClient,
+		DB:     h.DB,
+	}
+
+	ctx := r.Context()
+	caption, err := optimizer.RephraseCaption(ctx, claims.TenantID, req.Caption, req.Platform, req.MediaType, req.ImageURLs)
+	if err != nil {
+		h.Logger.Error("failed to rephrase caption", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "failed to rephrase caption",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"caption": caption,
+	})
+}
+
+// fineTuneCaption fine-tunes an existing caption to improve it
+func (h *Handler) fineTuneCaption(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Caption    string   `json:"caption"`    // Original caption to fine-tune
+		Platform   string   `json:"platform"`   // instagram, facebook, tiktok, etc.
+		MediaType  string   `json:"media_type"` // image, video, carousel
+		ImageURLs  []string `json:"image_urls"` // Optional: URLs of images to analyze
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Caption == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":   "caption required",
+			"message": "Please provide a caption to fine-tune",
+		})
+		return
+	}
+
+	if req.Platform == "" {
+		req.Platform = "instagram" // Default platform
+	}
+
+	if req.MediaType == "" {
+		req.MediaType = "image" // Default media type
+	}
+
+	// Create caption optimizer
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.AIClient,
+		DB:     h.DB,
+	}
+
+	ctx := r.Context()
+	caption, err := optimizer.FineTuneCaption(ctx, claims.TenantID, req.Caption, req.Platform, req.MediaType, req.ImageURLs)
+	if err != nil {
+		h.Logger.Error("failed to fine-tune caption", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":   "failed to fine-tune caption",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"caption": caption,
+	})
 }
 
 // =======================

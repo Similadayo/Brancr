@@ -160,6 +160,10 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Edit Caption", "postflow:edit_caption"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Rephrase", "caption:rephrase"),
+			tgbotapi.NewInlineKeyboardButtonData("✨ Fine-tune", "caption:fine_tune"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🕐 Change Time", "postflow:edit_schedule"),
 			tgbotapi.NewInlineKeyboardButtonData("📱 Change Platforms", "postflow:edit_platforms"),
 		),
