@@ -95,7 +95,6 @@ Or just say "tiktok" for quick stats!`
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📹 List Videos", "tiktok:list"),
-			// Analytics button removed - TikTok analytics disabled
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("💬 Comments", "tiktok:comments"),
