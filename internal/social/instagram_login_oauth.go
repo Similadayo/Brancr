@@ -15,6 +15,7 @@ import (
 
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -557,6 +558,13 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 	metadataJSON, _ := json.Marshal(metadata)
 
 	if err == nil {
+		// Encrypt token before updating
+		encryptedToken, encErr := utils.EncryptToken(accessToken)
+		if encErr != nil {
+			h.Logger.Error("failed to encrypt Instagram access token", zap.Error(encErr))
+			encryptedToken = accessToken // Fallback to plain token if encryption fails
+		}
+
 		// Update existing account
 		existing.ExpiresAt = &expiresAt
 		existing.Username = account.Username
@@ -566,9 +574,12 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 		existing.Mode = "oauth2"
 		existing.LoginMethod = "instagram_login"
 		existing.Metadata = string(metadataJSON)
+		existing.AccessToken = encryptedToken // Save encrypted token directly
 		
-		// Use persistSocialAccount to encrypt and save the token properly
-		persistSocialAccount(&existing, accessToken, h.DB)
+		// Save the updated account
+		if saveErr := h.DB.WithContext(ctx).Save(&existing).Error; saveErr != nil {
+			return fmt.Errorf("failed to update instagram account: %w", saveErr)
+		}
 		
 		h.Logger.Info("✅ Updated existing Instagram account",
 			zap.Uint("tenant_id", tenantID),
@@ -576,28 +587,32 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 		return nil
 	}
 
-	// Create new account
-	newAccount := storage.SocialAccount{
-		TenantID:   tenantID,
-		Platform:   "instagram",
-		ExpiresAt:  &expiresAt,
-		Username:   account.Username,
-		ExternalID: account.ID,
-		PageID:     account.ID, // For Instagram Login, PageID is the Instagram User ID
-		Connected:  true,
-		Mode:       "oauth2",
-		LoginMethod: "instagram_login",
-		Metadata:   string(metadataJSON),
+	// Encrypt token BEFORE creating account to ensure it's saved properly
+	encryptedToken, err := utils.EncryptToken(accessToken)
+	if err != nil {
+		h.Logger.Error("failed to encrypt Instagram access token", zap.Error(err))
+		// Continue with plain token if encryption fails (shouldn't happen in production)
+		encryptedToken = accessToken
 	}
 
-	// Set the token first, then persistSocialAccount will encrypt and save it
-	newAccount.AccessToken = accessToken
+	// Create new account with encrypted token
+	newAccount := storage.SocialAccount{
+		TenantID:    tenantID,
+		Platform:    "instagram",
+		ExpiresAt:   &expiresAt,
+		Username:    account.Username,
+		ExternalID:  account.ID,
+		PageID:      account.ID, // For Instagram Login, PageID is the Instagram User ID
+		Connected:   true,
+		Mode:        "oauth2",
+		LoginMethod: "instagram_login",
+		Metadata:    string(metadataJSON),
+		AccessToken: encryptedToken, // Save encrypted token directly
+	}
+
 	if err := h.DB.WithContext(ctx).Create(&newAccount).Error; err != nil {
 		return fmt.Errorf("failed to create instagram account: %w", err)
 	}
-	
-	// Now encrypt the token using persistSocialAccount (it will update the account)
-	persistSocialAccount(&newAccount, accessToken, h.DB)
 
 	h.Logger.Info("✅ Created new Instagram account",
 		zap.Uint("tenant_id", tenantID),
