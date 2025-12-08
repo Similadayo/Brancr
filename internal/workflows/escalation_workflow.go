@@ -376,11 +376,13 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		ResponseType:   "manual",
 		ResponseStatus: "sent",
 		FinalReply:     reply,
+		Metadata:       "{}", // Empty JSON object - required for JSONB field
 		CreatedAt:      time.Now(),
 	}
 
 	if err := w.DB.Create(&outgoingInteraction).Error; err != nil {
 		w.Logger.Warn("failed to create outgoing interaction", zap.Error(err))
+		return fmt.Errorf("failed to create outgoing interaction: %w", err)
 	}
 
 	w.Logger.Info("reply sent to customer",
@@ -469,29 +471,71 @@ func (w *EscalationWorkflow) getPriorityEmoji(priority EscalationPriority) strin
 func (w *EscalationWorkflow) GetEscalationStats(ctx context.Context, tenantID uint, startDate, endDate time.Time) (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
-	// Total escalations
+	// Total escalations (all time, or within date range if specified)
 	var totalCount int64
-	w.DB.Model(&storage.Interaction{}).
-		Where("tenant_id = ? AND response_type = ? AND created_at BETWEEN ? AND ?", tenantID, "escalated", startDate, endDate).
-		Count(&totalCount)
+	totalQuery := w.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND response_type = ?", tenantID, "escalated")
+	if !startDate.IsZero() && !endDate.IsZero() {
+		totalQuery = totalQuery.Where("created_at BETWEEN ? AND ?", startDate, endDate)
+	}
+	totalQuery.Count(&totalCount)
 	stats["total"] = totalCount
 
-	// Pending escalations
+	// Pending escalations (all time - not filtered by date)
 	var pendingCount int64
 	w.DB.Model(&storage.Interaction{}).
 		Where("tenant_id = ? AND response_type = ? AND response_status = ?", tenantID, "escalated", "pending").
 		Count(&pendingCount)
 	stats["pending"] = pendingCount
 
-	// Resolved escalations
+	// Resolved escalations (within date range if specified, otherwise all time)
 	var resolvedCount int64
-	w.DB.Model(&storage.Interaction{}).
-		Where("tenant_id = ? AND response_type = ? AND response_status = ? AND created_at BETWEEN ? AND ?", tenantID, "escalated", "resolved", startDate, endDate).
-		Count(&resolvedCount)
+	resolvedQuery := w.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND response_type = ? AND response_status = ?", tenantID, "escalated", "resolved")
+	if !startDate.IsZero() && !endDate.IsZero() {
+		resolvedQuery = resolvedQuery.Where("created_at BETWEEN ? AND ?", startDate, endDate)
+	}
+	resolvedQuery.Count(&resolvedCount)
 	stats["resolved"] = resolvedCount
 
-	// Average response time (would calculate from escalated_at to response sent)
-	stats["avg_response_time"] = "N/A" // TODO: Calculate from timestamps
+	// Average response time - calculate from escalated_at to when response was sent
+	var avgResponseTime string = "N/A"
+	var interactions []storage.Interaction
+	avgQuery := w.DB.Model(&storage.Interaction{}).
+		Where("tenant_id = ? AND response_type = ? AND response_status IN ? AND escalated_at IS NOT NULL", 
+			tenantID, "escalated", []string{"sent", "resolved"})
+	if !startDate.IsZero() && !endDate.IsZero() {
+		avgQuery = avgQuery.Where("created_at BETWEEN ? AND ?", startDate, endDate)
+	}
+	if err := avgQuery.Find(&interactions).Error; err == nil && len(interactions) > 0 {
+		var totalDuration time.Duration
+		validCount := 0
+		for _, inter := range interactions {
+			if inter.EscalatedAt != nil {
+				// Find when response was sent (check for outgoing interaction)
+				var outgoing storage.Interaction
+				if err := w.DB.Where("conversation_id = ? AND direction = ? AND created_at > ?", 
+					inter.ConversationID, "outgoing", *inter.EscalatedAt).
+					Order("created_at ASC").
+					First(&outgoing).Error; err == nil {
+					duration := outgoing.CreatedAt.Sub(*inter.EscalatedAt)
+					if duration > 0 {
+						totalDuration += duration
+						validCount++
+					}
+				}
+			}
+		}
+		if validCount > 0 {
+			avgDuration := totalDuration / time.Duration(validCount)
+			if avgDuration < time.Hour {
+				avgResponseTime = fmt.Sprintf("%.0f min", avgDuration.Minutes())
+			} else {
+				avgResponseTime = fmt.Sprintf("%.1f hrs", avgDuration.Hours())
+			}
+		}
+	}
+	stats["avg_response_time"] = avgResponseTime
 
 	return stats, nil
 }

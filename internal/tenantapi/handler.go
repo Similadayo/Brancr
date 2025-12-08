@@ -273,6 +273,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/escalations", h.listEscalations)
 		r.Get("/tenant/escalations/stats", h.getEscalationStats)
 		r.Get("/tenant/escalations/{id}", h.getEscalation)
+		
+		// Campaigns/Posts Stats API
+		r.Get("/tenant/campaigns/stats", h.getCampaignStats)
 		r.Post("/tenant/escalations/{id}/approve", h.approveEscalation)
 		r.Post("/tenant/escalations/{id}/reply", h.replyToEscalation)
 		r.Post("/tenant/escalations/{id}/ignore", h.ignoreEscalation)
@@ -5443,23 +5446,27 @@ func (h *Handler) getEscalationStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse date range
+	// Parse date range (optional - if not provided, get all-time stats)
 	startDateStr := r.URL.Query().Get("start_date")
 	endDateStr := r.URL.Query().Get("end_date")
 
-	startDate := time.Now().AddDate(0, 0, -30) // Default: last 30 days
-	endDate := time.Now()
+	var startDate, endDate time.Time
+	useDateRange := false
 
-	if startDateStr != "" {
-		if parsed, err := time.Parse("2006-01-02", startDateStr); err == nil {
-			startDate = parsed
+	if startDateStr != "" && endDateStr != "" {
+		if parsedStart, err := time.Parse("2006-01-02", startDateStr); err == nil {
+			if parsedEnd, err := time.Parse("2006-01-02", endDateStr); err == nil {
+				startDate = parsedStart
+				endDate = parsedEnd
+				useDateRange = true
+			}
 		}
 	}
 
-	if endDateStr != "" {
-		if parsed, err := time.Parse("2006-01-02", endDateStr); err == nil {
-			endDate = parsed
-		}
+	// If no date range provided, use zero times (will be treated as all-time)
+	if !useDateRange {
+		startDate = time.Time{}
+		endDate = time.Time{}
 	}
 
 	ctx := r.Context()
@@ -5468,6 +5475,41 @@ func (h *Handler) getEscalationStats(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Error("failed to get escalation stats", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// getCampaignStats returns statistics about scheduled, published, and draft posts
+func (h *Handler) getCampaignStats(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Count scheduled posts (status: scheduled, posting)
+	var scheduledCount int64
+	h.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND status IN ?", claims.TenantID, []string{"scheduled", "posting"}).
+		Count(&scheduledCount)
+
+	// Count published posts (status: posted)
+	var publishedCount int64
+	h.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "posted").
+		Count(&publishedCount)
+
+	// Count draft posts (status: draft, or posts with no scheduled_at and status not posted)
+	var draftCount int64
+	h.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND (status = ? OR (scheduled_at IS NULL AND status != ?))", claims.TenantID, "draft", "posted").
+		Count(&draftCount)
+
+	stats := map[string]interface{}{
+		"scheduled": scheduledCount,
+		"published": publishedCount,
+		"draft":     draftCount,
 	}
 
 	writeJSON(w, http.StatusOK, stats)
