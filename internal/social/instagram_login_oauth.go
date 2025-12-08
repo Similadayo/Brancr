@@ -591,13 +591,24 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 			return fmt.Errorf("failed to update instagram account: %w", saveErr)
 		}
 		
-		h.Logger.Info("✅ Updated existing Instagram account (reconnection)",
-			zap.Uint("tenant_id", tenantID),
-			zap.Uint("account_id", existing.ID),
-			zap.String("instagram_id", account.ID),
-			zap.String("username", account.Username),
-			zap.Bool("was_connected", existing.Connected),
-			zap.Int("access_token_length", len(encryptedToken)))
+		// Verify the save was successful by reloading
+		var verifyAccount storage.SocialAccount
+		if verifyErr := h.DB.WithContext(ctx).First(&verifyAccount, existing.ID).Error; verifyErr == nil {
+			h.Logger.Info("✅ Updated existing Instagram account (reconnection)",
+				zap.Uint("tenant_id", tenantID),
+				zap.Uint("account_id", existing.ID),
+				zap.String("instagram_id", account.ID),
+				zap.String("username", account.Username),
+				zap.Bool("was_connected", existing.Connected),
+				zap.Bool("now_connected", verifyAccount.Connected),
+				zap.Bool("has_access_token", verifyAccount.AccessToken != ""),
+				zap.Int("access_token_length", len(encryptedToken)))
+		} else {
+			h.Logger.Warn("⚠️ Account updated but verification reload failed",
+				zap.Uint("tenant_id", tenantID),
+				zap.Uint("account_id", existing.ID),
+				zap.Error(verifyErr))
+		}
 		return nil
 	}
 
@@ -628,10 +639,23 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 		return fmt.Errorf("failed to create instagram account: %w", err)
 	}
 
-	h.Logger.Info("✅ Created new Instagram account",
-		zap.Uint("tenant_id", tenantID),
-		zap.String("instagram_id", account.ID),
-		zap.String("username", account.Username))
+	// Verify the save was successful by reloading
+	var verifyAccount storage.SocialAccount
+	if verifyErr := h.DB.WithContext(ctx).First(&verifyAccount, newAccount.ID).Error; verifyErr == nil {
+		h.Logger.Info("✅ Created new Instagram account",
+			zap.Uint("tenant_id", tenantID),
+			zap.Uint("account_id", newAccount.ID),
+			zap.String("instagram_id", account.ID),
+			zap.String("username", account.Username),
+			zap.Bool("connected", verifyAccount.Connected),
+			zap.Bool("has_access_token", verifyAccount.AccessToken != ""),
+			zap.Int("access_token_length", len(encryptedToken)))
+	} else {
+		h.Logger.Warn("⚠️ Account created but verification reload failed",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("instagram_id", account.ID),
+			zap.Error(verifyErr))
+	}
 
 	return nil
 }

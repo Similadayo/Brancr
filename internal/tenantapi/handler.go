@@ -982,37 +982,34 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var account storage.SocialAccount
-	// First try to find connected account, then fall back to any account (for reconnection scenarios)
-	err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?", claims.TenantID, platform, true).First(&account).Error
+	// Find account by tenant_id + platform (handles both connected and reconnection scenarios)
+	err := h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error
 	if err != nil {
-		// Fallback: find any account (might be disconnected but being reconnected)
-		err = h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account).Error
-		if err != nil {
-			h.Logger.Warn("integration not found for verification",
-				zap.Error(err),
-				zap.Uint("tenant_id", claims.TenantID),
-				zap.String("platform", platform))
-			writeJSON(w, http.StatusNotFound, map[string]any{
-				"error":    "integration_not_found",
-				"message":  fmt.Sprintf("No %s integration found. Please connect your %s account first.", platform, platform),
-				"platform": platform,
-			})
-			return
-		}
-		// Found disconnected account - check if it has a token (might be in process of reconnecting)
-		if account.AccessToken == "" {
-			h.Logger.Warn("integration found but access token is missing",
-				zap.Uint("tenant_id", claims.TenantID),
-				zap.String("platform", platform),
-				zap.Bool("connected", account.Connected))
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error":    "token_missing",
-				"message":  fmt.Sprintf("Your %s account is not properly connected. Please complete the OAuth flow to reconnect.", platform),
-				"platform": platform,
-				"hint":     "If you just reconnected, wait a few seconds and try again.",
-			})
-			return
-		}
+		h.Logger.Warn("integration not found for verification",
+			zap.Error(err),
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("platform", platform))
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error":    "integration_not_found",
+			"message":  fmt.Sprintf("No %s integration found. Please connect your %s account first.", platform, platform),
+			"platform": platform,
+		})
+		return
+	}
+	
+	// Check if account has access token - if not, can't verify
+	if account.AccessToken == "" {
+		h.Logger.Warn("integration found but access token is missing",
+			zap.Uint("tenant_id", claims.TenantID),
+			zap.String("platform", platform),
+			zap.Bool("connected", account.Connected))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":    "token_missing",
+			"message":  fmt.Sprintf("Your %s account is not properly connected. Please complete the OAuth flow to reconnect.", platform),
+			"platform": platform,
+			"hint":     "If you just reconnected, wait a few seconds and try again.",
+		})
+		return
 	}
 
 	// Log verification attempt for debugging with detailed account info
