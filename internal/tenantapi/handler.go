@@ -993,18 +993,26 @@ func (h *Handler) deleteIntegration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Soft delete by setting Connected to false and clearing sensitive data
-	account.Connected = false
-	account.AccessToken = ""
-	account.RefreshToken = ""
-	account.ExternalID = ""
-	account.PageID = ""
+	// Log before deletion for debugging
+	h.Logger.Info("Disconnecting integration",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("platform", platform),
+		zap.Uint("account_id", account.ID),
+		zap.String("external_id", account.ExternalID),
+		zap.Bool("was_connected", account.Connected))
 
-	if err := h.DB.Save(&account).Error; err != nil {
-		h.Logger.Error("failed to disconnect integration", zap.Error(err), zap.String("platform", platform))
+	// Delete the account record entirely to ensure clean reconnection
+	// This prevents any stale data from interfering with reconnection
+	if err := h.DB.Delete(&account).Error; err != nil {
+		h.Logger.Error("failed to delete integration", zap.Error(err), zap.String("platform", platform))
 		http.Error(w, "failed to disconnect", http.StatusInternalServerError)
 		return
 	}
+
+	h.Logger.Info("✅ Integration deleted successfully",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("platform", platform),
+		zap.Uint("account_id", account.ID))
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message":  "integration disconnected successfully",
