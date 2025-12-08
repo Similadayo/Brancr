@@ -173,7 +173,17 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 				c.Logger.Warn("Failed to collect metrics for post",
 					zap.Uint("post_id", post.ID),
 					zap.String("platform", platform),
-					zap.Error(err))
+					zap.String("platform_post_id", platformPostID),
+					zap.Error(err),
+					zap.String("error_type", fmt.Sprintf("%T", err)))
+				
+				// If it's a 400 error, it might be due to invalid post ID or permissions
+				if strings.Contains(err.Error(), "status 400") {
+					c.Logger.Warn("Instagram API returned 400 - possible causes: invalid post ID, missing permissions, or post too old",
+						zap.Uint("post_id", post.ID),
+						zap.String("platform_post_id", platformPostID),
+						zap.String("platform", platform))
+				}
 				continue
 			}
 		}

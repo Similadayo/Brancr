@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"github.com/similadayo/brancr/pkg/interfaces"
 )
 
@@ -30,8 +32,32 @@ func (c *InstagramAnalyticsClient) Platform() string {
 
 // FetchPostMetrics retrieves engagement metrics for an Instagram post
 func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account *storage.SocialAccount, postID string, periodStart, periodEnd time.Time) (*interfaces.PostMetrics, error) {
+	if postID == "" {
+		return nil, fmt.Errorf("post ID is empty")
+	}
+
+	// Decrypt access token if needed
+	accessToken := account.AccessToken
+	decryptedToken, err := utils.DecryptToken(accessToken)
+	if err != nil {
+		// If decryption fails, try using as-is (might already be decrypted)
+		decryptedToken = accessToken
+	}
+
+	if decryptedToken == "" {
+		return nil, fmt.Errorf("access token is empty")
+	}
+
+	// Determine API base URL based on login method
+	var apiBase string
+	if account.LoginMethod == "instagram_login" {
+		apiBase = "https://graph.instagram.com/v24.0"
+	} else {
+		apiBase = "https://graph.facebook.com/v18.0"
+	}
+
 	// Instagram Graph API endpoint for post insights
-	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/insights", postID)
+	url := fmt.Sprintf("%s/%s/insights", apiBase, postID)
 	
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -40,7 +66,7 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 
 	// Add query parameters
 	q := req.URL.Query()
-	q.Add("access_token", account.AccessToken)
+	q.Add("access_token", decryptedToken)
 	q.Add("metric", "impressions,reach,likes,comments,saves,shares")
 	q.Add("period", "lifetime") // or "day", "week", "month"
 	req.URL.RawQuery = q.Encode()
@@ -52,7 +78,12 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		errorMsg := fmt.Sprintf("API returned status %d", resp.StatusCode)
+		if len(body) > 0 {
+			errorMsg += fmt.Sprintf(": %s", string(body))
+		}
+		return nil, fmt.Errorf(errorMsg)
 	}
 
 	var result struct {
