@@ -410,6 +410,9 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 
 	// Remove any signatures or names at the end (e.g., "— Fred", "— Assistant", "— [name]")
 	reply = removeSignature(reply)
+	
+	// Remove em-dashes from anywhere in the message (replace with commas or periods)
+	reply = removeEmDashes(reply)
 
 	// Enforce maximum length for WhatsApp (keep responses concise)
 	// Split by sentences to avoid cutting mid-sentence
@@ -738,6 +741,34 @@ func removeSignature(text string) string {
 		}
 	}
 
+	return text
+}
+
+// removeEmDashes removes em-dashes (—) and en-dashes (–) from anywhere in the message
+// Replaces them with appropriate punctuation (commas, periods, or regular hyphens)
+func removeEmDashes(text string) string {
+	if text == "" {
+		return text
+	}
+	
+	// Replace em-dash (—) with comma or period based on context
+	// Look for patterns like "word—word" or "word — word"
+	text = strings.ReplaceAll(text, " — ", ", ")
+	text = strings.ReplaceAll(text, "— ", ", ")
+	text = strings.ReplaceAll(text, " —", ", ")
+	text = strings.ReplaceAll(text, "—", ", ")
+	
+	// Replace en-dash (–) similarly
+	text = strings.ReplaceAll(text, " – ", ", ")
+	text = strings.ReplaceAll(text, "– ", ", ")
+	text = strings.ReplaceAll(text, " –", ", ")
+	text = strings.ReplaceAll(text, "–", ", ")
+	
+	// Clean up any double commas or spaces
+	text = strings.ReplaceAll(text, ",,", ",")
+	text = strings.ReplaceAll(text, "  ", " ")
+	text = strings.TrimSpace(text)
+	
 	return text
 }
 

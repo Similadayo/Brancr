@@ -274,37 +274,15 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	// If customer responds within 24 hours of an escalated reply, notify tenant
 	h.checkAndNotifyEscalationAftermath(ctx, msg, customer, interaction.ID, conversationID)
 
-	// Step 4: Decide: auto-reply first, escalate only when necessary
-	// Escalate immediately for sensitive cases: payments, refunds, complaints, financial matters
-	// Payment messages should ALWAYS be escalated - never auto-reply to financial transactions
-	shouldEscalateImmediately := intent.Intent == "payment" ||
-		(intent.Intent == "refund" && intent.Tone == "negative") || 
-		(intent.Intent == "complaint" && intent.Confidence > 0.7) ||
-		// Also escalate if message contains payment-related keywords (double-check)
-		strings.Contains(strings.ToLower(msg.Content), "paid") ||
-		strings.Contains(strings.ToLower(msg.Content), "payment") ||
-		strings.Contains(strings.ToLower(msg.Content), "naira") ||
-		strings.Contains(strings.ToLower(msg.Content), "dollar") ||
-		strings.Contains(strings.ToLower(msg.Content), "transaction")
+	// Step 4: Smart escalation decision - check multiple factors
+	shouldEscalate, escalationReason := h.shouldEscalateToHuman(ctx, msg, customer, intent, conversationID)
 	
-	// Very low confidence (< 0.3) means we can't understand the message - escalate
-	shouldTryAutoReply := intent.Confidence >= 0.3
-
-	if shouldEscalateImmediately {
-		// Only escalate immediately for critical refund/complaint cases
-		h.Logger.Info("🚨 Immediate escalation required",
+	if shouldEscalate {
+		h.Logger.Info("🚨 Escalation required",
+			zap.String("reason", escalationReason),
 			zap.String("intent", intent.Intent),
 			zap.String("tone", intent.Tone),
 			zap.Float64("confidence", intent.Confidence))
-		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
-	}
-
-	// Step 5: Try auto-reply first for most messages
-	if !shouldTryAutoReply {
-		// Very low confidence - escalate instead
-		h.Logger.Info("⚠️ Confidence too low for auto-reply, escalating",
-			zap.Float64("confidence", intent.Confidence),
-			zap.String("intent", intent.Intent))
 		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
 	}
 
@@ -718,6 +696,123 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 	}
 	
 	return &conversation, nil
+}
+
+// shouldEscalateToHuman determines if a message needs human intervention
+// Returns (shouldEscalate, reason)
+func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, conversationID uint) (bool, string) {
+	messageLower := strings.ToLower(msg.Content)
+	
+	// 1. Check if customer explicitly asks for human
+	explicitHumanRequest := strings.Contains(messageLower, "speak to") ||
+		strings.Contains(messageLower, "talk to") ||
+		strings.Contains(messageLower, "human") ||
+		strings.Contains(messageLower, "person") ||
+		strings.Contains(messageLower, "manager") ||
+		strings.Contains(messageLower, "owner") ||
+		strings.Contains(messageLower, "real person") ||
+		strings.Contains(messageLower, "actual person") ||
+		strings.Contains(messageLower, "get me someone") ||
+		strings.Contains(messageLower, "connect me")
+	
+	if explicitHumanRequest {
+		return true, "customer_explicitly_requested_human"
+	}
+	
+	// 2. Check conversation history for repeated frustration
+	if conversationID > 0 {
+		var recentInteractions []storage.Interaction
+		h.DB.Where("conversation_id = ? AND direction = ? AND created_at > ?",
+			conversationID, "incoming", time.Now().Add(-24*time.Hour)).
+			Order("created_at DESC").
+			Limit(5).
+			Find(&recentInteractions)
+		
+		// Count negative/urgent tones in recent messages
+		negativeCount := 0
+		for _, inter := range recentInteractions {
+			if inter.DetectedTone == "negative" || inter.DetectedTone == "urgent" {
+				negativeCount++
+			}
+		}
+		
+		// If 3+ negative messages in last 24 hours, escalate
+		if negativeCount >= 3 {
+			return true, fmt.Sprintf("repeated_frustration_%d_negative_messages", negativeCount)
+		}
+		
+		// Check if customer has been escalated before in this conversation
+		var previousEscalation storage.Interaction
+		if err := h.DB.Where("conversation_id = ? AND response_type = ? AND created_at > ?",
+			conversationID, "escalated", time.Now().Add(-7*24*time.Hour)).
+			First(&previousEscalation).Error; err == nil {
+			// Customer was escalated before - if they're still having issues, escalate again
+			if intent.Tone == "negative" || intent.Tone == "urgent" || intent.Intent == "complaint" {
+				return true, "follow_up_after_previous_escalation"
+			}
+		}
+	}
+	
+	// 3. Critical intents that always need human judgment
+	if intent.Intent == "refund" && intent.Tone == "negative" {
+		return true, "refund_with_negative_tone"
+	}
+	
+	if intent.Intent == "complaint" && intent.Confidence > 0.7 {
+		return true, "high_confidence_complaint"
+	}
+	
+	if intent.Intent == "delivery_issue" && intent.Tone == "urgent" {
+		return true, "urgent_delivery_issue"
+	}
+	
+	// 4. Payment-related messages - but be smart about it
+	// Only escalate if it's about actual payment processing, not just asking about prices
+	isPaymentProcessing := strings.Contains(messageLower, "paid") ||
+		strings.Contains(messageLower, "transaction") ||
+		strings.Contains(messageLower, "charge") ||
+		strings.Contains(messageLower, "charged") ||
+		strings.Contains(messageLower, "billing") ||
+		strings.Contains(messageLower, "invoice") ||
+		strings.Contains(messageLower, "receipt")
+	
+	isPriceInquiry := strings.Contains(messageLower, "how much") ||
+		strings.Contains(messageLower, "what's the price") ||
+		strings.Contains(messageLower, "how much does") ||
+		strings.Contains(messageLower, "cost") ||
+		strings.Contains(messageLower, "price") ||
+		strings.Contains(messageLower, "pricing")
+	
+	// Escalate payment processing issues, but not simple price inquiries
+	if intent.Intent == "payment" && isPaymentProcessing && !isPriceInquiry {
+		return true, "payment_processing_issue"
+	}
+	
+	// 5. Very low confidence - can't understand the message
+	if intent.Confidence < 0.3 {
+		return true, fmt.Sprintf("low_confidence_%.2f", intent.Confidence)
+	}
+	
+	// 6. Intent detector explicitly says it requires escalation
+	if intent.RequiresEscalation {
+		return true, "intent_detector_flagged_escalation"
+	}
+	
+	// 7. Complex/ambiguous messages that need human judgment
+	// Check message length and complexity
+	wordCount := len(strings.Fields(msg.Content))
+	if wordCount > 100 && intent.Confidence < 0.6 {
+		// Very long message with low confidence - likely complex issue
+		return true, "complex_message_low_confidence"
+	}
+	
+	// 8. Negative tone with high confidence - customer is clearly upset
+	if intent.Tone == "negative" && intent.Confidence > 0.8 {
+		return true, "high_confidence_negative_tone"
+	}
+	
+	// Default: don't escalate, let AI handle it
+	return false, ""
 }
 
 // escalateToTenant sends message to tenant's Telegram control center
