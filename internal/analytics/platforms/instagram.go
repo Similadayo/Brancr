@@ -65,9 +65,11 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 	}
 
 	// Add query parameters
+	// Note: Instagram API uses "saved" not "saves", and "shares" might not be valid for all post types
+	// Valid metrics: impressions, reach, likes, comments, saved, shares (if available), plays (for videos)
 	q := req.URL.Query()
 	q.Add("access_token", decryptedToken)
-	q.Add("metric", "impressions,reach,likes,comments,saves,shares")
+	q.Add("metric", "impressions,reach,likes,comments,saved,shares")
 	q.Add("period", "lifetime") // or "day", "week", "month"
 	req.URL.RawQuery = q.Encode()
 
@@ -134,7 +136,7 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 			if v, ok := value["value"].(float64); ok {
 				metrics.Comments = int64(v)
 			}
-		case "saves":
+		case "saved", "saves": // Instagram API returns "saved" but we support both for compatibility
 			if v, ok := value["value"].(float64); ok {
 				metrics.Saves = int64(v)
 			}
