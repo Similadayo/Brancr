@@ -39,20 +39,49 @@ func (r *TelegramReporter) GenerateWeeklySummary(ctx context.Context, tenantID u
 	endDate := time.Now()
 	startDate := endDate.AddDate(0, 0, -7)
 
+	r.Logger.Info("Generating weekly summary",
+		zap.Uint("tenant_id", tenantID),
+		zap.Time("start_date", startDate),
+		zap.Time("end_date", endDate),
+		zap.Bool("has_service", r.Service != nil))
+
 	// Check if there are any posted posts first
 	var postedPosts []storage.ScheduledPost
-	r.DB.Where("tenant_id = ? AND status = ? AND posted_at >= ? AND posted_at <= ?",
+	if err := r.DB.Where("tenant_id = ? AND status = ? AND posted_at >= ? AND posted_at <= ?",
 		tenantID, "posted", startDate, endDate).
 		Order("posted_at DESC").
-		Find(&postedPosts)
+		Find(&postedPosts).Error; err != nil {
+		r.Logger.Error("failed to fetch posted posts",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		// Continue - we'll try analytics anyway
+	} else {
+		r.Logger.Info("Found posted posts",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int("count", len(postedPosts)))
+	}
 
 	// Get analytics summary
+	if r.Service == nil {
+		r.Logger.Error("analytics service is nil",
+			zap.Uint("tenant_id", tenantID))
+		return r.buildWeeklySummaryFromPosts(bot, chatID, tenantID, postedPosts, startDate, endDate)
+	}
+
 	summary, err := r.Service.GetTenantAnalytics(ctx, tenantID, startDate, endDate)
 	if err != nil {
-		r.Logger.Error("failed to get analytics summary", zap.Error(err))
+		r.Logger.Error("failed to get analytics summary",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID),
+			zap.String("error_type", fmt.Sprintf("%T", err)))
 		// Fallback: build message from posts if available
 		return r.buildWeeklySummaryFromPosts(bot, chatID, tenantID, postedPosts, startDate, endDate)
 	}
+
+	r.Logger.Info("Got analytics summary",
+		zap.Uint("tenant_id", tenantID),
+		zap.Int("total_posts", summary.TotalPosts),
+		zap.Int64("total_reach", summary.TotalReach))
 
 	// If no analytics but posts exist, trigger collection
 	if summary.TotalPosts == 0 && len(postedPosts) > 0 {

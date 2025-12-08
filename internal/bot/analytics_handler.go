@@ -33,6 +33,9 @@ func NewAnalyticsHandler(manager *TenantBotManager, analyticsService interface{}
 func (h *AnalyticsHandler) HandleAnalyticsRequest(ctx context.Context, tenantID uint, chatID int64, text string) error {
 	bot, ok := h.Manager.GetBot(tenantID)
 	if !ok {
+		h.Manager.Logger.Error("bot not found for analytics request",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int64("chat_id", chatID))
 		return fmt.Errorf("bot not found for tenant %d", tenantID)
 	}
 
@@ -41,26 +44,48 @@ func (h *AnalyticsHandler) HandleAnalyticsRequest(ctx context.Context, tenantID 
 	// Send typing indicator
 	bot.Send(tgbotapi.NewChatAction(chatID, "typing"))
 
+	h.Manager.Logger.Info("Handling analytics request",
+		zap.Uint("tenant_id", tenantID),
+		zap.Int64("chat_id", chatID),
+		zap.String("text", text))
+
 	// Route to appropriate analytics function
+	var err error
 	switch {
 	case strings.Contains(lower, "weekly") || strings.Contains(lower, "week summary"):
-		return h.sendWeeklySummary(ctx, bot, tenantID, chatID)
+		err = h.sendWeeklySummary(ctx, bot, tenantID, chatID)
 	case strings.Contains(lower, "insights") || strings.Contains(lower, "trends"):
-		return h.sendTrendInsights(ctx, bot, tenantID, chatID)
+		err = h.sendTrendInsights(ctx, bot, tenantID, chatID)
 	case strings.Contains(lower, "growth") || strings.Contains(lower, "suggestions"):
-		return h.sendGrowthSuggestions(ctx, bot, tenantID, chatID)
+		err = h.sendGrowthSuggestions(ctx, bot, tenantID, chatID)
 	case strings.Contains(lower, "stats") || strings.Contains(lower, "analytics") || strings.Contains(lower, "performance"):
-		return h.sendAnalyticsSummary(ctx, bot, tenantID, chatID)
+		err = h.sendAnalyticsSummary(ctx, bot, tenantID, chatID)
 	case strings.Contains(lower, "platform") && strings.Contains(lower, "performance"):
-		return h.sendPlatformBreakdown(ctx, bot, tenantID, chatID)
+		err = h.sendPlatformBreakdown(ctx, bot, tenantID, chatID)
 	default:
 		// Default to weekly summary
-		return h.sendWeeklySummary(ctx, bot, tenantID, chatID)
+		err = h.sendWeeklySummary(ctx, bot, tenantID, chatID)
 	}
+
+	if err != nil {
+		h.Manager.Logger.Error("analytics request failed",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID),
+			zap.Int64("chat_id", chatID),
+			zap.String("request_type", lower))
+		return err
+	}
+
+	return nil
 }
 
 // sendWeeklySummary sends a conversational weekly analytics summary
 func (h *AnalyticsHandler) sendWeeklySummary(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64) error {
+	h.Manager.Logger.Info("Sending weekly summary",
+		zap.Uint("tenant_id", tenantID),
+		zap.Int64("chat_id", chatID),
+		zap.Bool("has_reporter", h.TelegramReporter != nil))
+
 	if h.TelegramReporter == nil {
 		// Fallback if reporter not initialized
 		h.Manager.Logger.Warn("TelegramReporter not initialized, using basic stats",
@@ -71,10 +96,14 @@ func (h *AnalyticsHandler) sendWeeklySummary(ctx context.Context, bot *tgbotapi.
 	if err := h.TelegramReporter.GenerateWeeklySummary(ctx, tenantID, bot, chatID); err != nil {
 		h.Manager.Logger.Error("failed to generate weekly summary",
 			zap.Error(err),
-			zap.Uint("tenant_id", tenantID))
+			zap.Uint("tenant_id", tenantID),
+			zap.String("error_type", fmt.Sprintf("%T", err)))
 		// Fallback to basic stats on error
 		return h.sendBasicStats(ctx, bot, tenantID, chatID)
 	}
+
+	h.Manager.Logger.Info("Weekly summary sent successfully",
+		zap.Uint("tenant_id", tenantID))
 
 	return nil
 }
@@ -560,12 +589,26 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 	periodEnd := time.Now()
 	periodStart := periodEnd.AddDate(0, 0, -30)
 
+	h.Manager.Logger.Info("Fetching analytics from database",
+		zap.Uint("tenant_id", tenantID),
+		zap.Time("period_start", periodStart),
+		zap.Time("period_end", periodEnd))
+
 	// First, check if there are any posted posts (from ScheduledPost table)
 	var postedPosts []storage.ScheduledPost
-	h.Manager.DB.Where("tenant_id = ? AND status = ? AND posted_at >= ? AND posted_at <= ?",
+	if err := h.Manager.DB.Where("tenant_id = ? AND status = ? AND posted_at >= ? AND posted_at <= ?",
 		tenantID, "posted", periodStart, periodEnd).
 		Order("posted_at DESC").
-		Find(&postedPosts)
+		Find(&postedPosts).Error; err != nil {
+		h.Manager.Logger.Error("failed to fetch posted posts",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		// Continue - we'll show basic message
+	} else {
+		h.Manager.Logger.Info("Found posted posts",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int("count", len(postedPosts)))
+	}
 
 	// Fetch analytics (may be empty if not collected yet)
 	var analytics []storage.PostAnalytics
@@ -575,8 +618,14 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 		Find(&analytics).Error
 
 	if err != nil {
-		h.Manager.Logger.Error("failed to fetch analytics", zap.Error(err))
+		h.Manager.Logger.Error("failed to fetch analytics",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
 		// Continue even if analytics fetch fails - we'll show posts anyway
+	} else {
+		h.Manager.Logger.Info("Found analytics records",
+			zap.Uint("tenant_id", tenantID),
+			zap.Int("count", len(analytics)))
 	}
 
 	// Build summary message
@@ -782,25 +831,70 @@ func (h *AnalyticsHandler) sendPlatformBreakdown(ctx context.Context, bot *tgbot
 
 // sendBasicStats sends basic stats as fallback
 func (h *AnalyticsHandler) sendBasicStats(ctx context.Context, bot *tgbotapi.BotAPI, tenantID uint, chatID int64) error {
+	h.Manager.Logger.Info("Sending basic stats fallback",
+		zap.Uint("tenant_id", tenantID))
+
 	// Count posts
 	var postCount int64
-	h.Manager.DB.Model(&storage.ScheduledPost{}).
+	if err := h.Manager.DB.Model(&storage.ScheduledPost{}).
 		Where("tenant_id = ? AND status = ?", tenantID, "posted").
-		Count(&postCount)
+		Count(&postCount).Error; err != nil {
+		h.Manager.Logger.Error("failed to count posted posts",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		postCount = 0
+	}
 
 	var scheduledCount int64
-	h.Manager.DB.Model(&storage.ScheduledPost{}).
+	if err := h.Manager.DB.Model(&storage.ScheduledPost{}).
 		Where("tenant_id = ? AND status = ?", tenantID, "scheduled").
-		Count(&scheduledCount)
+		Count(&scheduledCount).Error; err != nil {
+		h.Manager.Logger.Error("failed to count scheduled posts",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		scheduledCount = 0
+	}
+
+	var draftCount int64
+	if err := h.Manager.DB.Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND status = ?", tenantID, "draft").
+		Count(&draftCount).Error; err != nil {
+		h.Manager.Logger.Warn("failed to count draft posts",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		draftCount = 0
+	}
+
+	// Check if analytics exist but service isn't available
+	var analyticsCount int64
+	h.Manager.DB.Model(&storage.PostAnalytics{}).
+		Where("tenant_id = ?", tenantID).
+		Count(&analyticsCount)
 
 	msg := "📊 *Quick Stats*\n\n"
 	msg += fmt.Sprintf("• Posted: %d\n", postCount)
-	msg += fmt.Sprintf("• Scheduled: %d\n\n", scheduledCount)
-	msg += "_Full analytics coming soon! Post more content to see detailed insights._"
+	msg += fmt.Sprintf("• Scheduled: %d\n", scheduledCount)
+	msg += fmt.Sprintf("• Drafts: %d\n\n", draftCount)
+
+	if analyticsCount > 0 {
+		msg += fmt.Sprintf("📈 *Analytics Available:* %d posts analyzed\n\n", analyticsCount)
+		msg += "_Try asking for 'weekly summary' or 'insights' for detailed analytics!_"
+	} else if postCount > 0 {
+		msg += "📊 *Analytics Status:*\n"
+		msg += "Analytics are being collected. Check back in 10-15 minutes for detailed insights!\n\n"
+		msg += "_Instagram insights typically appear 5-10 minutes after posting._"
+	} else {
+		msg += "_Start posting content to see analytics! Post through your Telegram bot or dashboard._"
+	}
 
 	response := tgbotapi.NewMessage(chatID, msg)
 	response.ParseMode = "Markdown"
-	bot.Send(response)
+	if _, err := bot.Send(response); err != nil {
+		h.Manager.Logger.Error("failed to send basic stats",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID))
+		return err
+	}
 
 	return nil
 }
