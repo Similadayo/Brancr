@@ -995,12 +995,20 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log verification attempt for debugging
+	// Log verification attempt for debugging with detailed account info
 	h.Logger.Info("verifying integration",
 		zap.Uint("tenant_id", claims.TenantID),
+		zap.Uint("account_id", account.ID),
 		zap.String("platform", platform),
 		zap.String("mode", account.Mode),
-		zap.Bool("connected", account.Connected))
+		zap.String("login_method", account.LoginMethod),
+		zap.Bool("connected", account.Connected),
+		zap.Bool("has_access_token", account.AccessToken != ""),
+		zap.Int("access_token_length", len(account.AccessToken)),
+		zap.String("page_id", account.PageID),
+		zap.String("external_id", account.ExternalID),
+		zap.Time("created_at", account.CreatedAt),
+		zap.Time("updated_at", account.UpdatedAt))
 
 	// Verify the connection using the social package
 	message, err := social.VerifySocialConnection(r.Context(), &account, h.DB)
@@ -1046,6 +1054,16 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 
 	// Reload the account to get updated fields
 	h.DB.Where("tenant_id = ? AND platform = ?", claims.TenantID, platform).First(&account)
+
+	// Log successful verification with account details
+	h.Logger.Info("✅ Integration verified successfully",
+		zap.Uint("tenant_id", claims.TenantID),
+		zap.String("platform", platform),
+		zap.Uint("account_id", account.ID),
+		zap.String("external_id", account.ExternalID),
+		zap.String("page_id", account.PageID),
+		zap.Bool("connected", account.Connected),
+		zap.String("login_method", account.LoginMethod))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":     message,

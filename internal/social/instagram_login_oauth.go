@@ -543,11 +543,19 @@ type instagramAccountInfo struct {
 
 // saveInstagramAccount saves the Instagram account to the database
 func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, tenantID uint, account *instagramAccountInfo, accessToken string, permissions []string, expiresAt time.Time) error {
-	// Check if account already exists
+	// Check if account already exists - first by external_id, then by tenant_id + platform
+	// This handles the case where a tenant disconnects and reconnects (external_id might be empty or different)
 	var existing storage.SocialAccount
 	err := h.DB.WithContext(ctx).
 		Where("tenant_id = ? AND platform = ? AND external_id = ?", tenantID, "instagram", account.ID).
 		First(&existing).Error
+	
+	// If not found by external_id, try finding by tenant_id + platform (for reconnection scenarios)
+	if err != nil {
+		err = h.DB.WithContext(ctx).
+			Where("tenant_id = ? AND platform = ?", tenantID, "instagram").
+			First(&existing).Error
+	}
 
 	metadata := map[string]interface{}{
 		"login_method":    "instagram_login",
@@ -558,6 +566,8 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 	metadataJSON, _ := json.Marshal(metadata)
 
 	if err == nil {
+		// Found existing account (either by external_id or tenant_id + platform)
+		// This handles reconnection scenarios where the account was disconnected
 		// Encrypt token before updating
 		encryptedToken, encErr := utils.EncryptToken(accessToken)
 		if encErr != nil {
@@ -565,7 +575,7 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 			encryptedToken = accessToken // Fallback to plain token if encryption fails
 		}
 
-		// Update existing account
+		// Update existing account with new connection details
 		existing.ExpiresAt = &expiresAt
 		existing.Username = account.Username
 		existing.ExternalID = account.ID
@@ -581,9 +591,13 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 			return fmt.Errorf("failed to update instagram account: %w", saveErr)
 		}
 		
-		h.Logger.Info("✅ Updated existing Instagram account",
+		h.Logger.Info("✅ Updated existing Instagram account (reconnection)",
 			zap.Uint("tenant_id", tenantID),
-			zap.String("instagram_id", account.ID))
+			zap.Uint("account_id", existing.ID),
+			zap.String("instagram_id", account.ID),
+			zap.String("username", account.Username),
+			zap.Bool("was_connected", existing.Connected),
+			zap.Int("access_token_length", len(encryptedToken)))
 		return nil
 	}
 
