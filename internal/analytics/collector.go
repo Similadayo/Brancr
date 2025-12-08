@@ -63,6 +63,21 @@ func (c *CollectorService) CollectPostMetrics(ctx context.Context, tenantID uint
 	// Calculate engagement rate
 	engagementRate := c.calculateEngagementRate(metrics)
 
+	// Convert demographics and metadata to JSON strings
+	demographicsJSON := "{}"
+	if metrics.Demographics != nil && len(metrics.Demographics) > 0 {
+		if jsonBytes, err := json.Marshal(metrics.Demographics); err == nil {
+			demographicsJSON = string(jsonBytes)
+		}
+	}
+
+	metadataJSON := "{}"
+	if metrics.Metadata != nil && len(metrics.Metadata) > 0 {
+		if jsonBytes, err := json.Marshal(metrics.Metadata); err == nil {
+			metadataJSON = string(jsonBytes)
+		}
+	}
+
 	// Store or update analytics
 	analytics := storage.PostAnalytics{
 		TenantID:        tenantID,
@@ -84,10 +99,9 @@ func (c *CollectorService) CollectPostMetrics(ctx context.Context, tenantID uint
 		CollectedAt:     time.Now(),
 		PeriodStart:     metrics.PeriodStart,
 		PeriodEnd:       metrics.PeriodEnd,
+		Demographics:    demographicsJSON,
+		Metadata:        metadataJSON,
 	}
-
-	// Convert demographics and metadata to JSON strings (simplified - would use proper JSON encoding)
-	// For now, we'll store empty strings and implement proper JSON encoding later
 
 	// Upsert analytics (update if exists, create if not)
 	var existing storage.PostAnalytics
