@@ -118,7 +118,6 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	}
 
 	// For videos, check for video.publish scope (direct post) or video.upload scope (inbox)
-	// Prefer video.publish for direct posting
 	hasPublishScope := t.hasAuthorizedScope(acc, "video.publish")
 	hasUploadScope := t.hasAuthorizedScope(acc, "video.upload")
 	
@@ -126,8 +125,6 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 		return fmt.Errorf("tiktok posting requires 'video.publish' (for direct posting) or 'video.upload' (for inbox upload) scope, but user has not authorized either. Please reconnect your TikTok account and ensure you grant the appropriate permission")
 	}
 
-	// Use video.publish for direct posting (preferred)
-	// If only video.upload is available, we could use inbox endpoint, but for now we'll use direct post
 	videoURL := mediaURL
 
 	// Always get video size for FILE_UPLOAD (required by TikTok API)
@@ -154,25 +151,41 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	// Get posting options from asset metadata or use defaults
 	postingOptions := t.getPostingOptions(asset)
 
-	// Always use FILE_UPLOAD method (avoids URL ownership verification required for PULL_FROM_URL)
+	// Route to appropriate endpoint based on available scope
 	var session *tiktokSession
 	var initErr error
-	session, initErr = t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel, postingOptions)
-	if initErr != nil {
-		var apiErr *TikTokAPIError
-		if errors.As(initErr, &apiErr) {
-			if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
-				t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
-					zap.Uint("tenant_id", acc.TenantID),
-					zap.String("current_privacy", t.PrivacyLevel))
-				session, initErr = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY", postingOptions)
+	
+	if hasPublishScope {
+		// Use direct post endpoint (requires video.publish scope)
+		t.Logger.Info("Using TikTok direct post endpoint (video.publish scope)",
+			zap.Uint("tenant_id", acc.TenantID))
+		session, initErr = t.initUpload(ctx, accessToken, caption, videoSize, t.PrivacyLevel, postingOptions)
+		if initErr != nil {
+			var apiErr *TikTokAPIError
+			if errors.As(initErr, &apiErr) {
+				if apiErr.Code == "unaudited_client_can_only_post_to_private_accounts" && !strings.EqualFold(t.PrivacyLevel, "SELF_ONLY") {
+					t.Logger.Info("TikTok retrying with SELF_ONLY privacy due to unaudited client restriction",
+						zap.Uint("tenant_id", acc.TenantID),
+						zap.String("current_privacy", t.PrivacyLevel))
+					session, initErr = t.initUpload(ctx, accessToken, caption, videoSize, "SELF_ONLY", postingOptions)
+				}
 			}
 		}
+	} else if hasUploadScope {
+		// Use inbox upload endpoint (requires video.upload scope)
+		// Note: Inbox uploads don't support post_info (title, privacy, etc.) - user reviews in TikTok
+		t.Logger.Info("Using TikTok inbox upload endpoint (video.upload scope only)",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("note", "User will need to review and post in TikTok app"))
+		session, initErr = t.initInboxUpload(ctx, accessToken, videoSize)
+	} else {
+		// This should never happen due to earlier check, but handle it anyway
+		return fmt.Errorf("tiktok posting requires 'video.publish' or 'video.upload' scope")
 	}
 
 	if initErr != nil {
 		return fmt.Errorf("tiktok init upload failed: %w", initErr)
-		}
+	}
 
 	// Upload the video file (downloads from URL and uploads to TikTok)
 	if session != nil && session.UploadURL != "" {
@@ -766,6 +779,85 @@ func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, ca
 
 	return &tiktokSession{
 		PublishID: parsed.Data.PublishID,
+	}, nil
+}
+
+// initInboxUpload initializes an inbox upload for users with only video.upload scope
+// The inbox endpoint only requires source_info (no post_info) since user reviews in TikTok
+func (t *TikTokConnector) initInboxUpload(ctx context.Context, accessToken string, videoSize int64) (*tiktokSession, error) {
+	if videoSize <= 0 {
+		return nil, errors.New("invalid video size for TikTok inbox upload")
+	}
+
+	// Inbox upload only requires source_info (no post_info)
+	// User will review and post the video in TikTok app
+	payload := map[string]interface{}{
+		"source_info": map[string]interface{}{
+			"source":            "FILE_UPLOAD",
+			"video_size":        videoSize,
+			"chunk_size":        videoSize,
+			"total_chunk_count": 1,
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	t.Logger.Info("TikTok inbox init payload", zap.String("json", string(body)))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tikTokBaseAPI+tikTokInboxVideoPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Use rate limit retry wrapper
+	resp, err := t.executeWithRateLimitRetry(ctx, req, 3)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, parseTikTokError(resp.StatusCode, respBody)
+	}
+
+	var parsed struct {
+		Data struct {
+			PublishID string `json:"publish_id"`
+			UploadURL string `json:"upload_url"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			LogID   string `json:"log_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, err
+	}
+
+	if parsed.Error.Code != "" && parsed.Error.Code != "ok" {
+		return nil, &TikTokAPIError{
+			Status:  resp.StatusCode,
+			Code:    parsed.Error.Code,
+			Message: parsed.Error.Message,
+			LogID:   parsed.Error.LogID,
+		}
+	}
+
+	if parsed.Data.PublishID == "" {
+		return nil, errors.New("tiktok inbox init upload missing publish_id")
+	}
+
+	return &tiktokSession{
+		PublishID: parsed.Data.PublishID,
+		UploadURL: parsed.Data.UploadURL,
+		VideoSize: videoSize,
 	}, nil
 }
 
@@ -2014,9 +2106,11 @@ func (t *TikTokConnector) postPhoto(ctx context.Context, acc *storage.SocialAcco
 
 	// Build post_info
 	postInfo := map[string]interface{}{
-		"title":         defaultTikTokTitle(caption),
-		"description":   caption,
-		"privacy_level": level,
+		"title":          defaultTikTokTitle(caption),
+		"description":    caption,
+		"privacy_level":  level,
+		"disable_duet":    postingOptions.DisableDuet,
+		"disable_stitch":  postingOptions.DisableStitch,
 		"disable_comment": postingOptions.DisableComment,
 	}
 
