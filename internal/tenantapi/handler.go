@@ -682,10 +682,32 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, acc := range accounts {
+		// Determine connection status: account is connected if:
+		// 1. Connected flag is true, OR
+		// 2. Has a valid access token (not empty) and not expired
+		isConnected := acc.Connected
+		if !isConnected && acc.AccessToken != "" {
+			// Check if token is not expired (if ExpiresAt is set)
+			if acc.ExpiresAt == nil || acc.ExpiresAt.After(time.Now()) {
+				isConnected = true
+				// Auto-fix: Update the Connected flag in database if it's wrong
+				if acc.Connected != isConnected {
+					h.Logger.Info("Auto-fixing connection status",
+						zap.Uint("account_id", acc.ID),
+						zap.String("platform", acc.Platform),
+						zap.Uint("tenant_id", claims.TenantID))
+					acc.Connected = true
+					if err := h.DB.Model(&acc).Update("connected", true).Error; err != nil {
+						h.Logger.Warn("failed to auto-fix connection status", zap.Error(err))
+					}
+				}
+			}
+		}
+		
 		ig := integration{
 			ID:         acc.ID,
 			Platform:   acc.Platform,
-			Connected:  acc.Connected,
+			Connected:  isConnected,
 			Username:   acc.Username,
 			ExternalID: acc.ExternalID,
 			PageID:     acc.PageID,
@@ -903,6 +925,28 @@ func (h *Handler) getIntegration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine connection status: account is connected if:
+	// 1. Connected flag is true, OR
+	// 2. Has a valid access token (not empty) and not expired
+	isConnected := account.Connected
+	if !isConnected && account.AccessToken != "" {
+		// Check if token is not expired (if ExpiresAt is set)
+		if account.ExpiresAt == nil || account.ExpiresAt.After(time.Now()) {
+			isConnected = true
+			// Auto-fix: Update the Connected flag in database if it's wrong
+			if account.Connected != isConnected {
+				h.Logger.Info("Auto-fixing connection status",
+					zap.Uint("account_id", account.ID),
+					zap.String("platform", account.Platform),
+					zap.Uint("tenant_id", claims.TenantID))
+				account.Connected = true
+				if err := h.DB.Model(&account).Update("connected", true).Error; err != nil {
+					h.Logger.Warn("failed to auto-fix connection status", zap.Error(err))
+				}
+			}
+		}
+	}
+
 	type integrationDetail struct {
 		ID         uint       `json:"id"`
 		Platform   string     `json:"platform"`
@@ -919,7 +963,7 @@ func (h *Handler) getIntegration(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, integrationDetail{
 		ID:         account.ID,
 		Platform:   account.Platform,
-		Connected:  account.Connected,
+		Connected:  isConnected,
 		Username:   account.Username,
 		ExternalID: account.ExternalID,
 		PageID:     account.PageID,
