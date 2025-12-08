@@ -65,12 +65,21 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 	}
 
 	// Add query parameters
-	// Note: Instagram API uses "saved" not "saves", and "shares" might not be valid for all post types
-	// Valid metrics: impressions, reach, likes, comments, saved, shares (if available), plays (for videos)
+	// According to Instagram API docs (v24.0):
+	// - "impressions" is deprecated for v22.0+ and will be deprecated for all versions on April 21, 2025
+	//   (still available for media created before July 2, 2024)
+	// - "views" is the new metric for FEED, STORY, and REELS (replaces impressions for newer media)
+	// - "plays" is deprecated for v22.0+ and all versions on April 21, 2025
+	// - "saved" is the correct metric name (not "saves")
+	// - "shares" may not be available for all post types, but API will return what's available
+	// - Metrics available: comments, likes, saved, shares, reach, views, total_interactions
 	q := req.URL.Query()
 	q.Add("access_token", decryptedToken)
-	q.Add("metric", "impressions,reach,likes,comments,saved,shares")
-	q.Add("period", "lifetime") // or "day", "week", "month"
+	// Request core metrics that are available for most post types
+	// Using "views" instead of deprecated "impressions" for newer media
+	// Note: API will return only available metrics for the specific media type
+	q.Add("metric", "views,reach,likes,comments,saved,shares,total_interactions")
+	q.Add("period", "lifetime") // Period is automatically set to lifetime and cannot be changed
 	req.URL.RawQuery = q.Encode()
 
 	resp, err := c.client.Do(req)
@@ -120,7 +129,18 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 		value := metric.Values[0].Value
 		
 		switch metric.Name {
+		case "views":
+			// New metric for FEED, STORY, and REELS (replaces deprecated "impressions")
+			if v, ok := value["value"].(float64); ok {
+				metrics.Views = int64(v)
+				// For backward compatibility, also set Impressions if Views is available
+				// (since Views is the replacement for Impressions)
+				if metrics.Impressions == 0 {
+					metrics.Impressions = int64(v)
+				}
+			}
 		case "impressions":
+			// Deprecated for v22.0+ but still available for older media (created before July 2, 2024)
 			if v, ok := value["value"].(float64); ok {
 				metrics.Impressions = int64(v)
 			}
@@ -143,6 +163,26 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 		case "shares":
 			if v, ok := value["value"].(float64); ok {
 				metrics.Shares = int64(v)
+			}
+		case "total_interactions":
+			// Total interactions (likes + saves + comments + shares, minus unlikes/unsaves/deleted comments)
+			if v, ok := value["value"].(float64); ok {
+				if metrics.Metadata == nil {
+					metrics.Metadata = make(map[string]interface{})
+				}
+				metrics.Metadata["total_interactions"] = int64(v)
+			}
+		case "engagement": // Composite metric (likes + comments) - parse if API returns it
+			if v, ok := value["value"].(float64); ok {
+				// If we don't have individual likes/comments, use engagement as fallback
+				if metrics.Likes == 0 && metrics.Comments == 0 {
+					// Engagement = likes + comments, so we can't split it
+					// But we'll use it to calculate engagement rate if reach is available
+					if metrics.Metadata == nil {
+						metrics.Metadata = make(map[string]interface{})
+					}
+					metrics.Metadata["engagement"] = int64(v)
+				}
 			}
 		}
 	}
