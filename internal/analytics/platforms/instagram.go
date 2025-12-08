@@ -102,7 +102,9 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 			Name   string `json:"name"`
 			Period string `json:"period"`
 			Values []struct {
-				Value map[string]interface{} `json:"value"`
+				// Value can be a number (for lifetime period) or an object (for time-series data)
+				// Using interface{} to handle both cases
+				Value interface{} `json:"value"`
 			} `json:"values"`
 		} `json:"data"`
 	}
@@ -121,68 +123,71 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 		Metadata:       make(map[string]interface{}),
 	}
 
+	// Helper function to extract numeric value from Value field
+	extractValue := func(value interface{}) (float64, bool) {
+		switch v := value.(type) {
+		case float64:
+			return v, true
+		case int:
+			return float64(v), true
+		case int64:
+			return float64(v), true
+		case map[string]interface{}:
+			// Handle nested structure (for time-series data)
+			if nestedVal, ok := v["value"].(float64); ok {
+				return nestedVal, true
+			}
+		}
+		return 0, false
+	}
+
 	// Extract metrics from response
 	for _, metric := range result.Data {
 		if len(metric.Values) == 0 {
 			continue
 		}
 		value := metric.Values[0].Value
+		metricValue, ok := extractValue(value)
+		if !ok {
+			continue
+		}
 		
 		switch metric.Name {
 		case "views":
 			// New metric for FEED, STORY, and REELS (replaces deprecated "impressions")
-			if v, ok := value["value"].(float64); ok {
-				metrics.Views = int64(v)
-				// For backward compatibility, also set Impressions if Views is available
-				// (since Views is the replacement for Impressions)
-				if metrics.Impressions == 0 {
-					metrics.Impressions = int64(v)
-				}
+			metrics.Views = int64(metricValue)
+			// For backward compatibility, also set Impressions if Views is available
+			if metrics.Impressions == 0 {
+				metrics.Impressions = int64(metricValue)
 			}
 		case "impressions":
 			// Deprecated for v22.0+ but still available for older media (created before July 2, 2024)
-			if v, ok := value["value"].(float64); ok {
-				metrics.Impressions = int64(v)
-			}
+			metrics.Impressions = int64(metricValue)
 		case "reach":
-			if v, ok := value["value"].(float64); ok {
-				metrics.Reach = int64(v)
-			}
+			metrics.Reach = int64(metricValue)
 		case "likes":
-			if v, ok := value["value"].(float64); ok {
-				metrics.Likes = int64(v)
-			}
+			metrics.Likes = int64(metricValue)
 		case "comments":
-			if v, ok := value["value"].(float64); ok {
-				metrics.Comments = int64(v)
-			}
+			metrics.Comments = int64(metricValue)
 		case "saved", "saves": // Instagram API returns "saved" but we support both for compatibility
-			if v, ok := value["value"].(float64); ok {
-				metrics.Saves = int64(v)
-			}
+			metrics.Saves = int64(metricValue)
 		case "shares":
-			if v, ok := value["value"].(float64); ok {
-				metrics.Shares = int64(v)
-			}
+			metrics.Shares = int64(metricValue)
 		case "total_interactions":
 			// Total interactions (likes + saves + comments + shares, minus unlikes/unsaves/deleted comments)
-			if v, ok := value["value"].(float64); ok {
+			if metrics.Metadata == nil {
+				metrics.Metadata = make(map[string]interface{})
+			}
+			metrics.Metadata["total_interactions"] = int64(metricValue)
+		case "engagement": // Composite metric (likes + comments) - parse if API returns it
+			// If we don't have individual likes/comments, use engagement as fallback
+			if metrics.Likes == 0 && metrics.Comments == 0 {
+				// Engagement = likes + comments, so we can't split it
+				// But we'll use it to calculate engagement rate if reach is available
 				if metrics.Metadata == nil {
 					metrics.Metadata = make(map[string]interface{})
 				}
-				metrics.Metadata["total_interactions"] = int64(v)
-			}
-		case "engagement": // Composite metric (likes + comments) - parse if API returns it
-			if v, ok := value["value"].(float64); ok {
-				// If we don't have individual likes/comments, use engagement as fallback
-				if metrics.Likes == 0 && metrics.Comments == 0 {
-					// Engagement = likes + comments, so we can't split it
-					// But we'll use it to calculate engagement rate if reach is available
-					if metrics.Metadata == nil {
-						metrics.Metadata = make(map[string]interface{})
-					}
-					metrics.Metadata["engagement"] = int64(v)
-				}
+				metrics.Metadata["engagement"] = int64(metricValue)
 			}
 		}
 	}
