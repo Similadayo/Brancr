@@ -329,6 +329,7 @@ type ScheduledPost struct {
 	OptimalTime   *time.Time // AI-suggested optimal posting time
 	Priority      int        `gorm:"default:0"` // 0=normal, 1=high, 2=urgent
 	PostingWindow string     `gorm:"type:text"` // JSON: {"start": "09:00", "end": "17:00"}
+	EnhanceCaption bool      `gorm:"default:false"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
 }
 
 // SOCIAL ACCOUNTS

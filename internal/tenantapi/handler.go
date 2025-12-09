@@ -4011,11 +4011,12 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		MediaIDs    []uint   `json:"media_ids"`
-		Caption     string   `json:"caption"`
-		Platforms   []string `json:"platforms"`
-		ScheduledAt string   `json:"scheduled_at"` // RFC3339
-		Name        string   `json:"name"`
+		MediaIDs      []uint `json:"media_ids"`
+		Caption       string `json:"caption"`
+		Platforms     []string `json:"platforms"`
+		ScheduledAt   string   `json:"scheduled_at"` // RFC3339
+		Name          string   `json:"name"`
+		EnhanceCaption bool   `json:"enhance_caption"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.MediaIDs) == 0 {
 		http.Error(w, "media_ids required", http.StatusBadRequest)
@@ -4066,6 +4067,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		Platforms:     string(platsJSON),
 		ScheduledAt:   scheduledAt,
 		Status:        "scheduled",
+		EnhanceCaption: req.EnhanceCaption, // Store AI enhancement preference
 	}
 	if err := h.DB.Create(&post).Error; err != nil {
 		h.Logger.Error("failed to create post", zap.Error(err))

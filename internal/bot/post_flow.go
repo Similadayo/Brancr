@@ -709,6 +709,7 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		ScheduledAt:   &scheduledAtUTC,
 		Status:        "scheduled",
 		Timezone:      tenant.Timezone,
+		EnhanceCaption: sess.UseAICaption, // Store AI enhancement preference
 	}
 
 	if err := m.DB.Create(&sp).Error; err != nil {
@@ -926,6 +927,7 @@ func (m *TenantBotManager) createBatchPosts(bot *tgbotapi.BotAPI, tenantID uint,
 			ScheduledAt:   &scheduledAtUTC,
 			Status:        "scheduled",
 			Timezone:      timezone,
+			EnhanceCaption: sess.UseAICaption, // Store AI enhancement preference
 		}
 
 		if err := m.DB.Create(&sp).Error; err != nil {

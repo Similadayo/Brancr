@@ -368,6 +368,7 @@ func (m *BulkUploadManager) AutoScheduleCarousels(
 			ScheduledAt:   &scheduledTimes[i],
 			Status:        "scheduled",
 			Timezone:      timezone,
+			EnhanceCaption: false, // Bulk uploads use captions as-is by default
 		}
 
 		if err := m.DB.Create(&sp).Error; err != nil {

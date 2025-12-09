@@ -861,9 +861,17 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 	case "caption":
 		// Handle caption mode selection and actions
 		if arg == "use" {
-			// User accepted the generated caption, continue to platform selection
+			// User accepted the caption, continue to platform selection
 			sess, ok := getTenantSession(cq.Message.Chat.ID)
 			if ok {
+				// If this is called after user wrote their own caption and clicked "Use As-Is",
+				// ensure UseAICaption=false so scheduler uses caption as-is (Mode 2)
+				// If caption was enhanced by AI, UseAICaption is already true from enhanceCaptionInSession
+				// We only set it to false if it's the original caption (not enhanced)
+				if sess.CaptionMode == "write" && !sess.UseAICaption {
+					// User wrote their own caption and wants to use it as-is
+					sess.UseAICaption = false
+				}
 				sess.Step = 4
 				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Nice! Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 			}
@@ -919,6 +927,8 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 					bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "No caption to enhance. Please provide a caption first."))
 					return
 				}
+				// Set UseAICaption=true so scheduler knows to enhance this caption
+				sess.UseAICaption = true
 				h.enhanceCaptionInSession(bot, tenantID, cq.Message.Chat.ID, sess)
 			default:
 				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Invalid option. Please try again."))
