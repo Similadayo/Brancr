@@ -71,8 +71,15 @@ func SetupRouter(app *App) http.Handler {
 		// API-specific middleware
 		api.Use(middleware.ValidateContentType(app.Services.Logger)) // Validate Content-Type for API requests
 
-		// Tenant-specific rate limiting for authenticated routes
-		// This will be applied per-route in RegisterRoutes if needed
+		// Apply per-tenant rate limiting to authenticated routes
+		if app.Services.RateLimiter != nil {
+			rateLimitConfig := middleware.DefaultRateLimitConfig()
+			// Higher limits for API endpoints
+			rateLimitConfig.RequestsPerMinute = 120
+			rateLimitConfig.RequestsPerHour = 5000
+			api.Use(app.Services.RateLimiter.TenantRateLimit(rateLimitConfig))
+		}
+
 		apiHandler.RegisterRoutes(api)
 	})
 

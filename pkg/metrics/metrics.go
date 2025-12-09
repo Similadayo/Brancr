@@ -13,6 +13,10 @@ type Metrics struct {
 	BotMessages       *Counter
 	SocialPosts       *Counter
 	Errors            *Counter
+	DBQueries         *Counter
+	DBSlowQueries     *Counter
+	DBQueryDuration   *Histogram
+	DBErrors          *Counter
 }
 
 // Counter represents a simple counter metric
@@ -37,6 +41,10 @@ func NewMetrics() *Metrics {
 		BotMessages:        NewCounter("bot_messages_total"),
 		SocialPosts:        NewCounter("social_posts_total"),
 		Errors:             NewCounter("errors_total"),
+		DBQueries:          NewCounter("db_queries_total"),
+		DBSlowQueries:      NewCounter("db_slow_queries_total"),
+		DBQueryDuration:    NewHistogram("db_query_duration_seconds"),
+		DBErrors:           NewCounter("db_errors_total"),
 	}
 }
 

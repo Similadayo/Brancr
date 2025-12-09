@@ -54,12 +54,6 @@ func DefaultRateLimitConfig() RateLimitConfig {
 func (rl *RateLimiter) TenantRateLimit(config RateLimitConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if rl.rdb == nil {
-				// Redis not available, skip rate limiting
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			// Get tenant ID from context
 			claims, ok := TenantFromContext(r.Context())
 			if !ok {
@@ -72,30 +66,61 @@ func (rl *RateLimiter) TenantRateLimit(config RateLimitConfig) func(http.Handler
 			ctx := r.Context()
 			key := fmt.Sprintf("ratelimit:tenant:%d", tenantID)
 
-			// Check per-minute limit
-			minuteKey := key + ":minute"
-			currentMinute, err := rl.rdb.Incr(ctx, minuteKey).Result()
-			if err == nil {
-				rl.rdb.Expire(ctx, minuteKey, time.Minute)
-				if currentMinute > int64(config.RequestsPerMinute) {
-					rl.logger.Warn("rate limit exceeded (per minute)",
+			if rl.rdb != nil {
+				// Use Redis if available
+				// Check per-minute limit
+				minuteKey := key + ":minute"
+				currentMinute, err := rl.rdb.Incr(ctx, minuteKey).Result()
+				if err == nil {
+					rl.rdb.Expire(ctx, minuteKey, time.Minute)
+					if currentMinute > int64(config.RequestsPerMinute) {
+						rl.logger.Warn("rate limit exceeded (per minute)",
+							zap.Uint("tenant_id", tenantID),
+							zap.Int64("current", currentMinute),
+							zap.Int("limit", config.RequestsPerMinute))
+						w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", config.RequestsPerMinute))
+						w.Header().Set("X-RateLimit-Remaining", "0")
+						w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(time.Minute).Unix()))
+						http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+						return
+					}
+					w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", config.RequestsPerMinute))
+					w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", config.RequestsPerMinute-int(currentMinute)))
+				}
+
+				// Check per-hour limit
+				hourKey := key + ":hour"
+				currentHour, err := rl.rdb.Incr(ctx, hourKey).Result()
+				if err == nil {
+					rl.rdb.Expire(ctx, hourKey, time.Hour)
+					if currentHour > int64(config.RequestsPerHour) {
+						rl.logger.Warn("rate limit exceeded (per hour)",
+							zap.Uint("tenant_id", tenantID),
+							zap.Int64("current", currentHour),
+							zap.Int("limit", config.RequestsPerHour))
+						w.Header().Set("X-RateLimit-Limit-Hour", fmt.Sprintf("%d", config.RequestsPerHour))
+						w.Header().Set("X-RateLimit-Remaining-Hour", "0")
+						http.Error(w, "Hourly rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+						return
+					}
+				}
+			} else {
+				// Fallback to in-memory
+				minuteKey := key + ":minute"
+				if !rl.checkMemoryLimit(minuteKey, config.RequestsPerMinute, time.Minute) {
+					rl.logger.Warn("rate limit exceeded (per minute, in-memory)",
 						zap.Uint("tenant_id", tenantID),
-						zap.Int64("current", currentMinute),
 						zap.Int("limit", config.RequestsPerMinute))
+					w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", config.RequestsPerMinute))
+					w.Header().Set("X-RateLimit-Remaining", "0")
 					http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 					return
 				}
-			}
 
-			// Check per-hour limit
-			hourKey := key + ":hour"
-			currentHour, err := rl.rdb.Incr(ctx, hourKey).Result()
-			if err == nil {
-				rl.rdb.Expire(ctx, hourKey, time.Hour)
-				if currentHour > int64(config.RequestsPerHour) {
-					rl.logger.Warn("rate limit exceeded (per hour)",
+				hourKey := key + ":hour"
+				if !rl.checkMemoryLimit(hourKey, config.RequestsPerHour, time.Hour) {
+					rl.logger.Warn("rate limit exceeded (per hour, in-memory)",
 						zap.Uint("tenant_id", tenantID),
-						zap.Int64("current", currentHour),
 						zap.Int("limit", config.RequestsPerHour))
 					http.Error(w, "Hourly rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 					return

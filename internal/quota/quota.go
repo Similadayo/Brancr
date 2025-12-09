@@ -285,7 +285,9 @@ func (s *QuotaService) GetQuotaUsage(ctx context.Context, tenantID uint) (*stora
 }
 
 // UpdateQuotaLimits updates quota limits for a tenant (admin function)
-func (s *QuotaService) UpdateQuotaLimits(ctx context.Context, tenantID uint, limits map[string]int) error {
+// limits can contain: ai_calls_limit, posts_limit, storage_limit_mb, api_calls_limit (all int)
+// planType is a separate string parameter
+func (s *QuotaService) UpdateQuotaLimits(ctx context.Context, tenantID uint, limits map[string]int, planType string) error {
 	quota, err := s.GetOrCreateQuota(ctx, tenantID)
 	if err != nil {
 		return err
@@ -305,7 +307,7 @@ func (s *QuotaService) UpdateQuotaLimits(ctx context.Context, tenantID uint, lim
 	if val, ok := limits["api_calls_limit"]; ok {
 		updates["api_calls_limit"] = val
 	}
-	if planType, ok := limits["plan_type"].(string); ok {
+	if planType != "" {
 		updates["plan_type"] = planType
 	}
 	
@@ -319,7 +321,8 @@ func (s *QuotaService) UpdateQuotaLimits(ctx context.Context, tenantID uint, lim
 	
 	s.Logger.Info("updated quota limits for tenant",
 		zap.Uint("tenant_id", tenantID),
-		zap.Any("limits", limits))
+		zap.Any("limits", limits),
+		zap.String("plan_type", planType))
 	
 	return nil
 }
