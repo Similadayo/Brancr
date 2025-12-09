@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
@@ -23,14 +24,33 @@ type MetaWebhookHandler struct {
 	DB             *gorm.DB
 	Logger         *zap.Logger
 	MessageHandler *MessageHandler
+	MediaProcessor *MediaProcessor
 }
 
 // NewMetaWebhookHandler creates a new Meta webhook handler
 func NewMetaWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *MessageHandler) *MetaWebhookHandler {
+	// Initialize media processor if OpenAI and Cloudinary are configured
+	var mediaProcessor *MediaProcessor
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	cloudURL := os.Getenv("CLOUDINARY_URL")
+	if openAIKey != "" && cloudURL != "" {
+		aiClient := ai.NewAIClient()
+		var err error
+		mediaProcessor, err = NewMediaProcessor(logger, aiClient, cloudURL)
+		if err != nil {
+			logger.Warn("failed to initialize media processor for Meta webhook", zap.Error(err))
+		} else {
+			logger.Info("✅ Media processor initialized for Meta webhook (Instagram/Facebook media processing)")
+		}
+	} else {
+		logger.Info("⚠️ Media processor not initialized for Meta webhook (OpenAI or Cloudinary not configured)")
+	}
+
 	return &MetaWebhookHandler{
 		DB:             db,
 		Logger:         logger,
 		MessageHandler: msgHandler,
+		MediaProcessor: mediaProcessor,
 	}
 }
 
@@ -375,17 +395,17 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				zap.String("platform", "instagram"))
 
 			// Extract message content - handle text, media, reactions, etc.
-			messageContent := h.extractInstagramMessageContent(msg.Message)
-			if messageContent == "" {
-				// Skip non-text messages (media, reactions, stickers) - they don't need AI processing
-				h.Logger.Info("⏭️ Skipping non-text Instagram message",
-					zap.Uint("tenant_id", tenantID),
-					zap.String("message_id", msg.Message.MID),
-					zap.Bool("has_attachments", len(msg.Message.Attachments) > 0),
-					zap.Bool("has_reaction", len(msg.Message.Reaction) > 0))
+			messageContent, mediaInfo := h.extractInstagramMessageContent(msg.Message)
+			if messageContent == "" && mediaInfo == nil {
+				// Skip messages with no content and no media (reactions, stickers without attachments)
+				if len(msg.Message.Reaction) > 0 {
+					h.Logger.Info("⏭️ Skipping Instagram reaction message",
+						zap.Uint("tenant_id", tenantID),
+						zap.String("message_id", msg.Message.MID))
+				}
 				continue
 			}
-			h.processInstagramMessage(ctx, tenantID, igAccountID, msg.Sender.ID, msg.Message.MID, messageContent, msg.Timestamp, entry.ID)
+			h.processInstagramMessage(ctx, tenantID, igAccountID, msg.Sender.ID, msg.Message.MID, messageContent, msg.Timestamp, entry.ID, mediaInfo)
 		}
 
 		// Process messages from "changes" array (test/newer webhook format)
@@ -435,17 +455,17 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 
 			timestamp := change.Value.Timestamp.Int64()
 			// Extract message content - handle text, media, reactions, etc.
-			messageContent := h.extractInstagramMessageContent(change.Value.Message)
-			if messageContent == "" {
-				// Skip non-text messages (media, reactions, stickers) - they don't need AI processing
-				h.Logger.Info("⏭️ Skipping non-text Instagram message (changes format)",
-					zap.Uint("tenant_id", tenantID),
-					zap.String("message_id", change.Value.Message.MID),
-					zap.Bool("has_attachments", len(change.Value.Message.Attachments) > 0),
-					zap.Bool("has_reaction", len(change.Value.Message.Reaction) > 0))
+			messageContent, mediaInfo := h.extractInstagramMessageContent(change.Value.Message)
+			if messageContent == "" && mediaInfo == nil {
+				// Skip messages with no content and no media (reactions, stickers without attachments)
+				if len(change.Value.Message.Reaction) > 0 {
+					h.Logger.Info("⏭️ Skipping Instagram reaction message (changes format)",
+						zap.Uint("tenant_id", tenantID),
+						zap.String("message_id", change.Value.Message.MID))
+				}
 				continue
 			}
-			h.processInstagramMessage(ctx, tenantID, igAccountID, change.Value.Sender.ID, change.Value.Message.MID, messageContent, timestamp, entry.ID)
+			h.processInstagramMessage(ctx, tenantID, igAccountID, change.Value.Sender.ID, change.Value.Message.MID, messageContent, timestamp, entry.ID, mediaInfo)
 			messagesProcessed++
 		}
 
@@ -568,51 +588,76 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 	}
 }
 
-// extractInstagramMessageContent extracts text content from an Instagram message
-// Returns empty string for non-text messages (media, reactions, stickers) which should be skipped
+// InstagramMediaInfo contains extracted media information from Instagram attachments
+type InstagramMediaInfo struct {
+	URL      string
+	Type     string // image, video, audio, file
+	Payload  map[string]interface{} // Full attachment payload for processing
+}
+
+// extractInstagramMessageContent extracts text content and media information from an Instagram message
+// Returns: (text content, media info)
+// If both are empty/nil, the message should be skipped
 func (h *MetaWebhookHandler) extractInstagramMessageContent(msg struct {
 	MID         string                 `json:"mid"`
 	Text        string                 `json:"text"`
 	Attachments map[string]interface{} `json:"attachments,omitempty"`
 	Reaction    map[string]interface{} `json:"reaction,omitempty"`
-}) string {
-	// If message has text, return it
-	if strings.TrimSpace(msg.Text) != "" {
-		return msg.Text
-	}
+}) (string, *InstagramMediaInfo) {
+	// If message has text, return it (may also have attachments)
+	textContent := strings.TrimSpace(msg.Text)
 
-	// If message has attachments (media), create a descriptive placeholder
+	// Extract media information from attachments
+	var mediaInfo *InstagramMediaInfo
 	if len(msg.Attachments) > 0 {
-		// Check attachment type
-		if attachmentType, ok := msg.Attachments["type"].(string); ok {
-			switch strings.ToLower(attachmentType) {
-			case "image":
-				return "[Image]"
-			case "video":
-				return "[Video]"
-			case "audio":
-				return "[Audio]"
-			case "file":
-				return "[File]"
-			default:
-				return "[Media]"
+		// Instagram attachments structure: {"type": "image", "payload": {"url": "..."}}
+		attachmentType, _ := msg.Attachments["type"].(string)
+		payload, _ := msg.Attachments["payload"].(map[string]interface{})
+		
+		// Try to get URL from payload
+		var mediaURL string
+		if payload != nil {
+			if url, ok := payload["url"].(string); ok && url != "" {
+				mediaURL = url
 			}
 		}
-		return "[Media]"
+
+		// If we have a URL or type, create media info
+		if mediaURL != "" || attachmentType != "" {
+			mediaInfo = &InstagramMediaInfo{
+				URL:     mediaURL,
+				Type:    strings.ToLower(attachmentType),
+				Payload: msg.Attachments,
+			}
+
+			// If no text content, create a placeholder
+			if textContent == "" {
+				switch strings.ToLower(attachmentType) {
+				case "image":
+					textContent = "[Image]"
+				case "video":
+					textContent = "[Video]"
+				case "audio":
+					textContent = "[Audio]"
+				case "file":
+					textContent = "[File]"
+				default:
+					textContent = "[Media]"
+				}
+			}
+		}
 	}
 
-	// If message has a reaction, skip it (reactions don't need AI processing)
-	if len(msg.Reaction) > 0 {
-		return "" // Empty string signals to skip this message
+	// If message has a reaction but no content or media, skip it
+	if len(msg.Reaction) > 0 && textContent == "" && mediaInfo == nil {
+		return "", nil
 	}
 
-	// If message has no text, attachments, or reactions, it might be a sticker or other non-text content
-	// Return empty to skip it
-	return ""
+	return textContent, mediaInfo
 }
 
 // processInstagramMessage processes a single Instagram message
-func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenantID uint, igAccountID, senderID, messageID, text string, timestamp int64, entryID string) {
+func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenantID uint, igAccountID, senderID, messageID, text string, timestamp int64, entryID string, mediaInfo *InstagramMediaInfo) {
 	h.Logger.Info("💬 Processing Instagram message",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("sender_id", senderID),
@@ -702,8 +747,29 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				zap.String("profile_pic", customerProfilePic))
 		}
 
+		// Determine message type based on media
+		messageType := "text"
+		if mediaInfo != nil {
+			messageType = mediaInfo.Type
+			if messageType == "" {
+				messageType = "image" // Default for media
+			}
+		}
+
 		// Use senderID as ThreadID to ensure all messages from same customer are grouped
 		// For Instagram, ThreadID should be the customer's IGSID (senderID)
+		metadata := map[string]interface{}{
+			"entry_id":         entryID,
+			"original_message_id": messageID,
+		}
+
+		// Add media information to metadata
+		if mediaInfo != nil {
+			metadata["media_url"] = mediaInfo.URL
+			metadata["media_type"] = mediaInfo.Type
+			metadata["media"] = mediaInfo.Payload
+		}
+
 		incomingMsg := IncomingMessage{
 			Platform:           "instagram",
 			TenantID:           tenantID,
@@ -713,10 +779,10 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			CustomerProfilePic: customerProfilePic,
 			MessageID:          uniqueID, // Use uniqueID (messageID or fallback)
 			Content:            text,
-			MessageType:        "text",
+			MessageType:        messageType,
 			ThreadID:           senderID, // Use senderID as ThreadID to group all messages from same customer
 			Timestamp:          time.Unix(timestamp/1000, 0),
-			Metadata:           map[string]interface{}{"entry_id": entryID, "original_message_id": messageID},
+			Metadata:           metadata,
 		}
 
 		// Lock was created successfully in transaction above - store the interaction ID for later update
@@ -728,12 +794,83 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				zap.String("unique_id", uniqueID))
 		}
 
+		// Process media if available
+		if mediaInfo != nil && mediaInfo.URL != "" && h.MediaProcessor != nil {
+			h.Logger.Info("🔄 Processing Instagram media",
+				zap.String("media_type", mediaInfo.Type),
+				zap.String("media_url", mediaInfo.URL),
+				zap.Uint("tenant_id", tenantID))
+
+			// Process media in background (don't block message processing)
+			go func() {
+				processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+
+				result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaInfo.URL, mediaInfo.Type)
+				if err != nil {
+					h.Logger.Warn("failed to process Instagram media (non-critical)",
+						zap.String("media_type", mediaInfo.Type),
+						zap.String("media_url", mediaInfo.URL),
+						zap.Uint("tenant_id", tenantID),
+						zap.Error(err))
+					return
+				}
+
+				// Update interaction metadata with processing results
+				// Find the interaction by message ID
+				var interaction storage.Interaction
+				if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+					"instagram", uniqueID, "incoming").First(&interaction).Error; err == nil {
+					var existingMetadata map[string]interface{}
+					if interaction.Metadata != "" {
+						json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
+					}
+					if existingMetadata == nil {
+						existingMetadata = make(map[string]interface{})
+					}
+
+					// Add processing results
+					if result.StoredURL != "" {
+						existingMetadata["media_stored_url"] = result.StoredURL
+					}
+					if result.Transcription != "" {
+						existingMetadata["audio_transcription"] = result.Transcription
+					}
+					if result.ImageAnalysis != "" {
+						existingMetadata["image_analysis"] = result.ImageAnalysis
+					}
+					if result.DocumentText != "" {
+						existingMetadata["document_text"] = result.DocumentText
+					}
+
+					// Update content if we have transcription/analysis
+					if result.Transcription != "" && messageType == "audio" {
+						interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+					} else if result.ImageAnalysis != "" && (messageType == "image" || messageType == "sticker") {
+						interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+					}
+
+					metadataJSON, _ := json.Marshal(existingMetadata)
+					interaction.Metadata = string(metadataJSON)
+					h.DB.Save(&interaction)
+
+					h.Logger.Info("✅ Instagram media processing completed and saved",
+						zap.String("media_type", mediaInfo.Type),
+						zap.Bool("has_transcription", result.Transcription != ""),
+						zap.Bool("has_analysis", result.ImageAnalysis != ""),
+						zap.Uint("tenant_id", tenantID))
+				}
+			}()
+		}
+
 		h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("customer_id", senderID),
 			zap.String("customer_name", customerName),
 			zap.String("customer_username", customerUsername),
-			zap.String("thread_id", senderID))
+			zap.String("thread_id", senderID),
+			zap.String("message_type", messageType),
+			zap.Bool("has_media", mediaInfo != nil))
 
 		go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
 	} else {
@@ -793,8 +930,29 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				zap.String("unique_id", uniqueID))
 		}
 
+		// Determine message type based on media
+		messageType := "text"
+		if mediaInfo != nil {
+			messageType = mediaInfo.Type
+			if messageType == "" {
+				messageType = "image" // Default for media
+			}
+		}
+
 		// Still process the message even without account info
 		// The customer name might be available from webhook payload or can be set manually
+		metadata := map[string]interface{}{
+			"entry_id":         entryID,
+			"original_message_id": messageID,
+		}
+
+		// Add media information to metadata
+		if mediaInfo != nil {
+			metadata["media_url"] = mediaInfo.URL
+			metadata["media_type"] = mediaInfo.Type
+			metadata["media"] = mediaInfo.Payload
+		}
+
 		incomingMsg := IncomingMessage{
 			Platform:           "instagram",
 			TenantID:           tenantID,
@@ -804,10 +962,10 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 			CustomerProfilePic: "",
 			MessageID:          uniqueID, // Use uniqueID
 			Content:            text,
-			MessageType:        "text",
+			MessageType:        messageType,
 			ThreadID:           senderID, // Use senderID as ThreadID to group all messages from same customer
 			Timestamp:          time.Unix(timestamp/1000, 0),
-			Metadata:           map[string]interface{}{"entry_id": entryID, "original_message_id": messageID},
+			Metadata:           metadata,
 		}
 
 		// Lock was created successfully in transaction above - store the interaction ID for later update
@@ -819,10 +977,66 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				zap.String("unique_id", uniqueID))
 		}
 
+		// Process media if available (same as above)
+		if mediaInfo != nil && mediaInfo.URL != "" && h.MediaProcessor != nil {
+			go func() {
+				processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+
+				result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaInfo.URL, mediaInfo.Type)
+				if err != nil {
+					h.Logger.Warn("failed to process Instagram media (non-critical, no account)",
+						zap.String("media_type", mediaInfo.Type),
+						zap.String("media_url", mediaInfo.URL),
+						zap.Uint("tenant_id", tenantID),
+						zap.Error(err))
+					return
+				}
+
+				// Update interaction metadata with processing results
+				var interaction storage.Interaction
+				if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+					"instagram", uniqueID, "incoming").First(&interaction).Error; err == nil {
+					var existingMetadata map[string]interface{}
+					if interaction.Metadata != "" {
+						json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
+					}
+					if existingMetadata == nil {
+						existingMetadata = make(map[string]interface{})
+					}
+
+					if result.StoredURL != "" {
+						existingMetadata["media_stored_url"] = result.StoredURL
+					}
+					if result.Transcription != "" {
+						existingMetadata["audio_transcription"] = result.Transcription
+						if messageType == "audio" {
+							interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+						}
+					}
+					if result.ImageAnalysis != "" {
+						existingMetadata["image_analysis"] = result.ImageAnalysis
+						if messageType == "image" || messageType == "sticker" {
+							interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+						}
+					}
+					if result.DocumentText != "" {
+						existingMetadata["document_text"] = result.DocumentText
+					}
+
+					metadataJSON, _ := json.Marshal(existingMetadata)
+					interaction.Metadata = string(metadataJSON)
+					h.DB.Save(&interaction)
+				}
+			}()
+		}
+
 		h.Logger.Info("🚀 Sending Instagram message to MessageHandler (without account info)",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("customer_id", senderID),
-			zap.String("thread_id", senderID))
+			zap.String("thread_id", senderID),
+			zap.String("message_type", messageType),
+			zap.Bool("has_media", mediaInfo != nil))
 
 		go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
 	}
@@ -884,8 +1098,9 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 				} `json:"recipient"`
 				Timestamp FlexibleTimestamp `json:"timestamp"`
 				Message   struct {
-					MID  string `json:"mid"`
-					Text string `json:"text"`
+					MID         string                 `json:"mid"`
+					Text        string                 `json:"text"`
+					Attachments map[string]interface{} `json:"attachments,omitempty"`
 				} `json:"message"`
 			} `json:"messaging"`
 		} `json:"entry"`
@@ -925,12 +1140,72 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 
 		// Process each message
 		for j, msg := range entry.Messaging {
+			// Extract media information from Facebook message
+			textContent := strings.TrimSpace(msg.Message.Text)
+			var mediaInfo *InstagramMediaInfo // Reuse same struct for Facebook
+			
+			if len(msg.Message.Attachments) > 0 {
+				// Facebook attachments structure similar to Instagram
+				attachmentType, _ := msg.Message.Attachments["type"].(string)
+				payload, _ := msg.Message.Attachments["payload"].(map[string]interface{})
+				
+				var mediaURL string
+				if payload != nil {
+					if url, ok := payload["url"].(string); ok && url != "" {
+						mediaURL = url
+					}
+				}
+
+				if mediaURL != "" || attachmentType != "" {
+					mediaInfo = &InstagramMediaInfo{
+						URL:     mediaURL,
+						Type:    strings.ToLower(attachmentType),
+						Payload: msg.Message.Attachments,
+					}
+
+					if textContent == "" {
+						switch strings.ToLower(attachmentType) {
+						case "image":
+							textContent = "[Image]"
+						case "video":
+							textContent = "[Video]"
+						case "audio":
+							textContent = "[Audio]"
+						case "file":
+							textContent = "[File]"
+						default:
+							textContent = "[Media]"
+						}
+					}
+				}
+			}
+
+			messageType := "text"
+			if mediaInfo != nil {
+				messageType = mediaInfo.Type
+				if messageType == "" {
+					messageType = "image"
+				}
+			}
+
+			metadata := map[string]interface{}{
+				"entry_id": entry.ID,
+			}
+
+			if mediaInfo != nil {
+				metadata["media_url"] = mediaInfo.URL
+				metadata["media_type"] = mediaInfo.Type
+				metadata["media"] = mediaInfo.Payload
+			}
+
 			h.Logger.Info("💬 Processing Facebook message",
 				zap.Int("message_index", j),
 				zap.Uint("tenant_id", tenantID),
 				zap.String("sender_id", msg.Sender.ID),
 				zap.String("message_id", msg.Message.MID),
-				zap.String("message_preview", truncateString(msg.Message.Text, 100)))
+				zap.String("message_preview", truncateString(textContent, 100)),
+				zap.String("message_type", messageType),
+				zap.Bool("has_media", mediaInfo != nil))
 
 			incomingMsg := IncomingMessage{
 				Platform:           "facebook",
@@ -940,11 +1215,65 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 				CustomerUsername:   "",
 				CustomerProfilePic: "",
 				MessageID:          msg.Message.MID,
-				Content:            msg.Message.Text,
-				MessageType:        "text",
+				Content:            textContent,
+				MessageType:        messageType,
 				ThreadID:           msg.Sender.ID,
 				Timestamp:          time.Unix(msg.Timestamp.Int64()/1000, 0),
-				Metadata:           map[string]interface{}{"entry_id": entry.ID},
+				Metadata:           metadata,
+			}
+
+			// Process media if available
+			if mediaInfo != nil && mediaInfo.URL != "" && h.MediaProcessor != nil {
+				go func(uniqueID string, mInfo *InstagramMediaInfo) {
+					processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer cancel()
+
+					result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mInfo.URL, mInfo.Type)
+					if err != nil {
+						h.Logger.Warn("failed to process Facebook media (non-critical)",
+							zap.String("media_type", mInfo.Type),
+							zap.String("media_url", mInfo.URL),
+							zap.Uint("tenant_id", tenantID),
+							zap.Error(err))
+						return
+					}
+
+					// Update interaction metadata with processing results
+					var interaction storage.Interaction
+					if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+						"facebook", uniqueID, "incoming").First(&interaction).Error; err == nil {
+						var existingMetadata map[string]interface{}
+						if interaction.Metadata != "" {
+							json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
+						}
+						if existingMetadata == nil {
+							existingMetadata = make(map[string]interface{})
+						}
+
+						if result.StoredURL != "" {
+							existingMetadata["media_stored_url"] = result.StoredURL
+						}
+						if result.Transcription != "" {
+							existingMetadata["audio_transcription"] = result.Transcription
+							if messageType == "audio" {
+								interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+							}
+						}
+						if result.ImageAnalysis != "" {
+							existingMetadata["image_analysis"] = result.ImageAnalysis
+							if messageType == "image" || messageType == "sticker" {
+								interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+							}
+						}
+						if result.DocumentText != "" {
+							existingMetadata["document_text"] = result.DocumentText
+						}
+
+						metadataJSON, _ := json.Marshal(existingMetadata)
+						interaction.Metadata = string(metadataJSON)
+						h.DB.Save(&interaction)
+					}
+				}(msg.Message.MID, mediaInfo)
 			}
 
 			go h.MessageHandler.ProcessMessage(ctx, incomingMsg)

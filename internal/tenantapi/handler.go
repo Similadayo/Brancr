@@ -4530,17 +4530,18 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 
 	// Get customer info and last message for each conversation
 	type conversationResp struct {
-		ID             uint      `json:"id"`
-		CustomerID     uint      `json:"customer_id"`
-		CustomerName   string    `json:"customer_name"`
-		CustomerAvatar string    `json:"customer_avatar"`
-		Platform       string    `json:"platform"`
-		Status         string    `json:"status"`
-		LastMessage    string    `json:"last_message"`
-		LastMessageAt  time.Time `json:"last_message_at"`
-		UnreadCount    int       `json:"unread_count"`
-		CreatedAt      time.Time `json:"created_at"`
-		UpdatedAt      time.Time `json:"updated_at"`
+		ID             uint            `json:"id"`
+		CustomerID     uint            `json:"customer_id"`
+		CustomerName   string          `json:"customer_name"`
+		CustomerAvatar string          `json:"customer_avatar"`
+		Platform       string          `json:"platform"`
+		Status         string          `json:"status"`
+		LastMessage    string          `json:"last_message"`
+		LastMessageAt  time.Time       `json:"last_message_at"`
+		UnreadCount    int             `json:"unread_count"`
+		CreatedAt      time.Time       `json:"created_at"`
+		UpdatedAt      time.Time       `json:"updated_at"`
+		LastMessageMedia *InteractionMedia `json:"last_message_media,omitempty"` // Media preview for last message
 	}
 
 	resp := make([]conversationResp, 0, len(conversations))
@@ -4565,6 +4566,9 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 			}
 			// For incoming messages, Content is already correct
 
+			// Extract media information from last interaction
+			lastMessageMedia := parseMediaFromMetadata(lastInteraction.Metadata)
+
 			// Count unread messages (incoming messages not responded to)
 			var unreadCount int64
 			h.DB.Model(&storage.Interaction{}).
@@ -4583,6 +4587,7 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 				UnreadCount:    int(unreadCount),
 				CreatedAt:      conv.CreatedAt,
 				UpdatedAt:      conv.UpdatedAt,
+				LastMessageMedia: lastMessageMedia, // Include media preview if present
 			})
 		} else {
 			// No interactions yet - still create conversation entry
@@ -4747,17 +4752,18 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		zap.Int("outgoing", outgoingCount))
 
 	type interactionResp struct {
-		ID             uint      `json:"id"`
-		Direction      string    `json:"direction"`
-		MessageType    string    `json:"message_type"`
-		Content        string    `json:"content"`
-		DetectedIntent string    `json:"detected_intent"`
-		DetectedTone   string    `json:"detected_tone"`
-		ResponseType   string    `json:"response_type"`
-		ResponseStatus string    `json:"response_status"`
-		SuggestedReply string    `json:"suggested_reply"`
-		FinalReply     string    `json:"final_reply"`
-		CreatedAt      time.Time `json:"created_at"`
+		ID             uint            `json:"id"`
+		Direction      string          `json:"direction"`
+		MessageType    string          `json:"message_type"`
+		Content        string          `json:"content"`
+		DetectedIntent string          `json:"detected_intent"`
+		DetectedTone   string          `json:"detected_tone"`
+		ResponseType   string          `json:"response_type"`
+		ResponseStatus string          `json:"response_status"`
+		SuggestedReply string          `json:"suggested_reply"`
+		FinalReply     string          `json:"final_reply"`
+		CreatedAt      time.Time       `json:"created_at"`
+		Media          *InteractionMedia `json:"media,omitempty"` // Media information (if message has media)
 	}
 
 	messages := make([]interactionResp, 0, len(interactions))
@@ -4774,6 +4780,9 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// For incoming messages, displayContent already equals i.Content, which is correct
+
+		// Extract media information from metadata
+		media := parseMediaFromMetadata(i.Metadata)
 
 		// Log each message being added (for debugging)
 		if i.Direction == "outgoing" {
@@ -4800,6 +4809,7 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 			SuggestedReply: i.SuggestedReply,
 			FinalReply:     i.FinalReply, // Always include final_reply for reference
 			CreatedAt:      i.CreatedAt,
+			Media:          media, // Include media information if present
 		})
 	}
 
@@ -5127,17 +5137,18 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 
 	// Return the created interaction in the same format as getConversation
 	type interactionResp struct {
-		ID             uint      `json:"id"`
-		Direction      string    `json:"direction"`
-		MessageType    string    `json:"message_type"`
-		Content        string    `json:"content"`
-		DetectedIntent string    `json:"detected_intent"`
-		DetectedTone   string    `json:"detected_tone"`
-		ResponseType   string    `json:"response_type"`
-		ResponseStatus string    `json:"response_status"`
-		SuggestedReply string    `json:"suggested_reply"`
-		FinalReply     string    `json:"final_reply"`
-		CreatedAt      time.Time `json:"created_at"`
+		ID             uint            `json:"id"`
+		Direction      string          `json:"direction"`
+		MessageType    string          `json:"message_type"`
+		Content        string          `json:"content"`
+		DetectedIntent string          `json:"detected_intent"`
+		DetectedTone   string          `json:"detected_tone"`
+		ResponseType   string          `json:"response_type"`
+		ResponseStatus string          `json:"response_status"`
+		SuggestedReply string          `json:"suggested_reply"`
+		FinalReply     string          `json:"final_reply"`
+		CreatedAt      time.Time       `json:"created_at"`
+		Media          *InteractionMedia `json:"media,omitempty"` // Media information (if message has media)
 	}
 
 	// Use same display logic as getConversation - for outgoing, use final_reply
@@ -5145,6 +5156,9 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 	if interaction.Direction == "outgoing" && interaction.FinalReply != "" {
 		displayContent = interaction.FinalReply
 	}
+
+	// Extract media information from metadata
+	media := parseMediaFromMetadata(interaction.Metadata)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -5161,6 +5175,7 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 			SuggestedReply: interaction.SuggestedReply,
 			FinalReply:     interaction.FinalReply,
 			CreatedAt:      interaction.CreatedAt,
+			Media:          media, // Include media information if present
 		},
 	})
 }
