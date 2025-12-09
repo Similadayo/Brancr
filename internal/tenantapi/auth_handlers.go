@@ -258,6 +258,9 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-complete onboarding if tenant has sufficient data
+	h.checkAndAutoCompleteOnboarding(&tenant)
+
 	var profile storage.BusinessProfile
 	h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
 

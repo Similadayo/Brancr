@@ -2165,6 +2165,9 @@ func (h *Handler) getOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 	var faqs []storage.BusinessFAQ
 	h.DB.Where("tenant_id = ?", tenant.ID).Find(&faqs)
 
+	// Auto-complete onboarding if tenant has sufficient data
+	h.checkAndAutoCompleteOnboarding(&tenant)
+
 	// Format menu items for response
 	menuItemsResp := make([]map[string]any, len(menuItems))
 	for i, item := range menuItems {
@@ -2223,6 +2226,63 @@ func getStringOrEmpty(s string) string {
 		return ""
 	}
 	return s
+}
+
+// checkAndAutoCompleteOnboarding checks if tenant has sufficient data and auto-completes onboarding if needed
+func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
+	if tenant.OnboardingComplete {
+		return // Already complete
+	}
+
+	// Get business profile
+	var profile storage.BusinessProfile
+	h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
+
+	// Get persona
+	var persona storage.Persona
+	h.DB.Where("tenant_id = ?", tenant.ID).First(&persona)
+
+	// Get business menu items
+	var menuItemsCount int64
+	h.DB.Model(&storage.BusinessMenuItem{}).Where("tenant_id = ?", tenant.ID).Count(&menuItemsCount)
+
+	// Get business FAQs
+	var faqsCount int64
+	h.DB.Model(&storage.BusinessFAQ{}).Where("tenant_id = ?", tenant.ID).Count(&faqsCount)
+
+	hasBusinessProfile := profile.Name != "" || profile.Industry != "" || profile.Description != ""
+	hasPersona := persona.BotName != "" && persona.Tone != ""
+	hasBusinessDetails := menuItemsCount > 0 || faqsCount > 0 || profile.Keywords != "" || profile.KnowledgeBase != ""
+
+	// Check if tenant has been using the system (has posts, media, or social accounts)
+	var postCount int64
+	h.DB.Model(&storage.ScheduledPost{}).Where("tenant_id = ?", tenant.ID).Count(&postCount)
+
+	var mediaCount int64
+	h.DB.Model(&storage.MediaAsset{}).Where("tenant_id = ?", tenant.ID).Count(&mediaCount)
+
+	var socialAccountCount int64
+	h.DB.Model(&storage.SocialAccount{}).Where("tenant_id = ? AND connected = ?", tenant.ID, true).Count(&socialAccountCount)
+
+	hasActivity := postCount > 0 || mediaCount > 0 || socialAccountCount > 0
+
+	// Auto-complete if tenant has:
+	// 1. Business profile AND persona (minimum required)
+	// 2. OR has been actively using the system (posts/media/social accounts)
+	if (hasBusinessProfile && hasPersona) || hasActivity {
+		tenant.OnboardingStep = "complete"
+		tenant.OnboardingComplete = true
+		if err := h.DB.Save(tenant).Error; err != nil {
+			h.Logger.Warn("failed to auto-complete onboarding", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
+		} else {
+			h.Logger.Info("auto-completed onboarding for existing tenant",
+				zap.Uint("tenant_id", tenant.ID),
+				zap.Bool("has_business_profile", hasBusinessProfile),
+				zap.Bool("has_persona", hasPersona),
+				zap.Bool("has_business_details", hasBusinessDetails),
+				zap.Bool("has_activity", hasActivity))
+		}
+	}
 }
 
 func (h *Handler) updateBusinessProfile(w http.ResponseWriter, r *http.Request) {
