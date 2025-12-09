@@ -314,29 +314,8 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Create business profile
-		profile := storage.BusinessProfile{
-			TenantID: tenant.ID,
-			Name:     companyName,
-			Tone:     "friendly",
-		}
-		if err := h.DB.Create(&profile).Error; err != nil {
-			h.Logger.Error("failed to create business profile", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
-		}
-
-		// Create persona
-		persona := storage.Persona{
-			TenantID:   tenant.ID,
-			BotName:    "Assistant",
-			Tone:       "friendly, helpful",
-			Language:   "en",
-			Humor:      true,
-			StyleNotes: "",
-		}
-		if err := h.DB.Create(&persona).Error; err != nil {
-			h.Logger.Error("failed to create persona", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
-		}
-
+		// Don't create default BusinessProfile or Persona - let user fill them out during onboarding
+		// This prevents auto-completion from triggering immediately
 		h.Logger.Info("created new tenant from Google OAuth", zap.Uint("tenant_id", tenant.ID), zap.String("email", email))
 	} else if err != nil {
 		h.Logger.Error("failed to query tenant", zap.Error(err), zap.String("email", email))
