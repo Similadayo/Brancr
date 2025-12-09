@@ -2274,6 +2274,11 @@ func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 		tenant.OnboardingComplete = true
 		if err := h.DB.Save(tenant).Error; err != nil {
 			h.Logger.Warn("failed to auto-complete onboarding", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
+			// Reload tenant from database to ensure we return the actual persisted state
+			// This prevents returning modified in-memory state when save fails
+			if reloadErr := h.DB.First(tenant, tenant.ID).Error; reloadErr != nil {
+				h.Logger.Error("failed to reload tenant after save failure", zap.Error(reloadErr), zap.Uint("tenant_id", tenant.ID))
+			}
 		} else {
 			h.Logger.Info("auto-completed onboarding for existing tenant",
 				zap.Uint("tenant_id", tenant.ID),
