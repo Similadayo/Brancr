@@ -540,10 +540,19 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 
 	query := h.DB.Where("tenant_id = ?", claims.TenantID)
 	if statusFilter != "" {
-		// For "scheduled" filter, include both "scheduled" and "posting" statuses
-		if statusFilter == "scheduled" {
+		switch statusFilter {
+		case "scheduled":
+			// For "scheduled" filter, include both "scheduled" and "posting" statuses
 			query = query.Where("status IN ?", []string{"scheduled", "posting"})
-		} else {
+		case "published", "posted":
+			// For "published" filter, use "posted" status
+			query = query.Where("status = ?", "posted")
+		case "draft":
+			// For "draft" filter, match the same logic as getCampaignStats:
+			// status = "draft" OR (scheduled_at IS NULL AND status != "posted")
+			query = query.Where("(status = ? OR (scheduled_at IS NULL AND status != ?))", "draft", "posted")
+		default:
+			// For other status filters, use exact match
 			query = query.Where("status = ?", statusFilter)
 		}
 	}
@@ -6394,28 +6403,48 @@ func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAcco
 	// Create Gupshup client
 	gupshupClient := social.NewGupshupClient(h.Config, h.Logger)
 
-	// Get default template ID if available
-	var templateID string
-	if app.DefaultTemplateID != "" {
-		templateID = app.DefaultTemplateID
-	}
-
-	// Send message via Gupshup
-	// Signature: SendMessage(appID, to, message, defaultTemplateID ...string)
-	_, err := gupshupClient.SendMessage(app.GupshupAppID, recipientID, message, templateID)
+	// Since we're using sessions, try session message first (no template needed)
+	// Session messages work within 24 hours of customer's last message
+	messageID, err := gupshupClient.SendSessionMessage(app.GupshupAppID, recipientID, message)
 	if err != nil {
-		h.Logger.Error("Failed to send WhatsApp message via Gupshup",
+		// Session message failed - might be outside 24-hour window
+		// Fall back to template message
+		h.Logger.Warn("Session message failed, falling back to template",
 			zap.Uint("tenant_id", acc.TenantID),
 			zap.String("app_id", app.GupshupAppID),
 			zap.String("recipient", recipientID),
-			zap.Error(err))
-		return fmt.Errorf("Gupshup API request failed: %w", err)
-	}
+			zap.Error(err),
+			zap.String("note", "This may happen if customer is outside 24-hour window"))
 
-	h.Logger.Info("✅ WhatsApp message sent via Gupshup",
-		zap.Uint("tenant_id", acc.TenantID),
-		zap.String("app_id", app.GupshupAppID),
-		zap.String("recipient", recipientID))
+		// Get default template ID if available
+		var templateID string
+		if app.DefaultTemplateID != "" {
+			templateID = app.DefaultTemplateID
+		}
+
+		// Try template message as fallback
+		messageID, err = gupshupClient.SendMessage(app.GupshupAppID, recipientID, message, templateID)
+		if err != nil {
+			h.Logger.Error("Failed to send WhatsApp message via Gupshup (both session and template failed)",
+				zap.Uint("tenant_id", acc.TenantID),
+				zap.String("app_id", app.GupshupAppID),
+				zap.String("recipient", recipientID),
+				zap.Error(err))
+			return fmt.Errorf("Gupshup API request failed: %w", err)
+		}
+
+		h.Logger.Info("✅ WhatsApp message sent via Gupshup (template fallback)",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("app_id", app.GupshupAppID),
+			zap.String("recipient", recipientID),
+			zap.String("message_id", messageID))
+	} else {
+		h.Logger.Info("✅ WhatsApp message sent via Gupshup (session message)",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("app_id", app.GupshupAppID),
+			zap.String("recipient", recipientID),
+			zap.String("message_id", messageID))
+	}
 
 	return nil
 }
