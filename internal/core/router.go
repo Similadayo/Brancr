@@ -11,6 +11,7 @@ import (
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/tenantapi"
 	"github.com/similadayo/brancr/pkg/metrics"
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 func SetupRouter(app *App) http.Handler {
@@ -38,6 +39,10 @@ func SetupRouter(app *App) http.Handler {
 
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", promhttp.Handler())
+
+	// Swagger/OpenAPI documentation
+	// The docs package is auto-imported by swag init, and httpSwagger will find it automatically
+	r.Get("/api/docs/*", httpSwagger.WrapHandler)
 
 	// Build a limited context for admin routes (breaks circular dependency)
 	adminCtx := &admin.AdminContext{

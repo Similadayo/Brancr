@@ -253,7 +253,7 @@ func (s *InstagramInsightsService) GetAccountInsights(ctx context.Context, accou
 			}
 		}
 
-		return nil, fmt.Errorf(errorMsg)
+		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
 	var insights AccountInsightsResponse
@@ -331,7 +331,7 @@ func (s *InstagramInsightsService) GetMediaInsights(ctx context.Context, account
 				"Please disconnect and reconnect your Instagram account to grant this permission."
 		}
 
-		return nil, fmt.Errorf(errorMsg)
+		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
 	var insights MediaInsightsResponse

@@ -65,10 +65,58 @@ clean:
 	rm -rf bin/
 	go clean
 
-# Database migrations (placeholder - adjust based on your migration tool)
+# Database migrations
 migrate:
-	@echo "Running migrations..."
-	@echo "Note: Adjust this target based on your migration tool"
+	@echo "Running database migrations..."
+	@if [ -z "$$POSTGRES_DSN" ]; then \
+		echo "Error: POSTGRES_DSN environment variable not set"; \
+		exit 1; \
+	fi
+	@if command -v migrate >/dev/null 2>&1; then \
+		migrate -path migrations -database "$$POSTGRES_DSN" up; \
+	else \
+		echo "golang-migrate CLI not installed. Install with:"; \
+		echo "  go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest"; \
+		echo ""; \
+		echo "Or migrations will run automatically on application startup."; \
+	fi
+
+# Create a new migration
+migrate-create:
+	@if [ -z "$(NAME)" ]; then \
+		echo "Error: NAME parameter required. Usage: make migrate-create NAME=add_new_column"; \
+		exit 1; \
+	fi
+	@if command -v migrate >/dev/null 2>&1; then \
+		migrate create -ext sql -dir migrations -seq $(NAME); \
+	else \
+		echo "golang-migrate CLI not installed. Install with:"; \
+		echo "  go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest"; \
+	fi
+
+# Rollback last migration
+migrate-down:
+	@if [ -z "$$POSTGRES_DSN" ]; then \
+		echo "Error: POSTGRES_DSN environment variable not set"; \
+		exit 1; \
+	fi
+	@if command -v migrate >/dev/null 2>&1; then \
+		migrate -path migrations -database "$$POSTGRES_DSN" down 1; \
+	else \
+		echo "golang-migrate CLI not installed"; \
+	fi
+
+# Check migration version
+migrate-version:
+	@if [ -z "$$POSTGRES_DSN" ]; then \
+		echo "Error: POSTGRES_DSN environment variable not set"; \
+		exit 1; \
+	fi
+	@if command -v migrate >/dev/null 2>&1; then \
+		migrate -path migrations -database "$$POSTGRES_DSN" version; \
+	else \
+		echo "golang-migrate CLI not installed"; \
+	fi
 
 # Development setup
 dev-setup: fmt vet lint

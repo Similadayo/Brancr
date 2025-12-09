@@ -335,40 +335,40 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		} else {
 			// Caption exists - check if tenant wants AI enhancement
 			if p.EnhanceCaption {
-				// Mode 3: AI-enhanced - Optimize tenant's caption based on their preferences
-				s.Logger.Info("🤖 Enhancing tenant caption with AI",
-					zap.String("platform", platformForCaption),
+			// Mode 3: AI-enhanced - Optimize tenant's caption based on their preferences
+			s.Logger.Info("🤖 Enhancing tenant caption with AI",
+				zap.String("platform", platformForCaption),
+				zap.Uint("tenant_id", p.TenantID))
+
+			s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, "", "in_progress", "")
+
+			req := OptimizeCaptionRequest{
+				OriginalCaption: originalCaption,
+				Platform:        platformForCaption,
+				MediaType:       mediaTypeForAI,
+				TenantID:        p.TenantID,
+				ImageURLs:       urls, // Pass image URLs for analysis
+			}
+
+			result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
+			if err == nil && result != nil {
+				optimizedCaption = result.OptimizedCaption
+				improvements = result.Improvements
+				s.Logger.Info("✨ Caption enhanced",
+					zap.String("original_length", fmt.Sprintf("%d chars", len(originalCaption))),
+					zap.String("enhanced_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
+					zap.Strings("hashtags", result.Hashtags))
+
+				// Log enhancement success
+				hashtagsJSON, _ := json.Marshal(result.Hashtags)
+				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_enhanced"}`, hashtagsJSON, result.SuggestedTime)
+				s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
+			} else if err != nil {
+				s.Logger.Warn("caption enhancement failed, using tenant's original",
+					zap.Error(err),
 					zap.Uint("tenant_id", p.TenantID))
-
-				s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, "", "in_progress", "")
-
-				req := OptimizeCaptionRequest{
-					OriginalCaption: originalCaption,
-					Platform:        platformForCaption,
-					MediaType:       mediaTypeForAI,
-					TenantID:        p.TenantID,
-					ImageURLs:       urls, // Pass image URLs for analysis
-				}
-
-				result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
-				if err == nil && result != nil {
-					optimizedCaption = result.OptimizedCaption
-					improvements = result.Improvements
-					s.Logger.Info("✨ Caption enhanced",
-						zap.String("original_length", fmt.Sprintf("%d chars", len(originalCaption))),
-						zap.String("enhanced_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
-						zap.Strings("hashtags", result.Hashtags))
-
-					// Log enhancement success
-					hashtagsJSON, _ := json.Marshal(result.Hashtags)
-					metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_enhanced"}`, hashtagsJSON, result.SuggestedTime)
-					s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
-				} else if err != nil {
-					s.Logger.Warn("caption enhancement failed, using tenant's original",
-						zap.Error(err),
-						zap.Uint("tenant_id", p.TenantID))
-					// Mode 2: Fallback to tenant-customized (use original as-is)
-					optimizedCaption = originalCaption
+				// Mode 2: Fallback to tenant-customized (use original as-is)
+				optimizedCaption = originalCaption
 					// Log enhancement failure to complete the audit trail
 					s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, originalCaption, "failed", err.Error())
 				}

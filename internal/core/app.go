@@ -67,6 +67,11 @@ type App struct {
 
 // ✅ NewApp initializes all components using the Services pattern
 func NewApp(cfg *config.Config) (*App, error) {
+	// Validate required configuration before proceeding
+	if err := cfg.ValidateRequired(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	logger, _ := zap.NewProduction()
 
 	// 🗄️ Database with connection pooling and timeout configuration
@@ -127,10 +132,18 @@ func NewApp(cfg *config.Config) (*App, error) {
 	}
 
 	// 🧱 Run migrations
+	// First run GORM AutoMigrate for model synchronization
 	if err := storage.AutoMigrate(db); err != nil {
-		logger.Warn("migration failed", zap.Error(err))
+		logger.Warn("gorm auto-migration failed", zap.Error(err))
 	} else {
-		logger.Info("migrations complete")
+		logger.Info("gorm auto-migration complete")
+	}
+	
+	// Then run SQL migrations for schema changes, indexes, etc.
+	migrationsPath := "migrations"
+	if err := storage.RunMigrations(db, migrationsPath, logger); err != nil {
+		logger.Warn("sql migrations failed", zap.Error(err))
+		// Don't fail startup if migrations fail - allow manual intervention
 	}
 
 	// 📊 Create database indexes for production performance

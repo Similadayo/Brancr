@@ -342,13 +342,25 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 // - GET /api/oauth/tiktok/callback -> TikTokOAuthHandler.Callback
 
 type signupRequest struct {
-	Name        string `json:"name"`
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	CompanyName string `json:"company_name"`
-	Phone       string `json:"phone"`
+	Name        string `json:"name" example:"John Doe"`
+	Email       string `json:"email" example:"john@example.com"`
+	Password    string `json:"password" example:"securePassword123"`
+	CompanyName string `json:"company_name" example:"Acme Corp"`
+	Phone       string `json:"phone" example:"+1234567890"`
 }
 
+// signup handles tenant registration
+// @Summary      Register a new tenant
+// @Description  Create a new tenant account with email, password, and company information
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        request  body      signupRequest  true  "Signup request"
+// @Success      201     {object}  map[string]interface{}  "Tenant created successfully"
+// @Failure      400     {object}  map[string]interface{}  "Invalid request"
+// @Failure      409     {object}  map[string]interface{}  "Email already exists"
+// @Failure      500     {object}  map[string]interface{}  "Internal server error"
+// @Router       /auth/signup [post]
 func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	var req signupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -482,15 +494,27 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email    string `json:"email" example:"john@example.com"`
+	Password string `json:"password" example:"securePassword123"`
 }
 
+// login handles tenant authentication
+// @Summary      Login tenant
+// @Description  Authenticate tenant with email and password, returns session cookie
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        request  body      object  true  "Login request"  example({"email":"john@example.com","password":"securePassword123"})
+// @Success      200     {object}  map[string]interface{}  "Login successful"
+// @Failure      400     {object}  map[string]interface{}  "Invalid request"
+// @Failure      401     {object}  map[string]interface{}  "Invalid credentials"
+// @Failure      500     {object}  map[string]interface{}  "Internal server error"
+// @Router       /auth/login [post]
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.Logger.Warn("login: failed to decode request body", zap.Error(err))
-		http.Error(w, "invalid payload", http.StatusBadRequest)
+		h.writeValidationError(w, r, "invalid request payload", nil)
 		return
 	}
 
@@ -498,32 +522,32 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 
 	if req.Email == "" {
 		h.Logger.Warn("login: empty email provided")
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "invalid credentials")
 		return
 	}
 
 	var tenant storage.Tenant
 	if err := h.DB.Where("LOWER(email) = ?", req.Email).First(&tenant).Error; err != nil {
 		h.Logger.Warn("login: tenant not found", zap.String("email", req.Email), zap.Error(err))
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "invalid credentials")
 		return
 	}
 
 	if tenant.PasswordHash == "" {
 		h.Logger.Error("login: tenant has no password hash", zap.Uint("tenant_id", tenant.ID), zap.String("email", req.Email))
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "invalid credentials")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(tenant.PasswordHash), []byte(req.Password)); err != nil {
 		h.Logger.Warn("login: password mismatch", zap.Uint("tenant_id", tenant.ID), zap.String("email", req.Email))
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "invalid credentials")
 		return
 	}
 
 	if err := h.setSessionCookie(w, tenant.ID, tenant.Email); err != nil {
 		h.Logger.Error("issue session cookie", zap.Error(err))
-		http.Error(w, "login failed", http.StatusInternalServerError)
+		h.writeInternalError(w, r, err)
 		return
 	}
 
@@ -793,10 +817,23 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// listScheduledPosts lists scheduled posts with optional filtering
+// @Summary      List scheduled posts
+// @Description  Get a list of scheduled posts, optionally filtered by status
+// @Tags         posts
+// @Accept       json
+// @Produce      json
+// @Param        status   query     string  false  "Filter by status (scheduled, posted, draft)"
+// @Param        limit    query     int     false  "Limit number of results (default: 100)"
+// @Security     BearerAuth
+// @Success      200      {object}  map[string]interface{}  "List of scheduled posts"
+// @Failure      401      {object}  map[string]interface{}  "Unauthorized"
+// @Failure      500      {object}  map[string]interface{}  "Internal server error"
+// @Router       /tenant/scheduled-posts [get]
 func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "unauthorized")
 		return
 	}
 
@@ -827,7 +864,7 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 		Limit(limit).
 		Find(&posts).Error; err != nil {
 		h.Logger.Error("fetch scheduled posts", zap.Error(err))
-		http.Error(w, "could not fetch scheduled posts", http.StatusInternalServerError)
+		h.writeInternalError(w, r, err)
 		return
 	}
 
@@ -1318,22 +1355,35 @@ func (h *Handler) subscribeInstagramPage(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// getScheduledPost retrieves a single scheduled post by ID
+// @Summary      Get scheduled post
+// @Description  Get details of a specific scheduled post by ID
+// @Tags         posts
+// @Accept       json
+// @Produce      json
+// @Param        id   path      int  true  "Post ID"
+// @Security     BearerAuth
+// @Success      200  {object}  map[string]interface{}  "Scheduled post details"
+// @Failure      400  {object}  map[string]interface{}  "Invalid request"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Post not found"
+// @Router       /tenant/scheduled-posts/{id} [get]
 func (h *Handler) getScheduledPost(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "unauthorized")
 		return
 	}
 
 	postID := chi.URLParam(r, "id")
 	if postID == "" {
-		http.Error(w, "post id required", http.StatusBadRequest)
+		h.writeValidationError(w, r, "post id required", nil)
 		return
 	}
 
 	var post storage.ScheduledPost
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, postID).First(&post).Error; err != nil {
-		http.Error(w, "scheduled post not found", http.StatusNotFound)
+		h.writeNotFoundError(w, r, "scheduled post")
 		return
 	}
 
@@ -1378,28 +1428,42 @@ func (h *Handler) getScheduledPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// deleteScheduledPost cancels a scheduled post (soft delete)
+// @Summary      Delete scheduled post
+// @Description  Cancel a scheduled post by marking it as cancelled. Cannot delete already posted content.
+// @Tags         posts
+// @Accept       json
+// @Produce      json
+// @Param        id   path      int  true  "Post ID"
+// @Security     BearerAuth
+// @Success      200  {object}  map[string]interface{}  "Post cancelled successfully"
+// @Failure      400  {object}  map[string]interface{}  "Invalid request or post already posted"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Post not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /tenant/scheduled-posts/{id} [delete]
 func (h *Handler) deleteScheduledPost(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "unauthorized")
 		return
 	}
 
 	postID := chi.URLParam(r, "id")
 	if postID == "" {
-		http.Error(w, "post id required", http.StatusBadRequest)
+		h.writeValidationError(w, r, "post id required", nil)
 		return
 	}
 
 	var post storage.ScheduledPost
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, postID).First(&post).Error; err != nil {
-		http.Error(w, "scheduled post not found", http.StatusNotFound)
+		h.writeNotFoundError(w, r, "scheduled post")
 		return
 	}
 
 	// Only allow cancellation of posts that haven't been posted yet
 	if post.Status == "posted" {
-		http.Error(w, "cannot delete already posted content", http.StatusBadRequest)
+		h.writeValidationError(w, r, "cannot delete already posted content", nil)
 		return
 	}
 
@@ -1407,7 +1471,7 @@ func (h *Handler) deleteScheduledPost(w http.ResponseWriter, r *http.Request) {
 	post.Status = "cancelled"
 	if err := h.DB.Save(&post).Error; err != nil {
 		h.Logger.Error("failed to cancel scheduled post", zap.Error(err), zap.Uint("post_id", post.ID))
-		http.Error(w, "failed to cancel post", http.StatusInternalServerError)
+		h.writeInternalError(w, r, err)
 		return
 	}
 
@@ -4018,22 +4082,35 @@ func (h *Handler) deleteMedia(w http.ResponseWriter, r *http.Request) {
 // =======================
 // Post creation
 // =======================
+// createPost creates a new scheduled post
+// @Summary      Create scheduled post
+// @Description  Create a new scheduled post with media, caption, and platforms. Can be published immediately or scheduled for later.
+// @Tags         posts
+// @Accept       json
+// @Produce      json
+// @Param        request  body      object  true  "Post creation request"  example({"media_ids":[1,2,3],"caption":"Check out our new product!","platforms":["instagram","facebook"],"scheduled_at":"2025-01-15T10:00:00Z","name":"Product Launch","enhance_caption":false})
+// @Security     BearerAuth
+// @Success      201     {object}  map[string]interface{}  "Post created successfully"
+// @Failure      400     {object}  map[string]interface{}  "Invalid request"
+// @Failure      401     {object}  map[string]interface{}  "Unauthorized"
+// @Failure      500     {object}  map[string]interface{}  "Internal server error"
+// @Router       /tenant/posts [post]
 func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "unauthorized")
 		return
 	}
 	var req struct {
-		MediaIDs       []uint   `json:"media_ids"`
-		Caption        string   `json:"caption"`
-		Platforms      []string `json:"platforms"`
-		ScheduledAt    string   `json:"scheduled_at"` // RFC3339
-		Name           string   `json:"name"`
-		EnhanceCaption bool     `json:"enhance_caption"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
+		MediaIDs       []uint   `json:"media_ids" example:"[1,2,3]" binding:"required"`
+		Caption        string   `json:"caption" example:"Check out our new product!"`
+		Platforms      []string `json:"platforms" example:"[\"instagram\",\"facebook\"]" binding:"required"`
+		ScheduledAt    string   `json:"scheduled_at" example:"2025-01-15T10:00:00Z"` // RFC3339
+		Name           string   `json:"name" example:"Product Launch"`
+		EnhanceCaption bool     `json:"enhance_caption" example:"false"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.MediaIDs) == 0 {
-		http.Error(w, "media_ids required", http.StatusBadRequest)
+		h.writeValidationError(w, r, "media_ids required", nil)
 		return
 	}
 	var scheduledAt *time.Time
@@ -4048,10 +4125,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 			if t, err := time.Parse(time.RFC3339, req.ScheduledAt); err == nil {
 				scheduledAt = &t
 			} else {
-				writeJSON(w, http.StatusBadRequest, map[string]any{
-					"error":   "invalid scheduled_at",
-					"message": "scheduled_at must be RFC3339 format or 'now'",
-				})
+				h.writeValidationError(w, r, "scheduled_at must be RFC3339 format or 'now'", nil)
 				return
 			}
 		}
@@ -4064,10 +4138,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 
 	// Validate platforms
 	if len(req.Platforms) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":   "platforms required",
-			"message": "At least one platform must be selected",
-		})
+		h.writeValidationError(w, r, "At least one platform must be selected", nil)
 		return
 	}
 
@@ -4085,10 +4156,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.DB.Create(&post).Error; err != nil {
 		h.Logger.Error("failed to create post", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "failed to create post",
-			"message": "An error occurred while creating the post",
-		})
+		h.writeInternalError(w, r, err)
 		return
 	}
 
@@ -5587,10 +5655,19 @@ func (h *Handler) getEscalationStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // getCampaignStats returns statistics about scheduled, published, and draft posts
+// @Summary      Get campaign statistics
+// @Description  Get counts for scheduled, published, and draft posts
+// @Tags         campaigns
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  map[string]interface{}  "Campaign statistics"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Router       /tenant/campaigns/stats [get]
 func (h *Handler) getCampaignStats(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "unauthorized")
 		return
 	}
 
@@ -5622,10 +5699,20 @@ func (h *Handler) getCampaignStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // getPerformanceSummary returns performance metrics for the overview dashboard
+// @Summary      Get performance summary
+// @Description  Get performance metrics including engagement rate, impressions, reach, and top performing post
+// @Tags         analytics
+// @Accept       json
+// @Produce      json
+// @Param        period  query     string  false  "Time period (7d, 30d, 90d, all)"  default(7d)
+// @Security     BearerAuth
+// @Success      200     {object}  map[string]interface{}  "Performance summary"
+// @Failure      401     {object}  map[string]interface{}  "Unauthorized"
+// @Router       /tenant/analytics/performance [get]
 func (h *Handler) getPerformanceSummary(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		h.writeUnauthorizedError(w, r, "unauthorized")
 		return
 	}
 

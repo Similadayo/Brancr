@@ -123,6 +123,7 @@ func Load() *Config {
 		PortalTokenExpiryDays: getEnvInt("PORTAL_TOKEN_EXPIRY_DAYS", 90),
 	}
 
+	// Run validation (warnings only, doesn't fail)
 	validateConfig(cfg)
 	return cfg
 }
