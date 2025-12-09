@@ -6370,12 +6370,58 @@ func (h *Handler) sendFacebookReply(ctx context.Context, acc *storage.SocialAcco
 }
 
 func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
-	// Handle Respond.io mode differently - it uses Respond.io API, not Meta API
-	if acc.Mode == "respondio" {
-		return h.sendWhatsAppReplyRespondIO(ctx, acc, recipientID, message)
+	// Since we only use Gupshup, check for Gupshup mode
+	// Gupshup connections are stored in WhatsAppApp table, not SocialAccount
+	// Check if account mode indicates Gupshup, or look up WhatsAppApp directly
+	var app storage.WhatsAppApp
+	if err := h.DB.Where("tenant_id = ? AND mode = ?", acc.TenantID, "gupshup_partner").First(&app).Error; err != nil {
+		// If no Gupshup app found, try to use Meta API as fallback (for backward compatibility)
+		h.Logger.Warn("No Gupshup app found, falling back to Meta API",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.Error(err))
+		return h.sendWhatsAppReplyMeta(ctx, acc, recipientID, message)
 	}
 
-	// For Meta/other providers, use Meta WhatsApp API
+	// Verify app is live and has required data
+	if app.Status != "live" {
+		return fmt.Errorf("WhatsApp app is not live (status: %s)", app.Status)
+	}
+
+	if app.GupshupAppID == "" {
+		return fmt.Errorf("Gupshup App ID not found for WhatsApp account")
+	}
+
+	// Create Gupshup client
+	gupshupClient := social.NewGupshupClient(h.Config, h.Logger)
+
+	// Get default template ID if available
+	var templateID string
+	if app.DefaultTemplateID != "" {
+		templateID = app.DefaultTemplateID
+	}
+
+	// Send message via Gupshup
+	// Signature: SendMessage(appID, to, message, defaultTemplateID ...string)
+	_, err := gupshupClient.SendMessage(app.GupshupAppID, recipientID, message, templateID)
+	if err != nil {
+		h.Logger.Error("Failed to send WhatsApp message via Gupshup",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("app_id", app.GupshupAppID),
+			zap.String("recipient", recipientID),
+			zap.Error(err))
+		return fmt.Errorf("Gupshup API request failed: %w", err)
+	}
+
+	h.Logger.Info("✅ WhatsApp message sent via Gupshup",
+		zap.Uint("tenant_id", acc.TenantID),
+		zap.String("app_id", app.GupshupAppID),
+		zap.String("recipient", recipientID))
+
+	return nil
+}
+
+// sendWhatsAppReplyMeta sends a WhatsApp message via Meta API (fallback for non-Gupshup)
+func (h *Handler) sendWhatsAppReplyMeta(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
 	// WhatsApp uses phone number as recipient
 	phoneNumberID := acc.PageID // This is phone_number_id for WhatsApp
 	if phoneNumberID == "" {
@@ -6425,32 +6471,6 @@ func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAcco
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
-}
-
-// sendWhatsAppReplyRespondIO sends a WhatsApp message via Respond.io API
-func (h *Handler) sendWhatsAppReplyRespondIO(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
-	if h.Config.RespondIOAPIKey == "" {
-		return fmt.Errorf("Respond.io API key not configured")
-	}
-
-	// Get channel ID from ExternalID (stored during connection)
-	channelID := acc.ExternalID
-	if channelID == "" {
-		return fmt.Errorf("Respond.io channel ID not found for WhatsApp account")
-	}
-
-	// Create Respond.io client
-	respondIOClient := social.NewRespondIOClient(h.Config.RespondIOAPIKey, h.Logger)
-
-	// Send message via Respond.io
-	// Signature: SendMessage(ctx, identifier, text, channelID)
-	// identifier is the recipient phone number, channelID is the WhatsApp channel ID
-	_, err := respondIOClient.SendMessage(ctx, recipientID, message, channelID)
-	if err != nil {
-		return fmt.Errorf("Respond.io API request failed: %w", err)
 	}
 
 	return nil
