@@ -16,6 +16,7 @@ import (
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/order"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/queue"
 	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/social"
@@ -39,6 +40,7 @@ type Services struct {
 	Cache         *cache.Cache
 	RateLimiter   *middleware.RateLimiter
 	CircuitBreakers map[string]*circuitbreaker.CircuitBreaker
+	QuotaService  *quota.QuotaService
 
 	// AI Services
 	AIClient          *ai.AIClient
@@ -154,14 +156,29 @@ func (s *Services) initProductionInfra() error {
 	s.RateLimiter = middleware.NewRateLimiter(s.Redis, s.Logger)
 	s.Logger.Info("✅ Rate limiter initialized")
 
+	// Initialize quota service
+	s.QuotaService = quota.NewQuotaService(s.DB, s.Logger)
+	s.Logger.Info("✅ Quota service initialized")
+
 	// Initialize circuit breakers for external APIs
+	cbConfig := circuitbreaker.DefaultConfig()
 	if s.Redis != nil {
-		cbConfig := circuitbreaker.DefaultConfig()
 		s.CircuitBreakers["tiktok"] = circuitbreaker.NewCircuitBreaker("tiktok", cbConfig, s.Redis, s.Logger)
 		s.CircuitBreakers["instagram"] = circuitbreaker.NewCircuitBreaker("instagram", cbConfig, s.Redis, s.Logger)
 		s.CircuitBreakers["facebook"] = circuitbreaker.NewCircuitBreaker("facebook", cbConfig, s.Redis, s.Logger)
 		s.CircuitBreakers["gupshup"] = circuitbreaker.NewCircuitBreaker("gupshup", cbConfig, s.Redis, s.Logger)
+		s.CircuitBreakers["openai"] = circuitbreaker.NewCircuitBreaker("openai", cbConfig, s.Redis, s.Logger)
+		s.CircuitBreakers["cloudinary"] = circuitbreaker.NewCircuitBreaker("cloudinary", cbConfig, s.Redis, s.Logger)
 		s.Logger.Info("✅ Circuit breakers initialized")
+	} else {
+		// Create in-memory circuit breakers when Redis is unavailable
+		s.CircuitBreakers["tiktok"] = circuitbreaker.NewCircuitBreaker("tiktok", cbConfig, nil, s.Logger)
+		s.CircuitBreakers["instagram"] = circuitbreaker.NewCircuitBreaker("instagram", cbConfig, nil, s.Logger)
+		s.CircuitBreakers["facebook"] = circuitbreaker.NewCircuitBreaker("facebook", cbConfig, nil, s.Logger)
+		s.CircuitBreakers["gupshup"] = circuitbreaker.NewCircuitBreaker("gupshup", cbConfig, nil, s.Logger)
+		s.CircuitBreakers["openai"] = circuitbreaker.NewCircuitBreaker("openai", cbConfig, nil, s.Logger)
+		s.CircuitBreakers["cloudinary"] = circuitbreaker.NewCircuitBreaker("cloudinary", cbConfig, nil, s.Logger)
+		s.Logger.Info("✅ Circuit breakers initialized (in-memory mode, Redis unavailable)")
 	}
 
 	return nil
@@ -170,6 +187,10 @@ func (s *Services) initProductionInfra() error {
 func (s *Services) initAI() error {
 	// Initialize AI Client
 	aiClient := ai.NewAIClient()
+	// Add circuit breaker for OpenAI if available
+	if cb, ok := s.CircuitBreakers["openai"]; ok {
+		aiClient.CircuitBreaker = cb
+	}
 	s.AIClient = aiClient
 
 	// Initialize Memory Service
@@ -191,7 +212,7 @@ func (s *Services) initAI() error {
 	// We'll set it after IndustryService is initialized
 	s.CustomerResponder = customerResponder
 
-	// Initialize Caption Optimizer
+	// Initialize Caption Optimizer (QuotaService will be set after initProductionInfra)
 	captionOptimizer := &CaptionOptimizerImpl{
 		Client: aiClient,
 		DB:     s.DB,
@@ -354,6 +375,10 @@ func (s *Services) initSocial() error {
 
 	// Initialize Scheduler (uses CaptionOptimizer interface)
 	scheduler := social.NewScheduler(s.DB, s.Logger, s.CaptionOptimizer)
+	// Set QuotaService if available
+	if s.QuotaService != nil {
+		scheduler.QuotaService = s.QuotaService
+	}
 
 	// Set scheduler on BotManager for immediate post execution
 	if s.BotManager != nil {

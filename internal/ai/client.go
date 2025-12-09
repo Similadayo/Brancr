@@ -47,6 +47,10 @@ type AIClient struct {
 	BaseURL     string
 	Model       string
 	IsOpenRouter bool // Track if using OpenRouter vs OpenAI direct
+	CircuitBreaker interface {
+		Execute(ctx context.Context, fn func() error) error
+		IsOpen() bool
+	}
 }
 
 func NewAIClient() *AIClient {
@@ -117,11 +121,29 @@ func (c *AIClient) Generate(ctx context.Context, messages []Message) (string, er
 	req.Header.Set("Content-Type", "application/json")
 	// OpenAI API doesn't require additional headers
 
-	// Increased timeout to 90 seconds for slower AI models
-	client := &http.Client{Timeout: 90 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("network error: %w", err)
+	// Use circuit breaker if available
+	var resp *http.Response
+	if c.CircuitBreaker != nil {
+		err := c.CircuitBreaker.Execute(ctx, func() error {
+			client := &http.Client{Timeout: 90 * time.Second}
+			var httpErr error
+			resp, httpErr = client.Do(req)
+			if httpErr != nil {
+				return fmt.Errorf("network error: %w", httpErr)
+			}
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	} else {
+		// Fallback without circuit breaker
+		client := &http.Client{Timeout: 90 * time.Second}
+		var httpErr error
+		resp, httpErr = client.Do(req)
+		if httpErr != nil {
+			return "", fmt.Errorf("network error: %w", httpErr)
+		}
 	}
 	defer resp.Body.Close()
 

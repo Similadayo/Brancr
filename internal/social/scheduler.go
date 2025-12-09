@@ -63,6 +63,7 @@ func NewScheduler(db *gorm.DB, logger *zap.Logger, optimizer CaptionOptimizer) *
 		DB:               db,
 		Logger:           logger,
 		CaptionOptimizer: optimizer,
+		QuotaService:     nil, // Will be set by caller if available
 	}
 }
 
@@ -197,6 +198,18 @@ func (s *Scheduler) ExecutePostImmediately(postID uint) error {
 func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	ctx := context.Background()
 
+	// Check post quota before executing
+	if s.QuotaService != nil {
+		if err := s.QuotaService.CheckPostQuota(ctx, p.TenantID); err != nil {
+			s.Logger.Warn("post quota exceeded, marking as failed",
+				zap.Uint("post_id", p.ID),
+				zap.Uint("tenant_id", p.TenantID),
+				zap.Error(err))
+			s.markFailed(p, err.Error(), false, false)
+			return
+		}
+	}
+
 	s.Logger.Info("📤 Starting post execution",
 		zap.Uint("post_id", p.ID),
 		zap.Uint("tenant_id", p.TenantID),
@@ -324,13 +337,23 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 				hashtagsJSON, _ := json.Marshal(result.Hashtags)
 				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_generated"}`, hashtagsJSON, result.SuggestedTime)
 				s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "generated", "", optimizedCaption, "success", improvements, metadata, "")
-			} else if err != nil {
+			} else {
+				// Handle both error cases and nil/empty result cases
+				var errorMsg string
+				if err != nil {
+					errorMsg = err.Error()
+				} else if result == nil {
+					errorMsg = "caption generation returned nil result"
+				} else if result.OptimizedCaption == "" {
+					errorMsg = "caption generation returned empty caption"
+				}
+				
 				s.Logger.Warn("AI caption generation failed, will use empty caption",
-					zap.Error(err),
+					zap.String("error", errorMsg),
 					zap.Uint("tenant_id", p.TenantID))
 				optimizedCaption = "" // Keep empty if generation fails
 				// Log generation failure to complete the audit trail
-				s.logPostActivity(p.TenantID, p.ID, platformForCaption, "generating", "", "", "failed", err.Error())
+				s.logPostActivity(p.TenantID, p.ID, platformForCaption, "generating", "", "", "failed", errorMsg)
 			}
 		} else {
 			// Caption exists - check if tenant wants AI enhancement
@@ -351,7 +374,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			}
 
 			result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
-			if err == nil && result != nil {
+			if err == nil && result != nil && result.OptimizedCaption != "" {
 				optimizedCaption = result.OptimizedCaption
 				improvements = result.Improvements
 				s.Logger.Info("✨ Caption enhanced",
@@ -363,15 +386,25 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 				hashtagsJSON, _ := json.Marshal(result.Hashtags)
 				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_enhanced"}`, hashtagsJSON, result.SuggestedTime)
 				s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
-			} else if err != nil {
+			} else {
+				// Handle both error cases and nil/empty result cases
+				var errorMsg string
+				if err != nil {
+					errorMsg = err.Error()
+				} else if result == nil {
+					errorMsg = "caption optimization returned nil result"
+				} else if result.OptimizedCaption == "" {
+					errorMsg = "caption optimization returned empty caption"
+				}
+				
 				s.Logger.Warn("caption enhancement failed, using tenant's original",
-					zap.Error(err),
+					zap.String("error", errorMsg),
 					zap.Uint("tenant_id", p.TenantID))
 				// Mode 2: Fallback to tenant-customized (use original as-is)
 				optimizedCaption = originalCaption
-					// Log enhancement failure to complete the audit trail
-					s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, originalCaption, "failed", err.Error())
-				}
+				// Log enhancement failure to complete the audit trail
+				s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, originalCaption, "failed", errorMsg)
+			}
 			} else {
 				// Mode 2: Tenant-customized - Use caption as-is (no AI enhancement)
 				optimizedCaption = originalCaption
@@ -406,6 +439,24 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		wg.Add(1)
 		go func(plat string) {
 			defer wg.Done()
+			
+			// Use defer/recover to ensure activity log is completed even on panic
+			defer func() {
+				if r := recover(); r != nil {
+					panicErr := fmt.Errorf("panic during posting: %v", r)
+					s.Logger.Error("panic during post execution",
+						zap.String("platform", plat),
+						zap.Uint("post_id", p.ID),
+						zap.Any("panic", r))
+					// Log failure to complete the audit trail
+					s.logPostActivity(p.TenantID, p.ID, plat, "posting", originalCaption, optimizedCaption, "failed", panicErr.Error())
+					
+					mu.Lock()
+					lastError = panicErr
+					failed = append(failed, plat)
+					mu.Unlock()
+				}
+			}()
 			
 			s.Logger.Info("📱 Posting to platform",
 				zap.String("platform", plat),
@@ -510,6 +561,15 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	// Mark status based on results
 	now := time.Now()
 	if successCount == len(platforms) {
+		// All successful - increment quota usage
+		if s.QuotaService != nil {
+			if err := s.QuotaService.IncrementPostUsage(ctx, p.TenantID); err != nil {
+				s.Logger.Warn("failed to increment post quota usage",
+					zap.Uint("tenant_id", p.TenantID),
+					zap.Error(err))
+			}
+		}
+
 		// All successful
 		if err := s.DB.Model(&storage.ScheduledPost{}).Where("id = ?", p.ID).
 			Updates(map[string]interface{}{

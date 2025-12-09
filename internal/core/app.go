@@ -26,11 +26,19 @@ import (
 
 // CaptionOptimizerImpl wraps ai.CaptionOptimizer for scheduler
 type CaptionOptimizerImpl struct {
-	Client *ai.AIClient
-	DB     *gorm.DB
+	Client       *ai.AIClient
+	DB           *gorm.DB
+	QuotaService *quota.QuotaService
 }
 
 func (c *CaptionOptimizerImpl) OptimizeCaption(ctx context.Context, req social.OptimizeCaptionRequest) (*social.OptimizeCaptionResult, error) {
+	// Check quota before making AI call
+	if c.QuotaService != nil {
+		if err := c.QuotaService.CheckAICallQuota(ctx, req.TenantID); err != nil {
+			return nil, fmt.Errorf("quota exceeded: %w", err)
+		}
+	}
+
 	optimizer := &ai.CaptionOptimizer{
 		Client: c.Client,
 		DB:     c.DB,
@@ -47,6 +55,14 @@ func (c *CaptionOptimizerImpl) OptimizeCaption(ctx context.Context, req social.O
 	result, err := optimizer.OptimizeCaption(ctx, aiReq)
 	if err != nil {
 		return nil, err
+	}
+
+	// Increment quota usage on success
+	if c.QuotaService != nil {
+		if incErr := c.QuotaService.IncrementAICallUsage(ctx, req.TenantID); incErr != nil {
+			// Log but don't fail - quota was already checked
+			// This is a safety net in case of race conditions
+		}
 	}
 
 	return &social.OptimizeCaptionResult{

@@ -518,3 +518,28 @@ type ContentCalendar struct {
 	Notes    string    `gorm:"type:text"`
 	Status   string    // planned, scheduled, posted, cancelled
 }
+
+// TenantQuota tracks resource usage and limits for tenants
+type TenantQuota struct {
+	gorm.Model
+	TenantID uint `gorm:"uniqueIndex"` // One quota per tenant
+	
+	// Limits (0 = unlimited)
+	AICallsLimit      int `gorm:"default:100"`      // Daily AI API calls limit
+	PostsLimit        int `gorm:"default:50"`      // Daily posts limit
+	StorageLimitMB    int `gorm:"default:1000"`     // Storage limit in MB
+	APICallsLimit     int `gorm:"default:1000"`     // Daily API calls limit
+	
+	// Current usage (reset daily)
+	AICallsUsed      int       `gorm:"default:0"`
+	PostsUsed        int       `gorm:"default:0"`
+	StorageUsedMB    int       `gorm:"default:0"`
+	APICallsUsed     int       `gorm:"default:0"`
+	
+	// Reset tracking
+	LastResetAt      time.Time `gorm:"default:CURRENT_TIMESTAMP"`
+	ResetFrequency   string    `gorm:"default:'daily'"` // daily, weekly, monthly
+	
+	// Plan type (free, pro, enterprise)
+	PlanType         string    `gorm:"size:50;default:'free'"`
+}

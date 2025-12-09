@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,13 +14,23 @@ import (
 type RateLimiter struct {
 	rdb    *redis.Client
 	logger *zap.Logger
+	// In-memory fallback
+	memoryStore *sync.Map
+	mu          sync.RWMutex
+}
+
+// memoryEntry stores rate limit data
+type memoryEntry struct {
+	count     int64
+	expiresAt time.Time
 }
 
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(rdb *redis.Client, logger *zap.Logger) *RateLimiter {
 	return &RateLimiter{
-		rdb:    rdb,
-		logger: logger,
+		rdb:         rdb,
+		logger:      logger,
+		memoryStore: &sync.Map{},
 	}
 }
 
@@ -100,17 +111,22 @@ func (rl *RateLimiter) TenantRateLimit(config RateLimitConfig) func(http.Handler
 func (rl *RateLimiter) GlobalRateLimit(requestsPerMinute int) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if rl.rdb == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			ctx := r.Context()
 			key := "ratelimit:global:minute"
-			current, err := rl.rdb.Incr(ctx, key).Result()
-			if err == nil {
-				rl.rdb.Expire(ctx, key, time.Minute)
-				if current > int64(requestsPerMinute) {
+			
+			if rl.rdb != nil {
+				// Use Redis if available
+				current, err := rl.rdb.Incr(ctx, key).Result()
+				if err == nil {
+					rl.rdb.Expire(ctx, key, time.Minute)
+					if current > int64(requestsPerMinute) {
+						http.Error(w, "Service temporarily unavailable. Please try again later.", http.StatusServiceUnavailable)
+						return
+					}
+				}
+			} else {
+				// Fallback to in-memory
+				if !rl.checkMemoryLimit(key, requestsPerMinute, time.Minute) {
 					http.Error(w, "Service temporarily unavailable. Please try again later.", http.StatusServiceUnavailable)
 					return
 				}
@@ -119,6 +135,52 @@ func (rl *RateLimiter) GlobalRateLimit(requestsPerMinute int) func(http.Handler)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// checkMemoryLimit checks and increments in-memory rate limit
+func (rl *RateLimiter) checkMemoryLimit(key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	
+	// Clean up expired entries periodically
+	if now.Unix()%60 == 0 { // Every minute
+		rl.cleanupMemoryStore()
+	}
+	
+	entryInterface, _ := rl.memoryStore.LoadOrStore(key, &memoryEntry{
+		count:     0,
+		expiresAt: now.Add(window),
+	})
+	
+	entry := entryInterface.(*memoryEntry)
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	
+	// Check if expired
+	if now.After(entry.expiresAt) {
+		entry.count = 1
+		entry.expiresAt = now.Add(window)
+		return true
+	}
+	
+	// Check limit
+	if entry.count >= int64(limit) {
+		return false
+	}
+	
+	entry.count++
+	return true
+}
+
+// cleanupMemoryStore removes expired entries
+func (rl *RateLimiter) cleanupMemoryStore() {
+	now := time.Now()
+	rl.memoryStore.Range(func(key, value interface{}) bool {
+		entry := value.(*memoryEntry)
+		if now.After(entry.expiresAt) {
+			rl.memoryStore.Delete(key)
+		}
+		return true
+	})
 }
 
 // PlatformRateLimit limits requests to external platforms per tenant
