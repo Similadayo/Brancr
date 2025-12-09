@@ -89,8 +89,25 @@ func (h *GoogleOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 	if successRedirect == "" {
 		successRedirect = h.Config.FrontendURL
 		if successRedirect == "" {
-			successRedirect = "/"
+			successRedirect = "https://brancr.com/app" // Default to app dashboard
 		}
+	}
+	
+	// Ensure redirect URL is absolute (not relative)
+	// If it's a relative path, prepend the frontend URL
+	if !strings.HasPrefix(successRedirect, "http://") && !strings.HasPrefix(successRedirect, "https://") {
+		// It's a relative path, make it absolute
+		baseURL := h.Config.FrontendURL
+		if baseURL == "" {
+			baseURL = "https://brancr.com" // Default fallback
+		}
+		// Remove trailing slash from base URL
+		baseURL = strings.TrimRight(baseURL, "/")
+		// Ensure redirect path starts with /
+		if !strings.HasPrefix(successRedirect, "/") {
+			successRedirect = "/" + successRedirect
+		}
+		successRedirect = baseURL + successRedirect
 	}
 
 	state, err := randomState()
@@ -162,11 +179,36 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	successRedirect := stateData["success_redirect"]
+	
+	// If no redirect was stored, use FrontendURL and append /app if needed
 	if successRedirect == "" {
-		successRedirect = h.Config.FrontendURL
-		if successRedirect == "" {
-			successRedirect = "/"
+		baseURL := h.Config.FrontendURL
+		if baseURL == "" {
+			baseURL = "https://brancr.com" // Default fallback
 		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		// Append /app if not already present
+		if !strings.HasSuffix(baseURL, "/app") && !strings.Contains(baseURL, "/app/") {
+			successRedirect = baseURL + "/app"
+		} else {
+			successRedirect = baseURL
+		}
+	}
+	
+	// Ensure redirect URL is absolute (not relative)
+	// If it's a relative path, prepend the frontend URL
+	if !strings.HasPrefix(successRedirect, "http://") && !strings.HasPrefix(successRedirect, "https://") {
+		// It's a relative path, make it absolute
+		baseURL := h.Config.FrontendURL
+		if baseURL == "" {
+			baseURL = "https://brancr.com" // Default fallback
+		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		// Ensure redirect path starts with /
+		if !strings.HasPrefix(successRedirect, "/") {
+			successRedirect = "/" + successRedirect
+		}
+		successRedirect = baseURL + successRedirect
 	}
 
 	// Clear state cookie
