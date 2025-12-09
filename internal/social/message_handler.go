@@ -27,31 +27,31 @@ type BotGetter interface {
 
 // MessageHandler processes incoming messages from social platforms
 type MessageHandler struct {
-	DB               *gorm.DB
-	Logger           *zap.Logger
-	IntentDetector   *ai.IntentDetector
-	Responder        *ai.CustomerResponder
-	SystemToken      string           // Brancr's system user token for provider-owned WhatsApp model (legacy)
-	RespondIO        *RespondIOClient // Respond.io API client for WhatsApp integration
-	GupshupClient    *GupshupClient   // Gupshup Partner API client
-	EscalationFunc   func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
-	BotGetter        BotGetter // Optional: for Telegram message sending
+	DB             *gorm.DB
+	Logger         *zap.Logger
+	IntentDetector *ai.IntentDetector
+	Responder      *ai.CustomerResponder
+	SystemToken    string           // Brancr's system user token for provider-owned WhatsApp model (legacy)
+	RespondIO      *RespondIOClient // Respond.io API client for WhatsApp integration
+	GupshupClient  *GupshupClient   // Gupshup Partner API client
+	EscalationFunc func(ctx context.Context, tenantID uint, interactionID uint, customerName, platform, message, suggestedReply, intent, tone string, confidence float64) error
+	BotGetter      BotGetter // Optional: for Telegram message sending
 }
 
 // IncomingMessage represents a message from a social platform
 type IncomingMessage struct {
-	Platform         string // instagram, facebook, tiktok, youtube, whatsapp
-	TenantID         uint
-	CustomerID       string // Platform-specific customer ID
-	CustomerName     string
-	CustomerUsername string
+	Platform           string // instagram, facebook, tiktok, youtube, whatsapp
+	TenantID           uint
+	CustomerID         string // Platform-specific customer ID
+	CustomerName       string
+	CustomerUsername   string
 	CustomerProfilePic string // Profile picture URL
-	MessageID        string // Platform-specific message ID
-	Content          string
-	MessageType      string // text, image, video, comment
-	ThreadID         string // For DMs/threads
-	Timestamp        time.Time
-	Metadata         map[string]interface{} // Platform-specific data
+	MessageID          string // Platform-specific message ID
+	Content            string
+	MessageType        string // text, image, video, comment
+	ThreadID           string // For DMs/threads
+	Timestamp          time.Time
+	Metadata           map[string]interface{} // Platform-specific data
 }
 
 // ProcessMessage handles an incoming message: detects intent, decides auto-reply or escalation
@@ -76,7 +76,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	if msg.MessageID != "" {
 		var existingInteraction storage.Interaction
 		var err error
-		
+
 		if msg.Platform == "instagram" {
 			// For Instagram: Check across all tenants to catch duplicates from different account types
 			// Exclude "processing" interactions (lock interactions that haven't been fully processed yet)
@@ -88,7 +88,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			err = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ? AND response_type != ?",
 				msg.TenantID, msg.Platform, msg.MessageID, "incoming", "processing").First(&existingInteraction).Error
 		}
-		
+
 		if err == nil {
 			// Message already processed - skip to prevent duplicate responses
 			h.Logger.Info("⏭️ Skipping duplicate message - already processed",
@@ -203,7 +203,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			interaction.ResponseType = "auto_reply"
 			interaction.ResponseStatus = "pending"
 			interaction.Metadata = h.metadataToJSON(msg.Metadata)
-			
+
 			if err := h.DB.Save(&interaction).Error; err != nil {
 				h.Logger.Error("failed to update lock interaction", zap.Error(err))
 			} else {
@@ -217,7 +217,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			lockInteractionID = 0 // Reset to create new interaction
 		}
 	}
-	
+
 	// If no lock interaction, create new one
 	if lockInteractionID == 0 {
 		interaction = storage.Interaction{
@@ -241,7 +241,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			h.Logger.Error("failed to log interaction", zap.Error(err))
 		}
 	}
-	
+
 	if interaction.ConversationID == 0 {
 		// CRITICAL: If interaction was created without conversation_id, try to link it now
 		h.Logger.Warn("⚠️ Interaction created without conversation_id - attempting to link",
@@ -249,7 +249,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			zap.Uint("tenant_id", msg.TenantID),
 			zap.Uint("customer_id", customer.ID),
 			zap.String("platform", msg.Platform))
-		
+
 		// Try to find or create conversation again
 		if conv, convErr := h.createOrGetConversation(ctx, msg, customer.ID); convErr == nil && conv != nil {
 			interaction.ConversationID = conv.ID
@@ -276,7 +276,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 
 	// Step 4: Smart escalation decision - check multiple factors
 	shouldEscalate, escalationReason := h.shouldEscalateToHuman(ctx, msg, customer, intent, conversationID)
-	
+
 	if shouldEscalate {
 		h.Logger.Info("🚨 Escalation required",
 			zap.String("reason", escalationReason),
@@ -385,7 +385,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			// Still create outgoing interaction but log the error
 		}
 	}
-	
+
 	// CRITICAL: Verify we're using the same conversation as the incoming interaction
 	// If the incoming interaction has a conversation_id, use that one
 	if interaction.ConversationID > 0 && interaction.ConversationID != conversationID {
@@ -423,12 +423,12 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			zap.Uint("customer_id", customer.ID),
 			zap.String("platform", msg.Platform),
 			zap.String("message_preview", func() string {
-			if len(reply) > 50 {
-				return reply[:50] + "..."
-			}
-			return reply
-		}()))
-		
+				if len(reply) > 50 {
+					return reply[:50] + "..."
+				}
+				return reply
+			}()))
+
 		// Update conversation's last message time after outgoing message is sent
 		if conversationID > 0 {
 			if conversation == nil || conversation.ID != conversationID {
@@ -470,17 +470,17 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, msg IncomingMessage, customer *storage.Customer, interactionID uint, conversationID uint) {
 	// Check if there's a recent escalated interaction in this conversation (within last 24 hours)
 	cutoffTime := time.Now().Add(-24 * time.Hour)
-	
+
 	var recentEscalatedInteraction storage.Interaction
 	query := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ? AND response_type = ? AND response_status = ? AND created_at > ?",
 		msg.TenantID, customer.ID, msg.Platform, "manual", "sent", cutoffTime).
 		Order("created_at DESC").First(&recentEscalatedInteraction)
-	
+
 	if query.Error != nil {
 		// No recent escalated interaction - this is a new conversation
 		return
 	}
-	
+
 	// Found a recent escalated reply - this is a follow-up!
 	// Log for now - we can enhance this later to send notifications
 	h.Logger.Info("📬 Customer follow-up after escalated conversation",
@@ -488,7 +488,7 @@ func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, 
 		zap.Uint("original_interaction_id", recentEscalatedInteraction.ID),
 		zap.Uint("new_interaction_id", interactionID),
 		zap.String("customer_message", msg.Content))
-	
+
 	// TODO: Send notification to tenant via EscalationHandler about this follow-up
 	// This will be handled after the main reply logic decides what to do
 }
@@ -502,7 +502,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if err == nil {
 		// Update last message time
 		customer.LastMessageAt = msg.Timestamp
-		
+
 		// Update customer name if we have new information
 		// Always update when we have a name from the message (not just when empty)
 		if msg.CustomerName != "" {
@@ -523,7 +523,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 					zap.String("extracted_name", extractedName))
 			}
 		}
-		
+
 		// Update username if we have a better one (always update if we have new username)
 		if msg.CustomerUsername != "" {
 			if customer.Username == "" || msg.CustomerUsername != customer.Username {
@@ -534,7 +534,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 					zap.String("new_username", msg.CustomerUsername))
 			}
 		}
-		
+
 		// Update profile picture if we have a new one (always update when available)
 		if msg.CustomerProfilePic != "" {
 			if customer.ProfilePicURL == "" || msg.CustomerProfilePic != customer.ProfilePicURL {
@@ -544,7 +544,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 					zap.String("profile_pic_url", msg.CustomerProfilePic))
 			}
 		}
-		
+
 		h.DB.Save(&customer)
 		return &customer, nil
 	}
@@ -554,7 +554,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 	if extractedName != "" && msg.CustomerName == "" {
 		msg.CustomerName = extractedName
 	}
-	
+
 	// For Instagram: If we don't have a name, use a better fallback than "Instagram User"
 	displayName := msg.CustomerName
 	if displayName == "" && msg.Platform == "instagram" {
@@ -568,7 +568,7 @@ func (h *MessageHandler) trackCustomer(ctx context.Context, msg IncomingMessage)
 			displayName = "Instagram Customer"
 		}
 	}
-	
+
 	// Create new customer
 	customer = storage.Customer{
 		TenantID:      msg.TenantID,
@@ -660,7 +660,7 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 	err := h.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?",
 		msg.TenantID, customerID, msg.Platform).
 		Order("created_at DESC").First(&existing).Error
-	
+
 	if err == nil {
 		// Found existing conversation - update it
 		existing.LastMessageAt = msg.Timestamp
@@ -672,7 +672,7 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 		h.DB.Save(&existing)
 		return &existing, nil
 	}
-	
+
 	// Create new conversation with fallback thread ID
 	platformThreadID := msg.ThreadID
 	if platformThreadID == "" {
@@ -681,7 +681,7 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 	if platformThreadID == "" {
 		platformThreadID = fmt.Sprintf("%s_%d", msg.Platform, customerID)
 	}
-	
+
 	conversation := storage.Conversation{
 		TenantID:         msg.TenantID,
 		CustomerID:       customerID,
@@ -690,11 +690,11 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 		Status:           "active",
 		LastMessageAt:    msg.Timestamp,
 	}
-	
+
 	if err := h.DB.Create(&conversation).Error; err != nil {
 		return nil, fmt.Errorf("failed to create conversation (fallback): %w", err)
 	}
-	
+
 	return &conversation, nil
 }
 
@@ -702,7 +702,7 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 // Returns (shouldEscalate, reason)
 func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, conversationID uint) (bool, string) {
 	messageLower := strings.ToLower(msg.Content)
-	
+
 	// 1. Check if customer explicitly asks for human
 	explicitHumanRequest := strings.Contains(messageLower, "speak to") ||
 		strings.Contains(messageLower, "talk to") ||
@@ -714,11 +714,11 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		strings.Contains(messageLower, "actual person") ||
 		strings.Contains(messageLower, "get me someone") ||
 		strings.Contains(messageLower, "connect me")
-	
+
 	if explicitHumanRequest {
 		return true, "customer_explicitly_requested_human"
 	}
-	
+
 	// 2. Check conversation history for repeated frustration
 	if conversationID > 0 {
 		var recentInteractions []storage.Interaction
@@ -727,7 +727,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 			Order("created_at DESC").
 			Limit(5).
 			Find(&recentInteractions)
-		
+
 		// Count negative/urgent tones in recent messages
 		negativeCount := 0
 		for _, inter := range recentInteractions {
@@ -735,12 +735,12 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 				negativeCount++
 			}
 		}
-		
+
 		// If 3+ negative messages in last 24 hours, escalate
 		if negativeCount >= 3 {
 			return true, fmt.Sprintf("repeated_frustration_%d_negative_messages", negativeCount)
 		}
-		
+
 		// Check if customer has been escalated before in this conversation
 		var previousEscalation storage.Interaction
 		if err := h.DB.Where("conversation_id = ? AND response_type = ? AND created_at > ?",
@@ -752,22 +752,22 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 			}
 		}
 	}
-	
+
 	// 3. Very low confidence - can't understand the message (escalate to human)
 	if intent.Confidence < 0.25 {
 		return true, fmt.Sprintf("very_low_confidence_%.2f", intent.Confidence)
 	}
-	
+
 	// 4. High confidence + Critical intent + Negative/Urgent tone → Escalate
 	// Only escalate if we're VERY confident it's a real issue that needs human judgment
 	// This allows AI to handle routine questions like "What's your refund policy?"
 	isCriticalIntent := intent.Intent == "refund" || intent.Intent == "complaint" || intent.Intent == "delivery_issue"
 	isNegativeTone := intent.Tone == "negative" || intent.Tone == "urgent"
-	
+
 	if isCriticalIntent && intent.Confidence > 0.85 && isNegativeTone {
 		return true, fmt.Sprintf("high_confidence_critical_intent_%s_%s", intent.Intent, intent.Tone)
 	}
-	
+
 	// 5. Payment-related messages - but be smart about it
 	// Only escalate if it's about actual payment processing, not just asking about prices
 	isPaymentProcessing := strings.Contains(messageLower, "paid") ||
@@ -777,25 +777,25 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		strings.Contains(messageLower, "billing") ||
 		strings.Contains(messageLower, "invoice") ||
 		strings.Contains(messageLower, "receipt")
-	
+
 	isPriceInquiry := strings.Contains(messageLower, "how much") ||
 		strings.Contains(messageLower, "what's the price") ||
 		strings.Contains(messageLower, "how much does") ||
 		strings.Contains(messageLower, "cost") ||
 		strings.Contains(messageLower, "price") ||
 		strings.Contains(messageLower, "pricing")
-	
+
 	// Escalate payment processing issues, but not simple price inquiries
 	if intent.Intent == "payment" && isPaymentProcessing && !isPriceInquiry {
 		return true, "payment_processing_issue"
 	}
-	
+
 	// 6. Intent detector explicitly says it requires escalation
 	// But only if confidence is reasonable (not a false positive)
 	if intent.RequiresEscalation && intent.Confidence > 0.4 {
 		return true, "intent_detector_flagged_escalation"
 	}
-	
+
 	// 7. Complex/ambiguous messages that need human judgment
 	// Check message length and complexity
 	wordCount := len(strings.Fields(msg.Content))
@@ -803,7 +803,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		// Very long message with low confidence - likely complex issue
 		return true, "complex_message_low_confidence"
 	}
-	
+
 	// Default: don't escalate, let AI handle it
 	return false, ""
 }
@@ -856,7 +856,7 @@ func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMe
 	if err := h.sendReply(ctx, msg, reply); err != nil {
 		return err
 	}
-	
+
 	// Then send images if available
 	if len(imageURLs) > 0 {
 		// For Instagram, send all images in one request (up to 10)
@@ -867,7 +867,7 @@ func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMe
 			if len(imageURLs) > maxImages {
 				imageURLs = imageURLs[:maxImages]
 			}
-			
+
 			var acc storage.SocialAccount
 			if err := h.DB.Where("tenant_id = ? AND platform = ? AND connected = ?",
 				msg.TenantID, msg.Platform, true).First(&acc).Error; err == nil {
@@ -900,7 +900,7 @@ func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMe
 			if len(imageURLs) > maxImages {
 				imageURLs = imageURLs[:maxImages]
 			}
-			
+
 			for _, imageURL := range imageURLs {
 				if err := h.sendImageReply(ctx, msg, imageURL); err != nil {
 					h.Logger.Warn("Failed to send image",
@@ -911,7 +911,7 @@ func (h *MessageHandler) sendReplyWithImages(ctx context.Context, msg IncomingMe
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -1016,7 +1016,7 @@ func (h *MessageHandler) sendInstagramImageReply(ctx context.Context, acc *stora
 	}
 
 	var payload map[string]interface{}
-	
+
 	if len(imageURLs) == 1 {
 		// Single image - use attachment (singular, not attachments array)
 		// According to Instagram API docs: for single image, use "attachment" (singular)
@@ -1212,7 +1212,7 @@ func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, rep
 				zap.String("account_page_id", acc.PageID))
 			recipientID = msg.CustomerID
 		}
-		
+
 		// CRITICAL: Final validation - ensure recipient ID is not the account ID
 		if recipientID == "" {
 			return fmt.Errorf("CRITICAL: Cannot send Instagram message - both ThreadID and CustomerID are empty or invalid")
@@ -1220,12 +1220,12 @@ func (h *MessageHandler) sendReply(ctx context.Context, msg IncomingMessage, rep
 		if recipientID == acc.ExternalID || recipientID == acc.PageID {
 			return fmt.Errorf("CRITICAL: Cannot send Instagram message - recipient ID (%s) matches account ID. This is likely an echo message that should have been filtered earlier.", recipientID)
 		}
-		
+
 		h.Logger.Info("📨 Sending Instagram reply",
 			zap.String("recipient_id", recipientID),
 			zap.String("thread_id", msg.ThreadID),
 			zap.String("customer_id", msg.CustomerID))
-		
+
 		return h.sendInstagramReply(ctx, &acc, recipientID, reply)
 	case "facebook":
 		return h.sendFacebookReply(ctx, &acc, msg.ThreadID, reply)
@@ -1447,6 +1447,25 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 
 		errorMsg := fmt.Sprintf("Instagram API error %d: %s", resp.StatusCode, string(body))
 
+		// Enhanced monitoring for Instagram rate limits
+		isRateLimit := resp.StatusCode == 403 ||
+			strings.Contains(strings.ToLower(apiError.Error.Message), "rate limit") ||
+			strings.Contains(strings.ToLower(apiError.Error.Message), "request limit reached") ||
+			apiError.Error.Code == 4 || apiError.Error.Code == 17
+
+		if isRateLimit {
+			h.Logger.Error("🚨 INSTAGRAM RATE LIMIT HIT - MONITORING ALERT",
+				zap.Int("error_code", apiError.Error.Code),
+				zap.Int("status_code", resp.StatusCode),
+				zap.String("error_type", apiError.Error.Type),
+				zap.String("error_message", apiError.Error.Message),
+				zap.String("fbtrace_id", apiError.Error.FbtraceID),
+				zap.String("alert_type", "instagram_rate_limit"),
+				zap.String("action_required", "Reduce message sending frequency, wait before retrying"),
+				zap.Uint("tenant_id", acc.TenantID),
+				zap.String("platform", "instagram"))
+		}
+
 		// Provide specific guidance for common errors based on Meta's error codes
 		if apiError.Error.Code == 3 {
 			h.Logger.Error("❌ INSTAGRAM MESSAGING CAPABILITY MISSING",
@@ -1512,20 +1531,20 @@ func (h *MessageHandler) sendInstagramReply(ctx context.Context, acc *storage.So
 			zap.String("recipient_id", response.RecipientID),
 			zap.String("message_id", response.MessageID),
 			zap.String("message_preview", func() string {
-			if len(reply) > 50 {
-				return reply[:50] + "..."
-			}
-			return reply
-		}()))
+				if len(reply) > 50 {
+					return reply[:50] + "..."
+				}
+				return reply
+			}()))
 	} else {
 		h.Logger.Info("✅ Instagram DM sent",
 			zap.String("recipient_id", threadID),
 			zap.String("message_preview", func() string {
-			if len(reply) > 50 {
-				return reply[:50] + "..."
-			}
-			return reply
-		}()))
+				if len(reply) > 50 {
+					return reply[:50] + "..."
+				}
+				return reply
+			}()))
 	}
 
 	return nil
@@ -1660,20 +1679,20 @@ func (h *MessageHandler) sendFacebookReply(ctx context.Context, acc *storage.Soc
 			zap.String("recipient_id", response.RecipientID),
 			zap.String("message_id", response.MessageID),
 			zap.String("message_preview", func() string {
-			if len(reply) > 50 {
-				return reply[:50] + "..."
-			}
-			return reply
-		}()))
+				if len(reply) > 50 {
+					return reply[:50] + "..."
+				}
+				return reply
+			}()))
 	} else {
 		h.Logger.Info("✅ Facebook Messenger message sent",
 			zap.String("recipient_id", threadID),
 			zap.String("message_preview", func() string {
-			if len(reply) > 50 {
-				return reply[:50] + "..."
-			}
-			return reply
-		}()))
+				if len(reply) > 50 {
+					return reply[:50] + "..."
+				}
+				return reply
+			}()))
 	}
 
 	return nil
@@ -1736,7 +1755,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 		h.Logger.Info("💬 Within 24-hour window - attempting session message (no template)",
 			zap.String("customer_id", customerID),
 			zap.String("app_id", app.GupshupAppID))
-		
+
 		// Try sending without template (session message)
 		// If Gupshup doesn't support this, it will fail and we'll fall back to template
 		messageID, err := h.GupshupClient.SendSessionMessage(app.GupshupAppID, customerID, reply)
@@ -1744,7 +1763,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 			h.Logger.Info("✅ Session message sent successfully (no template needed)",
 				zap.String("customer_id", customerID),
 				zap.String("message_id", messageID))
-			
+
 			// Update interaction with message ID
 			var interaction storage.Interaction
 			if err := h.DB.Where("tenant_id = ? AND platform = ? AND direction = ? AND response_status = ?",
@@ -1756,7 +1775,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 			}
 			return nil
 		}
-		
+
 		// Session message failed - fall back to template
 		h.Logger.Warn("⚠️ Session message failed, falling back to template",
 			zap.String("customer_id", customerID),
@@ -1770,7 +1789,7 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 	if app.DefaultTemplateID == "" {
 		h.Logger.Info("🎨 No AI template found, creating one automatically",
 			zap.String("app_id", app.GupshupAppID))
-		
+
 		templateID, err := h.GupshupClient.CreateAITemplate(app.GupshupAppID)
 		if err != nil {
 			h.Logger.Warn("⚠️ Failed to create AI template automatically (will try Meta Library fallback)",
@@ -1819,9 +1838,9 @@ func (h *MessageHandler) sendWhatsAppReply(ctx context.Context, acc *storage.Soc
 
 	h.Logger.Info("✅ WhatsApp message sent via Gupshup",
 		zap.String("customer_id", customerID),
-				zap.String("message_id", messageID),
+		zap.String("message_id", messageID),
 		zap.String("app_id", app.GupshupAppID))
-	
+
 	// Update the most recent outgoing interaction with message ID
 	var interaction storage.Interaction
 	if err := h.DB.Where("tenant_id = ? AND platform = ? AND direction = ? AND response_status = ?",
@@ -2220,12 +2239,12 @@ func (h *MessageHandler) ensureInstagramLoginToken(ctx context.Context, acc *sto
 // shouldSendSticker determines if a sticker should be sent based on intent and message content
 func (h *MessageHandler) shouldSendSticker(intent *ai.DetectedIntent, message string) bool {
 	messageLower := strings.ToLower(message)
-	
+
 	// Check for positive tone
 	if intent.Tone == "positive" && intent.Confidence > 0.6 {
 		return true
 	}
-	
+
 	// Check for appreciation keywords
 	appreciationKeywords := []string{
 		"thank", "thanks", "thank you", "appreciate", "grateful",
@@ -2234,20 +2253,20 @@ func (h *MessageHandler) shouldSendSticker(intent *ai.DetectedIntent, message st
 		"best", "favorite", "favourite", "happy", "pleased",
 		"delighted", "satisfied", "impressed",
 	}
-	
+
 	for _, keyword := range appreciationKeywords {
 		if strings.Contains(messageLower, keyword) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
 // findMentionedPost searches for Instagram posts that match what the customer mentioned
 func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, message string) string {
 	messageLower := strings.ToLower(message)
-	
+
 	// Check if customer is talking about a post
 	mentionsPost := strings.Contains(messageLower, "post") ||
 		strings.Contains(messageLower, "photo you posted") ||
@@ -2258,11 +2277,11 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 		strings.Contains(messageLower, "the post") ||
 		strings.Contains(messageLower, "reel") ||
 		strings.Contains(messageLower, "story")
-	
+
 	if !mentionsPost {
 		return ""
 	}
-	
+
 	// Search for recent Instagram posts from this tenant
 	// Look in PostAnalytics table for published posts with PlatformPostID
 	var postAnalytics []storage.PostAnalytics
@@ -2274,7 +2293,7 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 		h.Logger.Warn("Failed to search for posts", zap.Error(err))
 		return ""
 	}
-	
+
 	if len(postAnalytics) == 0 {
 		// Fallback: search ScheduledPost table
 		var posts []storage.ScheduledPost
@@ -2294,11 +2313,11 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 			}
 		}
 	}
-	
+
 	if len(postAnalytics) == 0 {
 		return ""
 	}
-	
+
 	// If customer mentions "recent", "latest", "newest", return the most recent post
 	if strings.Contains(messageLower, "recent") || strings.Contains(messageLower, "latest") ||
 		strings.Contains(messageLower, "newest") || strings.Contains(messageLower, "last") {
@@ -2306,19 +2325,19 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 			return postAnalytics[0].PlatformPostID
 		}
 	}
-	
+
 	// Try to match post by caption keywords
 	// Get ScheduledPost captions for matching
 	var scheduledPostIDs []uint
 	for _, analytics := range postAnalytics {
 		scheduledPostIDs = append(scheduledPostIDs, analytics.ScheduledPostID)
 	}
-	
+
 	var posts []storage.ScheduledPost
 	if len(scheduledPostIDs) > 0 {
 		h.DB.Where("id IN ?", scheduledPostIDs).Find(&posts)
 	}
-	
+
 	// Extract keywords from message (remove common words)
 	messageWords := strings.Fields(messageLower)
 	keywords := []string{}
@@ -2332,13 +2351,13 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 			keywords = append(keywords, word)
 		}
 	}
-	
+
 	// Search for post with matching keywords in caption
 	for _, analytics := range postAnalytics {
 		if analytics.PlatformPostID == "" {
 			continue
 		}
-		
+
 		// Find corresponding ScheduledPost for caption
 		var postCaption string
 		for _, post := range posts {
@@ -2347,11 +2366,11 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 				break
 			}
 		}
-		
+
 		if postCaption == "" {
 			continue
 		}
-		
+
 		matches := 0
 		for _, keyword := range keywords {
 			if strings.Contains(postCaption, keyword) {
@@ -2363,11 +2382,11 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 			return analytics.PlatformPostID
 		}
 	}
-	
+
 	// If no specific match, return the most recent post
 	if len(postAnalytics) > 0 && postAnalytics[0].PlatformPostID != "" {
 		return postAnalytics[0].PlatformPostID
 	}
-	
+
 	return ""
 }

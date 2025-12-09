@@ -60,7 +60,7 @@ type Handler struct {
 	Logger               *zap.Logger
 	Config               *config.Config
 	Redis                *redis.Client
-	Cache                *cache.Cache                    // Redis cache for sessions and tenant data
+	Cache                *cache.Cache // Redis cache for sessions and tenant data
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 	Scheduler            *social.Scheduler
 	AIClient             *ai.AIClient
@@ -141,11 +141,11 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/tenant/onboarding/business-details", h.updateBusinessDetails)
 		r.Post("/tenant/onboarding/industry", h.setOnboardingIndustry)
 		r.Post("/tenant/onboarding/complete", h.completeOnboarding)
-		
+
 		// All other routes require onboarding to be complete
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.OnboardingCheck(h.DB, h.Logger))
-			
+
 			// Post-onboarding settings
 			r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
 			r.Put("/tenant/settings/persona", h.updatePersonaSettings)
@@ -663,12 +663,12 @@ func (h *Handler) setSessionCookie(w http.ResponseWriter, tenantID uint, email s
 		Name:     SessionCookie,
 		Value:    token,
 		Path:     "/",
-		MaxAge:   int(sessionTTL.Seconds()), // Use MaxAge for better browser compatibility
+		MaxAge:   int(sessionTTL.Seconds()),  // Use MaxAge for better browser compatibility
 		Expires:  time.Now().Add(sessionTTL), // Also set Expires for older browsers
 		Domain:   h.cookieDomain(),
 		HttpOnly: true,
 		SameSite: http.SameSiteNoneMode, // Required for cross-site requests (OAuth redirects)
-		Secure:   true,                   // Required when SameSite=None
+		Secure:   true,                  // Required when SameSite=None
 	}
 
 	http.SetCookie(w, cookie)
@@ -4223,15 +4223,30 @@ func (h *Handler) getBulkUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createBulkUpload(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "Bulk upload creation via dashboard not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Bulk upload creation via dashboard not implemented yet",
+		"coming_soon": true,
+		"feature":     "bulk_uploads",
+	})
 }
 
 func (h *Handler) updateBulkUploadStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "Pause/Resume not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Pause/Resume not implemented yet",
+		"coming_soon": true,
+		"feature":     "bulk_uploads",
+	})
 }
 
 func (h *Handler) cancelBulkUpload(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "Cancel not implemented yet"})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Cancel not implemented yet",
+		"coming_soon": true,
+		"feature":     "bulk_uploads",
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -4557,21 +4572,21 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 
 	// Get customer info and last message for each conversation
 	type conversationResp struct {
-		ID                uint            `json:"id"`
-		CustomerID        uint            `json:"customer_id"`
-		CustomerName      string          `json:"customer_name"`
-		CustomerAvatar     string          `json:"customer_avatar"`
-		CustomerPhone     string          `json:"customer_phone,omitempty"`      // Phone number (for WhatsApp)
-		CustomerCountryCode string         `json:"customer_country_code,omitempty"` // Country code (e.g., "234")
-		CustomerDialCode  string          `json:"customer_dial_code,omitempty"`   // Dial code (e.g., "8137369592")
-		Platform          string          `json:"platform"`
-		Status            string          `json:"status"`
-		LastMessage       string          `json:"last_message"`
-		LastMessageAt     time.Time       `json:"last_message_at"`
-		UnreadCount       int             `json:"unread_count"`
-		CreatedAt         time.Time       `json:"created_at"`
-		UpdatedAt         time.Time       `json:"updated_at"`
-		LastMessageMedia  *InteractionMedia `json:"last_message_media,omitempty"` // Media preview for last message
+		ID                  uint              `json:"id"`
+		CustomerID          uint              `json:"customer_id"`
+		CustomerName        string            `json:"customer_name"`
+		CustomerAvatar      string            `json:"customer_avatar"`
+		CustomerPhone       string            `json:"customer_phone,omitempty"`        // Phone number (for WhatsApp)
+		CustomerCountryCode string            `json:"customer_country_code,omitempty"` // Country code (e.g., "234")
+		CustomerDialCode    string            `json:"customer_dial_code,omitempty"`    // Dial code (e.g., "8137369592")
+		Platform            string            `json:"platform"`
+		Status              string            `json:"status"`
+		LastMessage         string            `json:"last_message"`
+		LastMessageAt       time.Time         `json:"last_message_at"`
+		UnreadCount         int               `json:"unread_count"`
+		CreatedAt           time.Time         `json:"created_at"`
+		UpdatedAt           time.Time         `json:"updated_at"`
+		LastMessageMedia    *InteractionMedia `json:"last_message_media,omitempty"` // Media preview for last message
 	}
 
 	resp := make([]conversationResp, 0, len(conversations))
@@ -4584,7 +4599,7 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 		if conv.Platform == "whatsapp" {
 			// For WhatsApp, phone is stored in PlatformID
 			customerPhone = customer.PlatformID
-			
+
 			// Try to get country_code and dial_code from first interaction metadata
 			var firstInteraction storage.Interaction
 			if err := h.DB.Where("conversation_id = ? AND direction = ?", conv.ID, "incoming").
@@ -4637,21 +4652,21 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 				Count(&unreadCount)
 
 			resp = append(resp, conversationResp{
-				ID:                conv.ID,
-				CustomerID:        conv.CustomerID,
-				CustomerName:      customer.DisplayName,
-				CustomerAvatar:    customer.ProfilePicURL,
-				CustomerPhone:     customerPhone,
+				ID:                  conv.ID,
+				CustomerID:          conv.CustomerID,
+				CustomerName:        customer.DisplayName,
+				CustomerAvatar:      customer.ProfilePicURL,
+				CustomerPhone:       customerPhone,
 				CustomerCountryCode: countryCode,
-				CustomerDialCode:  dialCode,
-				Platform:          conv.Platform,
-				Status:            conv.Status,
-				LastMessage:       lastMessageText, // Show message from any party
-				LastMessageAt:     conv.LastMessageAt,
-				UnreadCount:       int(unreadCount),
-				CreatedAt:         conv.CreatedAt,
-				UpdatedAt:         conv.UpdatedAt,
-				LastMessageMedia:  lastMessageMedia, // Include media preview if present
+				CustomerDialCode:    dialCode,
+				Platform:            conv.Platform,
+				Status:              conv.Status,
+				LastMessage:         lastMessageText, // Show message from any party
+				LastMessageAt:       conv.LastMessageAt,
+				UnreadCount:         int(unreadCount),
+				CreatedAt:           conv.CreatedAt,
+				UpdatedAt:           conv.UpdatedAt,
+				LastMessageMedia:    lastMessageMedia, // Include media preview if present
 			})
 		} else {
 			// No interactions yet - still create conversation entry
@@ -4662,20 +4677,20 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 				customerPhone = customer.PlatformID
 			}
 			resp = append(resp, conversationResp{
-				ID:                conv.ID,
-				CustomerID:        conv.CustomerID,
-				CustomerName:      customer.DisplayName,
-				CustomerAvatar:    customer.ProfilePicURL,
-				CustomerPhone:     customerPhone,
+				ID:                  conv.ID,
+				CustomerID:          conv.CustomerID,
+				CustomerName:        customer.DisplayName,
+				CustomerAvatar:      customer.ProfilePicURL,
+				CustomerPhone:       customerPhone,
 				CustomerCountryCode: countryCode,
-				CustomerDialCode:  dialCode,
-				Platform:          conv.Platform,
-				Status:            conv.Status,
-				LastMessage:       "",
-				LastMessageAt:     conv.LastMessageAt,
-				UnreadCount:       int(unreadCount),
-				CreatedAt:         conv.CreatedAt,
-				UpdatedAt:         conv.UpdatedAt,
+				CustomerDialCode:    dialCode,
+				Platform:            conv.Platform,
+				Status:              conv.Status,
+				LastMessage:         "",
+				LastMessageAt:       conv.LastMessageAt,
+				UnreadCount:         int(unreadCount),
+				CreatedAt:           conv.CreatedAt,
+				UpdatedAt:           conv.UpdatedAt,
 			})
 		}
 	}
@@ -4714,7 +4729,7 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	if conversation.Platform == "whatsapp" {
 		// For WhatsApp, phone is stored in PlatformID
 		customerPhone = customer.PlatformID
-		
+
 		// Try to get country_code and dial_code from first interaction metadata
 		var firstInteraction storage.Interaction
 		if err := h.DB.Where("conversation_id = ? AND direction = ?", conversation.ID, "incoming").
@@ -4855,17 +4870,17 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		zap.Int("outgoing", outgoingCount))
 
 	type interactionResp struct {
-		ID             uint            `json:"id"`
-		Direction      string          `json:"direction"`
-		MessageType    string          `json:"message_type"`
-		Content        string          `json:"content"`
-		DetectedIntent string          `json:"detected_intent"`
-		DetectedTone   string          `json:"detected_tone"`
-		ResponseType   string          `json:"response_type"`
-		ResponseStatus string          `json:"response_status"`
-		SuggestedReply string          `json:"suggested_reply"`
-		FinalReply     string          `json:"final_reply"`
-		CreatedAt      time.Time       `json:"created_at"`
+		ID             uint              `json:"id"`
+		Direction      string            `json:"direction"`
+		MessageType    string            `json:"message_type"`
+		Content        string            `json:"content"`
+		DetectedIntent string            `json:"detected_intent"`
+		DetectedTone   string            `json:"detected_tone"`
+		ResponseType   string            `json:"response_type"`
+		ResponseStatus string            `json:"response_status"`
+		SuggestedReply string            `json:"suggested_reply"`
+		FinalReply     string            `json:"final_reply"`
+		CreatedAt      time.Time         `json:"created_at"`
 		Media          *InteractionMedia `json:"media,omitempty"` // Media information (if message has media)
 	}
 
@@ -4940,18 +4955,18 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":                  conversation.ID,
-		"customer_id":         conversation.CustomerID,
-		"customer_name":       customer.DisplayName,
-		"customer_avatar":     customer.ProfilePicURL,
-		"customer_phone":      customerPhone,
+		"id":                    conversation.ID,
+		"customer_id":           conversation.CustomerID,
+		"customer_name":         customer.DisplayName,
+		"customer_avatar":       customer.ProfilePicURL,
+		"customer_phone":        customerPhone,
 		"customer_country_code": countryCode,
-		"customer_dial_code":  dialCode,
-		"platform":            conversation.Platform,
-		"status":              conversation.Status,
-		"messages":            messages, // This includes ALL messages (incoming + outgoing)
-		"created_at":          conversation.CreatedAt,
-		"updated_at":          conversation.UpdatedAt,
+		"customer_dial_code":    dialCode,
+		"platform":              conversation.Platform,
+		"status":                conversation.Status,
+		"messages":              messages, // This includes ALL messages (incoming + outgoing)
+		"created_at":            conversation.CreatedAt,
+		"updated_at":            conversation.UpdatedAt,
 	})
 }
 
@@ -5076,10 +5091,10 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 						zap.String("platform", conversation.Platform),
 						zap.Uint("conversation_id", conversation.ID),
 						zap.Duration("time_since_last_message", timeSinceLastMessage))
-					
+
 					writeJSON(w, http.StatusBadRequest, map[string]any{
-						"error":   "outside_24_hour_window",
-						"message": fmt.Sprintf("Cannot send message: Customer's last message was %v ago. %s only allows free-form messages within 24 hours of the customer's last message. Please use a template message or wait for the customer to message again.", 
+						"error": "outside_24_hour_window",
+						"message": fmt.Sprintf("Cannot send message: Customer's last message was %v ago. %s only allows free-form messages within 24 hours of the customer's last message. Please use a template message or wait for the customer to message again.",
 							formatDuration(timeSinceLastMessage), strings.Title(conversation.Platform)),
 						"time_since_last_message": timeSinceLastMessage.String(),
 					})
@@ -5094,9 +5109,9 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 							zap.String("platform", conversation.Platform),
 							zap.Uint("conversation_id", conversation.ID),
 							zap.Duration("time_since_last_message", timeSinceLastMessage))
-						
+
 						writeJSON(w, http.StatusBadRequest, map[string]any{
-							"error":   "outside_24_hour_window",
+							"error": "outside_24_hour_window",
 							"message": fmt.Sprintf("Cannot send message: Last activity was %v ago. %s only allows free-form messages within 24 hours of the customer's last message.",
 								formatDuration(timeSinceLastMessage), strings.Title(conversation.Platform)),
 							"time_since_last_message": timeSinceLastMessage.String(),
@@ -5243,17 +5258,17 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 
 	// Return the created interaction in the same format as getConversation
 	type interactionResp struct {
-		ID             uint            `json:"id"`
-		Direction      string          `json:"direction"`
-		MessageType    string          `json:"message_type"`
-		Content        string          `json:"content"`
-		DetectedIntent string          `json:"detected_intent"`
-		DetectedTone   string          `json:"detected_tone"`
-		ResponseType   string          `json:"response_type"`
-		ResponseStatus string          `json:"response_status"`
-		SuggestedReply string          `json:"suggested_reply"`
-		FinalReply     string          `json:"final_reply"`
-		CreatedAt      time.Time       `json:"created_at"`
+		ID             uint              `json:"id"`
+		Direction      string            `json:"direction"`
+		MessageType    string            `json:"message_type"`
+		Content        string            `json:"content"`
+		DetectedIntent string            `json:"detected_intent"`
+		DetectedTone   string            `json:"detected_tone"`
+		ResponseType   string            `json:"response_type"`
+		ResponseStatus string            `json:"response_status"`
+		SuggestedReply string            `json:"suggested_reply"`
+		FinalReply     string            `json:"final_reply"`
+		CreatedAt      time.Time         `json:"created_at"`
 		Media          *InteractionMedia `json:"media,omitempty"` // Media information (if message has media)
 	}
 
@@ -6399,31 +6414,45 @@ func (h *Handler) listTeamMembers(w http.ResponseWriter, r *http.Request) {
 				"created_at": tenant.CreatedAt,
 			},
 		},
-		"message": "Team management coming soon",
+		"message":     "Team management coming soon",
+		"coming_soon": true,
+		"feature":     "team_management",
 	})
 }
 
 func (h *Handler) inviteTeamMember(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"message": "Team invitations coming soon",
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Team invitations coming soon",
+		"coming_soon": true,
+		"feature":     "team_management",
 	})
 }
 
 func (h *Handler) getTeamMember(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"message": "Team management coming soon",
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Team management coming soon",
+		"coming_soon": true,
+		"feature":     "team_management",
 	})
 }
 
 func (h *Handler) updateTeamMember(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"message": "Team management coming soon",
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Team management coming soon",
+		"coming_soon": true,
+		"feature":     "team_management",
 	})
 }
 
 func (h *Handler) deleteTeamMember(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"message": "Team management coming soon",
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error":       "not_implemented",
+		"message":     "Team management coming soon",
+		"coming_soon": true,
+		"feature":     "team_management",
 	})
 }
 

@@ -1645,6 +1645,24 @@ func (c *GupshupClient) SendMessage(appID, to, message string, defaultTemplateID
 				errorMessage = msg
 			}
 
+			// Enhanced monitoring for template failures
+			isTemplateError := strings.Contains(strings.ToLower(errorMessage), "template") ||
+				strings.Contains(strings.ToLower(errorMessage), "4003") ||
+				resp.StatusCode == 400
+
+			if isTemplateError {
+				c.Logger.Error("🚨 WHATSAPP TEMPLATE ERROR - MONITORING ALERT",
+					zap.Int("status_code", resp.StatusCode),
+					zap.String("app_id", appID),
+					zap.String("template_id", templateID),
+					zap.Int("params_count", len(templateParams)),
+					zap.Strings("params", templateParams),
+					zap.String("error_message", errorMessage),
+					zap.String("full_response", string(body)),
+					zap.String("alert_type", "whatsapp_template_failure"),
+					zap.String("action_required", "Check template approval status and parameter count"))
+			}
+
 			c.Logger.Error("❌ Gupshup Send Message failed",
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("url", apiURL),

@@ -26,19 +26,19 @@ import (
 )
 
 const (
-	tikTokBaseAPI         = "https://open.tiktokapis.com"
-	tikTokInitUploadPath  = "/v2/post/publish/video/init/"        // Direct post video
-	tikTokInboxVideoPath  = "/v2/post/publish/inbox/video/init/"   // Upload to inbox (video)
-	tikTokContentInitPath = "/v2/post/publish/content/init/"       // Photo posting (direct or inbox)
-	tikTokStatusPath      = "/v2/post/publish/status/fetch/"
-	tikTokCreatorInfoPath = "/v2/post/publish/creator_info/query/"
-	tikTokRefreshPath     = "/v2/oauth/token/"
-	tikTokVideoListPath   = "/v2/video/list/"
-	tikTokVideoQueryPath  = "/v2/video/query/"
-	tikTokVideoDeletePath = "/v2/video/delete/"
-	tikTokCommentListPath = "/v2/comment/list/"
+	tikTokBaseAPI          = "https://open.tiktokapis.com"
+	tikTokInitUploadPath   = "/v2/post/publish/video/init/"       // Direct post video
+	tikTokInboxVideoPath   = "/v2/post/publish/inbox/video/init/" // Upload to inbox (video)
+	tikTokContentInitPath  = "/v2/post/publish/content/init/"     // Photo posting (direct or inbox)
+	tikTokStatusPath       = "/v2/post/publish/status/fetch/"
+	tikTokCreatorInfoPath  = "/v2/post/publish/creator_info/query/"
+	tikTokRefreshPath      = "/v2/oauth/token/"
+	tikTokVideoListPath    = "/v2/video/list/"
+	tikTokVideoQueryPath   = "/v2/video/query/"
+	tikTokVideoDeletePath  = "/v2/video/delete/"
+	tikTokCommentListPath  = "/v2/comment/list/"
 	tikTokCommentReplyPath = "/v2/comment/reply/"
-	tikTokResearchPath    = "/v2/research/video/query/"
+	tikTokResearchPath     = "/v2/research/video/query/"
 )
 
 // TikTokConnector handles posting media to TikTok using the Content Posting API.
@@ -105,7 +105,7 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	if asset == nil {
 		return errors.New("tiktok asset payload missing")
 	}
-	
+
 	// Check if asset is photo or video
 	mediaURL, isPhoto, err := t.getMediaURL(asset)
 	if err != nil {
@@ -120,7 +120,7 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	// For videos, check for video.publish scope (direct post) or video.upload scope (inbox)
 	hasPublishScope := t.hasAuthorizedScope(acc, "video.publish")
 	hasUploadScope := t.hasAuthorizedScope(acc, "video.upload")
-	
+
 	if !hasPublishScope && !hasUploadScope {
 		return fmt.Errorf("tiktok posting requires 'video.publish' (for direct posting) or 'video.upload' (for inbox upload) scope, but user has not authorized either. Please reconnect your TikTok account and ensure you grant the appropriate permission")
 	}
@@ -154,7 +154,7 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	// Route to appropriate endpoint based on available scope
 	var session *tiktokSession
 	var initErr error
-	
+
 	if hasPublishScope {
 		// Use direct post endpoint (requires video.publish scope)
 		t.Logger.Info("Using TikTok direct post endpoint (video.publish scope)",
@@ -184,12 +184,25 @@ func (t *TikTokConnector) PostMedia(ctx context.Context, acc *storage.SocialAcco
 	}
 
 	if initErr != nil {
+		// Enhanced monitoring for TikTok upload failures
+		t.Logger.Error("🚨 TIKTOK UPLOAD INIT FAILED - MONITORING ALERT",
+			zap.Uint("tenant_id", acc.TenantID),
+			zap.String("error", initErr.Error()),
+			zap.String("alert_type", "tiktok_upload_failure"),
+			zap.String("action_required", "Check TikTok API status, video format, and account permissions"))
 		return fmt.Errorf("tiktok init upload failed: %w", initErr)
 	}
 
 	// Upload the video file (downloads from URL and uploads to TikTok)
 	if session != nil && session.UploadURL != "" {
 		if uploadErr := t.uploadVideo(ctx, session, videoURL); uploadErr != nil {
+			// Enhanced monitoring for TikTok upload failures
+			t.Logger.Error("🚨 TIKTOK VIDEO UPLOAD FAILED - MONITORING ALERT",
+				zap.Uint("tenant_id", acc.TenantID),
+				zap.String("publish_id", session.PublishID),
+				zap.String("error", uploadErr.Error()),
+				zap.String("alert_type", "tiktok_upload_failure"),
+				zap.String("action_required", "Check video file size, format, network connectivity, and TikTok API status"))
 			return fmt.Errorf("tiktok upload failed: %w", uploadErr)
 		}
 	}
@@ -483,16 +496,16 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 	// This is less efficient but necessary for some CDNs
 	t.Logger.Info("⚠️ Video size not available from headers, downloading to determine size",
 		zap.String("video_url", videoURL))
-	
+
 	downloadReq, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create download request: %w", err)
 	}
-	
+
 	// Set headers that might help with Cloudinary and other CDNs
 	downloadReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Brancr/1.0)")
 	downloadReq.Header.Set("Accept", "*/*")
-	
+
 	downloadResp, err := t.httpClient.Do(downloadReq)
 	if err != nil {
 		return 0, fmt.Errorf("failed to download video to determine size: %w", err)
@@ -508,13 +521,13 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 		if errorMsg == "" {
 			errorMsg = fmt.Sprintf("HTTP %d with no error message", downloadResp.StatusCode)
 		}
-		
+
 		t.Logger.Error("❌ Failed to download video to determine size",
 			zap.String("video_url", videoURL),
 			zap.Int("status_code", downloadResp.StatusCode),
 			zap.String("error_body", errorMsg),
 			zap.String("content_type", downloadResp.Header.Get("Content-Type")))
-		
+
 		return 0, fmt.Errorf("failed to download video (%d): %s", downloadResp.StatusCode, errorMsg)
 	}
 
@@ -535,12 +548,12 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 	if err != nil {
 		return 0, fmt.Errorf("failed to read video to determine size: %w", err)
 	}
-	
+
 	size := int64(len(body))
 	if size > maxSize {
 		return 0, fmt.Errorf("video too large (exceeds %d bytes)", maxSize)
 	}
-	
+
 	if size == 0 {
 		return 0, errors.New("video appears to be empty or could not be downloaded")
 	}
@@ -548,7 +561,7 @@ func (t *TikTokConnector) getRemoteVideoSize(ctx context.Context, videoURL strin
 	t.Logger.Info("✅ Video size determined by downloading and reading",
 		zap.String("video_url", videoURL),
 		zap.Int64("size", size))
-	
+
 	return size, nil
 }
 
@@ -602,10 +615,10 @@ func (t *TikTokConnector) initUpload(ctx context.Context, accessToken, caption s
 	level := normalizePrivacyForPayload(privacyLevel)
 
 	postInfo := map[string]interface{}{
-		"title":         defaultTikTokTitle(caption),
-		"privacy_level": level,
-		"disable_duet":  options.DisableDuet,
-		"disable_stitch": options.DisableStitch,
+		"title":           defaultTikTokTitle(caption),
+		"privacy_level":   level,
+		"disable_duet":    options.DisableDuet,
+		"disable_stitch":  options.DisableStitch,
 		"disable_comment": options.DisableComment,
 	}
 
@@ -705,10 +718,10 @@ func (t *TikTokConnector) initUploadWithURL(ctx context.Context, accessToken, ca
 	level := normalizePrivacyForPayload(privacyLevel)
 
 	postInfo := map[string]interface{}{
-		"title":         defaultTikTokTitle(caption),
-		"privacy_level": level,
-		"disable_duet":  options.DisableDuet,
-		"disable_stitch": options.DisableStitch,
+		"title":           defaultTikTokTitle(caption),
+		"privacy_level":   level,
+		"disable_duet":    options.DisableDuet,
+		"disable_stitch":  options.DisableStitch,
 		"disable_comment": options.DisableComment,
 	}
 
@@ -1051,7 +1064,7 @@ func (t *TikTokConnector) getMediaURL(asset *storage.MediaAsset) (string, bool, 
 
 	firstURL := urls[0]
 	lowerURL := strings.ToLower(firstURL)
-	
+
 	// Check if it's a video
 	isVideo := strings.HasSuffix(lowerURL, ".mp4") ||
 		strings.HasSuffix(lowerURL, ".mov") ||
@@ -1059,7 +1072,7 @@ func (t *TikTokConnector) getMediaURL(asset *storage.MediaAsset) (string, bool, 
 		strings.HasSuffix(lowerURL, ".mkv") ||
 		strings.Contains(lowerURL, "video") ||
 		asset.Type == "video"
-	
+
 	// Check if it's a photo
 	isPhoto := strings.HasSuffix(lowerURL, ".jpg") ||
 		strings.HasSuffix(lowerURL, ".jpeg") ||
@@ -1068,7 +1081,7 @@ func (t *TikTokConnector) getMediaURL(asset *storage.MediaAsset) (string, bool, 
 		strings.HasSuffix(lowerURL, ".webp") ||
 		strings.Contains(lowerURL, "image") ||
 		asset.Type == "image"
-	
+
 	if !isVideo && !isPhoto {
 		// Try to infer from asset type
 		if asset.Type == "video" {
@@ -1128,7 +1141,7 @@ func (t *TikTokConnector) convertPhotoToVideo(ctx context.Context, photoURL, cap
 	// Step 4: Upload image to Cloudinary as a video resource
 	// Cloudinary will create a video from the image (static image video)
 	folder := "brancr/tiktok/conversions"
-	
+
 	t.Logger.Info("📤 Uploading image to Cloudinary",
 		zap.String("public_id", publicID),
 		zap.String("folder", folder))
@@ -1303,7 +1316,7 @@ func (t *TikTokConnector) CheckVideoStatus(ctx context.Context, acc *storage.Soc
 
 	var result struct {
 		Data struct {
-			Status  string `json:"status"`  // PROCESSING, PUBLISHED, FAILED
+			Status  string `json:"status"`   // PROCESSING, PUBLISHED, FAILED
 			VideoID string `json:"video_id"` // Available when status is PUBLISHED
 		} `json:"data"`
 		Error struct {
@@ -1327,8 +1340,8 @@ func (t *TikTokConnector) CheckVideoStatus(ctx context.Context, acc *storage.Soc
 	}
 
 	statusInfo := map[string]interface{}{
-		"status":    result.Data.Status,
-		"video_id":  result.Data.VideoID,
+		"status":     result.Data.Status,
+		"video_id":   result.Data.VideoID,
 		"publish_id": publishID,
 	}
 
@@ -1432,8 +1445,8 @@ func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAcc
 
 	var result struct {
 		Data struct {
-			Videos []map[string]interface{} `json:"videos"`
-			Cursor string                    `json:"cursor"`
+			Videos  []map[string]interface{} `json:"videos"`
+			Cursor  string                   `json:"cursor"`
 			HasMore bool                     `json:"has_more"`
 		} `json:"data"`
 		Error struct {
@@ -1457,10 +1470,10 @@ func (t *TikTokConnector) ListVideos(ctx context.Context, acc *storage.SocialAcc
 	}
 
 	response := map[string]interface{}{
-		"videos":  result.Data.Videos,
-		"cursor":  result.Data.Cursor,
+		"videos":   result.Data.Videos,
+		"cursor":   result.Data.Cursor,
 		"has_more": result.Data.HasMore,
-		"count":   len(result.Data.Videos),
+		"count":    len(result.Data.Videos),
 	}
 
 	t.Logger.Info("✅ TikTok videos listed",
@@ -1491,8 +1504,8 @@ func (t *TikTokConnector) GetVideoAnalytics(ctx context.Context, acc *storage.So
 		"query": map[string]interface{}{
 			"and": []map[string]interface{}{
 				{
-					"operation": "EQ",
-					"field_name": "video_id",
+					"operation":    "EQ",
+					"field_name":   "video_id",
 					"field_values": []string{videoID},
 				},
 			},
@@ -1560,18 +1573,18 @@ func (t *TikTokConnector) GetVideoAnalytics(ctx context.Context, acc *storage.So
 	}
 
 	analytics := result.Data.Videos[0]
-	
+
 	// Calculate engagement rate
 	viewCount, _ := analytics["view_count"].(float64)
 	likeCount, _ := analytics["like_count"].(float64)
 	commentCount, _ := analytics["comment_count"].(float64)
 	shareCount, _ := analytics["share_count"].(float64)
-	
+
 	engagementRate := 0.0
 	if viewCount > 0 {
 		engagementRate = ((likeCount + commentCount + shareCount) / viewCount) * 100
 	}
-	
+
 	analytics["engagement_rate"] = engagementRate
 	analytics["total_engagement"] = likeCount + commentCount + shareCount
 
@@ -1683,7 +1696,7 @@ func (t *TikTokConnector) ListComments(ctx context.Context, acc *storage.SocialA
 	}
 
 	payload := map[string]interface{}{
-		"video_id": videoID,
+		"video_id":  videoID,
 		"max_count": maxCount,
 	}
 	if cursor != "" {
@@ -1716,8 +1729,8 @@ func (t *TikTokConnector) ListComments(ctx context.Context, acc *storage.SocialA
 	var result struct {
 		Data struct {
 			Comments []map[string]interface{} `json:"comments"`
-			Cursor  string                    `json:"cursor"`
-			HasMore bool                      `json:"has_more"`
+			Cursor   string                   `json:"cursor"`
+			HasMore  bool                     `json:"has_more"`
 		} `json:"data"`
 		Error struct {
 			Code    string `json:"code"`
@@ -1966,14 +1979,14 @@ func (t *TikTokConnector) GetEnhancedAnalytics(ctx context.Context, acc *storage
 
 	if len(videoIDs) == 0 {
 		return map[string]interface{}{
-			"total_videos":     0,
-			"total_views":      0,
-			"total_likes":      0,
-			"total_comments":   0,
-			"total_shares":     0,
-			"avg_engagement":  0,
-			"videos":          []map[string]interface{}{},
-			"time_range":      timeRange,
+			"total_videos":   0,
+			"total_views":    0,
+			"total_likes":    0,
+			"total_comments": 0,
+			"total_shares":   0,
+			"avg_engagement": 0,
+			"videos":         []map[string]interface{}{},
+			"time_range":     timeRange,
 		}, nil
 	}
 
@@ -2018,17 +2031,17 @@ func (t *TikTokConnector) GetEnhancedAnalytics(ctx context.Context, acc *storage
 	}
 
 	result := map[string]interface{}{
-		"total_videos":     len(videoAnalytics),
-		"total_views":      totalViews,
-		"total_likes":      totalLikes,
-		"total_comments":   totalComments,
-		"total_shares":     totalShares,
-		"total_engagement": totalEngagement,
+		"total_videos":        len(videoAnalytics),
+		"total_views":         totalViews,
+		"total_likes":         totalLikes,
+		"total_comments":      totalComments,
+		"total_shares":        totalShares,
+		"total_engagement":    totalEngagement,
 		"avg_engagement_rate": avgEngagementRate,
-		"videos":          videoAnalytics,
-		"trends":          trends,
-		"time_range":      timeRange,
-		"generated_at":    time.Now().UTC().Format(time.RFC3339),
+		"videos":              videoAnalytics,
+		"trends":              trends,
+		"time_range":          timeRange,
+		"generated_at":        time.Now().UTC().Format(time.RFC3339),
 	}
 
 	t.Logger.Info("✅ Enhanced TikTok analytics retrieved",
@@ -2046,17 +2059,17 @@ func (t *TikTokConnector) hasAuthorizedScope(acc *storage.SocialAccount, require
 	if acc == nil || acc.Metadata == "" {
 		return false
 	}
-	
+
 	var metadata map[string]interface{}
 	if err := json.Unmarshal([]byte(acc.Metadata), &metadata); err != nil {
 		return false
 	}
-	
+
 	scopesStr, ok := metadata["authorized_scopes"].(string)
 	if !ok || scopesStr == "" {
 		return false
 	}
-	
+
 	// TikTok returns scopes as comma-separated string
 	scopes := strings.Split(scopesStr, ",")
 	for _, scope := range scopes {
@@ -2064,7 +2077,7 @@ func (t *TikTokConnector) hasAuthorizedScope(acc *storage.SocialAccount, require
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -2106,9 +2119,9 @@ func (t *TikTokConnector) postPhoto(ctx context.Context, acc *storage.SocialAcco
 
 	// Build post_info
 	postInfo := map[string]interface{}{
-		"title":          defaultTikTokTitle(caption),
-		"description":    caption,
-		"privacy_level":  level,
+		"title":           defaultTikTokTitle(caption),
+		"description":     caption,
+		"privacy_level":   level,
 		"disable_duet":    postingOptions.DisableDuet,
 		"disable_stitch":  postingOptions.DisableStitch,
 		"disable_comment": postingOptions.DisableComment,
@@ -2121,9 +2134,9 @@ func (t *TikTokConnector) postPhoto(ctx context.Context, acc *storage.SocialAcco
 
 	// Build source_info for photos
 	sourceInfo := map[string]interface{}{
-		"source":          "PULL_FROM_URL",
+		"source":            "PULL_FROM_URL",
 		"photo_cover_index": 1, // First photo as cover
-		"photo_images":     urls,
+		"photo_images":      urls,
 	}
 
 	// Build payload
