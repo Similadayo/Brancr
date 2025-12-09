@@ -82,12 +82,12 @@
             <div style="display: flex; flex-direction: column; gap: 4px;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-weight: 500;">{{.AICallsUsed}} / {{.AICallsLimit}}</span>
-                <span class="badge {{if ge .AICallsPercent 90}}danger{{else if ge .AICallsPercent 75}}warning{{else}}success{{end}}">
+                <span class="badge {{if ge .AICallsPercent 90.0}}danger{{else if ge .AICallsPercent 75.0}}warning{{else}}success{{end}}">
                   {{printf "%.1f" .AICallsPercent}}%
                 </span>
               </div>
               <div style="width: 100px; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
-                <div style="width: {{.AICallsPercent}}%; height: 100%; background: {{if ge .AICallsPercent 90}}var(--danger){{else if ge .AICallsPercent 75}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
+                <div style="width: {{.AICallsPercent}}%; height: 100%; background: {{if ge .AICallsPercent 90.0}}var(--danger){{else if ge .AICallsPercent 75.0}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
               </div>
             </div>
           </td>
@@ -95,12 +95,12 @@
             <div style="display: flex; flex-direction: column; gap: 4px;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-weight: 500;">{{.PostsUsed}} / {{.PostsLimit}}</span>
-                <span class="badge {{if ge .PostsPercent 90}}danger{{else if ge .PostsPercent 75}}warning{{else}}success{{end}}">
+                <span class="badge {{if ge .PostsPercent 90.0}}danger{{else if ge .PostsPercent 75.0}}warning{{else}}success{{end}}">
                   {{printf "%.1f" .PostsPercent}}%
                 </span>
               </div>
               <div style="width: 100px; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
-                <div style="width: {{.PostsPercent}}%; height: 100%; background: {{if ge .PostsPercent 90}}var(--danger){{else if ge .PostsPercent 75}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
+                <div style="width: {{.PostsPercent}}%; height: 100%; background: {{if ge .PostsPercent 90.0}}var(--danger){{else if ge .PostsPercent 75.0}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
               </div>
             </div>
           </td>
@@ -108,12 +108,12 @@
             <div style="display: flex; flex-direction: column; gap: 4px;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-weight: 500;">{{.StorageUsedMB}}MB / {{.StorageLimitMB}}MB</span>
-                <span class="badge {{if ge .StoragePercent 90}}danger{{else if ge .StoragePercent 75}}warning{{else}}success{{end}}">
+                <span class="badge {{if ge .StoragePercent 90.0}}danger{{else if ge .StoragePercent 75.0}}warning{{else}}success{{end}}">
                   {{printf "%.1f" .StoragePercent}}%
                 </span>
               </div>
               <div style="width: 100px; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
-                <div style="width: {{.StoragePercent}}%; height: 100%; background: {{if ge .StoragePercent 90}}var(--danger){{else if ge .StoragePercent 75}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
+                <div style="width: {{.StoragePercent}}%; height: 100%; background: {{if ge .StoragePercent 90.0}}var(--danger){{else if ge .StoragePercent 75.0}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
               </div>
             </div>
           </td>
@@ -121,12 +121,12 @@
             <div style="display: flex; flex-direction: column; gap: 4px;">
               <div style="display: flex; align-items: center; gap: 8px;">
                 <span style="font-weight: 500;">{{.APICallsUsed}} / {{.APICallsLimit}}</span>
-                <span class="badge {{if ge .APICallsPercent 90}}danger{{else if ge .APICallsPercent 75}}warning{{else}}success{{end}}">
+                <span class="badge {{if ge .APICallsPercent 90.0}}danger{{else if ge .APICallsPercent 75.0}}warning{{else}}success{{end}}">
                   {{printf "%.1f" .APICallsPercent}}%
                 </span>
               </div>
               <div style="width: 100px; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
-                <div style="width: {{.APICallsPercent}}%; height: 100%; background: {{if ge .APICallsPercent 90}}var(--danger){{else if ge .APICallsPercent 75}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
+                <div style="width: {{.APICallsPercent}}%; height: 100%; background: {{if ge .APICallsPercent 90.0}}var(--danger){{else if ge .APICallsPercent 75.0}}var(--warning){{else}}var(--success){{end}}; transition: width 0.3s;"></div>
               </div>
             </div>
           </td>
@@ -134,9 +134,9 @@
             {{.LastResetAt.Format "Jan 2, 2006 15:04"}}
           </td>
           <td>
-            {{if or (ge .AICallsPercent 100) (ge .PostsPercent 100) (ge .StoragePercent 100) (ge .APICallsPercent 100)}}
+            {{if or (ge .AICallsPercent 100.0) (ge .PostsPercent 100.0) (ge .StoragePercent 100.0) (ge .APICallsPercent 100.0)}}
               <span class="badge danger">Exceeded</span>
-            {{else if or (ge .AICallsPercent 90) (ge .PostsPercent 90) (ge .StoragePercent 90) (ge .APICallsPercent 90)}}
+            {{else if or (ge .AICallsPercent 90.0) (ge .PostsPercent 90.0) (ge .StoragePercent 90.0) (ge .APICallsPercent 90.0)}}
               <span class="badge warning">Near Limit</span>
             {{else}}
               <span class="badge success">Normal</span>
