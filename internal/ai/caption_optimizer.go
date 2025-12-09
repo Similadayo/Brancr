@@ -160,16 +160,30 @@ func buildBusinessContext(biz storage.BusinessProfile, menuItems []storage.Busin
 }
 
 // buildCaptionPrompt constructs the caption generation prompt
-// Template: #13 OptimizeCaption (caption optimization)
+// Template: #13 OptimizeCaption (caption optimization/generation)
 func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide string, imageAnalysis string, businessContext string) string {
 	var prompt strings.Builder
 
 	prompt.WriteString(intro)
 	prompt.WriteString("\n\n")
-	prompt.WriteString(fmt.Sprintf("Task: Optimize and rewrite a social media caption for %s.\n\n", strings.ToUpper(req.Platform)))
 	
-	if req.OriginalCaption != "" {
+	// Handle 3 modes:
+	// 1. AI-generated: OriginalCaption is empty - generate from scratch
+	// 2. Tenant-customized: OriginalCaption exists but we're not optimizing (handled by caller)
+	// 3. AI-enhanced: OriginalCaption exists - optimize/enhance it
+	if req.OriginalCaption == "" {
+		// Mode 1: Generate caption from scratch based on tenant preferences
+		prompt.WriteString(fmt.Sprintf("Task: Generate a social media caption for %s based on the business's brand voice, image content, and preferences.\n\n", strings.ToUpper(req.Platform)))
+		prompt.WriteString("Generate a fresh, engaging caption that:\n")
+		prompt.WriteString("1. Reflects the brand's voice and personality\n")
+		prompt.WriteString("2. References the image content when relevant\n")
+		prompt.WriteString("3. Is engaging and platform-appropriate\n")
+		prompt.WriteString("4. Sounds like a real human wrote it (not robotic or template-like)\n\n")
+	} else {
+		// Mode 3: Optimize/enhance existing caption
+		prompt.WriteString(fmt.Sprintf("Task: Optimize and rewrite a social media caption for %s.\n\n", strings.ToUpper(req.Platform)))
 		prompt.WriteString(fmt.Sprintf("Current caption: \"%s\"\n", req.OriginalCaption))
+		prompt.WriteString("Rewrite the caption to be more engaging and aligned with the brand's voice.\n\n")
 	}
 	if len(req.ImageURLs) > 0 {
 		prompt.WriteString(fmt.Sprintf("Image URL: %s\n", req.ImageURLs[0]))
@@ -204,7 +218,6 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString(platformGuide)
 
 	prompt.WriteString("\n\n")
-	prompt.WriteString("Rewrite the caption to be more engaging and aligned with the brand's voice.\n\n")
 	
 	prompt.WriteString("CRITICAL - Write like a REAL HUMAN would write this caption:\n")
 	prompt.WriteString("- Vary your sentence length naturally (mix short punchy lines with longer descriptive ones)\n")

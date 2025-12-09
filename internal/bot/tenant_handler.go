@@ -913,6 +913,13 @@ func (h *TenantWebhookHandler) handleCallbackQuery(bot *tgbotapi.BotAPI, tenantI
 					return
 				}
 				h.fineTuneCaptionInSession(bot, tenantID, cq.Message.Chat.ID, sess)
+			case "enhance":
+				// Mode 3: AI-enhanced - Enhance tenant's written caption
+				if sess.Caption == "" {
+					bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "No caption to enhance. Please provide a caption first."))
+					return
+				}
+				h.enhanceCaptionInSession(bot, tenantID, cq.Message.Chat.ID, sess)
 			default:
 				bot.Send(tgbotapi.NewMessage(cq.Message.Chat.ID, "Invalid option. Please try again."))
 			}
@@ -2065,6 +2072,74 @@ func (h *TenantWebhookHandler) handlePostingWorkflowCallback(bot *tgbotapi.BotAP
 		}
 	} else {
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Workflow orchestrator not properly configured."))
+	}
+}
+
+// enhanceCaptionInSession enhances the tenant's written caption with AI (Mode 3: AI-enhanced)
+func (h *TenantWebhookHandler) enhanceCaptionInSession(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, sess *PostSession) {
+	// Get media asset to extract image URLs
+	var ma storage.MediaAsset
+	if err := h.Manager.DB.First(&ma, sess.MediaAssetID).Error; err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, "Couldn't find that media anymore."))
+		return
+	}
+
+	var imageURLs []string
+	if ma.URLs != "" {
+		_ = json.Unmarshal([]byte(ma.URLs), &imageURLs)
+	}
+
+	platform := "instagram"
+	if len(sess.Platforms) > 0 {
+		platform = sess.Platforms[0]
+	}
+
+	optimizer := &ai.CaptionOptimizer{
+		Client: h.Manager.AIClient,
+		DB:     h.Manager.DB,
+	}
+
+	ctx := context.Background()
+	// Use OptimizeCaption to enhance the tenant's caption (Mode 3)
+	req := ai.OptimizeCaptionRequest{
+		OriginalCaption: sess.Caption,
+		Platform:        platform,
+		MediaType:       sess.MediaType,
+		TenantID:        tenantID,
+		ImageURLs:       imageURLs,
+	}
+
+	result, err := optimizer.OptimizeCaption(ctx, req)
+	if err != nil {
+		h.Manager.Logger.Error("failed to enhance caption", zap.Error(err))
+		bot.Send(tgbotapi.NewMessage(chatID, "Sorry, I couldn't enhance the caption right now. Using your original caption."))
+		// Continue with original caption (Mode 2 fallback)
+		sess.Step = 4
+		bot.Send(tgbotapi.NewMessage(chatID, "Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
+		return
+	}
+
+	if result != nil && result.OptimizedCaption != "" {
+		// Update session with enhanced caption
+		sess.Caption = result.OptimizedCaption
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✨ *AI-Enhanced Caption:*\n\n%s\n\n", result.OptimizedCaption))
+		msg.ParseMode = "Markdown"
+		msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Use This", "caption:use"),
+				tgbotapi.NewInlineKeyboardButtonData("🔄 Rephrase", "caption:rephrase"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✨ Fine-tune", "caption:fine_tune"),
+				tgbotapi.NewInlineKeyboardButtonData("✏️ Edit", "caption:edit"),
+			),
+		)
+		bot.Send(msg)
+	} else {
+		// Fallback to original
+		bot.Send(tgbotapi.NewMessage(chatID, "Using your original caption."))
+		sess.Step = 4
+		bot.Send(tgbotapi.NewMessage(chatID, "Which platforms are we queuing it for? (Instagram, Facebook, TikTok, YouTube, WhatsApp, or 'all')."))
 	}
 }
 

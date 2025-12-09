@@ -282,18 +282,67 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	optimizedCaption := originalCaption
 	var improvements string
 
+	// Handle 3 caption modes:
+	// 1. AI-generated: If caption is empty, generate from tenant preferences/images
+	// 2. Tenant-customized: If caption exists and tenant doesn't want AI enhancement, use as-is
+	// 3. AI-enhanced: If caption exists and tenant wants AI enhancement, optimize it
+	
+	// Use first platform for caption processing (result will be used for all platforms)
+	platformForCaption := "instagram"
+	if len(platforms) > 0 {
+		platformForCaption = platforms[0]
+	}
+	
 	if s.CaptionOptimizer != nil {
-		for _, platform := range platforms {
-			s.Logger.Info("🤖 Optimizing caption with AI",
-				zap.String("platform", platform),
+		if originalCaption == "" {
+			// Mode 1: AI-generated - Generate caption from scratch based on tenant preferences
+			s.Logger.Info("🤖 Generating AI caption from tenant preferences",
+				zap.String("platform", platformForCaption),
 				zap.Uint("tenant_id", p.TenantID))
 
-			// Log optimization start
-			s.logPostActivity(p.TenantID, p.ID, platform, "optimizing", originalCaption, "", "in_progress", "")
+			s.logPostActivity(p.TenantID, p.ID, platformForCaption, "generating", "", "", "in_progress", "")
+
+			// Generate caption using tenant's business context, persona, and image analysis
+			// This uses the same logic as GenerateCaptionFromKeywords but without keywords
+			req := OptimizeCaptionRequest{
+				OriginalCaption: "", // Empty = generate from scratch
+				Platform:        platformForCaption,
+				MediaType:       mediaTypeForAI,
+				TenantID:        p.TenantID,
+				ImageURLs:       urls, // Pass image URLs for analysis
+			}
+
+			result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
+			if err == nil && result != nil && result.OptimizedCaption != "" {
+				optimizedCaption = result.OptimizedCaption
+				improvements = "AI-generated from tenant preferences"
+				s.Logger.Info("✨ AI caption generated",
+					zap.String("length", fmt.Sprintf("%d chars", len(optimizedCaption))),
+					zap.Strings("hashtags", result.Hashtags))
+
+				// Log generation success
+				hashtagsJSON, _ := json.Marshal(result.Hashtags)
+				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_generated"}`, hashtagsJSON, result.SuggestedTime)
+				s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "generated", "", optimizedCaption, "success", improvements, metadata, "")
+			} else if err != nil {
+				s.Logger.Warn("AI caption generation failed, will use empty caption",
+					zap.Error(err),
+					zap.Uint("tenant_id", p.TenantID))
+				optimizedCaption = "" // Keep empty if generation fails
+			}
+		} else {
+			// Caption exists - check if tenant wants AI enhancement
+			// For now, we'll optimize by default (tenant can disable this in future via metadata)
+			// Mode 3: AI-enhanced - Optimize tenant's caption based on their preferences
+			s.Logger.Info("🤖 Enhancing tenant caption with AI",
+				zap.String("platform", platformForCaption),
+				zap.Uint("tenant_id", p.TenantID))
+
+			s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, "", "in_progress", "")
 
 			req := OptimizeCaptionRequest{
 				OriginalCaption: originalCaption,
-				Platform:        platform,
+				Platform:        platformForCaption,
 				MediaType:       mediaTypeForAI,
 				TenantID:        p.TenantID,
 				ImageURLs:       urls, // Pass image URLs for analysis
@@ -303,121 +352,149 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			if err == nil && result != nil {
 				optimizedCaption = result.OptimizedCaption
 				improvements = result.Improvements
-				s.Logger.Info("✨ Caption optimized",
+				s.Logger.Info("✨ Caption enhanced",
 					zap.String("original_length", fmt.Sprintf("%d chars", len(originalCaption))),
-					zap.String("optimized_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
+					zap.String("enhanced_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
 					zap.Strings("hashtags", result.Hashtags))
 
-				// Log optimization success
+				// Log enhancement success
 				hashtagsJSON, _ := json.Marshal(result.Hashtags)
-				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s"}`, hashtagsJSON, result.SuggestedTime)
-				s.logPostActivityWithMeta(p.TenantID, p.ID, platform, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
+				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_enhanced"}`, hashtagsJSON, result.SuggestedTime)
+				s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
+			} else if err != nil {
+				s.Logger.Warn("caption enhancement failed, using tenant's original",
+					zap.Error(err),
+					zap.Uint("tenant_id", p.TenantID))
+				// Mode 2: Fallback to tenant-customized (use original as-is)
+				optimizedCaption = originalCaption
 			}
-			break // Use same optimized caption for all platforms
 		}
+	} else {
+		// No AI optimizer available - use tenant's caption as-is (Mode 2: Tenant-customized)
+		optimizedCaption = originalCaption
 	}
 
-	// Post to each platform
+	// Post to each platform CONCURRENTLY for better performance
 	successCount := 0
 	var lastError error
 	succeeded := make([]string, 0, len(platforms))
 	failed := make([]string, 0, len(platforms))
-
-	for _, platform := range platforms {
-		s.Logger.Info("📱 Posting to platform",
-			zap.String("platform", platform),
-			zap.Int("media_count", len(urls)))
-
-		// Log posting attempt
-		s.logPostActivity(p.TenantID, p.ID, platform, "posting", originalCaption, optimizedCaption, "in_progress", "")
-
-		var platformPostID string
-		// Pass first asset ID so PostMedia can update it with platform-specific metadata (e.g., TikTok publish_id)
-		assetID := uint(0)
-		if len(assets) > 0 {
-			assetID = assets[0].ID
-		}
-		if err := s.postToPlatform(ctx, p.TenantID, p.ID, platform, urls, optimizedCaption, assetType, &platformPostID, assetID); err != nil {
-			s.Logger.Error("post failed",
-				zap.String("platform", platform),
-				zap.Error(err))
-			lastError = err
-			failed = append(failed, platform)
-
-			// Log failure
-			s.logPostActivity(p.TenantID, p.ID, platform, "failed", originalCaption, optimizedCaption, "failed", err.Error())
-
-			postLabel := strings.TrimSpace(p.Name)
-			if postLabel == "" {
-				postLabel = "Scheduled post"
-			} else {
-				postLabel = fmt.Sprintf("'%s'", postLabel)
-			}
-			failMsg := fmt.Sprintf("%s failed on %s: %s", postLabel, platform, err.Error())
-			s.notifyPostResult(ctx, p.TenantID, platform, false, failMsg)
-		} else {
-			successCount++
-			succeeded = append(succeeded, platform)
-			s.Logger.Info("✅ Posted successfully", zap.String("platform", platform))
-
-			// Log success with platform post ID in metadata
-			metadata := "{}"
-			if platformPostID != "" {
-				metadataBytes, _ := json.Marshal(map[string]interface{}{
-					"platform_post_id": platformPostID,
-				})
-				metadata = string(metadataBytes)
-			}
-			s.logPostActivityWithMeta(p.TenantID, p.ID, platform, "posted", originalCaption, optimizedCaption, "success", "", metadata, "")
-
-			// Trigger analytics collection for Instagram posts (with delay)
-			if platform == "instagram" && platformPostID != "" && s.AnalyticsService != nil {
-				go func(postID uint, tenantID uint, platform, platformPostID string) {
-					// Wait 5 minutes before collecting analytics (Instagram needs time to process)
-					time.Sleep(5 * time.Minute)
-					ctx := context.Background()
-					if err := s.AnalyticsService.CollectPostMetrics(ctx, tenantID, postID, platform, platformPostID); err != nil {
-						s.Logger.Warn("failed to collect analytics for post",
-							zap.Uint("post_id", postID),
-							zap.String("platform", platform),
-							zap.Error(err))
-					} else {
-						s.Logger.Info("✅ Collected analytics for post",
-							zap.Uint("post_id", postID),
-							zap.String("platform", platform))
-
-						// Trigger insights generation after collecting analytics
-						go func() {
-							time.Sleep(2 * time.Minute) // Wait a bit for analytics to settle
-							if svc, ok := s.AnalyticsService.(interface {
-								GenerateInsights(ctx context.Context, tenantID uint, periodStart, periodEnd time.Time) ([]*storage.TrendInsight, error)
-							}); ok {
-								periodEnd := time.Now()
-								periodStart := periodEnd.AddDate(0, 0, -30)
-								if _, err := svc.GenerateInsights(ctx, tenantID, periodStart, periodEnd); err != nil {
-									s.Logger.Warn("failed to auto-generate insights",
-										zap.Uint("tenant_id", tenantID),
-										zap.Error(err))
-								} else {
-									s.Logger.Info("✅ Auto-generated insights",
-										zap.Uint("tenant_id", tenantID))
-								}
-							}
-						}()
-					}
-				}(p.ID, p.TenantID, platform, platformPostID)
-			}
-
-			postLabel := strings.TrimSpace(p.Name)
-			if postLabel == "" {
-				postLabel = "Scheduled post"
-			} else {
-				postLabel = fmt.Sprintf("'%s'", postLabel)
-			}
-			successMsg := fmt.Sprintf("%s went live on %s.", postLabel, platform)
-			s.notifyPostResult(ctx, p.TenantID, platform, true, successMsg)
-		}
+	
+	// Use mutex to protect shared state
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	
+	// Pass first asset ID so PostMedia can update it with platform-specific metadata
+	assetID := uint(0)
+	if len(assets) > 0 {
+		assetID = assets[0].ID
 	}
+	
+	// Post to all platforms concurrently
+	for _, platform := range platforms {
+		wg.Add(1)
+		go func(plat string) {
+			defer wg.Done()
+			
+			s.Logger.Info("📱 Posting to platform",
+				zap.String("platform", plat),
+				zap.Int("media_count", len(urls)))
+
+			// Log posting attempt
+			s.logPostActivity(p.TenantID, p.ID, plat, "posting", originalCaption, optimizedCaption, "in_progress", "")
+
+			var platformPostID string
+			if err := s.postToPlatform(ctx, p.TenantID, p.ID, plat, urls, optimizedCaption, assetType, &platformPostID, assetID); err != nil {
+				s.Logger.Error("post failed",
+					zap.String("platform", plat),
+					zap.Error(err))
+				
+				mu.Lock()
+				lastError = err
+				failed = append(failed, plat)
+				mu.Unlock()
+
+				// Log failure
+				s.logPostActivity(p.TenantID, p.ID, plat, "failed", originalCaption, optimizedCaption, "failed", err.Error())
+
+				postLabel := strings.TrimSpace(p.Name)
+				if postLabel == "" {
+					postLabel = "Scheduled post"
+				} else {
+					postLabel = fmt.Sprintf("'%s'", postLabel)
+				}
+				failMsg := fmt.Sprintf("%s failed on %s: %s", postLabel, plat, err.Error())
+				s.notifyPostResult(ctx, p.TenantID, plat, false, failMsg)
+			} else {
+				mu.Lock()
+				successCount++
+				succeeded = append(succeeded, plat)
+				mu.Unlock()
+				
+				s.Logger.Info("✅ Posted successfully", zap.String("platform", plat))
+
+				// Log success with platform post ID in metadata
+				metadata := "{}"
+				if platformPostID != "" {
+					metadataBytes, _ := json.Marshal(map[string]interface{}{
+						"platform_post_id": platformPostID,
+					})
+					metadata = string(metadataBytes)
+				}
+				s.logPostActivityWithMeta(p.TenantID, p.ID, plat, "posted", originalCaption, optimizedCaption, "success", "", metadata, "")
+
+				// Trigger analytics collection for Instagram posts (with delay)
+				if plat == "instagram" && platformPostID != "" && s.AnalyticsService != nil {
+					go func(postID uint, tenantID uint, platform, platformPostID string) {
+						// Wait 5 minutes before collecting analytics (Instagram needs time to process)
+						time.Sleep(5 * time.Minute)
+						ctx := context.Background()
+						if err := s.AnalyticsService.CollectPostMetrics(ctx, tenantID, postID, platform, platformPostID); err != nil {
+							s.Logger.Warn("failed to collect analytics for post",
+								zap.Uint("post_id", postID),
+								zap.String("platform", platform),
+								zap.Error(err))
+						} else {
+							s.Logger.Info("✅ Collected analytics for post",
+								zap.Uint("post_id", postID),
+								zap.String("platform", platform))
+
+							// Trigger insights generation after collecting analytics
+							go func() {
+								time.Sleep(2 * time.Minute) // Wait a bit for analytics to settle
+								if svc, ok := s.AnalyticsService.(interface {
+									GenerateInsights(ctx context.Context, tenantID uint, periodStart, periodEnd time.Time) ([]*storage.TrendInsight, error)
+								}); ok {
+									periodEnd := time.Now()
+									periodStart := periodEnd.AddDate(0, 0, -30)
+									if _, err := svc.GenerateInsights(ctx, tenantID, periodStart, periodEnd); err != nil {
+										s.Logger.Warn("failed to auto-generate insights",
+											zap.Uint("tenant_id", tenantID),
+											zap.Error(err))
+									} else {
+										s.Logger.Info("✅ Auto-generated insights",
+											zap.Uint("tenant_id", tenantID))
+									}
+								}
+							}()
+						}
+					}(p.ID, p.TenantID, plat, platformPostID)
+				}
+
+				postLabel := strings.TrimSpace(p.Name)
+				if postLabel == "" {
+					postLabel = "Scheduled post"
+				} else {
+					postLabel = fmt.Sprintf("'%s'", postLabel)
+				}
+				successMsg := fmt.Sprintf("%s went live on %s.", postLabel, plat)
+				s.notifyPostResult(ctx, p.TenantID, plat, true, successMsg)
+			}
+		}(platform)
+	}
+	
+	// Wait for all platform posts to complete
+	wg.Wait()
 
 	// Mark status based on results
 	now := time.Now()
