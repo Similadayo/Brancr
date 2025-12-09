@@ -956,66 +956,144 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	}
 	
 	// Process media if this is a media message and MediaProcessor is available
-	if isMediaMessage && mediaURL != "" && h.MediaProcessor != nil {
-		h.Logger.Info("🔄 Processing media message",
-			zap.String("media_type", messageType),
-			zap.String("media_url", mediaURL),
-			zap.Uint("tenant_id", tenantID))
-		
-		// Process media in background (don't block webhook response)
-		// This downloads, stores, and processes the media (transcription, analysis, etc.)
-		go func() {
-			processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
+	if isMediaMessage && mediaURL != "" {
+		if h.MediaProcessor == nil {
+			h.Logger.Warn("⚠️ MediaProcessor not initialized - media will not be processed",
+				zap.String("media_type", messageType),
+				zap.String("media_url", mediaURL),
+				zap.Uint("tenant_id", tenantID),
+				zap.String("note", "Check OPENAI_API_KEY and CLOUDINARY_URL environment variables"))
+		} else {
+			h.Logger.Info("🔄 Processing media message",
+				zap.String("media_type", messageType),
+				zap.String("media_url", mediaURL),
+				zap.Uint("tenant_id", tenantID),
+				zap.String("message_id", waID))
 			
-			result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaURL, messageType)
-			if err != nil {
-				h.Logger.Warn("failed to process media (non-critical)",
-					zap.String("media_type", messageType),
-					zap.String("media_url", mediaURL),
-					zap.Uint("tenant_id", tenantID),
-					zap.Error(err))
-				return
+			// Process media in background (don't block webhook response)
+			// This downloads, stores, and processes the media (transcription, analysis, etc.)
+			go func() {
+				processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				
+				result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaURL, messageType)
+				if err != nil {
+					h.Logger.Warn("failed to process media (non-critical)",
+						zap.String("media_type", messageType),
+						zap.String("media_url", mediaURL),
+						zap.Uint("tenant_id", tenantID),
+						zap.String("message_id", waID),
+						zap.Error(err))
+					return
+				}
+				
+				// Wait a bit for the interaction to be created by MessageHandler
+				// The interaction is created synchronously, but we give it a moment
+				time.Sleep(2 * time.Second)
+				
+				// Find the interaction in the database and update it with processing results
+				// Use waID (message ID) to find the interaction
+				// Try multiple times with increasing delays in case the interaction hasn't been created yet
+				var interaction storage.Interaction
+				var findErr error
+				maxRetries := 5
+				for i := 0; i < maxRetries; i++ {
+					findErr = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ?",
+						tenantID, "whatsapp", waID, "incoming").First(&interaction).Error
+					if findErr == nil {
+						break
+					}
+					if i < maxRetries-1 {
+						time.Sleep(time.Duration(i+1) * time.Second)
+					}
+				}
+				
+				if findErr != nil {
+					h.Logger.Warn("failed to find interaction to update with media processing results",
+						zap.String("message_id", waID),
+						zap.Uint("tenant_id", tenantID),
+						zap.Int("retries", maxRetries),
+						zap.Error(findErr),
+						zap.String("note", "Interaction may not have been created yet or message ID mismatch"))
+					return
+				}
+			
+			// Parse existing metadata
+			var existingMetadata map[string]interface{}
+			if interaction.Metadata != "" && interaction.Metadata != "{}" {
+				if err := json.Unmarshal([]byte(interaction.Metadata), &existingMetadata); err != nil {
+					existingMetadata = make(map[string]interface{})
+				}
+			} else {
+				existingMetadata = make(map[string]interface{})
 			}
 			
 			// Update metadata with processing results
 			if result.StoredURL != "" {
-				metadata["media_stored_url"] = result.StoredURL
+				existingMetadata["media_stored_url"] = result.StoredURL
 			}
 			if result.Transcription != "" {
-				metadata["audio_transcription"] = result.Transcription
+				existingMetadata["audio_transcription"] = result.Transcription
 				// Update content with transcription for audio messages
 				if messageType == "audio" {
-					content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+					interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
 				}
 			}
 			if result.ImageAnalysis != "" {
-				metadata["image_analysis"] = result.ImageAnalysis
+				existingMetadata["image_analysis"] = result.ImageAnalysis
 				// Update content with analysis for image messages
 				if messageType == "image" || messageType == "sticker" {
-					content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+					interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
 				}
 			}
 			if result.DocumentText != "" {
-				metadata["document_text"] = result.DocumentText
+				existingMetadata["document_text"] = result.DocumentText
 				// Update content with extracted text for document messages
 				if messageType == "document" {
-					content = fmt.Sprintf("[Document]: %s", result.DocumentText)
+					interaction.Content = fmt.Sprintf("[Document]: %s", result.DocumentText)
 				}
 			}
 			
 			// Add processing metadata
 			for k, v := range result.Metadata {
-				metadata["media_"+k] = v
+				existingMetadata["media_"+k] = v
 			}
 			
-			h.Logger.Info("✅ Media processing completed",
-				zap.String("media_type", messageType),
-				zap.Bool("has_transcription", result.Transcription != ""),
-				zap.Bool("has_analysis", result.ImageAnalysis != ""),
-				zap.Bool("has_document_text", result.DocumentText != ""),
-				zap.Uint("tenant_id", tenantID))
+			// Save updated metadata and content to database
+			metadataJSON, err := json.Marshal(existingMetadata)
+			if err == nil {
+				interaction.Metadata = string(metadataJSON)
+				if err := h.DB.Save(&interaction).Error; err != nil {
+					h.Logger.Warn("failed to save media processing results to interaction",
+						zap.Uint("interaction_id", interaction.ID),
+						zap.Uint("tenant_id", tenantID),
+						zap.Error(err))
+				} else {
+					h.Logger.Info("✅ Media processing completed and saved to database",
+						zap.String("media_type", messageType),
+						zap.Bool("has_stored_url", result.StoredURL != ""),
+						zap.Bool("has_transcription", result.Transcription != ""),
+						zap.String("transcription_preview", func() string {
+							if len(result.Transcription) > 50 {
+								return result.Transcription[:50] + "..."
+							}
+							return result.Transcription
+						}()),
+						zap.Bool("has_analysis", result.ImageAnalysis != ""),
+						zap.Bool("has_document_text", result.DocumentText != ""),
+						zap.Uint("tenant_id", tenantID),
+						zap.Uint("interaction_id", interaction.ID),
+						zap.String("message_id", waID))
+				}
+			}
 		}()
+		}
+	} else if isMediaMessage && mediaURL == "" {
+		h.Logger.Warn("⚠️ Media message detected but no media URL found",
+			zap.String("media_type", messageType),
+			zap.Uint("tenant_id", tenantID),
+			zap.String("message_id", waID),
+			zap.Any("payload", payload))
 	}
 	
 	// Add media metadata if this is a media message
