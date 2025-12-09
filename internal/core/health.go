@@ -30,42 +30,81 @@ func (a *App) HealthHandler(w http.ResponseWriter, r *http.Request) {
 func (a *App) ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	checks := make(map[string]string)
+	checks := make(map[string]interface{})
 	allHealthy := true
 
 	// Check database connection
+	dbStart := time.Now()
 	if err := a.Services.DB.Exec("SELECT 1").Error; err != nil {
-		checks["database"] = "unhealthy: " + err.Error()
+		checks["database"] = map[string]interface{}{
+			"status":  "unhealthy",
+			"error":   err.Error(),
+			"latency": time.Since(dbStart).Milliseconds(),
+		}
 		allHealthy = false
 	} else {
-		checks["database"] = "healthy"
+		checks["database"] = map[string]interface{}{
+			"status":  "healthy",
+			"latency": time.Since(dbStart).Milliseconds(),
+		}
 	}
 
 	// Check Redis connection (if configured)
 	if a.Services.Redis != nil {
 		ctx := r.Context()
+		redisStart := time.Now()
 		if err := a.Services.Redis.Ping(ctx).Err(); err != nil {
-			checks["redis"] = "unhealthy: " + err.Error()
+			checks["redis"] = map[string]interface{}{
+				"status":  "unhealthy",
+				"error":   err.Error(),
+				"latency": time.Since(redisStart).Milliseconds(),
+			}
 			allHealthy = false
 		} else {
-			checks["redis"] = "healthy"
+			checks["redis"] = map[string]interface{}{
+				"status":  "healthy",
+				"latency": time.Since(redisStart).Milliseconds(),
+			}
+		}
+	} else {
+		checks["redis"] = map[string]interface{}{
+			"status": "not_configured",
 		}
 	}
 
-	status := HealthStatus{
-		Status:    "ready",
-		Timestamp: time.Now(),
-		Checks:    checks,
+	// Check database connection pool
+	if sqlDB, err := a.Services.DB.DB(); err == nil {
+		stats := sqlDB.Stats()
+		checks["database_pool"] = map[string]interface{}{
+			"open_connections":     stats.OpenConnections,
+			"in_use":               stats.InUse,
+			"idle":                 stats.Idle,
+			"wait_count":           stats.WaitCount,
+			"wait_duration_ms":     stats.WaitDuration.Milliseconds(),
+			"max_idle_closed":      stats.MaxIdleClosed,
+			"max_idle_time_closed": stats.MaxIdleTimeClosed,
+		}
 	}
 
 	if !allHealthy {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		status.Status = "not_ready"
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	json.NewEncoder(w).Encode(status)
+	// Return detailed checks in response
+	statusText := "ready"
+	if !allHealthy {
+		statusText = "not_ready"
+	}
+
+	response := map[string]interface{}{
+		"status":    statusText,
+		"timestamp": time.Now(),
+		"checks":    checks,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
 
 // LivenessHandler checks if the service is alive

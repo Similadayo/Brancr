@@ -28,6 +28,7 @@ func SetupRouter(app *App) http.Handler {
 	r.Use(middleware.LoggingMiddleware(app.Services.Logger))        // Request logging (with correlation ID)
 	r.Use(middleware.MetricsMiddleware(appMetrics))                 // Metrics collection
 	r.Use(middleware.CORSMiddleware(app.Config.CORSAllowedOrigins)) // CORS
+	r.Use(middleware.DefaultRequestSizeLimit(app.Services.Logger))  // Request size limit (10MB)
 
 	// Rate limiting (global, per IP)
 	if app.Services.RateLimiter != nil {
