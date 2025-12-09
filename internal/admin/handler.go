@@ -683,6 +683,9 @@ func WhatsAppRejectRequestHandler(ctx *AdminContext) http.HandlerFunc {
 
 // renderTemplate loads both layout and page template together (embedded templates)
 func renderTemplate(w http.ResponseWriter, page string, data any, logger *zap.Logger) {
+	// Ensure correct content type for HTML responses
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
 	tpl, err := template.ParseFS(adminTemplates, "templates/layout.html", "templates/"+page)
 	if err != nil {
 		logger.Error("template parse failed", zap.String("page", page), zap.Error(err))
@@ -704,6 +707,7 @@ func loadTemplate(name string) (*template.Template, error) {
 // ✅ GET /admin/login
 func GetLoginHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		tpl, err := loadTemplate("login.html")
 		if err != nil {
 			ctx.Logger.Error("load login template", zap.Error(err))
