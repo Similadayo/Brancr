@@ -1,34 +1,43 @@
 # Build stage
-FROM golang:1.22-alpine AS build
+FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache git
+# Install build dependencies
+RUN apk add --no-cache git gcc musl-dev
 
-ENV GOTOOLCHAIN=go1.25.0
-
+# Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Copy source code
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o brancr ./cmd/brancr
+# Build the application
+RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o bin/brancr ./cmd/brancr
 
-# Runtime stage
-FROM alpine:3.19
+# Final stage
+FROM alpine:latest
 
 WORKDIR /app
 
+# Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=build /app/brancr ./brancr
-COPY --from=build /app/config.yml ./config.yml
-COPY --from=build /app/internal/admin/templates ./internal/admin/templates
-COPY --from=build /app/static ./static
+# Copy binary from builder
+COPY --from=builder /app/bin/brancr /app/brancr
+COPY --from=builder /app/migrations /app/migrations
+
+# Create non-root user
+RUN addgroup -g 1000 brancr && \
+    adduser -D -u 1000 -G brancr brancr && \
+    chown -R brancr:brancr /app
+
+USER brancr
 
 EXPOSE 8080
 
-ENV PORT=8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-CMD ["./brancr"]
-
+CMD ["/app/brancr"]

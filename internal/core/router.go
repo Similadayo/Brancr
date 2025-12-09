@@ -24,10 +24,12 @@ func SetupRouter(app *App) http.Handler {
 	// Global middleware (order matters!)
 	r.Use(middleware.RequestIDMiddleware())                         // Add request ID first
 	r.Use(middleware.SecurityHeadersMiddleware())                   // Security headers
+	r.Use(middleware.SanitizeInput(app.Services.Logger))            // Input sanitization
 	r.Use(middleware.RecoveryMiddleware(app.Services.Logger))       // Panic recovery
 	r.Use(middleware.LoggingMiddleware(app.Services.Logger))        // Request logging (with correlation ID)
 	r.Use(middleware.MetricsMiddleware(appMetrics))                 // Metrics collection
 	r.Use(middleware.CORSMiddleware(app.Config.CORSAllowedOrigins)) // CORS
+	r.Use(middleware.Compression())                                 // Response compression
 	r.Use(middleware.DefaultRequestSizeLimit(app.Services.Logger))  // Request size limit (10MB)
 
 	// Rate limiting (global, per IP)

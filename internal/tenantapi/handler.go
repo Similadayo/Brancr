@@ -850,18 +850,22 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get limit from query parameter (for upcoming posts)
-	limit := 100
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
-			limit = parsedLimit
-		}
-	}
+	// Parse pagination parameters
+	pagination := ParsePagination(r)
 
 	var posts []storage.ScheduledPost
-	if err := query.
-		Order("scheduled_at ASC, created_at ASC").
-		Limit(limit).
+	var total int64
+
+	// Count total matching records (before pagination)
+	if err := query.Model(&storage.ScheduledPost{}).Count(&total).Error; err != nil {
+		h.Logger.Error("count scheduled posts", zap.Error(err))
+		h.writeInternalError(w, r, err)
+		return
+	}
+
+	// Apply pagination and fetch posts
+	if err := ApplyPagination(query.
+		Order("scheduled_at ASC, created_at ASC"), pagination).
 		Find(&posts).Error; err != nil {
 		h.Logger.Error("fetch scheduled posts", zap.Error(err))
 		h.writeInternalError(w, r, err)
@@ -909,9 +913,11 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"scheduled_posts": resp,
-	})
+	// Return paginated response
+	response := NewPaginatedResponse(resp, total, pagination)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 func (h *Handler) setSessionCookie(w http.ResponseWriter, tenantID uint, email string) error {

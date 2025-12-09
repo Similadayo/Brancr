@@ -122,3 +122,49 @@ migrate-version:
 dev-setup: fmt vet lint
 	@echo "Development checks completed"
 
+# Install pre-commit hooks
+install-hooks:
+	@echo "Installing pre-commit hooks..."
+	@mkdir -p .git/hooks
+	@cp .githooks/pre-commit .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✅ Pre-commit hooks installed"
+
+# Run development setup script
+setup-dev:
+	@if [ -f scripts/setup-dev.sh ]; then \
+		bash scripts/setup-dev.sh; \
+	else \
+		echo "Setup script not found"; \
+	fi
+
+# Docker Compose commands
+docker-up:
+	@echo "Starting Docker services..."
+	docker-compose up -d
+
+docker-down:
+	@echo "Stopping Docker services..."
+	docker-compose down
+
+docker-logs:
+	@echo "Showing Docker logs..."
+	docker-compose logs -f
+
+# Run with hot reload (requires air: go install github.com/cosmtrek/air@latest)
+dev:
+	@if command -v air >/dev/null 2>&1; then \
+		air; \
+	else \
+		echo "Air not installed. Install with: go install github.com/cosmtrek/air@latest"; \
+		go run ./cmd/brancr; \
+	fi
+
+# Generate Swagger docs
+swagger:
+	@if command -v swag >/dev/null 2>&1; then \
+		swag init -g cmd/brancr/main.go; \
+	else \
+		echo "swag not installed. Install with: go install github.com/swaggo/swag/cmd/swag@latest"; \
+	fi
+

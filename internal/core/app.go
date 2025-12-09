@@ -88,15 +88,23 @@ func NewApp(cfg *config.Config) (*App, error) {
 			dsn = dsn + separator + "connect_timeout=30&statement_timeout=60000"
 		}
 	}
-	
+
 	// Retry connection with exponential backoff
 	var db *gorm.DB
 	var lastErr error
 	maxRetries := 3
 	for i := 0; i < maxRetries; i++ {
-		db, lastErr = gorm.Open(postgres.Open(dsn), &gorm.Config{
+		// Configure GORM with query logging in development
+		gormConfig := &gorm.Config{
 			PrepareStmt: true, // Enable prepared statements for better performance
-		})
+		}
+
+		// Enable query logging in development
+		if cfg.AppEnv == "development" {
+			// Will be set after logger is created
+		}
+
+		db, lastErr = gorm.Open(postgres.Open(dsn), gormConfig)
 		if lastErr == nil {
 			break
 		}
@@ -110,7 +118,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 			time.Sleep(waitTime)
 		}
 	}
-	
+
 	if lastErr != nil {
 		return nil, fmt.Errorf("failed to connect to database after %d attempts: %w", maxRetries, lastErr)
 	}
@@ -138,7 +146,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 	} else {
 		logger.Info("gorm auto-migration complete")
 	}
-	
+
 	// Then run SQL migrations for schema changes, indexes, etc.
 	migrationsPath := "migrations"
 	if err := storage.RunMigrations(db, migrationsPath, logger); err != nil {

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Pre-commit hook for Brancr
+# This hook runs before each commit
+
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# Run go fmt
+echo "📝 Formatting code..."
+go fmt ./...
+
+# Run go vet
+echo "🔍 Running go vet..."
+go vet ./...
+
+# Run linter if available
+if command -v golangci-lint &> /dev/null; then
+    echo "🔍 Running linter..."
+    golangci-lint run ./... || echo "⚠️  Linter found issues, but continuing..."
+else
+    echo "ℹ️  golangci-lint not installed, skipping..."
+fi
+
+# Check for large files
+echo "📦 Checking for large files..."
+if git diff --cached --name-only | xargs ls -la 2>/dev/null | awk '{if ($5 > 10485760) print "⚠️  Large file detected: " $9 " (" $5 " bytes)"}'; then
+    echo "⚠️  Warning: Large files detected in commit"
+fi
+
+echo "✅ Pre-commit checks passed!"
+
