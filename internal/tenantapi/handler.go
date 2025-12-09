@@ -63,8 +63,8 @@ type Handler struct {
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 	Scheduler            *social.Scheduler
 	AIClient             *ai.AIClient
-	MessageHandler       *social.MessageHandler // For sending replies via MessageHandler
-	IndustryService      *industry.Service      // Industry service for industry-aware features
+	MessageHandler       *social.MessageHandler           // For sending replies via MessageHandler
+	IndustryService      *industry.Service                // Industry service for industry-aware features
 	InstagramInsights    *social.InstagramInsightsService // Instagram insights service
 	EmailService         interface {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
@@ -273,10 +273,10 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Get("/tenant/escalations", h.listEscalations)
 		r.Get("/tenant/escalations/stats", h.getEscalationStats)
 		r.Get("/tenant/escalations/{id}", h.getEscalation)
-		
+
 		// Campaigns/Posts Stats API
 		r.Get("/tenant/campaigns/stats", h.getCampaignStats)
-		
+
 		// Caption AI Suggestions API
 		r.Post("/tenant/captions/generate-from-keywords", h.generateCaptionFromKeywords)
 		r.Post("/tenant/captions/rephrase", h.rephraseCaption)
@@ -288,6 +288,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 		// Analytics API
 		r.Get("/tenant/analytics", h.getAnalytics)
+		r.Get("/tenant/analytics/performance", h.getPerformanceSummary)
 
 		// Media Library
 		r.Get("/tenant/media", h.listMedia)
@@ -701,7 +702,7 @@ func (h *Handler) listIntegrations(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		
+
 		ig := integration{
 			ID:         acc.ID,
 			Platform:   acc.Platform,
@@ -804,13 +805,26 @@ func (h *Handler) listScheduledPosts(w http.ResponseWriter, r *http.Request) {
 
 	query := h.DB.Where("tenant_id = ?", claims.TenantID)
 	if statusFilter != "" {
-		query = query.Where("status = ?", statusFilter)
+		// For "scheduled" filter, include both "scheduled" and "posting" statuses
+		if statusFilter == "scheduled" {
+			query = query.Where("status IN ?", []string{"scheduled", "posting"})
+		} else {
+			query = query.Where("status = ?", statusFilter)
+		}
+	}
+
+	// Get limit from query parameter (for upcoming posts)
+	limit := 100
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
 	}
 
 	var posts []storage.ScheduledPost
 	if err := query.
 		Order("scheduled_at ASC, created_at ASC").
-		Limit(100).
+		Limit(limit).
 		Find(&posts).Error; err != nil {
 		h.Logger.Error("fetch scheduled posts", zap.Error(err))
 		http.Error(w, "could not fetch scheduled posts", http.StatusInternalServerError)
@@ -1046,7 +1060,7 @@ func (h *Handler) verifyIntegration(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	
+
 	// Check if account has access token - if not, can't verify
 	if account.AccessToken == "" {
 		h.Logger.Warn("integration found but access token is missing",
@@ -4011,12 +4025,12 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		MediaIDs      []uint `json:"media_ids"`
-		Caption       string `json:"caption"`
-		Platforms     []string `json:"platforms"`
-		ScheduledAt   string   `json:"scheduled_at"` // RFC3339
-		Name          string   `json:"name"`
-		EnhanceCaption bool   `json:"enhance_caption"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
+		MediaIDs       []uint   `json:"media_ids"`
+		Caption        string   `json:"caption"`
+		Platforms      []string `json:"platforms"`
+		ScheduledAt    string   `json:"scheduled_at"` // RFC3339
+		Name           string   `json:"name"`
+		EnhanceCaption bool     `json:"enhance_caption"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.MediaIDs) == 0 {
 		http.Error(w, "media_ids required", http.StatusBadRequest)
@@ -4060,13 +4074,13 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 	mediaJSON, _ := json.Marshal(req.MediaIDs)
 	platsJSON, _ := json.Marshal(req.Platforms)
 	post := storage.ScheduledPost{
-		TenantID:      claims.TenantID,
-		Name:          req.Name,
-		Caption:       req.Caption,
-		MediaAssetIDs: string(mediaJSON),
-		Platforms:     string(platsJSON),
-		ScheduledAt:   scheduledAt,
-		Status:        "scheduled",
+		TenantID:       claims.TenantID,
+		Name:           req.Name,
+		Caption:        req.Caption,
+		MediaAssetIDs:  string(mediaJSON),
+		Platforms:      string(platsJSON),
+		ScheduledAt:    scheduledAt,
+		Status:         "scheduled",
 		EnhanceCaption: req.EnhanceCaption, // Store AI enhancement preference
 	}
 	if err := h.DB.Create(&post).Error; err != nil {
@@ -5607,6 +5621,168 @@ func (h *Handler) getCampaignStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+// getPerformanceSummary returns performance metrics for the overview dashboard
+func (h *Handler) getPerformanceSummary(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse period parameter (7d, 30d, 90d, all)
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "7d"
+	}
+
+	var startDate time.Time
+	now := time.Now()
+	switch period {
+	case "7d":
+		startDate = now.AddDate(0, 0, -7)
+	case "30d":
+		startDate = now.AddDate(0, 0, -30)
+	case "90d":
+		startDate = now.AddDate(0, 0, -90)
+	case "all":
+		startDate = time.Time{} // Zero time means all time
+	default:
+		startDate = now.AddDate(0, 0, -7)
+	}
+
+	// Query PostAnalytics for the period
+	var analytics []storage.PostAnalytics
+	query := h.DB.Model(&storage.PostAnalytics{}).Where("tenant_id = ?", claims.TenantID)
+	if !startDate.IsZero() {
+		query = query.Where("posted_at >= ? AND posted_at <= ?", startDate, now)
+	} else {
+		query = query.Where("posted_at <= ?", now)
+	}
+
+	if err := query.Find(&analytics).Error; err != nil {
+		h.Logger.Error("failed to fetch performance analytics", zap.Error(err))
+		// Return empty response instead of error
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"period":              period,
+			"engagement_rate":     nil,
+			"total_impressions":   0,
+			"total_reach":         0,
+			"total_likes":         0,
+			"total_comments":      0,
+			"total_shares":        0,
+			"total_posts":         0,
+			"top_performing_post": nil,
+			"platform_breakdown":  map[string]interface{}{},
+		})
+		return
+	}
+
+	if len(analytics) == 0 {
+		// No analytics data available
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"period":              period,
+			"engagement_rate":     nil,
+			"total_impressions":   0,
+			"total_reach":         0,
+			"total_likes":         0,
+			"total_comments":      0,
+			"total_shares":        0,
+			"total_posts":         0,
+			"top_performing_post": nil,
+			"platform_breakdown":  map[string]interface{}{},
+		})
+		return
+	}
+
+	// Aggregate metrics
+	var totalImpressions, totalReach, totalLikes, totalComments, totalShares int64
+	var totalEngagement int64
+	var topPost *storage.PostAnalytics
+	var topEngagement int64
+
+	platformBreakdown := make(map[string]map[string]interface{})
+
+	for i := range analytics {
+		anal := &analytics[i]
+		totalImpressions += anal.Impressions
+		totalReach += anal.Reach
+		totalLikes += anal.Likes
+		totalComments += anal.Comments
+		totalShares += anal.Shares
+		totalEngagement += anal.Likes + anal.Comments + anal.Shares
+
+		// Track top performing post
+		postEngagement := anal.Likes + anal.Comments + anal.Shares
+		if postEngagement > topEngagement {
+			topEngagement = postEngagement
+			topPost = anal
+		}
+
+		// Platform breakdown
+		if platformBreakdown[anal.Platform] == nil {
+			platformBreakdown[anal.Platform] = map[string]interface{}{
+				"posts":       0,
+				"impressions": int64(0),
+				"reach":       int64(0),
+				"likes":       int64(0),
+				"comments":    int64(0),
+			}
+		}
+		plat := platformBreakdown[anal.Platform]
+		plat["posts"] = plat["posts"].(int) + 1
+		plat["impressions"] = plat["impressions"].(int64) + anal.Impressions
+		plat["reach"] = plat["reach"].(int64) + anal.Reach
+		plat["likes"] = plat["likes"].(int64) + anal.Likes
+		plat["comments"] = plat["comments"].(int64) + anal.Comments
+	}
+
+	// Calculate engagement rate
+	var engagementRate *float64
+	if totalReach > 0 {
+		rate := float64(totalEngagement) / float64(totalReach) * 100
+		engagementRate = &rate
+	}
+
+	// Get top performing post details
+	var topPerformingPost map[string]interface{}
+	if topPost != nil {
+		// Get the scheduled post name
+		var scheduledPost storage.ScheduledPost
+		h.DB.First(&scheduledPost, topPost.ScheduledPostID)
+
+		topEngagementRate := float64(0)
+		if topPost.Reach > 0 {
+			topEngagementRate = float64(topEngagement) / float64(topPost.Reach) * 100
+		}
+
+		topPerformingPost = map[string]interface{}{
+			"id":              topPost.ScheduledPostID,
+			"name":            scheduledPost.Name,
+			"platform":        topPost.Platform,
+			"impressions":     topPost.Impressions,
+			"reach":           topPost.Reach,
+			"likes":           topPost.Likes,
+			"comments":        topPost.Comments,
+			"shares":          topPost.Shares,
+			"engagement_rate": topEngagementRate,
+			"posted_at":       topPost.PostedAt.Format(time.RFC3339),
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"period":              period,
+		"engagement_rate":     engagementRate,
+		"total_impressions":   totalImpressions,
+		"total_reach":         totalReach,
+		"total_likes":         totalLikes,
+		"total_comments":      totalComments,
+		"total_shares":        totalShares,
+		"total_posts":         len(analytics),
+		"top_performing_post": topPerformingPost,
+		"platform_breakdown":  platformBreakdown,
+	})
+}
+
 // =======================
 // CAPTION AI SUGGESTIONS API
 // =======================
@@ -5620,10 +5796,10 @@ func (h *Handler) generateCaptionFromKeywords(w http.ResponseWriter, r *http.Req
 	}
 
 	var req struct {
-		Keywords   string   `json:"keywords"`   // Keywords to generate caption from
-		Platform   string   `json:"platform"`   // instagram, facebook, tiktok, etc.
-		MediaType  string   `json:"media_type"` // image, video, carousel
-		ImageURLs  []string `json:"image_urls"` // Optional: URLs of images to analyze
+		Keywords  string   `json:"keywords"`   // Keywords to generate caption from
+		Platform  string   `json:"platform"`   // instagram, facebook, tiktok, etc.
+		MediaType string   `json:"media_type"` // image, video, carousel
+		ImageURLs []string `json:"image_urls"` // Optional: URLs of images to analyze
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -5678,10 +5854,10 @@ func (h *Handler) rephraseCaption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Caption    string   `json:"caption"`    // Original caption to rephrase
-		Platform   string   `json:"platform"`   // instagram, facebook, tiktok, etc.
-		MediaType  string   `json:"media_type"` // image, video, carousel
-		ImageURLs  []string `json:"image_urls"` // Optional: URLs of images
+		Caption   string   `json:"caption"`    // Original caption to rephrase
+		Platform  string   `json:"platform"`   // instagram, facebook, tiktok, etc.
+		MediaType string   `json:"media_type"` // image, video, carousel
+		ImageURLs []string `json:"image_urls"` // Optional: URLs of images
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -5736,10 +5912,10 @@ func (h *Handler) fineTuneCaption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Caption    string   `json:"caption"`    // Original caption to fine-tune
-		Platform   string   `json:"platform"`   // instagram, facebook, tiktok, etc.
-		MediaType  string   `json:"media_type"` // image, video, carousel
-		ImageURLs  []string `json:"image_urls"` // Optional: URLs of images to analyze
+		Caption   string   `json:"caption"`    // Original caption to fine-tune
+		Platform  string   `json:"platform"`   // instagram, facebook, tiktok, etc.
+		MediaType string   `json:"media_type"` // image, video, carousel
+		ImageURLs []string `json:"image_urls"` // Optional: URLs of images to analyze
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -5981,13 +6157,13 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		FiveTo15Min int64 `json:"5_to_15_min"`
 		Over15Min   int64 `json:"over_15_min"`
 	}
-	
+
 	var responseTimeDist responseTimeStats
 	var responseTimeInteractions []struct {
 		IncomingTime time.Time
 		OutgoingTime time.Time
 	}
-	
+
 	// Get conversations with their first incoming and outgoing interactions
 	// This calculates REAL response times by finding the time between each incoming message
 	// and the first outgoing response in the same conversation
@@ -6006,7 +6182,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			AND i1.created_at <= ?
 		GROUP BY i1.id, i1.created_at
 	`, claims.TenantID, start, end).Rows()
-	
+
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -6017,7 +6193,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Scan(&rt.IncomingTime, &rt.OutgoingTime); err == nil {
 				duration := rt.OutgoingTime.Sub(rt.IncomingTime)
 				minutes := duration.Minutes()
-				
+
 				if minutes < 1 {
 					responseTimeDist.Under1Min++
 				} else if minutes < 5 {
@@ -6030,11 +6206,11 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	for _, rt := range responseTimeInteractions {
 		duration := rt.OutgoingTime.Sub(rt.IncomingTime)
 		minutes := duration.Minutes()
-		
+
 		if minutes < 1 {
 			responseTimeDist.Under1Min++
 		} else if minutes < 5 {
@@ -6045,7 +6221,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 			responseTimeDist.Over15Min++
 		}
 	}
-	
+
 	var totalResponseTimes = responseTimeDist.Under1Min + responseTimeDist.OneTo5Min + responseTimeDist.FiveTo15Min + responseTimeDist.Over15Min
 	var responseTimeDistribution map[string]any
 	if totalResponseTimes > 0 {
@@ -6081,7 +6257,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	for _, p := range platformBreakdown {
 		totalChannelVolume += p.Conversations
 	}
-	
+
 	var volumeByChannel []map[string]any
 	for _, p := range platformBreakdown {
 		var percentage float64
@@ -6090,7 +6266,7 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		}
 		volumeByChannel = append(volumeByChannel, map[string]any{
 			"platform":   p.Platform,
-			"count":     p.Conversations,
+			"count":      p.Conversations,
 			"percentage": percentage,
 		})
 	}
@@ -6119,9 +6295,9 @@ func (h *Handler) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		},
 		"response_distribution": responseDistribution,
 		"response_time_distribution": map[string]any{
-			"data":      responseTimeDistribution,
-			"has_data":  hasResponseTimeData,
-			"total":     totalResponseTimes,
+			"data":     responseTimeDistribution,
+			"has_data": hasResponseTimeData,
+			"total":    totalResponseTimes,
 		},
 		"volume_by_channel": map[string]any{
 			"data":     volumeByChannel,
@@ -7593,7 +7769,7 @@ func (h *Handler) deleteTikTokVideo(w http.ResponseWriter, r *http.Request) {
 // This endpoint has been removed. TikTok analytics collection is no longer supported.
 func (h *Handler) getTikTokVideoAnalytics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusGone, map[string]any{
-		"error": "TikTok analytics functionality has been removed",
+		"error":   "TikTok analytics functionality has been removed",
 		"message": "TikTok analytics collection is no longer supported",
 	})
 }
@@ -7602,7 +7778,7 @@ func (h *Handler) getTikTokVideoAnalytics(w http.ResponseWriter, r *http.Request
 // This endpoint has been removed. TikTok analytics collection is no longer supported.
 func (h *Handler) getTikTokAnalytics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusGone, map[string]any{
-		"error": "TikTok analytics functionality has been removed",
+		"error":   "TikTok analytics functionality has been removed",
 		"message": "TikTok analytics collection is no longer supported",
 	})
 }
@@ -7830,7 +8006,7 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 	invalidAccountMetrics := map[string]bool{
 		"impressions": true, // Only valid for media insights, not account insights
 	}
-	
+
 	filteredMetrics := make([]string, 0, len(metrics))
 	for _, m := range metrics {
 		if m != "" && !invalidAccountMetrics[m] {
@@ -7841,7 +8017,7 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 				zap.String("login_method", account.LoginMethod))
 		}
 	}
-	
+
 	// If all metrics were filtered out, use defaults
 	if len(filteredMetrics) == 0 {
 		if account.LoginMethod == "instagram_login" {
@@ -7852,7 +8028,7 @@ func (h *Handler) getInstagramAccountInsights(w http.ResponseWriter, r *http.Req
 		h.Logger.Info("all requested metrics were deprecated, using defaults",
 			zap.Strings("default_metrics", filteredMetrics))
 	}
-	
+
 	metrics = filteredMetrics
 
 	period := r.URL.Query().Get("period")
