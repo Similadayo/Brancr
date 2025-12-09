@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -21,15 +23,34 @@ type GupshupWebhookHandler struct {
 	Logger         *zap.Logger
 	MessageHandler *MessageHandler
 	Client         *GupshupClient
+	MediaProcessor *MediaProcessor
 }
 
 // NewGupshupWebhookHandler creates a new Gupshup webhook handler
 func NewGupshupWebhookHandler(db *gorm.DB, logger *zap.Logger, msgHandler *MessageHandler, client *GupshupClient) *GupshupWebhookHandler {
+	// Initialize media processor if OpenAI and Cloudinary are configured
+	var mediaProcessor *MediaProcessor
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	cloudURL := os.Getenv("CLOUDINARY_URL")
+	if openAIKey != "" && cloudURL != "" {
+		aiClient := ai.NewAIClient()
+		var err error
+		mediaProcessor, err = NewMediaProcessor(logger, aiClient, cloudURL)
+		if err != nil {
+			logger.Warn("failed to initialize media processor", zap.Error(err))
+		} else {
+			logger.Info("✅ Media processor initialized (audio transcription, image analysis, document extraction)")
+		}
+	} else {
+		logger.Info("⚠️ Media processor not initialized (OpenAI or Cloudinary not configured)")
+	}
+
 	return &GupshupWebhookHandler{
 		DB:             db,
 		Logger:         logger,
 		MessageHandler: msgHandler,
 		Client:         client,
+		MediaProcessor: mediaProcessor,
 	}
 }
 
@@ -704,13 +725,124 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 
+	// Check if this is a media message (audio, image, video, document, sticker)
+	isMediaMessage := messageType == "audio" || messageType == "image" || 
+		messageType == "video" || messageType == "document" || messageType == "sticker"
+	
+	// Extract media URL and metadata for media messages
+	var mediaURL string
+	var mediaMetadata map[string]interface{}
+	
+	if isMediaMessage {
+		// Try to extract media URL from various possible locations
+		// Gupshup sends media URL in different places depending on message type
+		
+		// Method 1: payload.url or payload.payload.url
+		if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+			if url, ok := nestedPayload["url"].(string); ok && url != "" {
+				mediaURL = url
+			}
+		}
+		
+		// Method 2: message.audio.url, message.image.url, etc.
+		if mediaURL == "" && messageData != nil {
+			if mediaObj, ok := messageData[messageType].(map[string]interface{}); ok {
+				if url, ok := mediaObj["url"].(string); ok && url != "" {
+					mediaURL = url
+				}
+				// Extract additional metadata
+				mediaMetadata = mediaObj
+			}
+		}
+		
+		// Method 3: payload.url directly
+		if mediaURL == "" {
+			if url, ok := payload["url"].(string); ok && url != "" {
+				mediaURL = url
+			}
+		}
+		
+		// Extract caption if available (for images/videos)
+		var caption string
+		if messageData != nil {
+			if cap, ok := messageData["caption"].(string); ok && cap != "" {
+				caption = cap
+			}
+		}
+		if caption == "" && payload["caption"] != nil {
+			if cap, ok := payload["caption"].(string); ok {
+				caption = cap
+			}
+		}
+		
+		// Extract filename for documents
+		var filename string
+		if messageType == "document" && messageData != nil {
+			if doc, ok := messageData["document"].(map[string]interface{}); ok {
+				if name, ok := doc["filename"].(string); ok {
+					filename = name
+				}
+			}
+		}
+		
+		// Log media message details
+		h.Logger.Info("📎 Media message received",
+			zap.Uint("tenant_id", tenantID),
+			zap.String("source", source),
+			zap.String("message_type", messageType),
+			zap.String("media_url", mediaURL),
+			zap.String("caption", caption),
+			zap.String("filename", filename))
+		
+		// Store media metadata
+		mediaMetadata = map[string]interface{}{
+			"media_url":  mediaURL,
+			"media_type": messageType,
+			"caption":    caption,
+		}
+		if filename != "" {
+			mediaMetadata["filename"] = filename
+		}
+		
+		// For media messages, use caption as content if available, otherwise use a placeholder
+		// This allows AI to process the message context even for media
+		if caption != "" {
+			// Will be set below
+		} else {
+			// Set a descriptive placeholder based on media type
+			switch messageType {
+			case "audio":
+				// Will be set to placeholder below
+			case "image":
+				// Will be set to placeholder below
+			case "video":
+				// Will be set to placeholder below
+			case "document":
+				if filename != "" {
+					// Will use filename if available
+				}
+			case "sticker":
+				// Will be set to placeholder below
+			}
+		}
+	}
+	
 	// Extract text content - try multiple formats based on actual Gupshup payload structure
 	var content string
 	
+	// For media messages, try to get caption first
+	if isMediaMessage {
+		if caption, ok := mediaMetadata["caption"].(string); ok && caption != "" {
+			content = caption
+		}
+	}
+	
 	// Method 1: payload.payload.text (nested payload structure - from logs)
-	if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
-		if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
-			content = textStr
+	if content == "" {
+		if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+			if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
+				content = textStr
+			}
 		}
 	}
 	
@@ -751,12 +883,36 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 	
-	// CRITICAL: Log if content is still empty - this is the bug!
+	// For media messages without text/caption, use a descriptive placeholder
+	if content == "" && isMediaMessage {
+		switch messageType {
+		case "audio":
+			content = "[Voice note received]"
+		case "image":
+			content = "[Image received]"
+		case "video":
+			content = "[Video received]"
+		case "document":
+			if filename, ok := mediaMetadata["filename"].(string); ok && filename != "" {
+				content = fmt.Sprintf("[Document received: %s]", filename)
+			} else {
+				content = "[Document received]"
+			}
+		case "sticker":
+			content = "[Sticker received]"
+		default:
+			content = fmt.Sprintf("[%s received]", messageType)
+		}
+	}
+	
+	// CRITICAL: Log if content is still empty (should not happen for media messages now)
 	if content == "" {
 		h.Logger.Error("❌ CRITICAL: Failed to extract message content from Gupshup webhook",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("source", source),
 			zap.String("message_type", messageType),
+			zap.Bool("is_media_message", isMediaMessage),
+			zap.String("media_url", mediaURL),
 			zap.Any("message_data", messageData),
 			zap.Any("full_payload", payload),
 			zap.Any("payload_payload", func() interface{} {
@@ -793,6 +949,88 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 
+	// Build metadata with media information if applicable
+	metadata := map[string]interface{}{
+		"gupshup_app_id": envelope["appId"],
+		"raw_payload":    payload,
+	}
+	
+	// Process media if this is a media message and MediaProcessor is available
+	if isMediaMessage && mediaURL != "" && h.MediaProcessor != nil {
+		h.Logger.Info("🔄 Processing media message",
+			zap.String("media_type", messageType),
+			zap.String("media_url", mediaURL),
+			zap.Uint("tenant_id", tenantID))
+		
+		// Process media in background (don't block webhook response)
+		// This downloads, stores, and processes the media (transcription, analysis, etc.)
+		go func() {
+			processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			
+			result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaURL, messageType)
+			if err != nil {
+				h.Logger.Warn("failed to process media (non-critical)",
+					zap.String("media_type", messageType),
+					zap.String("media_url", mediaURL),
+					zap.Uint("tenant_id", tenantID),
+					zap.Error(err))
+				return
+			}
+			
+			// Update metadata with processing results
+			if result.StoredURL != "" {
+				metadata["media_stored_url"] = result.StoredURL
+			}
+			if result.Transcription != "" {
+				metadata["audio_transcription"] = result.Transcription
+				// Update content with transcription for audio messages
+				if messageType == "audio" {
+					content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+				}
+			}
+			if result.ImageAnalysis != "" {
+				metadata["image_analysis"] = result.ImageAnalysis
+				// Update content with analysis for image messages
+				if messageType == "image" || messageType == "sticker" {
+					content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+				}
+			}
+			if result.DocumentText != "" {
+				metadata["document_text"] = result.DocumentText
+				// Update content with extracted text for document messages
+				if messageType == "document" {
+					content = fmt.Sprintf("[Document]: %s", result.DocumentText)
+				}
+			}
+			
+			// Add processing metadata
+			for k, v := range result.Metadata {
+				metadata["media_"+k] = v
+			}
+			
+			h.Logger.Info("✅ Media processing completed",
+				zap.String("media_type", messageType),
+				zap.Bool("has_transcription", result.Transcription != ""),
+				zap.Bool("has_analysis", result.ImageAnalysis != ""),
+				zap.Bool("has_document_text", result.DocumentText != ""),
+				zap.Uint("tenant_id", tenantID))
+		}()
+	}
+	
+	// Add media metadata if this is a media message
+	if isMediaMessage && mediaMetadata != nil {
+		metadata["media"] = mediaMetadata
+		metadata["media_url"] = mediaURL
+		metadata["media_type"] = messageType
+		// Add URL expiry if available (Gupshup may provide this)
+		if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+			if expiry, ok := nestedPayload["urlExpiry"].(string); ok {
+				metadata["media_url_expiry"] = expiry
+			}
+		}
+	}
+	
 	// Use existing MessageHandler to process message
 	// This will automatically:
 	// 1. Find or create customer
@@ -809,13 +1047,10 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		CustomerProfilePic: "",
 		MessageID:         waID,
 		Content:           content,
-		MessageType:       messageType,
+		MessageType:       messageType, // Will be "audio", "image", "video", "document", "sticker", or "text"
 		ThreadID:          source, // Use phone number as thread ID
 		Timestamp:         timestamp,
-		Metadata: map[string]interface{}{
-			"gupshup_app_id": envelope["appId"],
-			"raw_payload":    payload,
-		},
+		Metadata:          metadata,
 	}
 
 	// Process through existing message handler (handles AI, intent detection, etc.)
