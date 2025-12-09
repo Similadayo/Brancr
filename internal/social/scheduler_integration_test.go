@@ -15,9 +15,14 @@ import (
 
 // TestScheduler_WorkerPoolIntegration tests that scheduler properly integrates with worker pool
 func TestScheduler_WorkerPoolIntegration(t *testing.T) {
-	// Setup in-memory database
+	// Setup in-memory database (requires CGO)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub" ||
+			errMsg == "sql: unknown driver \"sqlite3\" (forgotten import?)" {
+			t.Skip("Skipping test: SQLite requires CGO. Run with: set CGO_ENABLED=1 && go test ./...")
+		}
 		t.Fatalf("failed to open database: %v", err)
 	}
 
@@ -107,9 +112,14 @@ func TestScheduler_WorkerPoolIntegration(t *testing.T) {
 
 // TestScheduler_WorkerPoolFallback tests fallback to goroutines when pool is full
 func TestScheduler_WorkerPoolFallback(t *testing.T) {
-	// Setup in-memory database
+	// Setup in-memory database (requires CGO)
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub" ||
+			errMsg == "sql: unknown driver \"sqlite3\" (forgotten import?)" {
+			t.Skip("Skipping test: SQLite requires CGO. Run with: set CGO_ENABLED=1 && go test ./...")
+		}
 		t.Fatalf("failed to open database: %v", err)
 	}
 
@@ -176,7 +186,9 @@ type workerPoolTestAdapter struct {
 	pool *worker.Pool
 }
 
-func (a *workerPoolTestAdapter) Submit(job interface{ Execute(ctx context.Context) error }) error {
+func (a *workerPoolTestAdapter) Submit(job interface {
+	Execute(ctx context.Context) error
+}) error {
 	return a.pool.Submit(worker.JobFunc(job.Execute))
 }
 
@@ -189,4 +201,3 @@ func (m *mockCaptionOptimizerIntegration) OptimizeCaption(ctx context.Context, r
 		Hashtags:         []string{"#test"},
 	}, nil
 }
-

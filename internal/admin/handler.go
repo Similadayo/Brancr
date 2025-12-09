@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -682,28 +681,24 @@ func WhatsAppRejectRequestHandler(ctx *AdminContext) http.HandlerFunc {
 	}
 }
 
-// renderTemplate loads both layout and page template together
+// renderTemplate loads both layout and page template together (embedded templates)
 func renderTemplate(w http.ResponseWriter, page string, data any, logger *zap.Logger) {
-	layout := filepath.Join("internal", "admin", "templates", "layout.html")
-	pagePath := filepath.Join("internal", "admin", "templates", page)
-
-	tpl, err := template.ParseFiles(layout, pagePath)
+	tpl, err := template.ParseFS(adminTemplates, "templates/layout.html", "templates/"+page)
 	if err != nil {
 		logger.Error("template parse failed", zap.String("page", page), zap.Error(err))
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
 	}
 
-	err = tpl.ExecuteTemplate(w, "layout.html", data)
-	if err != nil {
+	if err := tpl.ExecuteTemplate(w, "layout.html", data); err != nil {
 		logger.Error("template execute failed", zap.String("page", page), zap.Error(err))
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }
 
-// simple login template loader
+// simple login template loader (embedded)
 func loadTemplate(name string) (*template.Template, error) {
-	return template.ParseFiles("internal/admin/templates/" + name)
+	return template.ParseFS(adminTemplates, "templates/"+name)
 }
 
 // ✅ GET /admin/login

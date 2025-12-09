@@ -178,10 +178,24 @@
       const selectedPlan = planFilter.value;
 
       rows.forEach(row => {
-        const tenantName = row.getAttribute('data-tenant').toLowerCase();
-        const plan = row.getAttribute('data-plan');
+        // Skip rows without data attributes (e.g., "no data available" row)
+        const tenantNameAttr = row.getAttribute('data-tenant');
+        const planAttr = row.getAttribute('data-plan');
+        
+        if (tenantNameAttr === null || planAttr === null) {
+          // This is the empty state row - show it only when there's no search/filter
+          if (!searchTerm && !selectedPlan) {
+            row.style.display = '';
+          } else {
+            row.style.display = 'none';
+          }
+          return;
+        }
 
-        const matchesSearch = tenantName.includes(searchTerm);
+        const tenantName = tenantNameAttr.toLowerCase();
+        const plan = planAttr;
+
+        const matchesSearch = !searchTerm || tenantName.includes(searchTerm);
         const matchesPlan = !selectedPlan || plan === selectedPlan;
 
         if (matchesSearch && matchesPlan) {
