@@ -4,12 +4,14 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/similadayo/brancr/pkg/metrics"
 )
 
 // AdminRouter returns the admin subrouter (mount at /admin)
-func AdminRouter(ctx *AdminContext) http.Handler {
+func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 	r := chi.NewRouter()
 	r.Use(AdminPanicMiddleware(ctx))
+	r.Use(AdminLoggingMiddleware(ctx, m)) // Add comprehensive logging
 	r.Get("/login", GetLoginHandler(ctx))
 	r.Post("/login", PostLoginHandler(ctx))
 

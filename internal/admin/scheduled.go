@@ -22,7 +22,7 @@ func ScheduledHandler(ctx *AdminContext) http.HandlerFunc {
 			"Now":   time.Now(),
 		}
 
-		renderTemplate(w, "scheduled.html", data, ctx.Logger)
+		renderTemplate(w, r, "scheduled.html", data, ctx.Logger)
 	}
 }
 

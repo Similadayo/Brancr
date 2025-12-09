@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"go.uber.org/zap"
 )
 
 func jwtSecret(ctx *AdminContext) []byte {
@@ -41,15 +42,35 @@ func AdminAuthMiddleware(ctx *AdminContext) func(next http.Handler) http.Handler
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("brancr_admin")
 			if err != nil || cookie.Value == "" {
+				logger := GetAdminLogger(r)
+				if logger != nil {
+					logger.Warn("admin auth failed: no session cookie",
+						zap.String("path", r.URL.Path),
+						zap.String("remote_addr", r.RemoteAddr))
+				}
 				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 				return
 			}
 
 			token, err := validateToken(ctx, cookie.Value)
 			if err != nil || !token.Valid {
+				logger := GetAdminLogger(r)
+				if logger != nil {
+					logger.Warn("admin auth failed: invalid token",
+						zap.String("path", r.URL.Path),
+						zap.Error(err))
+				}
 				clearAdminCookie(w)
 				http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 				return
+			}
+
+			// Extract admin email from token claims
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				if email, ok := claims["sub"].(string); ok {
+					// Store admin email in context for logging
+					r = r.WithContext(context.WithValue(r.Context(), "admin_email", email))
+				}
 			}
 
 			r = r.WithContext(context.WithValue(r.Context(), "admin_token", token))

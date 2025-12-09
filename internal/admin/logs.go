@@ -24,7 +24,7 @@ func LogsHandler(ctx *AdminContext) http.HandlerFunc {
 			"Logs": logs,
 		}
 
-		renderTemplate(w, "logs.html", data, ctx.Logger)
+		renderTemplate(w, r, "logs.html", data, ctx.Logger)
 	}
 }
 

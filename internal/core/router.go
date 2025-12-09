@@ -63,7 +63,7 @@ func SetupRouter(app *App) http.Handler {
 		AdminPassword: app.Config.AdminPassword,
 	}
 
-	r.Mount("/admin", admin.AdminRouter(adminCtx))
+	r.Mount("/admin", admin.AdminRouter(adminCtx, appMetrics))
 	r.Mount("/bot", TenantRouter(app))
 
 	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.WorkflowOrchestrator, app.Services.Scheduler, app.Services.AIClient, app.Services.MessageHandler, app.Services.IndustryService, app.Services.InstagramInsights, app.Services.EmailService)

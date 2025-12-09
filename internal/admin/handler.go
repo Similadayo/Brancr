@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
@@ -115,7 +116,7 @@ func WhatsAppNumbersPageHandler(ctx *AdminContext) http.HandlerFunc {
 			"Page":      "whatsapp",
 		}
 
-		renderTemplate(w, "whatsapp.html", data, ctx.Logger)
+		renderTemplate(w, r, "whatsapp.html", data, ctx.Logger)
 	}
 }
 
@@ -682,19 +683,36 @@ func WhatsAppRejectRequestHandler(ctx *AdminContext) http.HandlerFunc {
 }
 
 // renderTemplate loads both layout and page template together (embedded templates)
-func renderTemplate(w http.ResponseWriter, page string, data any, logger *zap.Logger) {
+func renderTemplate(w http.ResponseWriter, r *http.Request, page string, data any, logger *zap.Logger) {
+	// Get request context logger if available
+	ctxLogger := GetAdminLogger(r)
+	if ctxLogger != nil {
+		logger = ctxLogger
+	}
+
 	// Ensure correct content type for HTML responses
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	requestID := ""
+	if r != nil {
+		requestID = middleware.GetRequestID(r.Context())
+	}
+
 	tpl, err := template.ParseFS(adminTemplates, "templates/layout.html", "templates/"+page)
 	if err != nil {
-		logger.Error("template parse failed", zap.String("page", page), zap.Error(err))
+		logger.Error("template parse failed",
+			zap.String("page", page),
+			zap.String("request_id", requestID),
+			zap.Error(err))
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
 	}
 
 	if err := tpl.ExecuteTemplate(w, "layout.html", data); err != nil {
-		logger.Error("template execute failed", zap.String("page", page), zap.Error(err))
+		logger.Error("template execute failed",
+			zap.String("page", page),
+			zap.String("request_id", requestID),
+			zap.Error(err))
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }
@@ -723,13 +741,24 @@ func GetLoginHandler(ctx *AdminContext) http.HandlerFunc {
 // ✅ POST /admin/login
 func PostLoginHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		requestID := middleware.GetRequestID(r.Context())
+		logger := ctx.Logger.With(
+			zap.String("request_id", requestID),
+			zap.String("path", r.URL.Path),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+
 		if err := r.ParseForm(); err != nil {
+			logger.Warn("login failed: parse form error", zap.Error(err))
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 
 		email := r.FormValue("email")
 		password := r.FormValue("password")
+
+		// Don't log password, but log login attempt
+		logger.Info("admin login attempt", zap.String("email", email))
 		cfgEmail := ctx.AdminEmail
 		cfgPassword := ctx.AdminPassword
 
@@ -740,6 +769,8 @@ func PostLoginHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		if email != cfgEmail {
+			logger.Warn("admin login failed: invalid email",
+				zap.String("email", email))
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -755,17 +786,20 @@ func PostLoginHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		if !ok {
+			logger.Warn("admin login failed: invalid password",
+				zap.String("email", email))
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
 
 		tokenStr, err := createToken(ctx, cfgEmail, 24*time.Hour)
 		if err != nil {
-			ctx.Logger.Error("create token", zap.Error(err))
+			logger.Error("admin login failed: token creation error", zap.Error(err))
 			http.Error(w, "could not create token", http.StatusInternalServerError)
 			return
 		}
 		setAdminCookie(w, tokenStr)
+		logger.Info("admin login successful", zap.String("email", email))
 		http.Redirect(w, r, "/admin/", http.StatusSeeOther)
 	}
 }
@@ -787,7 +821,7 @@ func DashboardHandler(ctx *AdminContext) http.HandlerFunc {
 			"CloudinaryUsage":   stats.CloudinaryUsage,
 		}
 
-		renderTemplate(w, "dashboard.html", data, ctx.Logger)
+		renderTemplate(w, r, "dashboard.html", data, ctx.Logger)
 	}
 }
 
@@ -816,7 +850,7 @@ func TenantsHandler(ctx *AdminContext) http.HandlerFunc {
 			"TotalCount": len(tenants),
 		}
 
-		renderTemplate(w, "tenants.html", data, ctx.Logger)
+		renderTemplate(w, r, "tenants.html", data, ctx.Logger)
 	}
 }
 
@@ -838,7 +872,7 @@ func SocialAccountsHandler(ctx *AdminContext) http.HandlerFunc {
 			"Accounts": accounts,
 		}
 
-		renderTemplate(w, "social.html", data, ctx.Logger)
+		renderTemplate(w, r, "social.html", data, ctx.Logger)
 	}
 }
 

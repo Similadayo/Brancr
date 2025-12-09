@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
@@ -43,7 +44,7 @@ func UsageStatsPageHandler(ctx *AdminContext) http.HandlerFunc {
 			"Page":           "usage",
 		}
 
-		renderTemplate(w, "usage.html", data, ctx.Logger)
+		renderTemplate(w, r, "usage.html", data, ctx.Logger)
 	}
 }
 
@@ -67,7 +68,8 @@ func getUsageStats(ctx *AdminContext, r *http.Request) ([]UsageStatsResponse, in
 	tenantIDStr := r.URL.Query().Get("tenant_id")
 
 	var tenants []storage.Tenant
-	query := ctx.DB.Where("status = ?", "active")
+	// Query all tenants (not just active) to show usage for all
+	query := ctx.DB
 
 	if tenantIDStr != "" {
 		query = query.Where("id = ?", tenantIDStr)
@@ -78,6 +80,13 @@ func getUsageStats(ctx *AdminContext, r *http.Request) ([]UsageStatsResponse, in
 		return []UsageStatsResponse{}, 0, 0, 0
 	}
 
+	requestID := middleware.GetRequestID(r.Context())
+	logger := ctx.Logger.With(
+		zap.String("request_id", requestID),
+		zap.Int("tenant_count", len(tenants)),
+	)
+	logger.Info("fetching usage stats")
+
 	quotaService := quota.NewQuotaService(ctx.DB, ctx.Logger)
 	stats := make([]UsageStatsResponse, 0, len(tenants))
 	nearQuotaLimit := 0
@@ -86,9 +95,29 @@ func getUsageStats(ctx *AdminContext, r *http.Request) ([]UsageStatsResponse, in
 	for _, tenant := range tenants {
 		quotaData, err := quotaService.GetQuotaUsage(r.Context(), tenant.ID)
 		if err != nil {
-			ctx.Logger.Warn("failed to get quota for tenant",
+			logger.Error("failed to get quota for tenant",
 				zap.Uint("tenant_id", tenant.ID),
+				zap.String("tenant_name", tenant.Name),
 				zap.Error(err))
+			// Still include tenant in stats with zero usage if quota fetch fails
+			stats = append(stats, UsageStatsResponse{
+				TenantID:        tenant.ID,
+				TenantName:      tenant.Name,
+				PlanType:        "unknown",
+				AICallsUsed:     0,
+				AICallsLimit:    0,
+				AICallsPercent:  0,
+				PostsUsed:       0,
+				PostsLimit:      0,
+				PostsPercent:    0,
+				StorageUsedMB:   0,
+				StorageLimitMB:  0,
+				StoragePercent:  0,
+				APICallsUsed:    0,
+				APICallsLimit:   0,
+				APICallsPercent: 0,
+				LastResetAt:     time.Now(),
+			})
 			continue
 		}
 

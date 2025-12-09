@@ -172,7 +172,7 @@ func HealthHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		data := buildHealthReport(ctx)
 		data["Page"] = "health"
-		renderTemplate(w, "health.html", data, ctx.Logger)
+		renderTemplate(w, r, "health.html", data, ctx.Logger)
 	}
 }
 
