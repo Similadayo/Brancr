@@ -2270,6 +2270,10 @@ func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 	// 1. Business profile AND persona (minimum required)
 	// 2. OR has been actively using the system (posts/media/social accounts)
 	if (hasBusinessProfile && hasPersona) || hasActivity {
+		// Store original values before modifying in case we need to revert
+		originalStep := tenant.OnboardingStep
+		originalComplete := tenant.OnboardingComplete
+
 		tenant.OnboardingStep = "complete"
 		tenant.OnboardingComplete = true
 		if err := h.DB.Save(tenant).Error; err != nil {
@@ -2277,7 +2281,10 @@ func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 			// Reload tenant from database to ensure we return the actual persisted state
 			// This prevents returning modified in-memory state when save fails
 			if reloadErr := h.DB.First(tenant, tenant.ID).Error; reloadErr != nil {
-				h.Logger.Error("failed to reload tenant after save failure", zap.Error(reloadErr), zap.Uint("tenant_id", tenant.ID))
+				// Both save and reload failed - revert in-memory state to original values
+				h.Logger.Error("failed to reload tenant after save failure, reverting in-memory state", zap.Error(reloadErr), zap.Uint("tenant_id", tenant.ID))
+				tenant.OnboardingStep = originalStep
+				tenant.OnboardingComplete = originalComplete
 			}
 		} else {
 			h.Logger.Info("auto-completed onboarding for existing tenant",
