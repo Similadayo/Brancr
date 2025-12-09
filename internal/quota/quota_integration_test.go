@@ -26,7 +26,7 @@ func TestQuotaService_Integration(t *testing.T) {
 	}
 
 	logger := zap.NewNop()
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	tenantID := uint(1)
 
@@ -89,7 +89,7 @@ func TestQuotaService_PostQuotaIntegration(t *testing.T) {
 	}
 
 	logger := zap.NewNop()
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	tenantID := uint(1)
 

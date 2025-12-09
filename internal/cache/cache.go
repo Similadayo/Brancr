@@ -152,5 +152,9 @@ func WebhookIdempotencyKey(platform, eventID string) string {
 	return fmt.Sprintf("webhook:idempotency:%s:%s", platform, eventID)
 }
 
+func QuotaKey(tenantID uint) string {
+	return fmt.Sprintf("quota:%d", tenantID)
+}
+
 var ErrCacheMiss = fmt.Errorf("cache miss")
 

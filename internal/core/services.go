@@ -160,8 +160,8 @@ func (s *Services) initProductionInfra() error {
 	s.RateLimiter = middleware.NewRateLimiter(s.Redis, s.Logger)
 	s.Logger.Info("✅ Rate limiter initialized")
 
-	// Initialize quota service
-	s.QuotaService = quota.NewQuotaService(s.DB, s.Logger)
+	// Initialize quota service (with cache support)
+	s.QuotaService = quota.NewQuotaService(s.DB, s.Logger, s.Cache)
 	s.Logger.Info("✅ Quota service initialized")
 
 	// Initialize worker pool for background jobs

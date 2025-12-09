@@ -87,7 +87,7 @@ func getUsageStats(ctx *AdminContext, r *http.Request) ([]UsageStatsResponse, in
 	)
 	logger.Info("fetching usage stats")
 
-	quotaService := quota.NewQuotaService(ctx.DB, ctx.Logger)
+	quotaService := quota.NewQuotaService(ctx.DB, ctx.Logger, nil) // Cache not needed for admin stats
 	stats := make([]UsageStatsResponse, 0, len(tenants))
 	nearQuotaLimit := 0
 	quotaExceeded := 0

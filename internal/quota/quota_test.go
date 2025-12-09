@@ -12,7 +12,7 @@ import (
 func TestQuotaService_GetOrCreateQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -59,7 +59,7 @@ func TestQuotaService_GetOrCreateQuota(t *testing.T) {
 func TestQuotaService_CheckAICallQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -100,7 +100,7 @@ func TestQuotaService_CheckAICallQuota(t *testing.T) {
 func TestQuotaService_IncrementAICallUsage(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -131,7 +131,7 @@ func TestQuotaService_IncrementAICallUsage(t *testing.T) {
 func TestQuotaService_CheckPostQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -168,7 +168,7 @@ func TestQuotaService_CheckPostQuota(t *testing.T) {
 func TestQuotaService_CheckStorageQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -202,7 +202,7 @@ func TestQuotaService_CheckStorageQuota(t *testing.T) {
 func TestQuotaService_ResetQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger)
+	service := NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
