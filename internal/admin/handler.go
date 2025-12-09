@@ -29,7 +29,7 @@ func WhatsAppNumbersHandler(ctx *AdminContext) http.HandlerFunc {
 			storage.WhatsAppPhoneNumber
 			TenantName string `json:"tenant_name"`
 		}
-		
+
 		response := make([]numberWithTenant, 0, len(numbers))
 		for _, num := range numbers {
 			item := numberWithTenant{WhatsAppPhoneNumber: num}
@@ -66,10 +66,10 @@ func WhatsAppNumbersPageHandler(ctx *AdminContext) http.HandlerFunc {
 			TenantName string
 			TenantID   uint // For display purposes in template
 		}
-		
+
 		displayNumbers := make([]displayNumber, 0, len(numbers))
 		var availableCount, assignedCount int
-		
+
 		for _, num := range numbers {
 			item := displayNumber{WhatsAppPhoneNumber: num}
 			if num.TenantID != nil && *num.TenantID != 0 {
@@ -88,13 +88,13 @@ func WhatsAppNumbersPageHandler(ctx *AdminContext) http.HandlerFunc {
 		// Get phone number requests
 		var requests []storage.WhatsAppPhoneNumberRequest
 		ctx.DB.Where("status IN (?)", []string{"pending", "added_to_meta", "verification_code_sent"}).Order("created_at DESC").Find(&requests)
-		
+
 		type requestWithTenant struct {
 			storage.WhatsAppPhoneNumberRequest
 			TenantName  string
 			TenantEmail string
 		}
-		
+
 		displayRequests := make([]requestWithTenant, 0, len(requests))
 		for _, req := range requests {
 			item := requestWithTenant{WhatsAppPhoneNumberRequest: req}
@@ -107,13 +107,13 @@ func WhatsAppNumbersPageHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		data := map[string]any{
-			"Numbers":   displayNumbers,
-			"Total":     len(numbers),
-			"Available": availableCount,
-			"Assigned":  assignedCount,
-			"Requests":  displayRequests,
+			"Numbers":       displayNumbers,
+			"Total":         len(numbers),
+			"Available":     availableCount,
+			"Assigned":      assignedCount,
+			"Requests":      displayRequests,
 			"RequestsCount": len(displayRequests),
-			"Page":      "whatsapp",
+			"Page":          "whatsapp",
 		}
 
 		renderTemplate(w, r, "whatsapp.html", data, ctx.Logger)
@@ -147,8 +147,8 @@ func WhatsAppSyncHandler(ctx *AdminContext) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":        true,
-			"message":        "Phone numbers synced successfully",
+			"success":         true,
+			"message":         "Phone numbers synced successfully",
 			"available_count": availableCount,
 		})
 	}
@@ -203,13 +203,13 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 		// 3. Number is verified and added to WABA
 		// 4. Admin syncs to Brancr: POST /admin/whatsapp/sync
 		// 5. Then tenant can request another verification code via API for ownership
-		
+
 		// Format phone number (ensure + prefix)
 		phoneNumber := strings.TrimSpace(req.PhoneNumber)
 		if !strings.HasPrefix(phoneNumber, "+") {
 			phoneNumber = "+" + phoneNumber
 		}
-		
+
 		// Try to find the phone number in database (must be synced first)
 		// Try both with and without + prefix
 		var phoneNum storage.WhatsAppPhoneNumber
@@ -217,7 +217,7 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 		if !strings.HasPrefix(phoneNumberQuery, "+") {
 			phoneNumberQuery = "+" + phoneNumberQuery
 		}
-		
+
 		err := ctx.DB.Where("phone_number = ? OR phone_number = ?", phoneNumber, phoneNumberQuery).First(&phoneNum).Error
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -228,7 +228,7 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 					"After adding and verifying in Meta, sync phone numbers using POST /admin/whatsapp/sync, " +
 					"then use POST /admin/whatsapp/request-code to request a verification code for tenant access.",
 				"received_phone_number": req.PhoneNumber,
-				"searched_for": phoneNumberQuery,
+				"searched_for":          phoneNumberQuery,
 			})
 			return
 		}
@@ -240,7 +240,7 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 			ctx.Logger.Info("registering phone number before requesting code",
 				zap.String("phone_number_id", phoneNum.PhoneNumberID),
 				zap.String("status", phoneNum.Status))
-			
+
 			if err := social.RegisterPhoneNumber(ctx.Logger, ctx.Config, phoneNum.PhoneNumberID); err != nil {
 				ctx.Logger.Error("failed to register phone number before requesting code", zap.Error(err))
 				w.WriteHeader(http.StatusInternalServerError)
@@ -250,7 +250,7 @@ func WhatsAppAddNumberHandler(ctx *AdminContext) http.HandlerFunc {
 				})
 				return
 			}
-			
+
 			ctx.Logger.Info("phone number registered successfully, proceeding to request code",
 				zap.String("phone_number_id", phoneNum.PhoneNumberID))
 		}
@@ -323,8 +323,8 @@ func WhatsAppRegisterNumberHandler(ctx *AdminContext) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Phone number registered successfully. You can now verify it with the verification code.",
+			"success":         true,
+			"message":         "Phone number registered successfully. You can now verify it with the verification code.",
 			"phone_number_id": req.PhoneNumberID,
 		})
 	}
@@ -413,10 +413,10 @@ func WhatsAppRequestsHandler(ctx *AdminContext) http.HandlerFunc {
 		// Get tenant info for each request
 		type requestWithTenant struct {
 			storage.WhatsAppPhoneNumberRequest
-			TenantName string `json:"tenant_name"`
+			TenantName  string `json:"tenant_name"`
 			TenantEmail string `json:"tenant_email"`
 		}
-		
+
 		displayRequests := make([]requestWithTenant, 0, len(requests))
 		for _, req := range requests {
 			item := requestWithTenant{WhatsAppPhoneNumberRequest: req}
@@ -431,7 +431,7 @@ func WhatsAppRequestsHandler(ctx *AdminContext) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"requests": displayRequests,
-			"total": len(displayRequests),
+			"total":    len(displayRequests),
 		})
 	}
 }
@@ -510,7 +510,7 @@ func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": "no_verification_code",
+				"error":   "no_verification_code",
 				"message": "Tenant has not provided the verification code yet.",
 			})
 			return
@@ -520,7 +520,7 @@ func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": "phone_number_id_missing",
+				"error":   "phone_number_id_missing",
 				"message": "Phone number ID is missing. Make sure you marked the request as added to Meta first.",
 			})
 			return
@@ -546,7 +546,7 @@ func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": "verification_failed",
+				"error":   "verification_failed",
 				"message": err.Error(),
 			})
 			return
@@ -627,8 +627,8 @@ func WhatsAppVerifyRequestHandler(ctx *AdminContext) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Phone number verified and assigned successfully!",
+			"success":      true,
+			"message":      "Phone number verified and assigned successfully!",
 			"phone_number": phoneNum.PhoneNumber,
 		})
 	}
@@ -865,11 +865,89 @@ func TenantDetailHandler(ctx *AdminContext) http.HandlerFunc {
 
 func SocialAccountsHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		type socialAccountView struct {
+			TenantID     uint
+			TenantName   string
+			Platform     string
+			PlatformName string
+			Mode         string
+			ModeLabel    string
+			Status       string
+			Connected    bool
+			Username     string
+			ExternalID   string
+			CreatedAt    time.Time
+		}
+
 		var accounts []storage.SocialAccount
-		ctx.DB.Find(&accounts)
+		if err := ctx.DB.Order("tenant_id ASC, platform ASC, created_at DESC").Find(&accounts).Error; err != nil {
+			ctx.Logger.Warn("failed to fetch social accounts", zap.Error(err))
+		}
+
+		// Preload tenant names for display
+		tenantNames := map[uint]string{}
+		if len(accounts) > 0 {
+			var tenants []storage.Tenant
+			ids := make([]uint, 0, len(accounts))
+			seen := map[uint]struct{}{}
+			for _, a := range accounts {
+				if _, ok := seen[a.TenantID]; !ok {
+					ids = append(ids, a.TenantID)
+					seen[a.TenantID] = struct{}{}
+				}
+			}
+			if len(ids) > 0 {
+				if err := ctx.DB.Where("id IN ?", ids).Find(&tenants).Error; err != nil {
+					ctx.Logger.Warn("failed to fetch tenants for social accounts", zap.Error(err))
+				} else {
+					for _, t := range tenants {
+						tenantNames[t.ID] = t.Name
+					}
+				}
+			}
+		}
+
+		viewAccounts := make([]socialAccountView, 0, len(accounts))
+		for _, a := range accounts {
+			platform := strings.ToLower(a.Platform)
+			mode := strings.ToLower(a.Mode)
+
+			// WhatsApp uses Gupshup; normalize label
+			modeLabel := mode
+			if platform == "whatsapp" {
+				modeLabel = "gupshup"
+			}
+			if modeLabel == "" {
+				modeLabel = "oauth2"
+			}
+
+			status := "disconnected"
+			if a.Connected {
+				status = "connected"
+			}
+
+			platformLabel := platform
+			if len(platformLabel) > 0 {
+				platformLabel = strings.ToUpper(platformLabel[:1]) + platformLabel[1:]
+			}
+
+			viewAccounts = append(viewAccounts, socialAccountView{
+				TenantID:     a.TenantID,
+				TenantName:   tenantNames[a.TenantID],
+				Platform:     platform,
+				PlatformName: platformLabel,
+				Mode:         mode,
+				ModeLabel:    strings.ToLower(modeLabel),
+				Status:       status,
+				Connected:    a.Connected,
+				Username:     a.Username,
+				ExternalID:   a.ExternalID,
+				CreatedAt:    a.CreatedAt,
+			})
+		}
 
 		data := map[string]any{
-			"Accounts": accounts,
+			"Accounts": viewAccounts,
 		}
 
 		renderTemplate(w, r, "social.html", data, ctx.Logger)

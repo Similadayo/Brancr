@@ -1,49 +1,301 @@
 {{define "title"}}Social Connections — Brancr Admin{{end}}
 {{define "content"}}
+<style>
+  .filters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+    align-items: end;
+  }
+  .filter-group label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+  .filter-group input,
+  .filter-group select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+  }
+  .bulk-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+  }
+  .bulk-actions .muted { color: var(--text-secondary); font-size: 12px; }
+  .table-container { margin-top: 8px; }
+  #accountsTable.compact td, #accountsTable.compact th { padding: 8px 10px; }
+  .checkbox-col { width: 36px; text-align: center; }
+  .actions-col { width: 120px; text-align: right; }
+  .tenant-cell .tenant-name { display: flex; gap: 8px; align-items: center; }
+  .tenant-id { font-weight: 600; }
+  .tenant-label { color: var(--text-secondary); }
+  .chip {
+    display: inline-block;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .btn-small { padding: 6px 10px; font-size: 12px; }
+  .muted { color: var(--text-secondary); }
+</style>
 <div class="page-header">
-  <h1>Social Connections</h1>
-  <p>Manage connected social media accounts</p>
+  <div>
+    <h1>Social Connections</h1>
+    <p>Manage connected social media accounts</p>
+  </div>
+  <div class="actions">
+    <button id="compactToggle" class="btn-secondary">Toggle Compact</button>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="filter-group">
+    <label>Search</label>
+    <input id="searchInput" type="text" placeholder="Tenant, platform, handle…" />
+  </div>
+  <div class="filter-group">
+    <label>Platform</label>
+    <select id="platformFilter">
+      <option value="">All</option>
+      <option value="facebook">Facebook</option>
+      <option value="instagram">Instagram</option>
+      <option value="tiktok">TikTok</option>
+      <option value="whatsapp">WhatsApp (Gupshup)</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Mode</label>
+    <select id="modeFilter">
+      <option value="">All</option>
+      <option value="oauth2">oauth2</option>
+      <option value="gupshup">gupshup</option>
+      <option value="manual">manual</option>
+      <option value="provider_owned">provider_owned</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Status</label>
+    <select id="statusFilter">
+      <option value="">All</option>
+      <option value="connected">Connected</option>
+      <option value="disconnected">Disconnected</option>
+    </select>
+  </div>
+  <div class="bulk-actions">
+    <label class="muted">Bulk</label>
+    <button id="bulkDisconnect" class="btn-danger" disabled>Disconnect Selected</button>
+  </div>
 </div>
 
 <div class="table-container">
-  <table>
+  <table id="accountsTable" class="sortable">
     <thead>
       <tr>
-        <th>Tenant ID</th>
-        <th>Platform</th>
-        <th>Mode</th>
-        <th>Status</th>
-        <th>Created</th>
-        <th>Actions</th>
+        <th class="checkbox-col"><input type="checkbox" id="selectAll" /></th>
+        <th data-sort="tenant">Tenant</th>
+        <th data-sort="platform">Platform</th>
+        <th data-sort="mode">Mode</th>
+        <th data-sort="status">Status</th>
+        <th data-sort="created">Created</th>
+        <th>Handle</th>
+        <th class="actions-col">Actions</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="accountsBody">
       {{range .Accounts}}
-      <tr>
-        <td>{{.TenantID}}</td>
-        <td style="text-transform: capitalize; font-weight: 500;">{{.Platform}}</td>
-        <td><span class="badge info">{{.Mode}}</span></td>
+      <tr
+        data-tenant="{{.TenantID}}"
+        data-tenant-name="{{.TenantName}}"
+        data-platform="{{.Platform}}"
+        data-mode="{{.ModeLabel}}"
+        data-status="{{.Status}}"
+        data-created="{{.CreatedAt.Unix}}"
+      >
+        <td class="checkbox-col">
+          <input type="checkbox" class="row-check" />
+        </td>
+        <td class="tenant-cell">
+          <div class="tenant-name">
+            <span class="tenant-id">#{{.TenantID}}</span>
+            {{if .TenantName}}<span class="tenant-label">{{.TenantName}}</span>{{end}}
+          </div>
+        </td>
+        <td>
+          <span class="chip">{{.PlatformName}}</span>
+        </td>
+        <td>
+          <span class="badge info" title="{{.ModeLabel}}">{{.ModeLabel}}</span>
+        </td>
         <td>
           {{if .Connected}}
-            <span class="badge success">✅ Connected</span>
+            <span class="badge success">● Connected</span>
           {{else}}
-            <span class="badge danger">❌ Disconnected</span>
+            <span class="badge danger">● Disconnected</span>
           {{end}}
         </td>
-        <td style="color: var(--text-secondary);">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
-        <td>
-          <button class="btn-danger" style="padding: 6px 12px; font-size: 12px;">Disconnect</button>
+        <td class="muted">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+        <td class="muted handle-cell">{{if .Username}}{{.Username}}{{else if .ExternalID}}{{.ExternalID}}{{else}}—{{end}}</td>
+        <td class="actions-col">
+          <button class="btn-danger btn-small">Disconnect</button>
         </td>
       </tr>
       {{else}}
-      <tr>
-        <td colspan="6" style="text-align: center; padding: 40px; color: var(--text-secondary);">
-          No connected accounts yet
+      <tr class="empty-row">
+        <td colspan="8" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+          No connections found. Try adjusting filters or connect an account.
         </td>
       </tr>
       {{end}}
     </tbody>
   </table>
 </div>
+
+<script>
+  (function() {
+    const table = document.getElementById('accountsTable');
+    const tbody = document.getElementById('accountsBody');
+    const searchInput = document.getElementById('searchInput');
+    const platformFilter = document.getElementById('platformFilter');
+    const modeFilter = document.getElementById('modeFilter');
+    const statusFilter = document.getElementById('statusFilter');
+    const selectAll = document.getElementById('selectAll');
+    const bulkDisconnect = document.getElementById('bulkDisconnect');
+    const compactToggle = document.getElementById('compactToggle');
+
+    let sortKey = 'tenant';
+    let sortDir = 'asc';
+
+    function text(val) { return (val || '').toString().toLowerCase(); }
+
+    function rowMatches(row) {
+      const s = text(searchInput.value);
+      const platform = row.dataset.platform || '';
+      const mode = row.dataset.mode || '';
+      const status = row.dataset.status || '';
+      const tenant = row.dataset.tenant || '';
+      const tenantName = row.dataset.tenantName || '';
+      const handle = row.querySelector('.handle-cell')?.textContent.toLowerCase() || '';
+
+      if (platformFilter.value && platform !== platformFilter.value) return false;
+      if (modeFilter.value && mode !== modeFilter.value) return false;
+      if (statusFilter.value && status !== statusFilter.value) return false;
+
+      if (!s) return true;
+      return tenant.includes(s) || tenantName.toLowerCase().includes(s) || platform.includes(s) || handle.includes(s);
+    }
+
+    function applyFilters() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      let visible = 0;
+      rows.forEach(row => {
+        if (row.classList.contains('empty-row')) return;
+        const ok = rowMatches(row);
+        row.style.display = ok ? '' : 'none';
+        if (ok) visible++;
+      });
+      const emptyRow = tbody.querySelector('.empty-row');
+      if (emptyRow) emptyRow.style.display = visible === 0 ? '' : 'none';
+      updateBulkState();
+    }
+
+    function compare(a, b, key) {
+      const av = a.dataset[key] || '';
+      const bv = b.dataset[key] || '';
+      if (key === 'created') {
+        return (parseInt(av || '0', 10) - parseInt(bv || '0', 10));
+      }
+      return av.localeCompare(bv);
+    }
+
+    function applySort(key) {
+      const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => !r.classList.contains('empty-row'));
+      rows.sort((a, b) => {
+        const res = compare(a, b, key);
+        return sortDir === 'asc' ? res : -res;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    }
+
+    function updateSort(th) {
+      const key = th.dataset.sort;
+      if (!key) return;
+      if (sortKey === key) {
+        sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortKey = key;
+        sortDir = 'asc';
+      }
+      applySort(sortKey);
+      applyFilters();
+    }
+
+    function updateBulkState() {
+      const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.style.display !== 'none' && !r.classList.contains('empty-row'));
+      const checks = rows.map(r => r.querySelector('.row-check'));
+      const anyChecked = checks.some(c => c && c.checked);
+      bulkDisconnect.disabled = !anyChecked;
+      if (selectAll) {
+        const allVisibleChecked = checks.length > 0 && checks.every(c => c.checked);
+        selectAll.checked = allVisibleChecked;
+        selectAll.indeterminate = !allVisibleChecked && anyChecked;
+      }
+    }
+
+    function bindEvents() {
+      searchInput.addEventListener('input', applyFilters);
+      platformFilter.addEventListener('change', applyFilters);
+      modeFilter.addEventListener('change', applyFilters);
+      statusFilter.addEventListener('change', applyFilters);
+
+      table.querySelectorAll('th[data-sort]').forEach(th => {
+        th.style.cursor = 'pointer';
+        th.addEventListener('click', () => updateSort(th));
+      });
+
+      selectAll.addEventListener('change', () => {
+        const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.style.display !== 'none' && !r.classList.contains('empty-row'));
+        rows.forEach(r => {
+          const cb = r.querySelector('.row-check');
+          if (cb) cb.checked = selectAll.checked;
+        });
+        updateBulkState();
+      });
+
+      tbody.addEventListener('change', (e) => {
+        if (e.target.classList.contains('row-check')) {
+          updateBulkState();
+        }
+      });
+
+      bulkDisconnect.addEventListener('click', () => {
+        // Placeholder; connect to backend endpoint when available
+        const count = Array.from(tbody.querySelectorAll('.row-check'))
+          .filter(cb => cb.checked && cb.closest('tr').style.display !== 'none').length;
+        if (count > 0) {
+          alert(`Disconnect ${count} selected connection(s).`);
+        }
+      });
+
+      compactToggle.addEventListener('click', () => {
+        table.classList.toggle('compact');
+      });
+    }
+
+    bindEvents();
+    applySort(sortKey);
+    applyFilters();
+  })();
+</script>
 {{end}}
 {{template "layout.html" .}}
