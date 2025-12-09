@@ -2237,6 +2237,26 @@ func getStringOrEmpty(s string) string {
 	return s
 }
 
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.0f seconds", d.Seconds())
+	}
+	if d < time.Hour {
+		minutes := d.Minutes()
+		if minutes < 1 {
+			return "less than a minute"
+		}
+		return fmt.Sprintf("%.0f minutes", minutes)
+	}
+	if d < 24*time.Hour {
+		hours := d.Hours()
+		return fmt.Sprintf("%.1f hours", hours)
+	}
+	days := d.Hours() / 24
+	return fmt.Sprintf("%.1f days", days)
+}
+
 // checkAndAutoCompleteOnboarding checks if tenant has sufficient data and auto-completes onboarding if needed
 func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 	if tenant.OnboardingComplete {
@@ -4923,6 +4943,52 @@ func (h *Handler) sendReply(w http.ResponseWriter, r *http.Request) {
 			First(&account).Error; err != nil {
 			http.Error(w, fmt.Sprintf("%s account not connected", conversation.Platform), http.StatusBadRequest)
 			return
+		}
+
+		// Check 24-hour window for WhatsApp
+		// WhatsApp only allows free-form (session) messages within 24 hours of customer's last message
+		// After 24 hours, you must use pre-approved template messages
+		if conversation.Platform == "whatsapp" {
+			// Find the last incoming message from the customer
+			var lastIncoming storage.Interaction
+			if err := h.DB.Where("conversation_id = ? AND direction = ?", conversation.ID, "incoming").
+				Order("created_at DESC").First(&lastIncoming).Error; err == nil {
+				// Check if last message was within 24 hours
+				timeSinceLastMessage := time.Since(lastIncoming.CreatedAt)
+				if timeSinceLastMessage > 24*time.Hour {
+					h.Logger.Warn("Cannot send message - outside 24-hour window",
+						zap.String("platform", conversation.Platform),
+						zap.Uint("conversation_id", conversation.ID),
+						zap.Duration("time_since_last_message", timeSinceLastMessage))
+					
+					writeJSON(w, http.StatusBadRequest, map[string]any{
+						"error":   "outside_24_hour_window",
+						"message": fmt.Sprintf("Cannot send message: Customer's last message was %v ago. %s only allows free-form messages within 24 hours of the customer's last message. Please use a template message or wait for the customer to message again.", 
+							formatDuration(timeSinceLastMessage), strings.Title(conversation.Platform)),
+						"time_since_last_message": timeSinceLastMessage.String(),
+					})
+					return
+				}
+			} else {
+				// No incoming messages found - check conversation LastMessageAt as fallback
+				if !conversation.LastMessageAt.IsZero() {
+					timeSinceLastMessage := time.Since(conversation.LastMessageAt)
+					if timeSinceLastMessage > 24*time.Hour {
+						h.Logger.Warn("Cannot send message - outside 24-hour window (using conversation LastMessageAt)",
+							zap.String("platform", conversation.Platform),
+							zap.Uint("conversation_id", conversation.ID),
+							zap.Duration("time_since_last_message", timeSinceLastMessage))
+						
+						writeJSON(w, http.StatusBadRequest, map[string]any{
+							"error":   "outside_24_hour_window",
+							"message": fmt.Sprintf("Cannot send message: Last activity was %v ago. %s only allows free-form messages within 24 hours of the customer's last message.",
+								formatDuration(timeSinceLastMessage), strings.Title(conversation.Platform)),
+							"time_since_last_message": timeSinceLastMessage.String(),
+						})
+						return
+					}
+				}
+			}
 		}
 
 		// Use platform-specific reply sending
