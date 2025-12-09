@@ -27,9 +27,15 @@ import (
 type postJob struct {
 	scheduler *Scheduler
 	post      storage.ScheduledPost
+	done      func() // Callback to signal completion
 }
 
 func (j *postJob) Execute(ctx context.Context) error {
+	defer func() {
+		if j.done != nil {
+			j.done()
+		}
+	}()
 	j.scheduler.executePost(j.post)
 	return nil // executePost handles its own errors
 }
@@ -159,11 +165,16 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 			// Use worker pool if available, otherwise use goroutines
 			if s.WorkerPool != nil {
 				post := p // Capture for closure
+				// Track worker pool job in wait group
+				wg.Add(1)
 				job := &postJob{
 					scheduler: s,
 					post:      post,
+					done:      wg.Done, // Signal completion when job finishes
 				}
 				if err := s.WorkerPool.Submit(job); err != nil {
+					// Submission failed, revert wait group increment and use fallback
+					wg.Done()
 					s.Logger.Warn("failed to submit post to worker pool, using goroutine fallback",
 						zap.Uint("post_id", p.ID),
 						zap.Error(err))
@@ -178,8 +189,7 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 						s.executePost(post)
 					}(p)
 				}
-				// Note: Worker pool jobs execute asynchronously
-				// We don't wait for them here as they handle their own completion
+				// Worker pool job is now tracked in wait group and will call wg.Done() on completion
 			} else {
 				// Fallback to goroutines with semaphore
 				wg.Add(1)

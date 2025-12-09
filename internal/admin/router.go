@@ -29,7 +29,8 @@ func AdminRouter(ctx *AdminContext) http.Handler {
 		r.Get("/scheduled/force_cancel_form", ForceCancelFormHandler(ctx))
 		r.Post("/scheduled/force_cancel", ForceCancelHandler(ctx))
 		r.Get("/social", (SocialAccountsHandler(ctx)))
-		r.Get("/usage", UsageStatsHandler(ctx))
+		r.Get("/usage", UsageStatsPageHandler(ctx))           // HTML page
+		r.Get("/usage/api", UsageStatsAPIHandler(ctx))         // JSON API endpoint
 		
 		// WhatsApp phone number management
 		r.Get("/whatsapp", WhatsAppNumbersPageHandler(ctx))              // HTML page

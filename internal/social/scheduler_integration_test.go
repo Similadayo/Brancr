@@ -2,6 +2,7 @@ package social
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,30 +22,32 @@ func TestScheduler_WorkerPoolIntegration(t *testing.T) {
 	}
 
 	// Auto-migrate
-	if err := db.AutoMigrate(&storage.ScheduledPost{}, &storage.ActivityLog{}); err != nil {
+	if err := db.AutoMigrate(&storage.ScheduledPost{}, &storage.PostLog{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 
 	logger := zap.NewNop()
-	optimizer := &mockCaptionOptimizer{}
+	optimizer := &mockCaptionOptimizerIntegration{}
 
 	// Create scheduler
 	scheduler := NewScheduler(db, logger, optimizer)
 
-	// Create worker pool
+	// Create worker pool and wrap it in adapter to match scheduler interface
 	pool := worker.NewPool(5, 50, logger)
 	pool.Start()
 	defer pool.Shutdown(5 * time.Second)
 
-	// Set worker pool
-	scheduler.WorkerPool = pool
+	// Create adapter to match scheduler's WorkerPool interface
+	poolAdapter := &workerPoolTestAdapter{pool: pool}
+	scheduler.WorkerPool = poolAdapter
 
 	// Create a test post
+	scheduledAt := time.Now().Add(-1 * time.Minute)
 	post := storage.ScheduledPost{
 		TenantID:    1,
-		Platform:    "instagram",
+		Platforms:   `["instagram"]`,
 		Status:      "scheduled",
-		ScheduledAt: time.Now().Add(-1 * time.Minute), // Due
+		ScheduledAt: &scheduledAt, // Due
 		Caption:     "Test caption",
 	}
 
@@ -52,20 +55,36 @@ func TestScheduler_WorkerPoolIntegration(t *testing.T) {
 		t.Fatalf("failed to create post: %v", err)
 	}
 
+	// Track completion with wait group
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	// Submit job to worker pool
 	job := &postJob{
 		scheduler: scheduler,
 		post:      post,
+		done:      wg.Done, // Track completion
 	}
 
 	if err := pool.Submit(job); err != nil {
 		t.Fatalf("failed to submit job: %v", err)
 	}
 
-	// Wait for job to complete
-	time.Sleep(2 * time.Second)
+	// Wait for job to complete (with timeout)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-	// Verify post was processed (status changed or activity log created)
+	select {
+	case <-done:
+		// Job completed
+	case <-time.After(5 * time.Second):
+		t.Fatal("job did not complete within timeout")
+	}
+
+	// Verify post was processed (status changed or post log created)
 	var updatedPost storage.ScheduledPost
 	if err := db.First(&updatedPost, post.ID).Error; err != nil {
 		t.Fatalf("failed to fetch post: %v", err)
@@ -76,12 +95,12 @@ func TestScheduler_WorkerPoolIntegration(t *testing.T) {
 		t.Log("Post status unchanged - this is expected if executePost fails due to missing platform adapter")
 	}
 
-	// Check for activity log
-	var activityLogs []storage.ActivityLog
-	if err := db.Where("tenant_id = ? AND entity_type = ? AND entity_id = ?",
-		1, "scheduled_post", post.ID).Find(&activityLogs).Error; err == nil {
-		if len(activityLogs) > 0 {
-			t.Logf("Activity log created: %+v", activityLogs[0])
+	// Check for post log
+	var postLogs []storage.PostLog
+	if err := db.Where("tenant_id = ? AND scheduled_post_id = ?",
+		1, post.ID).Find(&postLogs).Error; err == nil {
+		if len(postLogs) > 0 {
+			t.Logf("Post log created: %+v", postLogs[0])
 		}
 	}
 }
@@ -99,7 +118,7 @@ func TestScheduler_WorkerPoolFallback(t *testing.T) {
 	}
 
 	logger := zap.NewNop()
-	optimizer := &mockCaptionOptimizer{}
+	optimizer := &mockCaptionOptimizerIntegration{}
 
 	scheduler := NewScheduler(db, logger, optimizer)
 
@@ -108,18 +127,40 @@ func TestScheduler_WorkerPoolFallback(t *testing.T) {
 	pool.Start()
 	defer pool.Shutdown(5 * time.Second)
 
-	scheduler.WorkerPool = pool
+	// Create adapter
+	poolAdapter := &workerPoolTestAdapter{pool: pool}
+	scheduler.WorkerPool = poolAdapter
 
 	// Fill the queue
-	post1 := storage.ScheduledPost{TenantID: 1, Platform: "instagram", Status: "scheduled", ScheduledAt: time.Now()}
+	scheduledAt1 := time.Now()
+	post1 := storage.ScheduledPost{
+		TenantID:    1,
+		Platforms:   `["instagram"]`,
+		Status:      "scheduled",
+		ScheduledAt: &scheduledAt1,
+	}
 	db.Create(&post1)
-	job1 := &postJob{scheduler: scheduler, post: post1}
+	job1 := &postJob{
+		scheduler: scheduler,
+		post:      post1,
+		done:      func() {}, // No-op for test
+	}
 	pool.Submit(job1) // Fill queue
 
 	// Try to submit another job - should fail and fallback
-	post2 := storage.ScheduledPost{TenantID: 1, Platform: "instagram", Status: "scheduled", ScheduledAt: time.Now()}
+	scheduledAt2 := time.Now()
+	post2 := storage.ScheduledPost{
+		TenantID:    1,
+		Platforms:   `["instagram"]`,
+		Status:      "scheduled",
+		ScheduledAt: &scheduledAt2,
+	}
 	db.Create(&post2)
-	job2 := &postJob{scheduler: scheduler, post: post2}
+	job2 := &postJob{
+		scheduler: scheduler,
+		post:      post2,
+		done:      func() {}, // No-op for test
+	}
 
 	// This should trigger fallback (though we can't easily test the fallback path here)
 	err = pool.Submit(job2)
@@ -130,9 +171,19 @@ func TestScheduler_WorkerPoolFallback(t *testing.T) {
 	}
 }
 
-type mockCaptionOptimizer struct{}
+// workerPoolTestAdapter adapts worker.Pool to scheduler's interface for testing
+type workerPoolTestAdapter struct {
+	pool *worker.Pool
+}
 
-func (m *mockCaptionOptimizer) OptimizeCaption(ctx context.Context, req OptimizeCaptionRequest) (*OptimizeCaptionResult, error) {
+func (a *workerPoolTestAdapter) Submit(job interface{ Execute(ctx context.Context) error }) error {
+	return a.pool.Submit(worker.JobFunc(job.Execute))
+}
+
+// mockCaptionOptimizerIntegration is a mock for integration tests (separate from unit test mock)
+type mockCaptionOptimizerIntegration struct{}
+
+func (m *mockCaptionOptimizerIntegration) OptimizeCaption(ctx context.Context, req OptimizeCaptionRequest) (*OptimizeCaptionResult, error) {
 	return &OptimizeCaptionResult{
 		OptimizedCaption: req.OriginalCaption,
 		Hashtags:         []string{"#test"},
