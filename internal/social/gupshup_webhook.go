@@ -1244,7 +1244,15 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 					}
 					
 					// Save updated metadata and content
-					metadataJSON, _ := json.Marshal(existingMetadata)
+					metadataJSON, err := json.Marshal(existingMetadata)
+					if err != nil {
+						h.Logger.Error("failed to marshal metadata for interaction update",
+							zap.Uint("interaction_id", interaction.ID),
+							zap.Uint("tenant_id", tenantID),
+							zap.Error(err))
+						// Don't save corrupted metadata - log error and skip update
+						return
+					}
 					interaction.Metadata = string(metadataJSON)
 					h.DB.Save(&interaction)
 					

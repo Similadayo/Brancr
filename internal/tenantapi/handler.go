@@ -131,206 +131,212 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.TenantAuth([]byte(h.Config.TenantJWTSecret), SessionCookie))
 
-		// Onboarding endpoints
+		// Onboarding endpoints (exempt from onboarding check - users need to access these to complete onboarding)
 		r.Get("/tenant/onboarding/status", h.getOnboardingStatus)
 		r.Post("/tenant/onboarding/business-profile", h.updateBusinessProfile)
 		r.Post("/tenant/onboarding/persona", h.updatePersona)
 		r.Post("/tenant/onboarding/business-details", h.updateBusinessDetails)
 		r.Post("/tenant/onboarding/industry", h.setOnboardingIndustry)
 		r.Post("/tenant/onboarding/complete", h.completeOnboarding)
-		// Post-onboarding settings
-		r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
-		r.Put("/tenant/settings/persona", h.updatePersonaSettings)
-		r.Put("/tenant/settings/business-details", h.updateBusinessDetailsSettings)
+		
+		// All other routes require onboarding to be complete
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.OnboardingCheck(h.DB, h.Logger))
+			
+			// Post-onboarding settings
+			r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
+			r.Put("/tenant/settings/persona", h.updatePersonaSettings)
+			r.Put("/tenant/settings/business-details", h.updateBusinessDetailsSettings)
 
-		r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
+			r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 
-		// Integration CRUD
-		r.Get("/tenant/integrations", h.listIntegrations)
-		r.Get("/tenant/integrations/{platform}", h.getIntegration)
-		r.Delete("/tenant/integrations/{platform}", h.deleteIntegration)
-		r.Post("/tenant/integrations/{platform}/verify", h.verifyIntegration)
-		r.Post("/tenant/integrations/{platform}/repair", h.repairIntegration)
-		r.Get("/tenant/integrations/{platform}/debug", h.debugIntegration) // Debug endpoint to check account details
-		// Manual Page subscription endpoint (for Instagram)
-		r.Post("/tenant/integrations/instagram/subscribe", h.subscribeInstagramPage)
+			// Integration CRUD
+			r.Get("/tenant/integrations", h.listIntegrations)
+			r.Get("/tenant/integrations/{platform}", h.getIntegration)
+			r.Delete("/tenant/integrations/{platform}", h.deleteIntegration)
+			r.Post("/tenant/integrations/{platform}/verify", h.verifyIntegration)
+			r.Post("/tenant/integrations/{platform}/repair", h.repairIntegration)
+			r.Get("/tenant/integrations/{platform}/debug", h.debugIntegration) // Debug endpoint to check account details
+			// Manual Page subscription endpoint (for Instagram)
+			r.Post("/tenant/integrations/instagram/subscribe", h.subscribeInstagramPage)
 
-		// Instagram Insights
-		r.Get("/tenant/instagram/insights/account", h.getInstagramAccountInsights)
-		r.Get("/tenant/instagram/insights/media/{mediaId}", h.getInstagramMediaInsights)
+			// Instagram Insights
+			r.Get("/tenant/instagram/insights/account", h.getInstagramAccountInsights)
+			r.Get("/tenant/instagram/insights/media/{mediaId}", h.getInstagramMediaInsights)
 
-		// Scheduled posts CRUD
-		r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
-		r.Get("/tenant/scheduled-posts/{id}", h.getScheduledPost)
-		r.Put("/tenant/scheduled-posts/{id}", h.updateScheduledPost)
-		r.Delete("/tenant/scheduled-posts/{id}", h.deleteScheduledPost)
-		// Calendar endpoints
-		r.Get("/tenant/calendar", h.getCalendar)
-		r.Get("/tenant/calendar/{date}", h.getCalendarDay)
-		r.Post("/tenant/calendar", h.createCalendarEntry)
-		r.Put("/tenant/calendar/{date}", h.updateCalendarEntry)
+			// Scheduled posts CRUD
+			r.Get("/tenant/scheduled-posts", h.listScheduledPosts)
+			r.Get("/tenant/scheduled-posts/{id}", h.getScheduledPost)
+			r.Put("/tenant/scheduled-posts/{id}", h.updateScheduledPost)
+			r.Delete("/tenant/scheduled-posts/{id}", h.deleteScheduledPost)
+			// Calendar endpoints
+			r.Get("/tenant/calendar", h.getCalendar)
+			r.Get("/tenant/calendar/{date}", h.getCalendarDay)
+			r.Post("/tenant/calendar", h.createCalendarEntry)
+			r.Put("/tenant/calendar/{date}", h.updateCalendarEntry)
 
-		// Overview and stats
-		r.Get("/tenant/overview", h.overview)
+			// Overview and stats
+			r.Get("/tenant/overview", h.overview)
 
-		// Intent catalog management
-		r.Get("/tenant/intent-catalog", h.listIntentCatalog)
-		r.Post("/tenant/intent-catalog", h.createIntentCatalog)
-		r.Put("/tenant/intent-catalog/{id}", h.updateIntentCatalog)
-		r.Delete("/tenant/intent-catalog/{id}", h.deleteIntentCatalog)
+			// Intent catalog management
+			r.Get("/tenant/intent-catalog", h.listIntentCatalog)
+			r.Post("/tenant/intent-catalog", h.createIntentCatalog)
+			r.Put("/tenant/intent-catalog/{id}", h.updateIntentCatalog)
+			r.Delete("/tenant/intent-catalog/{id}", h.deleteIntentCatalog)
 
-		// Industry management
-		r.Get("/tenant/industries", h.listIndustries)
-		r.Get("/tenant/industry", h.getTenantIndustry)
-		r.Post("/tenant/industry", h.setTenantIndustry)
+			// Industry management
+			r.Get("/tenant/industries", h.listIndustries)
+			r.Get("/tenant/industry", h.getTenantIndustry)
+			r.Post("/tenant/industry", h.setTenantIndustry)
 
-		// Product management (E-commerce)
-		r.Get("/tenant/products", h.listProducts)
-		r.Post("/tenant/products", h.createProduct)
-		r.Get("/tenant/products/{id}", h.getProduct)
-		r.Put("/tenant/products/{id}", h.updateProduct)
-		r.Delete("/tenant/products/{id}", h.deleteProduct)
+			// Product management (E-commerce)
+			r.Get("/tenant/products", h.listProducts)
+			r.Post("/tenant/products", h.createProduct)
+			r.Get("/tenant/products/{id}", h.getProduct)
+			r.Put("/tenant/products/{id}", h.updateProduct)
+			r.Delete("/tenant/products/{id}", h.deleteProduct)
 
-		// Menu item management (Restaurants)
-		r.Get("/tenant/menu-items", h.listMenuItems)
-		r.Post("/tenant/menu-items", h.createMenuItem)
-		r.Get("/tenant/menu-items/{id}", h.getMenuItem)
-		r.Put("/tenant/menu-items/{id}", h.updateMenuItem)
-		r.Delete("/tenant/menu-items/{id}", h.deleteMenuItem)
+			// Menu item management (Restaurants)
+			r.Get("/tenant/menu-items", h.listMenuItems)
+			r.Post("/tenant/menu-items", h.createMenuItem)
+			r.Get("/tenant/menu-items/{id}", h.getMenuItem)
+			r.Put("/tenant/menu-items/{id}", h.updateMenuItem)
+			r.Delete("/tenant/menu-items/{id}", h.deleteMenuItem)
 
-		// Service management (Consultants/Agencies)
-		r.Get("/tenant/services", h.listServices)
-		r.Post("/tenant/services", h.createService)
-		r.Get("/tenant/services/{id}", h.getService)
-		r.Put("/tenant/services/{id}", h.updateService)
-		r.Delete("/tenant/services/{id}", h.deleteService)
+			// Service management (Consultants/Agencies)
+			r.Get("/tenant/services", h.listServices)
+			r.Post("/tenant/services", h.createService)
+			r.Get("/tenant/services/{id}", h.getService)
+			r.Put("/tenant/services/{id}", h.updateService)
+			r.Delete("/tenant/services/{id}", h.deleteService)
 
-		// Payment Account management
-		r.Get("/tenant/payment-accounts", h.listPaymentAccounts)
-		r.Post("/tenant/payment-accounts", h.createPaymentAccount)
-		r.Get("/tenant/payment-accounts/{id}", h.getPaymentAccount)
-		r.Put("/tenant/payment-accounts/{id}", h.updatePaymentAccount)
-		r.Delete("/tenant/payment-accounts/{id}", h.deletePaymentAccount)
-		r.Put("/tenant/payment-accounts/{id}/set-default", h.setDefaultPaymentAccount)
+			// Payment Account management
+			r.Get("/tenant/payment-accounts", h.listPaymentAccounts)
+			r.Post("/tenant/payment-accounts", h.createPaymentAccount)
+			r.Get("/tenant/payment-accounts/{id}", h.getPaymentAccount)
+			r.Put("/tenant/payment-accounts/{id}", h.updatePaymentAccount)
+			r.Delete("/tenant/payment-accounts/{id}", h.deletePaymentAccount)
+			r.Put("/tenant/payment-accounts/{id}/set-default", h.setDefaultPaymentAccount)
 
-		// Order management
-		r.Get("/tenant/orders", h.listOrders)
-		r.Get("/tenant/orders/{id}", h.getOrder)
-		r.Put("/tenant/orders/{id}", h.updateOrder)
-		r.Put("/tenant/orders/{id}/confirm-payment", h.confirmOrderPayment)
-		r.Get("/tenant/orders/{orderId}/portal-token", h.generatePortalToken)
-		r.Get("/tenant/orders/stats", h.getOrderStats)
+			// Order management
+			r.Get("/tenant/orders", h.listOrders)
+			r.Get("/tenant/orders/{id}", h.getOrder)
+			r.Put("/tenant/orders/{id}", h.updateOrder)
+			r.Put("/tenant/orders/{id}/confirm-payment", h.confirmOrderPayment)
+			r.Get("/tenant/orders/{orderId}/portal-token", h.generatePortalToken)
+			r.Get("/tenant/orders/stats", h.getOrderStats)
 
-		// Payment management
-		r.Get("/tenant/payments", h.listPayments)
-		r.Get("/tenant/payments/{id}", h.getPayment)
-		r.Put("/tenant/payments/{id}/verify", h.verifyPayment)
-		r.Post("/tenant/payments/{id}/generate-receipt", h.generateReceipt)
-		r.Put("/tenant/payments/{id}/dispute", h.disputePayment)
+			// Payment management
+			r.Get("/tenant/payments", h.listPayments)
+			r.Get("/tenant/payments/{id}", h.getPayment)
+			r.Put("/tenant/payments/{id}/verify", h.verifyPayment)
+			r.Post("/tenant/payments/{id}/generate-receipt", h.generateReceipt)
+			r.Put("/tenant/payments/{id}/dispute", h.disputePayment)
 
-		// WhatsApp provider-owned model (new)
-		r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
-		r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
-		r.Post("/tenant/whatsapp/select-number", h.selectWhatsAppNumber)
-		r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
-		r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
-		r.Get("/tenant/whatsapp/webhook-status", h.checkWebhookStatus)
-		r.Post("/tenant/whatsapp/resubscribe", h.resubscribeWebhook)
-		r.Get("/tenant/whatsapp/diagnostics", h.comprehensiveDiagnostics)
+			// WhatsApp provider-owned model (new)
+			r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)
+			r.Post("/tenant/whatsapp/numbers/{id}/assign", h.assignPhoneNumber)
+			r.Post("/tenant/whatsapp/select-number", h.selectWhatsAppNumber)
+			r.Get("/tenant/whatsapp/current", h.getAssignedPhoneNumber)
+			r.Post("/tenant/whatsapp/disconnect", h.disconnectPhoneNumber)
+			r.Get("/tenant/whatsapp/webhook-status", h.checkWebhookStatus)
+			r.Post("/tenant/whatsapp/resubscribe", h.resubscribeWebhook)
+			r.Get("/tenant/whatsapp/diagnostics", h.comprehensiveDiagnostics)
 
-		// Tenant-provided phone numbers (for Meta direct)
-		r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
-		r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
-		r.Post("/tenant/whatsapp/check-number", h.checkTenantPhoneNumber) // Check if number is ready to verify
+			// Tenant-provided phone numbers (for Meta direct)
+			r.Post("/tenant/whatsapp/request-number", h.requestTenantPhoneNumber)
+			r.Post("/tenant/whatsapp/verify-number", h.verifyTenantPhoneNumber)
+			r.Post("/tenant/whatsapp/check-number", h.checkTenantPhoneNumber) // Check if number is ready to verify
 
-		// New simplified WhatsApp connection (Respond.io)
-		r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
-		r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
-		r.Post("/tenant/whatsapp/refresh-status", h.refreshWhatsAppStatus) // Manual refresh - calls GetAppDetails
+			// New simplified WhatsApp connection (Respond.io)
+			r.Post("/tenant/whatsapp/connect", h.connectWhatsApp)
+			r.Get("/tenant/whatsapp/connection-status", h.getWhatsAppConnectionStatus)
+			r.Post("/tenant/whatsapp/refresh-status", h.refreshWhatsAppStatus) // Manual refresh - calls GetAppDetails
 
-		// Legacy embedded signup (deprecated - keeping for migration)
-		r.Route("/internal/meta/whatsapp", func(r chi.Router) {
-			r.Post("/code", h.handleWhatsAppExchangeCode)
-			r.Post("/session", h.handleWhatsAppSession)
-		})
+			// Legacy embedded signup (deprecated - keeping for migration)
+			r.Route("/internal/meta/whatsapp", func(r chi.Router) {
+				r.Post("/code", h.handleWhatsAppExchangeCode)
+				r.Post("/session", h.handleWhatsAppSession)
+			})
 
-		// Templates CRUD
-		r.Get("/tenant/templates", h.listTemplates)
-		r.Post("/tenant/templates", h.createTemplate)
-		r.Get("/tenant/templates/{id}", h.getTemplate)
-		r.Put("/tenant/templates/{id}", h.updateTemplate)
-		r.Delete("/tenant/templates/{id}", h.deleteTemplate)
+			// Templates CRUD
+			r.Get("/tenant/templates", h.listTemplates)
+			r.Post("/tenant/templates", h.createTemplate)
+			r.Get("/tenant/templates/{id}", h.getTemplate)
+			r.Put("/tenant/templates/{id}", h.updateTemplate)
+			r.Delete("/tenant/templates/{id}", h.deleteTemplate)
 
-		// Conversations API
-		r.Get("/tenant/conversations", h.listConversations)
-		r.Get("/tenant/conversations/{id}", h.getConversation)
-		r.Post("/tenant/conversations/{id}/replies", h.sendReply)
-		r.Put("/tenant/conversations/{id}", h.updateConversation)
-		r.Post("/tenant/conversations/{id}/suggest-replies", h.suggestReplies)
+			// Conversations API
+			r.Get("/tenant/conversations", h.listConversations)
+			r.Get("/tenant/conversations/{id}", h.getConversation)
+			r.Post("/tenant/conversations/{id}/replies", h.sendReply)
+			r.Put("/tenant/conversations/{id}", h.updateConversation)
+			r.Post("/tenant/conversations/{id}/suggest-replies", h.suggestReplies)
 
-		// Escalations API
-		r.Get("/tenant/escalations", h.listEscalations)
-		r.Get("/tenant/escalations/stats", h.getEscalationStats)
-		r.Get("/tenant/escalations/{id}", h.getEscalation)
+			// Escalations API
+			r.Get("/tenant/escalations", h.listEscalations)
+			r.Get("/tenant/escalations/stats", h.getEscalationStats)
+			r.Get("/tenant/escalations/{id}", h.getEscalation)
 
-		// Campaigns/Posts Stats API
-		r.Get("/tenant/campaigns/stats", h.getCampaignStats)
+			// Campaigns/Posts Stats API
+			r.Get("/tenant/campaigns/stats", h.getCampaignStats)
 
-		// Caption AI Suggestions API
-		r.Post("/tenant/captions/generate-from-keywords", h.generateCaptionFromKeywords)
-		r.Post("/tenant/captions/rephrase", h.rephraseCaption)
-		r.Post("/tenant/captions/fine-tune", h.fineTuneCaption)
-		r.Post("/tenant/escalations/{id}/approve", h.approveEscalation)
-		r.Post("/tenant/escalations/{id}/reply", h.replyToEscalation)
-		r.Post("/tenant/escalations/{id}/ignore", h.ignoreEscalation)
-		r.Post("/tenant/escalations/{id}/resolve", h.resolveEscalation)
+			// Caption AI Suggestions API
+			r.Post("/tenant/captions/generate-from-keywords", h.generateCaptionFromKeywords)
+			r.Post("/tenant/captions/rephrase", h.rephraseCaption)
+			r.Post("/tenant/captions/fine-tune", h.fineTuneCaption)
+			r.Post("/tenant/escalations/{id}/approve", h.approveEscalation)
+			r.Post("/tenant/escalations/{id}/reply", h.replyToEscalation)
+			r.Post("/tenant/escalations/{id}/ignore", h.ignoreEscalation)
+			r.Post("/tenant/escalations/{id}/resolve", h.resolveEscalation)
 
-		// Analytics API
-		r.Get("/tenant/analytics", h.getAnalytics)
-		r.Get("/tenant/analytics/performance", h.getPerformanceSummary)
+			// Analytics API
+			r.Get("/tenant/analytics", h.getAnalytics)
+			r.Get("/tenant/analytics/performance", h.getPerformanceSummary)
 
-		// Media Library
-		r.Get("/tenant/media", h.listMedia)
-		r.Get("/tenant/media/{id}", h.getMedia)
-		r.Post("/tenant/media", h.createMedia)
-		r.Put("/tenant/media/{id}", h.updateMedia)
-		r.Delete("/tenant/media/{id}", h.deleteMedia)
+			// Media Library
+			r.Get("/tenant/media", h.listMedia)
+			r.Get("/tenant/media/{id}", h.getMedia)
+			r.Post("/tenant/media", h.createMedia)
+			r.Put("/tenant/media/{id}", h.updateMedia)
+			r.Delete("/tenant/media/{id}", h.deleteMedia)
 
-		// Post creation
-		r.Post("/tenant/posts", h.createPost)
-		r.Post("/tenant/posts/generate-caption", h.generateCaption)
-		r.Post("/tenant/posts/{id}/publish", h.publishPost)
-		r.Get("/tenant/posts/optimal-times", h.getOptimalTimes)
+			// Post creation
+			r.Post("/tenant/posts", h.createPost)
+			r.Post("/tenant/posts/generate-caption", h.generateCaption)
+			r.Post("/tenant/posts/{id}/publish", h.publishPost)
+			r.Get("/tenant/posts/optimal-times", h.getOptimalTimes)
 
-		// Bulk uploads
-		r.Get("/tenant/bulk-uploads", h.listBulkUploads)
-		r.Get("/tenant/bulk-uploads/{id}", h.getBulkUpload)
-		r.Post("/tenant/bulk-uploads", h.createBulkUpload)
-		r.Put("/tenant/bulk-uploads/{id}", h.updateBulkUploadStatus)
-		r.Post("/tenant/bulk-uploads/{id}/cancel", h.cancelBulkUpload)
+			// Bulk uploads
+			r.Get("/tenant/bulk-uploads", h.listBulkUploads)
+			r.Get("/tenant/bulk-uploads/{id}", h.getBulkUpload)
+			r.Post("/tenant/bulk-uploads", h.createBulkUpload)
+			r.Put("/tenant/bulk-uploads/{id}", h.updateBulkUploadStatus)
+			r.Post("/tenant/bulk-uploads/{id}/cancel", h.cancelBulkUpload)
 
-		// Team Management API (coming soon - placeholder)
-		r.Get("/tenant/team/members", h.listTeamMembers)
-		r.Post("/tenant/team/invite", h.inviteTeamMember)
-		r.Get("/tenant/team/members/{id}", h.getTeamMember)
-		r.Put("/tenant/team/members/{id}", h.updateTeamMember)
-		r.Delete("/tenant/team/members/{id}", h.deleteTeamMember)
+			// Team Management API (coming soon - placeholder)
+			r.Get("/tenant/team/members", h.listTeamMembers)
+			r.Post("/tenant/team/invite", h.inviteTeamMember)
+			r.Get("/tenant/team/members/{id}", h.getTeamMember)
+			r.Put("/tenant/team/members/{id}", h.updateTeamMember)
+			r.Delete("/tenant/team/members/{id}", h.deleteTeamMember)
 
-		// TikTok Video Management API
-		r.Route("/tenant/tiktok", func(r chi.Router) {
-			// Video listing and details
-			r.Get("/videos", h.listTikTokVideos)
-			r.Get("/videos/{video_id}", h.getTikTokVideo)
-			r.Get("/videos/status/{publish_id}", h.getTikTokVideoStatus)
-			r.Delete("/videos/{video_id}", h.deleteTikTokVideo)
+			// TikTok Video Management API
+			r.Route("/tenant/tiktok", func(r chi.Router) {
+				// Video listing and details
+				r.Get("/videos", h.listTikTokVideos)
+				r.Get("/videos/{video_id}", h.getTikTokVideo)
+				r.Get("/videos/status/{publish_id}", h.getTikTokVideoStatus)
+				r.Delete("/videos/{video_id}", h.deleteTikTokVideo)
 
-			// Analytics endpoints removed - TikTok analytics functionality disabled
+				// Analytics endpoints removed - TikTok analytics functionality disabled
 
-			// Comment management
-			r.Get("/videos/{video_id}/comments", h.listTikTokComments)
-			r.Post("/videos/{video_id}/comments/{comment_id}/reply", h.replyToTikTokComment)
-		})
-	})
+				// Comment management
+				r.Get("/videos/{video_id}/comments", h.listTikTokComments)
+				r.Post("/videos/{video_id}/comments/{comment_id}/reply", h.replyToTikTokComment)
+			})
+		}) // End onboarding check middleware group
+	}) // End tenant auth middleware group
 }
 
 // OAuth handlers are implemented in internal/social/meta_oauth.go and internal/social/tiktok_oauth.go

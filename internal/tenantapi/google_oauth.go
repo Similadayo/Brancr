@@ -97,9 +97,11 @@ func (h *GoogleOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 	// If it's a relative path, prepend the frontend URL
 	if !strings.HasPrefix(successRedirect, "http://") && !strings.HasPrefix(successRedirect, "https://") {
 		// It's a relative path, make it absolute
+		// Only use FrontendURL as base if it's actually absolute (starts with http:// or https://)
+		// Otherwise, fallback to hardcoded default to avoid path duplication
 		baseURL := h.Config.FrontendURL
-		if baseURL == "" {
-			baseURL = "https://brancr.com" // Default fallback
+		if baseURL == "" || (!strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://")) {
+			baseURL = "https://brancr.com" // Default fallback (absolute URL)
 		}
 		// Remove trailing slash from base URL
 		baseURL = strings.TrimRight(baseURL, "/")
@@ -181,10 +183,12 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	successRedirect := stateData["success_redirect"]
 	
 	// If no redirect was stored, use FrontendURL and append /app if needed
+	// Only use FrontendURL if it's absolute (starts with http:// or https://)
+	// Otherwise, fallback to hardcoded default to avoid path duplication
 	if successRedirect == "" {
 		baseURL := h.Config.FrontendURL
-		if baseURL == "" {
-			baseURL = "https://brancr.com" // Default fallback
+		if baseURL == "" || (!strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://")) {
+			baseURL = "https://brancr.com" // Default fallback (absolute URL)
 		}
 		baseURL = strings.TrimRight(baseURL, "/")
 		// Append /app if not already present
@@ -199,9 +203,11 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	// If it's a relative path, prepend the frontend URL
 	if !strings.HasPrefix(successRedirect, "http://") && !strings.HasPrefix(successRedirect, "https://") {
 		// It's a relative path, make it absolute
+		// Only use FrontendURL as base if it's actually absolute (starts with http:// or https://)
+		// Otherwise, fallback to hardcoded default to avoid path duplication
 		baseURL := h.Config.FrontendURL
-		if baseURL == "" {
-			baseURL = "https://brancr.com" // Default fallback
+		if baseURL == "" || (!strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://")) {
+			baseURL = "https://brancr.com" // Default fallback (absolute URL)
 		}
 		baseURL = strings.TrimRight(baseURL, "/")
 		// Ensure redirect path starts with /
@@ -260,9 +266,11 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	// Find or create tenant
 	var tenant storage.Tenant
+	var isNewTenant bool
 	err = h.DB.Where("email = ?", email).First(&tenant).Error
 
 	if err == gorm.ErrRecordNotFound {
+		isNewTenant = true
 		// Create new tenant
 		companyName := userInfo.Name
 		if companyName == "" {
@@ -348,7 +356,27 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Redirect new users to onboarding, existing users to their intended destination
+	var finalRedirect string
+	if isNewTenant {
+		// New users should go to onboarding, not dashboard
+		// Determine base URL for onboarding
+		baseURL := h.Config.FrontendURL
+		if baseURL == "" || (!strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://")) {
+			baseURL = "https://brancr.com" // Default fallback
+		}
+		baseURL = strings.TrimRight(baseURL, "/")
+		finalRedirect = baseURL + "/app/onboarding"
+		h.Logger.Info("redirecting new tenant to onboarding",
+			zap.Uint("tenant_id", tenant.ID),
+			zap.String("email", email),
+			zap.String("redirect_url", finalRedirect))
+	} else {
+		// Existing users go to their intended destination (or dashboard if not specified)
+		finalRedirect = successRedirect
+	}
+
 	// Redirect to frontend
-	http.Redirect(w, r, successRedirect, http.StatusSeeOther)
+	http.Redirect(w, r, finalRedirect, http.StatusSeeOther)
 }
 

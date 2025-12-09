@@ -60,14 +60,20 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 		Type: mediaType,
 	}
 	
-	// If mediaType is empty but we have stored URL or transcription/analysis, infer type
+	// If mediaType is empty but we have content indicators, infer type
+	// Priority: Check actual content indicators first (transcription, analysis, document text)
+	// before falling back to storedURL (which can represent any media type)
 	if mediaType == "" {
-		if storedURL != "" || hasTranscription != "" {
-			mediaType = "audio" // Likely audio if we have transcription
+		if hasTranscription != "" {
+			mediaType = "audio" // Has transcription, definitely audio
 		} else if hasImageAnalysis != "" {
-			mediaType = "image" // Likely image if we have analysis
+			mediaType = "image" // Has image analysis, definitely image
 		} else if hasDocumentText != "" {
-			mediaType = "document" // Likely document if we have text
+			mediaType = "document" // Has document text, definitely document
+		} else if storedURL != "" {
+			// Fallback: If we only have storedURL without content indicators,
+			// we can't reliably infer the type, so leave it empty
+			// The frontend can handle this by checking the URL extension or other metadata
 		}
 		media.Type = mediaType
 	}
