@@ -21,12 +21,18 @@ func SetupRouter(app *App) http.Handler {
 	appMetrics := metrics.NewMetrics()
 	app.Services.Metrics = appMetrics
 
-	// Global middleware
-	r.Use(middleware.RequestIDMiddleware())
-	r.Use(middleware.RecoveryMiddleware(app.Services.Logger))
-	r.Use(middleware.LoggingMiddleware(app.Services.Logger))
-	r.Use(middleware.MetricsMiddleware(appMetrics))
-	r.Use(middleware.CORSMiddleware(app.Config.CORSAllowedOrigins))
+	// Global middleware (order matters!)
+	r.Use(middleware.RequestIDMiddleware())                         // Add request ID first
+	r.Use(middleware.SecurityHeadersMiddleware())                   // Security headers
+	r.Use(middleware.RecoveryMiddleware(app.Services.Logger))       // Panic recovery
+	r.Use(middleware.LoggingMiddleware(app.Services.Logger))        // Request logging (with correlation ID)
+	r.Use(middleware.MetricsMiddleware(appMetrics))                 // Metrics collection
+	r.Use(middleware.CORSMiddleware(app.Config.CORSAllowedOrigins)) // CORS
+
+	// Rate limiting (global, per IP)
+	if app.Services.RateLimiter != nil {
+		r.Use(app.Services.RateLimiter.GlobalRateLimit(1000)) // 1000 requests per minute globally
+	}
 
 	// Static file serving for admin assets
 	fileServer := http.FileServer(http.Dir("static"))
@@ -59,6 +65,11 @@ func SetupRouter(app *App) http.Handler {
 
 	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.WorkflowOrchestrator, app.Services.Scheduler, app.Services.AIClient, app.Services.MessageHandler, app.Services.IndustryService, app.Services.InstagramInsights, app.Services.EmailService)
 	r.Route("/api", func(api chi.Router) {
+		// API-specific middleware
+		api.Use(middleware.ValidateContentType(app.Services.Logger)) // Validate Content-Type for API requests
+
+		// Tenant-specific rate limiting for authenticated routes
+		// This will be applied per-route in RegisterRoutes if needed
 		apiHandler.RegisterRoutes(api)
 	})
 

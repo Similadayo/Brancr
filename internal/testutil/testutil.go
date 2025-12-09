@@ -20,8 +20,8 @@ func TestDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		errMsg := err.Error()
-		if errMsg == "Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub" || 
-		   errMsg == "sql: unknown driver \"sqlite3\" (forgotten import?)" {
+		if errMsg == "Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub" ||
+			errMsg == "sql: unknown driver \"sqlite3\" (forgotten import?)" {
 			t.Skip("Skipping test: SQLite requires CGO. Run with: set CGO_ENABLED=1 && go test ./...")
 		}
 		t.Fatalf("Failed to create test database: %v", err)
@@ -41,14 +41,14 @@ func TestLogger(t *testing.T) *zap.Logger {
 // TestConfig creates a test configuration
 func TestConfig() *config.Config {
 	return &config.Config{
-		AppEnv:           "test",
-		Port:             "8080",
+		AppEnv: "test",
+		Port:   "8080",
 		// OpenRouter removed - using OpenAI direct API only
-		PostgresDSN:      "",
-		RedisAddr:        "localhost:6379",
-		AdminBotToken:    "test-token",
-		AdminEmail:       "test@example.com",
-		AdminPassword:    "test-password",
+		PostgresDSN:   "",
+		RedisAddr:     "localhost:6379",
+		AdminBotToken: "test-token",
+		AdminEmail:    "test@example.com",
+		AdminPassword: "test-password",
 	}
 }
 
@@ -83,3 +83,9 @@ func CleanupDB(t *testing.T, db *gorm.DB) {
 	}
 }
 
+// TestConfigWithJWT creates a test config with JWT secret
+func TestConfigWithJWT() *config.Config {
+	cfg := TestConfig()
+	cfg.TenantJWTSecret = "test-jwt-secret-key-must-be-at-least-32-characters-long"
+	return cfg
+}

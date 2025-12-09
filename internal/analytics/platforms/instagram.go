@@ -58,7 +58,7 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 
 	// Instagram Graph API endpoint for post insights
 	url := fmt.Sprintf("%s/%s/insights", apiBase, postID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -94,7 +94,7 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 		if len(body) > 0 {
 			errorMsg += fmt.Sprintf(": %s", string(body))
 		}
-		return nil, fmt.Errorf(errorMsg)
+		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
 	var result struct {
@@ -151,7 +151,7 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 		if !ok {
 			continue
 		}
-		
+
 		switch metric.Name {
 		case "views":
 			// New metric for FEED, STORY, and REELS (replaces deprecated "impressions")
@@ -205,7 +205,7 @@ func (c *InstagramAnalyticsClient) FetchPostMetrics(ctx context.Context, account
 func (c *InstagramAnalyticsClient) FetchAccountMetrics(ctx context.Context, account *storage.SocialAccount, periodStart, periodEnd time.Time) (*interfaces.AccountMetrics, error) {
 	// Use Instagram Business Account ID
 	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/insights", account.ExternalID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -231,8 +231,8 @@ func (c *InstagramAnalyticsClient) FetchAccountMetrics(ctx context.Context, acco
 		Data []struct {
 			Name   string `json:"name"`
 			Values []struct {
-				Value map[string]interface{} `json:"value"`
-				EndTime string `json:"end_time"`
+				Value   map[string]interface{} `json:"value"`
+				EndTime string                 `json:"end_time"`
 			} `json:"values"`
 		} `json:"data"`
 	}
@@ -252,7 +252,7 @@ func (c *InstagramAnalyticsClient) FetchAccountMetrics(ctx context.Context, acco
 			continue
 		}
 		value := metric.Values[0].Value
-		
+
 		switch metric.Name {
 		case "follower_count":
 			if v, ok := value["value"].(float64); ok {
@@ -275,7 +275,7 @@ func (c *InstagramAnalyticsClient) FetchAccountMetrics(ctx context.Context, acco
 // FetchAudienceDemographics retrieves audience demographic data
 func (c *InstagramAnalyticsClient) FetchAudienceDemographics(ctx context.Context, account *storage.SocialAccount) (*interfaces.AudienceDemographics, error) {
 	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/insights", account.ExternalID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -306,7 +306,6 @@ func (c *InstagramAnalyticsClient) FetchAudienceDemographics(ctx context.Context
 
 	// Parse demographics from response
 	// Implementation would parse the actual API response structure
-	
+
 	return demographics, nil
 }
-

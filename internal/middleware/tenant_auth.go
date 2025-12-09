@@ -79,3 +79,8 @@ func TenantFromContext(ctx context.Context) (*TenantClaims, bool) {
 	claims, ok := ctx.Value(tenantContextKey{}).(*TenantClaims)
 	return claims, ok
 }
+
+// WithTenantContext adds tenant claims to context (useful for testing)
+func WithTenantContext(ctx context.Context, claims *TenantClaims) context.Context {
+	return context.WithValue(ctx, tenantContextKey{}, claims)
+}

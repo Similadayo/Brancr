@@ -396,6 +396,7 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 		businessContext,
 		salesGuidance,
 		message,
+		message, // Duplicate for the second %s placeholder in the format string
 	)
 
 	// Add the main task as user message
@@ -410,7 +411,7 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 
 	// Remove any signatures or names at the end (e.g., "— Fred", "— Assistant", "— [name]")
 	reply = removeSignature(reply)
-	
+
 	// Remove em-dashes from anywhere in the message (replace with commas or periods)
 	reply = removeEmDashes(reply)
 
@@ -750,25 +751,25 @@ func removeEmDashes(text string) string {
 	if text == "" {
 		return text
 	}
-	
+
 	// Replace em-dash (—) with comma or period based on context
 	// Look for patterns like "word—word" or "word — word"
 	text = strings.ReplaceAll(text, " — ", ", ")
 	text = strings.ReplaceAll(text, "— ", ", ")
 	text = strings.ReplaceAll(text, " —", ", ")
 	text = strings.ReplaceAll(text, "—", ", ")
-	
+
 	// Replace en-dash (–) similarly
 	text = strings.ReplaceAll(text, " – ", ", ")
 	text = strings.ReplaceAll(text, "– ", ", ")
 	text = strings.ReplaceAll(text, " –", ", ")
 	text = strings.ReplaceAll(text, "–", ", ")
-	
+
 	// Clean up any double commas or spaces
 	text = strings.ReplaceAll(text, ",,", ",")
 	text = strings.ReplaceAll(text, "  ", " ")
 	text = strings.TrimSpace(text)
-	
+
 	return text
 }
 
