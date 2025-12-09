@@ -559,7 +559,8 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 						// We'll generate portal token via receipt service
 						// For now, we'll create a placeholder - portal token will be generated when payment is confirmed
 						// But we can generate it now for customer access
-						publicURL := "https://api.brancr.com" // Default fallback - TODO: Get from config if available
+						publicURL := "https://api.brancr.com" // Default fallback
+						// Note: PublicURL should be passed from config if available in this context
 						// ReceiptService for portal token generation doesn't need Cloudinary or EmailService
 						receiptService := receipt.NewReceiptService(r.DB, r.Logger, "", publicURL, nil)
 						token, url, err := receiptService.GeneratePortalTokenAndURL(ctx, order.ID, tenantID, publicURL)

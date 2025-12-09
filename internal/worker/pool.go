@@ -148,6 +148,14 @@ func (p *Pool) Shutdown(timeout time.Duration) error {
 	}
 }
 
+// Stats contains pool statistics
+type Stats struct {
+	Size       int
+	ActiveJobs int64
+	QueueDepth int64
+	QueueSize  int64
+}
+
 // Stats returns pool statistics
 func (p *Pool) Stats() Stats {
 	p.mu.RLock()
@@ -158,14 +166,6 @@ func (p *Pool) Stats() Stats {
 		QueueDepth: p.queueDepth,
 		QueueSize:  int64(cap(p.queue)),
 	}
-}
-
-// Stats contains pool statistics
-type Stats struct {
-	Size       int
-	ActiveJobs int64
-	QueueDepth int64
-	QueueSize  int64
 }
 
 var (

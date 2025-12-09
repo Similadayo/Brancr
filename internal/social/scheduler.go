@@ -23,6 +23,17 @@ import (
 	"github.com/similadayo/brancr/internal/utils"
 )
 
+// postJob implements worker.Job interface for scheduler
+type postJob struct {
+	scheduler *Scheduler
+	post      storage.ScheduledPost
+}
+
+func (j *postJob) Execute(ctx context.Context) error {
+	j.scheduler.executePost(j.post)
+	return nil // executePost handles its own errors
+}
+
 type PostNotifier func(ctx context.Context, tenantID uint, platform string, success bool, message string)
 
 type Scheduler struct {
@@ -31,6 +42,13 @@ type Scheduler struct {
 	CaptionOptimizer CaptionOptimizer
 	PostNotifier     PostNotifier
 	AnalyticsService AnalyticsServiceInterface // Optional: for triggering analytics collection
+	QuotaService     interface {
+		CheckPostQuota(ctx context.Context, tenantID uint) error
+		IncrementPostUsage(ctx context.Context, tenantID uint) error
+	}
+	WorkerPool       interface {
+		Submit(job interface{ Execute(ctx context.Context) error }) error
+	}
 	// Platform adapters will be injected here as needed
 }
 
@@ -121,34 +139,59 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 			break // No more posts to process
 		}
 
-		// Process batch concurrently with controlled concurrency
-		// Use a semaphore to limit concurrent executions
-		semaphore := make(chan struct{}, 20) // Max 20 concurrent posts
+		// Process batch using worker pool if available, otherwise use goroutines
 		var wg sync.WaitGroup
+		semaphore := make(chan struct{}, 20) // Max 20 concurrent posts (fallback)
 
-	for _, p := range posts {
+		for _, p := range posts {
 			// Try to claim by updating status to "posting" if still scheduled (optimistic locking)
-		tx := s.DB.Begin()
+			tx := s.DB.Begin()
 			rowsAffected := tx.Model(&storage.ScheduledPost{}).
 				Where("id = ? AND status = ?", p.ID, "scheduled").
 				Update("status", "posting").RowsAffected
 			
 			if rowsAffected == 0 {
-			tx.Rollback()
+				tx.Rollback()
 				continue // Post already claimed by another worker
-		}
-		tx.Commit()
+			}
+			tx.Commit()
 
-			// Execute post with concurrency control
-			wg.Add(1)
-			semaphore <- struct{}{} // Acquire semaphore
-			go func(post storage.ScheduledPost) {
-				defer func() {
-					<-semaphore // Release semaphore
-					wg.Done()
-				}()
-				s.executePost(post)
-			}(p)
+			// Use worker pool if available, otherwise use goroutines
+			if s.WorkerPool != nil {
+				post := p // Capture for closure
+				job := &postJob{
+					scheduler: s,
+					post:      post,
+				}
+				if err := s.WorkerPool.Submit(job); err != nil {
+					s.Logger.Warn("failed to submit post to worker pool, using goroutine fallback",
+						zap.Uint("post_id", p.ID),
+						zap.Error(err))
+					// Fallback to goroutine
+					wg.Add(1)
+					semaphore <- struct{}{}
+					go func(post storage.ScheduledPost) {
+						defer func() {
+							<-semaphore
+							wg.Done()
+						}()
+						s.executePost(post)
+					}(p)
+				}
+				// Note: Worker pool jobs execute asynchronously
+				// We don't wait for them here as they handle their own completion
+			} else {
+				// Fallback to goroutines with semaphore
+				wg.Add(1)
+				semaphore <- struct{}{}
+				go func(post storage.ScheduledPost) {
+					defer func() {
+						<-semaphore
+						wg.Done()
+					}()
+					s.executePost(post)
+				}(p)
+			}
 		}
 
 		// Wait for batch to complete before fetching next batch

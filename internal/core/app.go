@@ -20,6 +20,7 @@ import (
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/bot"
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 )
@@ -142,16 +143,25 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// Get underlying SQL DB for pool configuration
 	sqlDB2, err := db.DB()
 	if err == nil {
-		// Production-ready connection pool settings
-		sqlDB2.SetMaxOpenConns(100)                 // Maximum open connections
-		sqlDB2.SetMaxIdleConns(10)                  // Maximum idle connections
+		// Production-ready connection pool settings (configurable)
+		maxOpen := cfg.DBMaxOpenConns
+		if maxOpen == 0 {
+			maxOpen = 100 // Default
+		}
+		maxIdle := cfg.DBMaxIdleConns
+		if maxIdle == 0 {
+			maxIdle = 10 // Default
+		}
+		
+		sqlDB2.SetMaxOpenConns(maxOpen)                 // Maximum open connections
+		sqlDB2.SetMaxIdleConns(maxIdle)                  // Maximum idle connections
 		sqlDB2.SetConnMaxLifetime(time.Hour)        // Connection max lifetime
 		sqlDB2.SetConnMaxIdleTime(10 * time.Minute) // Idle connection timeout
 		// Set connection timeout for establishing new connections (30 seconds)
 		// Note: This is separate from the DSN connect_timeout
 		logger.Info("✅ Database connection pool configured",
-			zap.Int("max_open", 100),
-			zap.Int("max_idle", 10),
+			zap.Int("max_open", maxOpen),
+			zap.Int("max_idle", maxIdle),
 			zap.String("dsn_timeout", "30s"))
 	}
 
@@ -543,6 +553,15 @@ func (a *App) Run() error {
 	if a.Services.JobQueue != nil {
 		a.Services.JobQueue.Shutdown()
 		a.Services.Logger.Info("🛑 Job queue stopped")
+	}
+
+	// Shutdown worker pool
+	if a.Services.WorkerPool != nil {
+		if err := a.Services.WorkerPool.Shutdown(30 * time.Second); err != nil {
+			a.Services.Logger.Warn("worker pool shutdown timeout", zap.Error(err))
+		} else {
+			a.Services.Logger.Info("🛑 Worker pool stopped")
+		}
 	}
 
 	// Cancel scheduler

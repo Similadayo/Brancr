@@ -19,6 +19,7 @@ import (
 	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/queue"
 	"github.com/similadayo/brancr/internal/security"
+	"github.com/similadayo/brancr/internal/worker"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/workflows"
@@ -41,6 +42,7 @@ type Services struct {
 	RateLimiter   *middleware.RateLimiter
 	CircuitBreakers map[string]*circuitbreaker.CircuitBreaker
 	QuotaService  *quota.QuotaService
+	WorkerPool    *worker.Pool
 
 	// AI Services
 	AIClient          *ai.AIClient
@@ -159,6 +161,21 @@ func (s *Services) initProductionInfra() error {
 	// Initialize quota service
 	s.QuotaService = quota.NewQuotaService(s.DB, s.Logger)
 	s.Logger.Info("✅ Quota service initialized")
+
+	// Initialize worker pool for background jobs
+	poolSize := s.Config.WorkerPoolSize
+	if poolSize == 0 {
+		poolSize = 20 // Default
+	}
+	queueSize := s.Config.WorkerQueueSize
+	if queueSize == 0 {
+		queueSize = 100 // Default
+	}
+	s.WorkerPool = worker.NewPool(poolSize, queueSize, s.Logger)
+	s.WorkerPool.Start()
+	s.Logger.Info("✅ Worker pool initialized",
+		zap.Int("size", poolSize),
+		zap.Int("queue_size", queueSize))
 
 	// Initialize circuit breakers for external APIs
 	cbConfig := circuitbreaker.DefaultConfig()
@@ -378,6 +395,11 @@ func (s *Services) initSocial() error {
 	// Set QuotaService if available
 	if s.QuotaService != nil {
 		scheduler.QuotaService = s.QuotaService
+	}
+	// Set WorkerPool if available (wrap to match interface)
+	if s.WorkerPool != nil {
+		scheduler.WorkerPool = &workerPoolAdapter{pool: s.WorkerPool}
+		s.Logger.Info("✅ Worker pool integrated into scheduler")
 	}
 
 	// Set scheduler on BotManager for immediate post execution
@@ -609,4 +631,13 @@ func (w *botGetterWrapper) GetBot(tenantID uint) (interface{}, bool) {
 		return nil, false
 	}
 	return bot, true
+}
+
+// workerPoolAdapter adapts worker.Pool to scheduler's interface
+type workerPoolAdapter struct {
+	pool *worker.Pool
+}
+
+func (a *workerPoolAdapter) Submit(job interface{ Execute(ctx context.Context) error }) error {
+	return a.pool.Submit(worker.JobFunc(job.Execute))
 }

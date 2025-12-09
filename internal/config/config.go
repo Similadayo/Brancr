@@ -61,6 +61,10 @@ type Config struct {
 	SMTPPass              string // SMTP password
 	SMTPFrom              string // SMTP from email address
 	PortalTokenExpiryDays int    // Portal token expiration in days (default: 90)
+	DBMaxOpenConns        int    // Database max open connections (default: 100)
+	DBMaxIdleConns        int    // Database max idle connections (default: 10)
+	WorkerPoolSize        int    // Worker pool size for background jobs (default: 20)
+	WorkerQueueSize       int    // Worker pool queue size (default: 100)
 }
 
 // Load loads configuration from .env or system environment variables.
@@ -121,6 +125,10 @@ func Load() *Config {
 		SMTPPass:              os.Getenv("SMTP_PASS"),
 		SMTPFrom:              getEnv("SMTP_FROM", "noreply@brancr.com"),
 		PortalTokenExpiryDays: getEnvInt("PORTAL_TOKEN_EXPIRY_DAYS", 90),
+		DBMaxOpenConns:        getEnvInt("DB_MAX_OPEN_CONNS", 100),
+		DBMaxIdleConns:        getEnvInt("DB_MAX_IDLE_CONNS", 10),
+		WorkerPoolSize:        getEnvInt("WORKER_POOL_SIZE", 20),
+		WorkerQueueSize:       getEnvInt("WORKER_QUEUE_SIZE", 100),
 	}
 
 	// Run validation (warnings only, doesn't fail)

@@ -9,11 +9,15 @@ const p99Latency = new Trend('p99_latency');
 
 export const options = {
   stages: [
-    { duration: '2m', target: 50 },   // Ramp up to 50 users
-    { duration: '5m', target: 50 },   // Stay at 50 users
-    { duration: '2m', target: 100 },  // Ramp up to 100 users
-    { duration: '5m', target: 100 },  // Stay at 100 users
-    { duration: '2m', target: 0 },    // Ramp down
+    { duration: '30s', target: 10 },   // Ramp up to 10 users
+    { duration: '1m', target: 10 },     // Stay at 10 users
+    { duration: '30s', target: 50 },    // Ramp up to 50 users
+    { duration: '2m', target: 50 },     // Stay at 50 users
+    { duration: '1m', target: 100 },    // Ramp up to 100 users (100+ concurrent tenants)
+    { duration: '3m', target: 100 },    // Stay at 100 users
+    { duration: '1m', target: 150 },    // Ramp up to 150 users (stress test)
+    { duration: '2m', target: 150 },    // Stay at 150 users
+    { duration: '30s', target: 0 },     // Ramp down
   ],
   thresholds: {
     http_req_duration: ['p(95)<500', 'p(99)<1000'], // 95% under 500ms, 99% under 1s
