@@ -6370,6 +6370,12 @@ func (h *Handler) sendFacebookReply(ctx context.Context, acc *storage.SocialAcco
 }
 
 func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
+	// Handle Respond.io mode differently - it uses Respond.io API, not Meta API
+	if acc.Mode == "respondio" {
+		return h.sendWhatsAppReplyRespondIO(ctx, acc, recipientID, message)
+	}
+
+	// For Meta/other providers, use Meta WhatsApp API
 	// WhatsApp uses phone number as recipient
 	phoneNumberID := acc.PageID // This is phone_number_id for WhatsApp
 	if phoneNumberID == "" {
@@ -6397,10 +6403,16 @@ func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAcco
 		"text":              map[string]string{"body": message},
 	}
 
-	jsonData, _ := json.Marshal(payload)
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal WhatsApp payload: %w", err)
+	}
 	apiURLWithToken := fmt.Sprintf("%s?access_token=%s", apiURL, url.QueryEscape(token))
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURLWithToken, strings.NewReader(string(jsonData)))
+	if err != nil {
+		return fmt.Errorf("failed to create WhatsApp request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -6413,6 +6425,32 @@ func (h *Handler) sendWhatsAppReply(ctx context.Context, acc *storage.SocialAcco
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("WhatsApp API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// sendWhatsAppReplyRespondIO sends a WhatsApp message via Respond.io API
+func (h *Handler) sendWhatsAppReplyRespondIO(ctx context.Context, acc *storage.SocialAccount, recipientID, message string) error {
+	if h.Config.RespondIOAPIKey == "" {
+		return fmt.Errorf("Respond.io API key not configured")
+	}
+
+	// Get channel ID from ExternalID (stored during connection)
+	channelID := acc.ExternalID
+	if channelID == "" {
+		return fmt.Errorf("Respond.io channel ID not found for WhatsApp account")
+	}
+
+	// Create Respond.io client
+	respondIOClient := social.NewRespondIOClient(h.Config.RespondIOAPIKey, h.Logger)
+
+	// Send message via Respond.io
+	// Signature: SendMessage(ctx, identifier, text, channelID)
+	// identifier is the recipient phone number, channelID is the WhatsApp channel ID
+	_, err := respondIOClient.SendMessage(ctx, recipientID, message, channelID)
+	if err != nil {
+		return fmt.Errorf("Respond.io API request failed: %w", err)
 	}
 
 	return nil
