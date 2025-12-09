@@ -65,6 +65,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&TrendInsight{},
 		&PlatformMetricsSnapshot{},
 		&AudienceSegment{},
+		&TenantQuota{}, // Quota tracking for tenants
 	); err != nil {
 		return err
 	}

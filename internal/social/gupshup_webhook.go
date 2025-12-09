@@ -717,11 +717,23 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 
-	// Extract sender name if available
+	// Extract sender information (name, phone, country_code, dial_code)
 	customerName := ""
+	var customerPhone string
+	var countryCode string
+	var dialCode string
 	if sender, ok := payload["sender"].(map[string]interface{}); ok {
 		if name, ok := sender["name"].(string); ok {
 			customerName = name
+		}
+		if phone, ok := sender["phone"].(string); ok {
+			customerPhone = phone
+		}
+		if cc, ok := sender["country_code"].(string); ok {
+			countryCode = cc
+		}
+		if dc, ok := sender["dial_code"].(string); ok {
+			dialCode = dc
 		}
 	}
 
@@ -949,10 +961,21 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		}
 	}
 
-	// Build metadata with media information if applicable
+	// Build metadata with media information and customer details
 	metadata := map[string]interface{}{
 		"gupshup_app_id": envelope["appId"],
 		"raw_payload":    payload,
+	}
+	
+	// Add customer information to metadata for frontend display
+	if countryCode != "" {
+		metadata["customer_country_code"] = countryCode
+	}
+	if dialCode != "" {
+		metadata["customer_dial_code"] = dialCode
+	}
+	if customerPhone != "" {
+		metadata["customer_phone"] = customerPhone
 	}
 	
 	// Process media if this is a media message and MediaProcessor is available

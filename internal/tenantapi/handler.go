@@ -4536,24 +4536,58 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 
 	// Get customer info and last message for each conversation
 	type conversationResp struct {
-		ID             uint            `json:"id"`
-		CustomerID     uint            `json:"customer_id"`
-		CustomerName   string          `json:"customer_name"`
-		CustomerAvatar string          `json:"customer_avatar"`
-		Platform       string          `json:"platform"`
-		Status         string          `json:"status"`
-		LastMessage    string          `json:"last_message"`
-		LastMessageAt  time.Time       `json:"last_message_at"`
-		UnreadCount    int             `json:"unread_count"`
-		CreatedAt      time.Time       `json:"created_at"`
-		UpdatedAt      time.Time       `json:"updated_at"`
-		LastMessageMedia *InteractionMedia `json:"last_message_media,omitempty"` // Media preview for last message
+		ID                uint            `json:"id"`
+		CustomerID        uint            `json:"customer_id"`
+		CustomerName      string          `json:"customer_name"`
+		CustomerAvatar     string          `json:"customer_avatar"`
+		CustomerPhone     string          `json:"customer_phone,omitempty"`      // Phone number (for WhatsApp)
+		CustomerCountryCode string         `json:"customer_country_code,omitempty"` // Country code (e.g., "234")
+		CustomerDialCode  string          `json:"customer_dial_code,omitempty"`   // Dial code (e.g., "8137369592")
+		Platform          string          `json:"platform"`
+		Status            string          `json:"status"`
+		LastMessage       string          `json:"last_message"`
+		LastMessageAt     time.Time       `json:"last_message_at"`
+		UnreadCount       int             `json:"unread_count"`
+		CreatedAt         time.Time       `json:"created_at"`
+		UpdatedAt         time.Time       `json:"updated_at"`
+		LastMessageMedia  *InteractionMedia `json:"last_message_media,omitempty"` // Media preview for last message
 	}
 
 	resp := make([]conversationResp, 0, len(conversations))
 	for _, conv := range conversations {
 		var customer storage.Customer
 		h.DB.Where("id = ?", conv.CustomerID).First(&customer)
+
+		// Extract customer phone, country_code, and dial_code from first interaction metadata
+		var customerPhone, countryCode, dialCode string
+		if conv.Platform == "whatsapp" {
+			// For WhatsApp, phone is stored in PlatformID
+			customerPhone = customer.PlatformID
+			
+			// Try to get country_code and dial_code from first interaction metadata
+			var firstInteraction storage.Interaction
+			if err := h.DB.Where("conversation_id = ? AND direction = ?", conv.ID, "incoming").
+				Order("created_at ASC").
+				First(&firstInteraction).Error; err == nil {
+				if firstInteraction.Metadata != "" && firstInteraction.Metadata != "{}" {
+					var metadata map[string]interface{}
+					if err := json.Unmarshal([]byte(firstInteraction.Metadata), &metadata); err == nil {
+						if cc, ok := metadata["customer_country_code"].(string); ok {
+							countryCode = cc
+						}
+						if dc, ok := metadata["customer_dial_code"].(string); ok {
+							dialCode = dc
+						}
+						// Also check for phone in metadata if PlatformID is empty
+						if customerPhone == "" {
+							if cp, ok := metadata["customer_phone"].(string); ok {
+								customerPhone = cp
+							}
+						}
+					}
+				}
+			}
+		}
 
 		// Get last interaction (from ANY party - customer or tenant)
 		var lastInteraction storage.Interaction
@@ -4582,34 +4616,45 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 				Count(&unreadCount)
 
 			resp = append(resp, conversationResp{
-				ID:             conv.ID,
-				CustomerID:     conv.CustomerID,
-				CustomerName:   customer.DisplayName,
-				CustomerAvatar: customer.ProfilePicURL,
-				Platform:       conv.Platform,
-				Status:         conv.Status,
-				LastMessage:    lastMessageText, // Show message from any party
-				LastMessageAt:  conv.LastMessageAt,
-				UnreadCount:    int(unreadCount),
-				CreatedAt:      conv.CreatedAt,
-				UpdatedAt:      conv.UpdatedAt,
-				LastMessageMedia: lastMessageMedia, // Include media preview if present
+				ID:                conv.ID,
+				CustomerID:        conv.CustomerID,
+				CustomerName:      customer.DisplayName,
+				CustomerAvatar:    customer.ProfilePicURL,
+				CustomerPhone:     customerPhone,
+				CustomerCountryCode: countryCode,
+				CustomerDialCode:  dialCode,
+				Platform:          conv.Platform,
+				Status:            conv.Status,
+				LastMessage:       lastMessageText, // Show message from any party
+				LastMessageAt:     conv.LastMessageAt,
+				UnreadCount:       int(unreadCount),
+				CreatedAt:         conv.CreatedAt,
+				UpdatedAt:         conv.UpdatedAt,
+				LastMessageMedia:  lastMessageMedia, // Include media preview if present
 			})
 		} else {
 			// No interactions yet - still create conversation entry
 			var unreadCount int64
+			// Extract customer phone for WhatsApp even if no interactions
+			var customerPhone, countryCode, dialCode string
+			if conv.Platform == "whatsapp" {
+				customerPhone = customer.PlatformID
+			}
 			resp = append(resp, conversationResp{
-				ID:             conv.ID,
-				CustomerID:     conv.CustomerID,
-				CustomerName:   customer.DisplayName,
-				CustomerAvatar: customer.ProfilePicURL,
-				Platform:       conv.Platform,
-				Status:         conv.Status,
-				LastMessage:    "",
-				LastMessageAt:  conv.LastMessageAt,
-				UnreadCount:    int(unreadCount),
-				CreatedAt:      conv.CreatedAt,
-				UpdatedAt:      conv.UpdatedAt,
+				ID:                conv.ID,
+				CustomerID:        conv.CustomerID,
+				CustomerName:      customer.DisplayName,
+				CustomerAvatar:    customer.ProfilePicURL,
+				CustomerPhone:     customerPhone,
+				CustomerCountryCode: countryCode,
+				CustomerDialCode:  dialCode,
+				Platform:          conv.Platform,
+				Status:            conv.Status,
+				LastMessage:       "",
+				LastMessageAt:     conv.LastMessageAt,
+				UnreadCount:       int(unreadCount),
+				CreatedAt:         conv.CreatedAt,
+				UpdatedAt:         conv.UpdatedAt,
 			})
 		}
 	}
@@ -4642,6 +4687,37 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	// Get customer info
 	var customer storage.Customer
 	h.DB.Where("id = ?", conversation.CustomerID).First(&customer)
+
+	// Extract customer phone, country_code, and dial_code from first interaction metadata
+	var customerPhone, countryCode, dialCode string
+	if conversation.Platform == "whatsapp" {
+		// For WhatsApp, phone is stored in PlatformID
+		customerPhone = customer.PlatformID
+		
+		// Try to get country_code and dial_code from first interaction metadata
+		var firstInteraction storage.Interaction
+		if err := h.DB.Where("conversation_id = ? AND direction = ?", conversation.ID, "incoming").
+			Order("created_at ASC").
+			First(&firstInteraction).Error; err == nil {
+			if firstInteraction.Metadata != "" && firstInteraction.Metadata != "{}" {
+				var metadata map[string]interface{}
+				if err := json.Unmarshal([]byte(firstInteraction.Metadata), &metadata); err == nil {
+					if cc, ok := metadata["customer_country_code"].(string); ok {
+						countryCode = cc
+					}
+					if dc, ok := metadata["customer_dial_code"].(string); ok {
+						dialCode = dc
+					}
+					// Also check for phone in metadata if PlatformID is empty
+					if customerPhone == "" {
+						if cp, ok := metadata["customer_phone"].(string); ok {
+							customerPhone = cp
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Get all interactions from ALL parties in the conversation
 	// This includes:
@@ -4843,15 +4919,18 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":              conversation.ID,
-		"customer_id":     conversation.CustomerID,
-		"customer_name":   customer.DisplayName,
-		"customer_avatar": customer.ProfilePicURL,
-		"platform":        conversation.Platform,
-		"status":          conversation.Status,
-		"messages":        messages, // This includes ALL messages (incoming + outgoing)
-		"created_at":      conversation.CreatedAt,
-		"updated_at":      conversation.UpdatedAt,
+		"id":                  conversation.ID,
+		"customer_id":         conversation.CustomerID,
+		"customer_name":       customer.DisplayName,
+		"customer_avatar":     customer.ProfilePicURL,
+		"customer_phone":      customerPhone,
+		"customer_country_code": countryCode,
+		"customer_dial_code":  dialCode,
+		"platform":            conversation.Platform,
+		"status":              conversation.Status,
+		"messages":            messages, // This includes ALL messages (incoming + outgoing)
+		"created_at":          conversation.CreatedAt,
+		"updated_at":          conversation.UpdatedAt,
 	})
 }
 
