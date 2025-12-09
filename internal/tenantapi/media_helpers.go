@@ -30,6 +30,7 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 	// Check if this interaction has media
 	mediaURL, _ := metadata["media_url"].(string)
 	mediaType, _ := metadata["media_type"].(string)
+	storedURL, _ := metadata["media_stored_url"].(string)
 	
 	// Also check for nested media object
 	if mediaURL == "" {
@@ -43,8 +44,14 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 		}
 	}
 
-	// If no media URL or type, return nil
-	if mediaURL == "" && mediaType == "" {
+	// Check if we have any media indicators (URL, stored URL, type, or transcription/analysis)
+	// This ensures we return media info even if only stored_url exists (after processing)
+	hasTranscription, _ := metadata["audio_transcription"].(string)
+	hasImageAnalysis, _ := metadata["image_analysis"].(string)
+	hasDocumentText, _ := metadata["document_text"].(string)
+	
+	// If no media indicators at all, return nil
+	if mediaURL == "" && storedURL == "" && mediaType == "" && hasTranscription == "" && hasImageAnalysis == "" && hasDocumentText == "" {
 		return nil
 	}
 
@@ -52,9 +59,21 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 		URL:  mediaURL,
 		Type: mediaType,
 	}
+	
+	// If mediaType is empty but we have stored URL or transcription/analysis, infer type
+	if mediaType == "" {
+		if storedURL != "" || hasTranscription != "" {
+			mediaType = "audio" // Likely audio if we have transcription
+		} else if hasImageAnalysis != "" {
+			mediaType = "image" // Likely image if we have analysis
+		} else if hasDocumentText != "" {
+			mediaType = "document" // Likely document if we have text
+		}
+		media.Type = mediaType
+	}
 
-	// Extract stored URL (Cloudinary)
-	if storedURL, ok := metadata["media_stored_url"].(string); ok && storedURL != "" {
+	// Extract stored URL (Cloudinary) - use existing storedURL variable
+	if storedURL != "" {
 		media.StoredURL = storedURL
 	}
 
