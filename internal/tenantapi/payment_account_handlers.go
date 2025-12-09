@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 )
 
@@ -33,36 +34,44 @@ func (h *Handler) listPaymentAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type accountResp struct {
-		ID                 uint   `json:"id"`
-		AccountType        string `json:"account_type"`
-		BankName           string `json:"bank_name,omitempty"`
-		AccountNumber      string `json:"account_number"`      // Masked for security
-		AccountName        string `json:"account_name"`
+		ID                  uint   `json:"id"`
+		AccountType         string `json:"account_type"`
+		BankName            string `json:"bank_name,omitempty"`
+		AccountNumber       string `json:"account_number"` // Masked for security
+		AccountName         string `json:"account_name"`
 		MobileMoneyProvider string `json:"mobile_money_provider,omitempty"`
-		PhoneNumber        string `json:"phone_number,omitempty"`
-		IsDefault          bool   `json:"is_default"`
-		IsActive           bool   `json:"is_active"`
-		CreatedAt          string `json:"created_at"`
-		UpdatedAt          string `json:"updated_at"`
+		PhoneNumber         string `json:"phone_number,omitempty"`
+		IsDefault           bool   `json:"is_default"`
+		IsActive            bool   `json:"is_active"`
+		CreatedAt           string `json:"created_at"`
+		UpdatedAt           string `json:"updated_at"`
 	}
 
 	resp := make([]accountResp, len(accounts))
 	for i, acc := range accounts {
+		// Decrypt account number for masking
+		decryptedNumber, err := utils.DecryptToken(acc.AccountNumber)
+		if err != nil {
+			h.Logger.Warn("failed to decrypt account number for masking",
+				zap.Error(err),
+				zap.Uint("account_id", acc.ID))
+			decryptedNumber = "" // Use empty string if decryption fails
+		}
 		// Mask account number - show only last 4 digits
-		maskedNumber := maskAccountNumber(acc.AccountNumber)
+		maskedNumber := maskAccountNumber(decryptedNumber)
 
 		resp[i] = accountResp{
-			ID:                 acc.ID,
-			AccountType:        acc.AccountType,
-			BankName:           acc.BankName,
-			AccountNumber:      maskedNumber,
-			AccountName:        acc.AccountName,
+			ID:                  acc.ID,
+			AccountType:         acc.AccountType,
+			BankName:            acc.BankName,
+			AccountNumber:       maskedNumber,
+			AccountName:         acc.AccountName,
 			MobileMoneyProvider: acc.MobileMoneyProvider,
-			PhoneNumber:        acc.PhoneNumber,
-			IsDefault:          acc.IsDefault,
-			IsActive:           acc.IsActive,
-			CreatedAt:          acc.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:          acc.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			PhoneNumber:         acc.PhoneNumber,
+			IsDefault:           acc.IsDefault,
+			IsActive:            acc.IsActive,
+			CreatedAt:           acc.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:           acc.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -81,14 +90,14 @@ func (h *Handler) createPaymentAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AccountType        string `json:"account_type"` // bank, mobile_money, cash
-		BankName           string `json:"bank_name"`
-		AccountNumber      string `json:"account_number"`
-		AccountName        string `json:"account_name"`
+		AccountType         string `json:"account_type"` // bank, mobile_money, cash
+		BankName            string `json:"bank_name"`
+		AccountNumber       string `json:"account_number"`
+		AccountName         string `json:"account_name"`
 		MobileMoneyProvider string `json:"mobile_money_provider"` // MTN, Airtel, etc.
-		PhoneNumber        string `json:"phone_number"`
-		IsDefault          bool   `json:"is_default"`
-		IsActive           bool   `json:"is_active"`
+		PhoneNumber         string `json:"phone_number"`
+		IsDefault           bool   `json:"is_default"`
+		IsActive            bool   `json:"is_active"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -122,11 +131,19 @@ func (h *Handler) createPaymentAccount(w http.ResponseWriter, r *http.Request) {
 			Update("is_default", false)
 	}
 
+	// Encrypt account number before storing
+	encryptedAccountNumber, err := utils.EncryptToken(req.AccountNumber)
+	if err != nil {
+		h.Logger.Error("failed to encrypt account number", zap.Error(err))
+		http.Error(w, "failed to encrypt account number", http.StatusInternalServerError)
+		return
+	}
+
 	account := storage.TenantPaymentAccount{
 		TenantID:            claims.TenantID,
 		AccountType:         req.AccountType,
 		BankName:            req.BankName,
-		AccountNumber:       req.AccountNumber, // TODO: Encrypt this
+		AccountNumber:       encryptedAccountNumber, // Encrypted
 		AccountName:         req.AccountName,
 		MobileMoneyProvider: req.MobileMoneyProvider,
 		PhoneNumber:         req.PhoneNumber,
@@ -147,11 +164,11 @@ func (h *Handler) createPaymentAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"success": true,
 		"payment_account": map[string]any{
-			"id":          account.ID,
+			"id":           account.ID,
 			"account_type": account.AccountType,
 			"account_name": account.AccountName,
-			"is_default":  account.IsDefault,
-			"is_active":   account.IsActive,
+			"is_default":   account.IsDefault,
+			"is_active":    account.IsActive,
 		},
 	})
 }
@@ -178,22 +195,30 @@ func (h *Handler) getPaymentAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Decrypt account number for masking
+	decryptedNumber, err := utils.DecryptToken(account.AccountNumber)
+	if err != nil {
+		h.Logger.Warn("failed to decrypt account number for masking",
+			zap.Error(err),
+			zap.Uint("account_id", account.ID))
+		decryptedNumber = "" // Use empty string if decryption fails
+	}
 	// Mask account number
-	maskedNumber := maskAccountNumber(account.AccountNumber)
+	maskedNumber := maskAccountNumber(decryptedNumber)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment_account": map[string]any{
-			"id":                 account.ID,
-			"account_type":       account.AccountType,
-			"bank_name":          account.BankName,
-			"account_number":     maskedNumber,
-			"account_name":       account.AccountName,
+			"id":                    account.ID,
+			"account_type":          account.AccountType,
+			"bank_name":             account.BankName,
+			"account_number":        maskedNumber,
+			"account_name":          account.AccountName,
 			"mobile_money_provider": account.MobileMoneyProvider,
-			"phone_number":       account.PhoneNumber,
-			"is_default":         account.IsDefault,
-			"is_active":           account.IsActive,
-			"created_at":         account.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"updated_at":         account.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"phone_number":          account.PhoneNumber,
+			"is_default":            account.IsDefault,
+			"is_active":             account.IsActive,
+			"created_at":            account.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at":            account.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -221,14 +246,14 @@ func (h *Handler) updatePaymentAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AccountType        *string `json:"account_type"`
-		BankName           *string `json:"bank_name"`
-		AccountNumber      *string `json:"account_number"`
-		AccountName        *string `json:"account_name"`
+		AccountType         *string `json:"account_type"`
+		BankName            *string `json:"bank_name"`
+		AccountNumber       *string `json:"account_number"`
+		AccountName         *string `json:"account_name"`
 		MobileMoneyProvider *string `json:"mobile_money_provider"`
-		PhoneNumber        *string `json:"phone_number"`
-		IsDefault          *bool   `json:"is_default"`
-		IsActive           *bool   `json:"is_active"`
+		PhoneNumber         *string `json:"phone_number"`
+		IsDefault           *bool   `json:"is_default"`
+		IsActive            *bool   `json:"is_active"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -244,7 +269,14 @@ func (h *Handler) updatePaymentAccount(w http.ResponseWriter, r *http.Request) {
 		account.BankName = *req.BankName
 	}
 	if req.AccountNumber != nil {
-		account.AccountNumber = *req.AccountNumber // TODO: Encrypt
+		// Encrypt account number before storing
+		encryptedAccountNumber, err := utils.EncryptToken(*req.AccountNumber)
+		if err != nil {
+			h.Logger.Error("failed to encrypt account number", zap.Error(err))
+			http.Error(w, "failed to encrypt account number", http.StatusInternalServerError)
+			return
+		}
+		account.AccountNumber = encryptedAccountNumber
 	}
 	if req.AccountName != nil {
 		account.AccountName = *req.AccountName
@@ -277,11 +309,11 @@ func (h *Handler) updatePaymentAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"payment_account": map[string]any{
-			"id":          account.ID,
+			"id":           account.ID,
 			"account_type": account.AccountType,
 			"account_name": account.AccountName,
-			"is_default":  account.IsDefault,
-			"is_active":   account.IsActive,
+			"is_default":   account.IsDefault,
+			"is_active":    account.IsActive,
 		},
 	})
 }
@@ -373,4 +405,3 @@ func maskAccountNumber(accountNumber string) string {
 	}
 	return masked + accountNumber[len(accountNumber)-4:]
 }
-
