@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"strings"
 
+	"fmt"
+	"time"
+
+	"github.com/similadayo/brancr/internal/cache"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
@@ -225,14 +229,32 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 
 // logout handles tenant logout
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	// Get tenant claims to invalidate session in cache
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if ok && h.Cache != nil {
+		ctx := r.Context()
+		// Invalidate session in cache
+		sessionKey := fmt.Sprintf("session:tenant:%d:%s", claims.TenantID, claims.Email)
+		if err := h.Cache.Delete(ctx, sessionKey); err != nil {
+			h.Logger.Warn("failed to invalidate session in cache", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		}
+		// Also invalidate tenant data cache
+		tenantKey := cache.TenantKey(claims.TenantID)
+		if err := h.Cache.Delete(ctx, tenantKey); err != nil {
+			h.Logger.Warn("failed to invalidate tenant cache", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		}
+	}
+
+	// Clear cookie with same settings as login (for consistency)
 	cookie := &http.Cookie{
 		Name:     SessionCookie,
 		Value:    "",
 		Path:     "/",
-		MaxAge:   -1,
+		MaxAge:   -1, // Delete immediately
+		Expires:  time.Unix(0, 0), // Also set Expires for older browsers
 		HttpOnly: true,
-		Secure:   h.Config.AppEnv == "production",
-		SameSite: http.SameSiteLaxMode,
+		Secure:   true,                   // Must match login cookie settings
+		SameSite: http.SameSiteNoneMode, // Must match login cookie settings
 		Domain:   h.cookieDomain(),
 	}
 	http.SetCookie(w, cookie)
@@ -251,21 +273,65 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try to get tenant data from cache first
+	type cachedTenantData struct {
+		Tenant         storage.Tenant
+		BusinessProfile storage.BusinessProfile
+		Persona        storage.Persona
+	}
+	var cachedData cachedTenantData
+	cacheKey := cache.TenantKey(claims.TenantID)
+	cacheHit := false
+
+	if h.Cache != nil {
+		if err := h.Cache.Get(r.Context(), cacheKey, &cachedData); err == nil {
+			cacheHit = true
+			h.Logger.Debug("tenant data cache hit", zap.Uint("tenant_id", claims.TenantID))
+		}
+	}
+
 	var tenant storage.Tenant
-	if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
-		h.Logger.Error("failed to fetch tenant", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
-		h.writeInternalError(w, r, err)
-		return
+	var profile storage.BusinessProfile
+	var persona storage.Persona
+
+	if cacheHit {
+		tenant = cachedData.Tenant
+		profile = cachedData.BusinessProfile
+		persona = cachedData.Persona
+	} else {
+		// Cache miss - fetch from database
+		if err := h.DB.First(&tenant, claims.TenantID).Error; err != nil {
+			h.Logger.Error("failed to fetch tenant", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+			h.writeInternalError(w, r, err)
+			return
+		}
+
+		h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
+		h.DB.Where("tenant_id = ?", tenant.ID).First(&persona)
+
+		// Cache the data for 5 minutes
+		if h.Cache != nil {
+			cachedData = cachedTenantData{
+				Tenant:          tenant,
+				BusinessProfile: profile,
+				Persona:         persona,
+			}
+			if err := h.Cache.SetWithTTL(r.Context(), cacheKey, cachedData, 5*time.Minute); err != nil {
+				h.Logger.Warn("failed to cache tenant data", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+			}
+		}
 	}
 
 	// Auto-complete onboarding if tenant has sufficient data
+	// This may modify tenant, so invalidate cache if it changes
+	originalOnboardingComplete := tenant.OnboardingComplete
 	h.checkAndAutoCompleteOnboarding(&tenant)
-
-	var profile storage.BusinessProfile
-	h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
-
-	var persona storage.Persona
-	h.DB.Where("tenant_id = ?", tenant.ID).First(&persona)
+	if tenant.OnboardingComplete != originalOnboardingComplete {
+		// Onboarding status changed - invalidate cache
+		if h.Cache != nil {
+			h.Cache.Delete(r.Context(), cacheKey)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenant": map[string]any{

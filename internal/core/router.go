@@ -66,7 +66,7 @@ func SetupRouter(app *App) http.Handler {
 	r.Mount("/admin", admin.AdminRouter(adminCtx, appMetrics))
 	r.Mount("/bot", TenantRouter(app))
 
-	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.WorkflowOrchestrator, app.Services.Scheduler, app.Services.AIClient, app.Services.MessageHandler, app.Services.IndustryService, app.Services.InstagramInsights, app.Services.EmailService)
+	apiHandler := tenantapi.NewHandler(app.Services.DB, app.Services.Logger, app.Config, app.Services.Redis, app.Services.WorkflowOrchestrator, app.Services.Scheduler, app.Services.AIClient, app.Services.MessageHandler, app.Services.IndustryService, app.Services.InstagramInsights, app.Services.EmailService, app.Services.Cache)
 	r.Route("/api", func(api chi.Router) {
 		// API-specific middleware
 		api.Use(middleware.ValidateContentType(app.Services.Logger)) // Validate Content-Type for API requests

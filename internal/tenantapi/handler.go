@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/ai"
+	"github.com/similadayo/brancr/internal/cache"
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
@@ -59,6 +60,7 @@ type Handler struct {
 	Logger               *zap.Logger
 	Config               *config.Config
 	Redis                *redis.Client
+	Cache                *cache.Cache                    // Redis cache for sessions and tenant data
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 	Scheduler            *social.Scheduler
 	AIClient             *ai.AIClient
@@ -75,12 +77,13 @@ type Handler struct {
 
 func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service, instagramInsights *social.InstagramInsightsService, emailService interface {
 	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
-}) *Handler {
+}, cacheService *cache.Cache) *Handler {
 	return &Handler{
 		DB:                   db,
 		Logger:               logger,
 		Config:               cfg,
 		Redis:                redis,
+		Cache:                cacheService,
 		WorkflowOrchestrator: orchestrator,
 		Scheduler:            scheduler,
 		AIClient:             aiClient,
@@ -639,15 +642,33 @@ func (h *Handler) setSessionCookie(w http.ResponseWriter, tenantID uint, email s
 		return err
 	}
 
+	// Cache session in Redis for faster validation (optional, falls back to JWT validation)
+	if h.Cache != nil {
+		ctx := context.Background() // Use background context for cache operations
+		sessionKey := fmt.Sprintf("session:tenant:%d:%s", tenantID, email)
+		sessionData := map[string]interface{}{
+			"tenant_id":  tenantID,
+			"email":      email,
+			"token":      token,
+			"created_at": time.Now().Unix(),
+		}
+		// Cache for same duration as cookie
+		if err := h.Cache.SetWithTTL(ctx, sessionKey, sessionData, sessionTTL); err != nil {
+			// Log but don't fail - JWT validation will still work
+			h.Logger.Warn("failed to cache session", zap.Error(err), zap.Uint("tenant_id", tenantID))
+		}
+	}
+
 	cookie := &http.Cookie{
 		Name:     SessionCookie,
 		Value:    token,
 		Path:     "/",
-		Expires:  time.Now().Add(sessionTTL),
+		MaxAge:   int(sessionTTL.Seconds()), // Use MaxAge for better browser compatibility
+		Expires:  time.Now().Add(sessionTTL), // Also set Expires for older browsers
 		Domain:   h.cookieDomain(),
 		HttpOnly: true,
-		SameSite: http.SameSiteNoneMode,
-		Secure:   true,
+		SameSite: http.SameSiteNoneMode, // Required for cross-site requests (OAuth redirects)
+		Secure:   true,                   // Required when SameSite=None
 	}
 
 	http.SetCookie(w, cookie)
