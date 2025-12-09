@@ -22,6 +22,7 @@ import (
 	"github.com/similadayo/brancr/internal/worker"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/tenantapi"
 	"github.com/similadayo/brancr/internal/workflows"
 	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
@@ -70,6 +71,7 @@ type Services struct {
 	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
 	TikTokOAuthHandler      *social.TikTokOAuthHandler
 	TikTokWebhookHandler    *social.TikTokWebhookHandler
+	GoogleOAuthHandler      *tenantapi.GoogleOAuthHandler // Google OAuth for tenant authentication
 
 	// Analytics Services
 	AnalyticsService   *analytics.Service
@@ -368,6 +370,14 @@ func (s *Services) initSocial() error {
 		s.Logger.Info("✅ TikTok OAuth handler initialized")
 	} else {
 		s.Logger.Info("ℹ️  TikTok OAuth disabled — missing TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, or TIKTOK_REDIRECT_URI")
+	}
+
+	// Initialize Google OAuth handler for tenant authentication
+	if googleOAuthHandler := tenantapi.NewGoogleOAuthHandler(s.DB, s.Logger, s.Config); googleOAuthHandler != nil {
+		s.GoogleOAuthHandler = googleOAuthHandler
+		s.Logger.Info("✅ Google OAuth handler initialized for tenant authentication")
+	} else {
+		s.Logger.Info("ℹ️  Google OAuth disabled — missing GOOGLE_OAUTH_CLIENT_ID or GOOGLE_OAUTH_CLIENT_SECRET")
 	}
 
 	// Initialize TikTok Webhook Handler (ONLY if secret is configured for security)

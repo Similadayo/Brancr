@@ -152,5 +152,11 @@ func SetupRouter(app *App) http.Handler {
 		r.MethodFunc(http.MethodPost, "/api/oauth/meta/whatsapp/callback", app.Services.EmbeddedSignupHandler.Callback)
 	}
 
+	// Google OAuth for tenant authentication
+	if app.Services.GoogleOAuthHandler != nil {
+		r.Get("/api/auth/google/start", app.Services.GoogleOAuthHandler.StartOAuth)
+		r.Get("/api/auth/google/callback", app.Services.GoogleOAuthHandler.Callback)
+	}
+
 	return r
 }
