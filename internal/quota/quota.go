@@ -42,14 +42,22 @@ func (s *QuotaService) GetOrCreateQuota(ctx context.Context, tenantID uint) (*st
 		if err := s.Cache.Get(ctx, cacheKey, &cachedQuota); err == nil {
 			// Cache hit - check if reset is needed (this may modify quota)
 			originalLastReset := cachedQuota.LastResetAt
-			if err := s.checkAndResetQuota(ctx, &cachedQuota); err != nil {
-				s.Logger.Warn("failed to reset quota from cache", zap.Error(err))
-			}
-			// If reset occurred, invalidate cache and reload from DB
+			resetErr := s.checkAndResetQuota(ctx, &cachedQuota)
+			
+			// If reset occurred successfully, invalidate cache and reload from DB to get fresh state
 			if !originalLastReset.Equal(cachedQuota.LastResetAt) {
 				s.Cache.Delete(ctx, cacheKey)
-				// Fall through to DB query
+				// Fall through to DB query to get fresh data after reset
+			} else if resetErr != nil {
+				// Reset was attempted but failed (database error) - invalidate cache and fetch fresh data
+				// This prevents using stale cached quota when reset should have happened but failed
+				s.Logger.Warn("quota reset failed, invalidating cache and fetching fresh data",
+					zap.Uint("tenant_id", tenantID),
+					zap.Error(resetErr))
+				s.Cache.Delete(ctx, cacheKey)
+				// Fall through to DB query to get accurate current state
 			} else {
+				// No reset needed and no error - safe to use cached data
 				s.Logger.Debug("quota cache hit", zap.Uint("tenant_id", tenantID))
 				return &cachedQuota, nil
 			}
