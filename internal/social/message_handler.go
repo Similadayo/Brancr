@@ -702,6 +702,7 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 // Returns (shouldEscalate, reason)
 func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, conversationID uint) (bool, string) {
 	messageLower := strings.ToLower(msg.Content)
+	isMediaType := msg.MessageType == "audio" || msg.MessageType == "image" || msg.MessageType == "video" || msg.MessageType == "document" || msg.MessageType == "sticker"
 
 	// 1. Check if customer explicitly asks for human
 	explicitHumanRequest := strings.Contains(messageLower, "speak to") ||
@@ -753,12 +754,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		}
 	}
 
-	// 3. Very low confidence - can't understand the message (escalate to human)
-	if intent.Confidence < 0.25 {
-		return true, fmt.Sprintf("very_low_confidence_%.2f", intent.Confidence)
-	}
-
-	// 4. High confidence + Critical intent + Negative/Urgent tone → Escalate
+	// 3. High confidence + Critical intent + Negative/Urgent tone → Escalate
 	// Only escalate if we're VERY confident it's a real issue that needs human judgment
 	// This allows AI to handle routine questions like "What's your refund policy?"
 	isCriticalIntent := intent.Intent == "refund" || intent.Intent == "complaint" || intent.Intent == "delivery_issue"
@@ -768,7 +764,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return true, fmt.Sprintf("high_confidence_critical_intent_%s_%s", intent.Intent, intent.Tone)
 	}
 
-	// 5. Payment-related message handling - context-aware
+	// 4. Payment-related message handling - context-aware
 	// Customer asking to PAY (provide account): Can auto-reply with stored details
 	// Customer CONFIRMS they paid: Must escalate for tenant to verify & send receipt
 	// Customer asking WHEN TO PAY: Can auto-reply with POD info if applicable
@@ -806,18 +802,27 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return true, "invoice_request_needs_tenant_action"
 	}
 
-	// Escalate refund/complaint
+	// 5. Escalate refund/complaint
 	if intent.Intent == "refund" || intent.Intent == "complaint" {
 		return true, fmt.Sprintf("%s_requires_human_judgment", intent.Intent)
 	}
 
-	// 6. Intent detector explicitly says it requires escalation
+	// 6. Very low confidence - can't understand the message (escalate to human)
+	// For media messages (audio/image/video/document/sticker), avoid knee-jerk escalations unless payment-related
+	if intent.Confidence < 0.25 {
+		if isMediaType && !(intent.Intent == "payment" || isPaymentConfirmation || isInvoiceRequest) {
+			return false, ""
+		}
+		return true, fmt.Sprintf("very_low_confidence_%.2f", intent.Confidence)
+	}
+
+	// 7. Intent detector explicitly says it requires escalation
 	// But only if confidence is reasonable (not a false positive)
 	if intent.RequiresEscalation && intent.Confidence > 0.4 {
 		return true, "intent_detector_flagged_escalation"
 	}
 
-	// 7. Complex/ambiguous messages that need human judgment
+	// 8. Complex/ambiguous messages that need human judgment
 	// Check message length and complexity
 	wordCount := len(strings.Fields(msg.Content))
 	if wordCount > 100 && intent.Confidence < 0.5 {
