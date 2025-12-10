@@ -768,26 +768,45 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return true, fmt.Sprintf("high_confidence_critical_intent_%s_%s", intent.Intent, intent.Tone)
 	}
 
-	// 5. Payment-related messages - but be smart about it
-	// Only escalate if it's about actual payment processing, not just asking about prices
-	isPaymentProcessing := strings.Contains(messageLower, "paid") ||
-		strings.Contains(messageLower, "transaction") ||
-		strings.Contains(messageLower, "charge") ||
-		strings.Contains(messageLower, "charged") ||
-		strings.Contains(messageLower, "billing") ||
-		strings.Contains(messageLower, "invoice") ||
+	// 5. Payment-related message handling - context-aware
+	// Customer asking to PAY (provide account): Can auto-reply with stored details
+	// Customer CONFIRMS they paid: Must escalate for tenant to verify & send receipt
+	// Customer asking WHEN TO PAY: Can auto-reply with POD info if applicable
+
+	isPaymentConfirmation := strings.Contains(messageLower, "paid") ||
+		strings.Contains(messageLower, "sent payment") ||
+		strings.Contains(messageLower, "transferred") ||
+		strings.Contains(messageLower, "payment made")
+
+	isPaymentInquiry := strings.Contains(messageLower, "how to pay") ||
+		strings.Contains(messageLower, "payment method") ||
+		strings.Contains(messageLower, "where to send") ||
+		strings.Contains(messageLower, "account number") ||
+		strings.Contains(messageLower, "bank details") ||
+		strings.Contains(messageLower, "payment details")
+
+	isInvoiceRequest := strings.Contains(messageLower, "invoice") ||
 		strings.Contains(messageLower, "receipt")
 
-	isPriceInquiry := strings.Contains(messageLower, "how much") ||
-		strings.Contains(messageLower, "what's the price") ||
-		strings.Contains(messageLower, "how much does") ||
-		strings.Contains(messageLower, "cost") ||
-		strings.Contains(messageLower, "price") ||
-		strings.Contains(messageLower, "pricing")
+	// Escalate if customer confirms they paid - tenant must verify & send receipt
+	if (intent.Intent == "payment" || isPaymentConfirmation) && intent.Confidence > 0.7 {
+		return true, "payment_confirmation_requires_tenant_verification"
+	}
 
-	// Escalate payment processing issues, but not simple price inquiries
-	if intent.Intent == "payment" && isPaymentProcessing && !isPriceInquiry {
-		return true, "payment_processing_issue"
+	// Payment inquiry (asking for account details) - can be auto-replied with stored details
+	// Don't escalate - let responder check if account details are available
+	if isPaymentInquiry && intent.Intent == "account" {
+		return false, ""
+	}
+
+	// Escalate invoice requests - tenant needs to generate/send
+	if isInvoiceRequest {
+		return true, "invoice_request_needs_tenant_action"
+	}
+
+	// Escalate refund/complaint
+	if intent.Intent == "refund" || intent.Intent == "complaint" {
+		return true, fmt.Sprintf("%s_requires_human_judgment", intent.Intent)
 	}
 
 	// 6. Intent detector explicitly says it requires escalation

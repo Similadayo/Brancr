@@ -40,6 +40,8 @@ func (p *PolicyEngine) Evaluate(ctx context.Context, tenantID uint, intent *Inte
 	// settings := p.getTenantPolicy(tenantID)
 
 	aggConfidence := intent.Confidence
+
+	// Handle emotion-based escalations first
 	if emotion != nil {
 		// reduce effective confidence if emotion indicates urgency/frustration (force human)
 		for _, lab := range p.EscalateEmotionLabels {
@@ -53,6 +55,43 @@ func (p *PolicyEngine) Evaluate(ctx context.Context, tenantID uint, intent *Inte
 				}, nil
 			}
 		}
+	}
+
+	// Handle payment-related intents smartly:
+	// - "account" intent: CAN auto-reply if account details are stored
+	// - "payment": MUST escalate (tenant needs to verify & send receipt)
+	// - "refund": MUST escalate (requires human judgment)
+	// - "complaint": MUST escalate (requires human judgment)
+	if intent.Intent == "refund" || intent.Intent == "complaint" {
+		return &PolicyDecision{
+			Action:      "escalate",
+			Confidence:  aggConfidence,
+			Reason:      fmt.Sprintf("critical_issue=%s", intent.Intent),
+			ShouldHuman: true,
+			CreatedAt:   time.Now(),
+		}, nil
+	}
+
+	// "payment" intent (customer says they paid) - escalate for verification
+	if intent.Intent == "payment" && aggConfidence > 0.7 {
+		return &PolicyDecision{
+			Action:      "escalate",
+			Confidence:  aggConfidence,
+			Reason:      "payment_requires_tenant_verification",
+			ShouldHuman: true,
+			CreatedAt:   time.Now(),
+		}, nil
+	}
+
+	// "account" intent (customer asking for payment account) - can auto-reply
+	if intent.Intent == "account" && aggConfidence > 0.75 {
+		return &PolicyDecision{
+			Action:      "auto_reply",
+			Confidence:  aggConfidence,
+			Reason:      "account_details_available",
+			ShouldHuman: false,
+			CreatedAt:   time.Now(),
+		}, nil
 	}
 
 	// If intent unknown or confidence low -> ask clarify

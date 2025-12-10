@@ -29,11 +29,11 @@ func NewIntentDetector(client *AIClient, db *gorm.DB, logger *zap.Logger) *Inten
 
 // DetectedIntent represents the analysis result
 type DetectedIntent struct {
-	Intent      string  // inquiry, order, payment, complaint, casual, refund, delivery_issue
-	Tone        string  // positive, neutral, negative, urgent
-	Confidence  float64 // 0-1
-	RequiresEscalation bool // true if sensitive/uncertain
-	Reasoning   string  // Why this intent was detected
+	Intent             string  // inquiry, order, payment, complaint, casual, refund, delivery_issue
+	Tone               string  // positive, neutral, negative, urgent
+	Confidence         float64 // 0-1
+	RequiresEscalation bool    // true if sensitive/uncertain
+	Reasoning          string  // Why this intent was detected
 }
 
 // DetectIntent analyzes a message to determine intent, tone, and whether it needs escalation
@@ -49,7 +49,7 @@ func (d *IntentDetector) DetectIntent(ctx context.Context, tenantID uint, messag
 	}
 
 	// Build intent options list
-	intentOptions := []string{"inquiry", "order", "payment", "complaint", "casual", "refund", "delivery_issue"}
+	intentOptions := []string{"inquiry", "order", "payment", "complaint", "casual", "refund", "delivery_issue", "account", "billing"}
 	if len(intentCatalog) > 0 {
 		for _, intent := range intentCatalog {
 			intentOptions = append(intentOptions, intent.Name)
@@ -82,8 +82,17 @@ Tone should be one of: positive, neutral, negative, urgent
 Confidence should be a number between 0.0 and 1.0
 Requires escalation should be true ONLY if:
   - Confidence is below 0.25 (very uncertain), OR
+  - Intent is payment/account/billing/refund/complaint (ALWAYS escalate these if confidence > 0.5), OR
+  - Message contains requests for sensitive information (account details, bank info, payment details, card numbers, etc.), OR
   - Intent is refund/complaint/delivery_issue AND confidence > 0.85 AND tone is negative/urgent (real issue needing human judgment)
-Do NOT set requires_escalation=true for routine questions like "What's your refund policy?" or "How do I return something?" - those should be false even if intent is refund.
+
+SENSITIVE INTENT KEYWORDS (always set requires_escalation=true if detected with confidence > 0.5):
+- Payment processing: "paid", "charge", "transaction", "billing", "invoice"
+- Account/Bank info: "account", "bank", "routing", "swift", "account number", "account details", "bank details"
+- Card data: "card", "credit", "debit", "cvv", "expiry"
+- Money transfer: "transfer money", "send money", "payment details"
+
+Do NOT set requires_escalation=false for these sensitive requests even if the customer seems polite.
 
 Message: "%s"
 Platform: %s
@@ -120,17 +129,17 @@ Platform: %s
 // FallbackDetection provides keyword-based intent detection as fallback
 func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 	lower := strings.ToLower(message)
-	
+
 	intent := "casual"
 	tone := "neutral"
 	requiresEscalation := false
-	
+
 	// Intent detection
 	if strings.Contains(lower, "refund") || strings.Contains(lower, "return") || strings.Contains(lower, "money back") {
 		intent = "refund"
 		// Only escalate if it's clearly negative/urgent, not just asking about policy
-		if strings.Contains(lower, "want") || strings.Contains(lower, "need") || strings.Contains(lower, "demand") || 
-		   strings.Contains(lower, "terrible") || strings.Contains(lower, "angry") || strings.Contains(lower, "disappointed") {
+		if strings.Contains(lower, "want") || strings.Contains(lower, "need") || strings.Contains(lower, "demand") ||
+			strings.Contains(lower, "terrible") || strings.Contains(lower, "angry") || strings.Contains(lower, "disappointed") {
 			requiresEscalation = true
 			tone = "negative"
 		} else {
@@ -144,7 +153,7 @@ func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 		intent = "delivery_issue"
 		// Only escalate if urgent/negative, not just asking "when will it arrive?"
 		if strings.Contains(lower, "not received") || strings.Contains(lower, "missing") || strings.Contains(lower, "lost") ||
-		   strings.Contains(lower, "urgent") || strings.Contains(lower, "asap") {
+			strings.Contains(lower, "urgent") || strings.Contains(lower, "asap") {
 			requiresEscalation = true
 			tone = "urgent"
 		} else {
@@ -157,7 +166,7 @@ func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 	} else if strings.Contains(lower, "?") || strings.Contains(lower, "what") || strings.Contains(lower, "how") || strings.Contains(lower, "when") {
 		intent = "inquiry"
 	}
-	
+
 	// Tone detection
 	if strings.Contains(lower, "urgent") || strings.Contains(lower, "asap") || strings.Contains(lower, "immediately") {
 		tone = "urgent"
@@ -166,13 +175,12 @@ func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 	} else if strings.Contains(lower, "angry") || strings.Contains(lower, "disappointed") || strings.Contains(lower, "frustrated") {
 		tone = "negative"
 	}
-	
+
 	return &DetectedIntent{
-		Intent:            intent,
-		Tone:              tone,
-		Confidence:        0.65, // Lower confidence for keyword-based
+		Intent:             intent,
+		Tone:               tone,
+		Confidence:         0.65, // Lower confidence for keyword-based
 		RequiresEscalation: requiresEscalation,
-		Reasoning:         "Keyword-based detection (AI unavailable)",
+		Reasoning:          "Keyword-based detection (AI unavailable)",
 	}
 }
-

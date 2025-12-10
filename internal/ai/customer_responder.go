@@ -54,11 +54,80 @@ func NewCustomerResponder(client *AIClient, db *gorm.DB, logger *zap.Logger, mem
 // GenerateCustomerReply generates an AI reply for a customer message
 // conversationID is optional - if provided, sales conversation tracking will be used
 func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID uint, customerID uint, message string, intent string, platform string, conversationID ...uint) (string, error) {
+	// Special handling for payment/account intents
+	if intent == "account" {
+		// For account intent: try to fetch and return stored payment account details
+		account, err := r.getStoredPaymentAccount(ctx, tenantID)
+		if err == nil && account != nil {
+			// We have stored payment details - can auto-reply
+			return r.buildPaymentAccountReply(account), nil
+		}
+		// No stored account - escalate
+		return "", fmt.Errorf("no payment account configured - requires escalation")
+	}
+
+	// Refuse to handle payment confirmations - these need tenant verification
+	if intent == "payment" {
+		return "", fmt.Errorf("payment confirmation requires tenant verification - escalating")
+	}
+
+	// Refuse to handle refunds/complaints - need human judgment
+	if intent == "refund" || intent == "complaint" {
+		return "", fmt.Errorf("%s requires human judgment - escalating", intent)
+	}
+
 	var convID uint
 	if len(conversationID) > 0 {
 		convID = conversationID[0]
 	}
 	return r.GenerateCustomerReplyWithSales(ctx, tenantID, customerID, message, intent, platform, convID)
+}
+
+// getStoredPaymentAccount retrieves tenant's default payment account details
+func (r *CustomerResponder) getStoredPaymentAccount(ctx context.Context, tenantID uint) (*storage.TenantPaymentAccount, error) {
+	var account storage.TenantPaymentAccount
+	if err := r.DB.Where("tenant_id = ? AND is_active = ? AND is_default = ?", tenantID, true, true).First(&account).Error; err != nil {
+		return nil, err
+	}
+	return &account, nil
+}
+
+// buildPaymentAccountReply creates a formatted reply with payment account details
+func (r *CustomerResponder) buildPaymentAccountReply(account *storage.TenantPaymentAccount) string {
+	var reply string
+
+	switch account.AccountType {
+	case "bank":
+		reply = fmt.Sprintf("Thank you for your interest! Here are our payment details:\n\n"+
+			"🏦 Bank Transfer:\n"+
+			"Bank: %s\n"+
+			"Account Name: %s\n"+
+			"Account Number: %s\n\n"+
+			"Once you transfer, please send us a proof of payment so we can confirm your order.",
+			account.BankName, account.AccountName, account.AccountNumber)
+
+	case "mobile_money":
+		reply = fmt.Sprintf("Thank you for your interest! Here's how to send us payment:\n\n"+
+			"📱 Mobile Money:\n"+
+			"Provider: %s\n"+
+			"Phone: %s\n"+
+			"Name: %s\n\n"+
+			"Send the payment and reply with a screenshot so we can verify.",
+			account.MobileMoneyProvider, account.PhoneNumber, account.AccountName)
+
+	case "cash":
+		reply = fmt.Sprintf("Thank you! We accept cash payment.\n\n"+
+			"💵 Payment Method: Cash\n"+
+			"Name: %s\n"+
+			"Phone: %s\n\n"+
+			"Please arrange a delivery or pickup time with us.",
+			account.AccountName, account.PhoneNumber)
+
+	default:
+		reply = "Please contact us for payment details."
+	}
+
+	return reply
 }
 
 // GenerateCustomerReplyWithSales generates an AI reply with sales conversation tracking

@@ -18,6 +18,15 @@ type Responder struct {
 	Policy     *PolicyEngine
 }
 
+// isSensitiveIntent checks if an intent should never be auto-replied to
+func isSensitiveIntent(intent string) bool {
+	return intent == "payment" ||
+		intent == "account" ||
+		intent == "billing" ||
+		intent == "refund" ||
+		intent == "complaint"
+}
+
 // getPlatformFormatting returns platform-specific formatting instructions
 func getPlatformFormatting(channel string) string {
 	switch strings.ToLower(channel) {
@@ -95,7 +104,7 @@ TASK: Reply naturally, like a real person would. Address what they asked directl
 	}
 
 	reply = strings.TrimSpace(reply)
-	
+
 	// Remove em-dashes from anywhere in the message
 	reply = removeEmDashes(reply)
 
@@ -159,10 +168,10 @@ func (r *Responder) GenerateHumanlikeReply(ctx context.Context, tenantID uint, u
 	}
 
 	reply = strings.TrimSpace(reply)
-	
+
 	// Remove em-dashes from anywhere in the message
 	reply = removeEmDashes(reply)
-	
+
 	r.Memory.SaveConversation(ctx, tenantID, userMsg, reply)
 	return reply, nil
 }
@@ -256,7 +265,7 @@ TASK: Write your reply as the business owner. Be appreciative, concise, and natu
 		return "", fmt.Errorf("AI generation failed: %w", err)
 	}
 	reply = strings.TrimSpace(reply)
-	
+
 	// Remove em-dashes from anywhere in the message
 	reply = removeEmDashes(reply)
 
