@@ -583,6 +583,10 @@ func (a *orderServiceAdapter) CreateOrderFromSalesConversation(ctx context.Conte
 	return a.orderService.CreateOrderFromSalesConversation(ctx, tenantID, customerID, conversationID, salesConv, customerName, customerPhone, customerEmail, platform)
 }
 
+func (a *orderServiceAdapter) ExtractOrderItems(salesConv *storage.SalesConversation) ([]storage.OrderItem, float64, error) {
+	return a.orderService.ExtractOrderItems(salesConv)
+}
+
 // industryServiceAdapter adapts IndustryService to CustomerResponder interface
 type industryServiceAdapter struct {
 	industry *industry.Service

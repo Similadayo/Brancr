@@ -29,6 +29,7 @@ type CustomerResponder struct {
 	PaymentInstructionGen    *PaymentInstructionGenerator // Payment instruction generator
 	OrderService             interface {                  // Order service for creating orders
 		CreateOrderFromSalesConversation(ctx context.Context, tenantID, customerID, conversationID uint, salesConv *storage.SalesConversation, customerName, customerPhone, customerEmail, platform string) (*storage.Order, error)
+		ExtractOrderItems(salesConv *storage.SalesConversation) ([]storage.OrderItem, float64, error)
 	}
 	CustomerExtractor *CustomerInfoExtractor // Customer info extraction
 	TenantNotifier    interface {            // Tenant notification service (optional)
@@ -349,6 +350,8 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 			if isCommitted {
 				r.SalesConversationManager.UpdateCommitmentLevel(ctx, salesConv.ID, "committed")
 				r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, "payment_instructions")
+				// Build and store a pending order draft, then notify tenant for approval
+				r.buildAndNotifyOrderDraft(ctx, salesConv, biz, platform)
 			}
 
 			// Detect negotiation
@@ -685,6 +688,47 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 	}
 
 	return reply, nil
+}
+
+// buildAndNotifyOrderDraft constructs a pending order draft and notifies the tenant for approval.
+// It does not create an order until the tenant confirms.
+func (r *CustomerResponder) buildAndNotifyOrderDraft(ctx context.Context, salesConv *storage.SalesConversation, biz storage.BusinessProfile, platform string) {
+	if r.SalesConversationManager == nil || r.OrderService == nil {
+		return
+	}
+
+	draft, err := r.SalesConversationManager.BuildOrderDraft(salesConv)
+	if err != nil {
+		r.Logger.Warn("failed to build order draft", zap.Error(err), zap.Uint("sales_conversation_id", salesConv.ID))
+		return
+	}
+
+	if err := r.SalesConversationManager.SavePendingOrderDraft(ctx, salesConv.ID, draft); err != nil {
+		r.Logger.Warn("failed to save pending order draft", zap.Error(err), zap.Uint("sales_conversation_id", salesConv.ID))
+		return
+	}
+
+	if r.TenantNotifier == nil {
+		return
+	}
+
+	// Build a brief Markdown summary for tenant approval
+	lines := []string{
+		fmt.Sprintf("📦 *New order draft* for %s", biz.Name),
+		fmt.Sprintf("Customer ID: %d", salesConv.CustomerID),
+		fmt.Sprintf("Conversation ID: %d", salesConv.ConversationID),
+		fmt.Sprintf("Platform: %s", platform),
+		"\nItems:",
+	}
+	for _, item := range draft.Items {
+		lines = append(lines, fmt.Sprintf("- %s x%d @ %.2f = %.2f", item.Name, item.Quantity, item.UnitPrice, item.TotalPrice))
+	}
+	lines = append(lines, fmt.Sprintf("\nTotal: %.2f %s", draft.TotalAmount, draft.Currency))
+	lines = append(lines, "Payment mode: pay on delivery unless you mark as paid.")
+	lines = append(lines, "Reply in Telegram: *Approve order* to create it, or *Decline order* to cancel the draft.")
+
+	msg := strings.Join(lines, "\n")
+	r.TenantNotifier.NotifyOwnerWithMarkdown(salesConv.TenantID, msg)
 }
 
 // determineSalesStage determines the sales stage based on intent and commitment

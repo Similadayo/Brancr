@@ -236,18 +236,21 @@ type TenantPaymentAccount struct {
 // SalesConversation tracks sales conversation state
 type SalesConversation struct {
 	gorm.Model
-	ConversationID   uint    `gorm:"index"` // Links to Conversation
-	TenantID         uint    `gorm:"index"`
-	CustomerID       uint    `gorm:"index"`
-	Stage            string  `gorm:"size:50"`    // greeting, product_inquiry, negotiation, commitment_confirmation, payment_instructions
-	CommitmentLevel  string  `gorm:"size:50"`    // exploring, interested, considering, committed, payment_ready
-	ItemsDiscussed   string  `gorm:"type:jsonb"` // JSON array of products/services discussed
-	PriceDiscussed   float64 // Price discussed (may change during negotiation)
-	NegotiationCount int     `gorm:"default:0"`  // Number of negotiation rounds
-	ObjectionsRaised string  `gorm:"type:jsonb"` // JSON array of objections
-	LastIntent       string  `gorm:"size:50"`    // Last detected intent
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ConversationID     uint    `gorm:"index"` // Links to Conversation
+	TenantID           uint    `gorm:"index"`
+	CustomerID         uint    `gorm:"index"`
+	Stage              string  `gorm:"size:50"`    // greeting, product_inquiry, negotiation, commitment_confirmation, payment_instructions
+	CommitmentLevel    string  `gorm:"size:50"`    // exploring, interested, considering, committed, payment_ready
+	ItemsDiscussed     string  `gorm:"type:jsonb"` // JSON array of products/services discussed
+	PriceDiscussed     float64 // Price discussed (may change during negotiation)
+	NegotiationCount   int     `gorm:"default:0"`  // Number of negotiation rounds
+	ObjectionsRaised   string  `gorm:"type:jsonb"` // JSON array of objections
+	LastIntent         string  `gorm:"size:50"`    // Last detected intent
+	PendingOrderDraft  string  `gorm:"type:jsonb"` // Draft order JSON awaiting tenant confirmation
+	PendingOrderStatus string  `gorm:"size:50"`    // pending_confirmation, approved, declined, none
+	PendingOrderSetAt  *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // NegotiationHistory tracks negotiation attempts

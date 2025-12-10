@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/storage"
@@ -18,6 +19,14 @@ type SalesConversationManager struct {
 	DB              *gorm.DB
 	IndustryService *industry.Service
 	Logger          *zap.Logger
+}
+
+// OrderDraft captures a pending order summary before tenant approval
+type OrderDraft struct {
+	Items       []storage.OrderItem `json:"items"`
+	TotalAmount float64             `json:"total_amount"`
+	Currency    string              `json:"currency"`
+	PaymentMode string              `json:"payment_mode"` // pay_on_delivery or paid
 }
 
 // NewSalesConversationManager creates a new sales conversation manager
@@ -41,13 +50,13 @@ func (m *SalesConversationManager) GetOrCreateSalesConversation(ctx context.Cont
 
 	// Create new sales conversation
 	salesConv = storage.SalesConversation{
-		ConversationID:  conversationID,
-		TenantID:        tenantID,
-		CustomerID:      customerID,
-		Stage:           "greeting",
-		CommitmentLevel: "exploring",
-		ItemsDiscussed:  "[]",
-		PriceDiscussed:  0,
+		ConversationID:   conversationID,
+		TenantID:         tenantID,
+		CustomerID:       customerID,
+		Stage:            "greeting",
+		CommitmentLevel:  "exploring",
+		ItemsDiscussed:   "[]",
+		PriceDiscussed:   0,
 		NegotiationCount: 0,
 		ObjectionsRaised: "[]",
 	}
@@ -213,7 +222,7 @@ func (m *SalesConversationManager) BuildIndustrySalesContext(ctx context.Context
 // DetectCommitment detects if customer is ready to commit to purchase
 func (m *SalesConversationManager) DetectCommitment(ctx context.Context, message string, salesConv *storage.SalesConversation) (bool, float64) {
 	messageLower := strings.ToLower(message)
-	
+
 	// Strong commitment indicators
 	strongIndicators := []string{
 		"i'll take it", "i'll buy", "i want to order", "i'm ready to pay",
@@ -221,77 +230,195 @@ func (m *SalesConversationManager) DetectCommitment(ctx context.Context, message
 		"i'm interested", "let's proceed", "i'll go with", "i'll get",
 		"send me the", "give me your", "what's your account",
 	}
-	
+
 	// Medium commitment indicators
 	mediumIndicators := []string{
 		"how much", "what's the price", "how much does it cost",
 		"tell me more", "i'm considering", "sounds good",
 		"that works", "okay", "alright",
 	}
-	
+
 	// Check for strong commitment
 	for _, indicator := range strongIndicators {
 		if strings.Contains(messageLower, indicator) {
 			return true, 0.9
 		}
 	}
-	
+
 	// Check for medium commitment
 	for _, indicator := range mediumIndicators {
 		if strings.Contains(messageLower, indicator) {
 			return true, 0.6
 		}
 	}
-	
+
 	// If already in negotiation stage and price discussed, higher likelihood
 	if salesConv.Stage == "negotiation" && salesConv.PriceDiscussed > 0 {
 		return true, 0.7
 	}
-	
+
 	return false, 0.0
+}
+
+// BuildOrderDraft builds a draft order from the sales conversation (no DB writes)
+func (m *SalesConversationManager) BuildOrderDraft(salesConv *storage.SalesConversation) (*OrderDraft, error) {
+	items, total, err := m.extractOrderItemsFromConversation(salesConv)
+	if err != nil {
+		return nil, err
+	}
+	return &OrderDraft{
+		Items:       items,
+		TotalAmount: total,
+		Currency:    "NGN",
+		PaymentMode: "pay_on_delivery",
+	}, nil
+}
+
+// SavePendingOrderDraft persists a pending order draft on the sales conversation
+func (m *SalesConversationManager) SavePendingOrderDraft(ctx context.Context, salesConvID uint, draft *OrderDraft) error {
+	if draft == nil {
+		return fmt.Errorf("draft is nil")
+	}
+	bytes, err := json.Marshal(draft)
+	if err != nil {
+		return fmt.Errorf("failed to marshal order draft: %w", err)
+	}
+	now := time.Now()
+	return m.DB.Model(&storage.SalesConversation{}).
+		Where("id = ?", salesConvID).
+		Updates(map[string]interface{}{
+			"pending_order_draft":  string(bytes),
+			"pending_order_status": "pending_confirmation",
+			"pending_order_set_at": &now,
+		}).Error
+}
+
+// ApprovePendingOrder marks the draft as approved (order creation handled elsewhere)
+func (m *SalesConversationManager) ApprovePendingOrder(ctx context.Context, salesConvID uint) error {
+	return m.DB.Model(&storage.SalesConversation{}).
+		Where("id = ?", salesConvID).
+		Updates(map[string]interface{}{
+			"pending_order_status": "approved",
+		}).Error
+}
+
+// DeclinePendingOrder marks the draft as declined
+func (m *SalesConversationManager) DeclinePendingOrder(ctx context.Context, salesConvID uint) error {
+	return m.DB.Model(&storage.SalesConversation{}).
+		Where("id = ?", salesConvID).
+		Updates(map[string]interface{}{
+			"pending_order_status": "declined",
+		}).Error
+}
+
+func (m *SalesConversationManager) extractOrderItemsFromConversation(salesConv *storage.SalesConversation) ([]storage.OrderItem, float64, error) {
+	var items []storage.OrderItem
+	var totalAmount float64
+
+	if salesConv.ItemsDiscussed != "" {
+		var discussedItems []map[string]interface{}
+		if err := json.Unmarshal([]byte(salesConv.ItemsDiscussed), &discussedItems); err != nil {
+			return nil, 0, fmt.Errorf("failed to parse items discussed: %w", err)
+		}
+
+		for _, item := range discussedItems {
+			name, _ := item["name"].(string)
+			if name == "" {
+				continue
+			}
+
+			var price float64
+			if p, ok := item["price"].(float64); ok {
+				price = p
+			} else if p, ok := item["price"].(int); ok {
+				price = float64(p)
+			} else {
+				if salesConv.PriceDiscussed > 0 && len(discussedItems) == 1 {
+					price = salesConv.PriceDiscussed
+				} else {
+					continue
+				}
+			}
+
+			quantity := 1
+			if q, ok := item["quantity"].(float64); ok {
+				quantity = int(q)
+			} else if q, ok := item["quantity"].(int); ok {
+				quantity = q
+			}
+
+			description, _ := item["description"].(string)
+			totalPrice := price * float64(quantity)
+
+			items = append(items, storage.OrderItem{
+				Name:        name,
+				Description: description,
+				Quantity:    quantity,
+				UnitPrice:   price,
+				TotalPrice:  totalPrice,
+			})
+			totalAmount += totalPrice
+		}
+	}
+
+	if len(items) == 0 && salesConv.PriceDiscussed > 0 {
+		items = append(items, storage.OrderItem{
+			Name:       "Order",
+			Quantity:   1,
+			UnitPrice:  salesConv.PriceDiscussed,
+			TotalPrice: salesConv.PriceDiscussed,
+		})
+		totalAmount = salesConv.PriceDiscussed
+	}
+
+	if len(items) == 0 {
+		return nil, 0, fmt.Errorf("no items found in sales conversation")
+	}
+
+	return items, totalAmount, nil
 }
 
 // DetectNegotiation detects if customer is negotiating
 func (m *SalesConversationManager) DetectNegotiation(ctx context.Context, message string) (bool, string, float64) {
 	messageLower := strings.ToLower(message)
-	
+
 	// Price negotiation
 	priceIndicators := []string{
 		"can you reduce", "can you lower", "is there discount",
 		"too expensive", "cheaper", "reduce the price", "lower price",
 		"what's your best price", "final price", "best offer",
 	}
-	
+
 	// Quantity negotiation
 	quantityIndicators := []string{
 		"if i buy more", "bulk discount", "buy in bulk",
 		"what if i take", "multiple items", "several",
 	}
-	
+
 	// Terms negotiation
 	termsIndicators := []string{
 		"payment plan", "installment", "pay later",
 		"deposit", "down payment", "terms",
 	}
-	
+
 	for _, indicator := range priceIndicators {
 		if strings.Contains(messageLower, indicator) {
 			return true, "price", 0.8
 		}
 	}
-	
+
 	for _, indicator := range quantityIndicators {
 		if strings.Contains(messageLower, indicator) {
 			return true, "quantity", 0.7
 		}
 	}
-	
+
 	for _, indicator := range termsIndicators {
 		if strings.Contains(messageLower, indicator) {
 			return true, "terms", 0.7
 		}
 	}
-	
+
 	return false, "", 0.0
 }
 
@@ -304,7 +431,7 @@ func (m *SalesConversationManager) ExtractOrderDetailsFromMessage(ctx context.Co
 		"cupcake", "order", "delivery", "pickup", "quantity", "how many",
 		"4", "five", "six", "one", "two", "three",
 	}
-	
+
 	hasOrderIndicators := false
 	for _, indicator := range orderIndicators {
 		if strings.Contains(messageLower, indicator) {
@@ -312,7 +439,7 @@ func (m *SalesConversationManager) ExtractOrderDetailsFromMessage(ctx context.Co
 			break
 		}
 	}
-	
+
 	if !hasOrderIndicators {
 		return nil // Skip extraction if no order indicators
 	}
@@ -432,10 +559,10 @@ Customer message: "%s"`, message)
 // extractOrderDetailsFallback uses simple pattern matching as fallback
 func (m *SalesConversationManager) extractOrderDetailsFallback(ctx context.Context, message string, salesConv *storage.SalesConversation) error {
 	messageLower := strings.ToLower(message)
-	
+
 	// Simple extraction: look for numbers followed by item names
 	// This is a basic fallback - AI extraction is preferred
-	
+
 	// Extract quantity (look for numbers at start or after "i want", "i need", etc.)
 	quantity := 1
 	words := strings.Fields(messageLower)
@@ -548,7 +675,7 @@ func (m *SalesConversationManager) DetectCompleteOrderDetails(ctx context.Contex
 		strings.Contains(messageLower, "landmark")
 
 	// Check for contact info (phone number)
-	hasContactInfo := customerPhone != "" || 
+	hasContactInfo := customerPhone != "" ||
 		strings.Contains(messageLower, "phone") ||
 		strings.Contains(messageLower, "call") ||
 		strings.Contains(messageLower, "contact")
@@ -581,4 +708,3 @@ func (m *SalesConversationManager) DetectCompleteOrderDetails(ctx context.Contex
 	// Quantity is nice to have but not always required (defaults to 1)
 	return hasItems && hasPrice && hasDeliveryInfo && hasContactInfo
 }
-
