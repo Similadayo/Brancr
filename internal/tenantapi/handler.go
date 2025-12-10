@@ -279,6 +279,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 			// Notifications API
 			r.Get("/tenant/notifications", h.listNotifications)
+			r.Get("/tenant/notifications/counts", h.notificationCounts)
 			r.Post("/tenant/notifications/{id}/read", h.markNotificationRead)
 			r.Post("/tenant/notifications/read-all", h.markAllNotificationsRead)
 
@@ -4827,6 +4828,13 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 	status := strings.ToLower(r.URL.Query().Get("status"))
 	onlyUnread := status == "" || status == "unread"
 	nType := r.URL.Query().Get("type")
+	sinceStr := r.URL.Query().Get("since")
+	var since *time.Time
+	if sinceStr != "" {
+		if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			since = &t
+		}
+	}
 
 	limit := 20
 	if l := r.URL.Query().Get("limit"); l != "" {
@@ -4848,6 +4856,9 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 	if nType != "" {
 		query = query.Where("type = ?", nType)
+	}
+	if since != nil {
+		query = query.Where("created_at >= ?", *since)
 	}
 
 	var total int64
@@ -4937,6 +4948,24 @@ func (h *Handler) markAllNotificationsRead(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// notificationCounts returns total and unread counts for notifications
+func (h *Handler) notificationCounts(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var total, unread int64
+	h.DB.Model(&storage.Notification{}).Where("tenant_id = ?", claims.TenantID).Count(&total)
+	h.DB.Model(&storage.Notification{}).Where("tenant_id = ? AND read_at IS NULL", claims.TenantID).Count(&unread)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"unread": unread,
+	})
 }
 
 func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {

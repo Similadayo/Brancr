@@ -54,6 +54,7 @@ type EscalationNotification struct {
 	InteractionID  uint
 	TenantID       uint
 	CustomerID     uint
+	ConversationID uint
 	CustomerName   string
 	Platform       string
 	Message        string
@@ -118,6 +119,7 @@ func (w *EscalationWorkflow) CreateEscalation(ctx context.Context, interactionID
 		InteractionID:  interaction.ID,
 		TenantID:       interaction.TenantID,
 		CustomerID:     customer.ID,
+		ConversationID: interaction.ConversationID,
 		CustomerName:   customerName,
 		Platform:       interaction.Platform,
 		Message:        interaction.Content,
@@ -147,9 +149,24 @@ func (w *EscalationWorkflow) sendEscalationNotification(ctx context.Context, not
 	// Create inline keyboard - stored for later use
 	_ = w.createEscalationKeyboard(notification.InteractionID, notification.Priority)
 
-	// Send via Telegram bot
-	// This would require access to the bot instance
-	// For now, we'll log the notification structure
+	// Persist dashboard notification
+	now := time.Now()
+	notif := storage.Notification{
+		TenantID:       notification.TenantID,
+		ConversationID: notification.ConversationID,
+		InteractionID:  notification.InteractionID,
+		Type:           "escalation",
+		Title:          fmt.Sprintf("Escalation from %s", notification.CustomerName),
+		Body:           notification.Message,
+		Severity:       string(notification.Priority),
+		Metadata:       "{}",
+		ReadAt:         &now,
+	}
+	if err := w.DB.Create(&notif).Error; err != nil {
+		w.Logger.Warn("failed to create escalation notification", zap.Error(err))
+	}
+
+	// Send via Telegram bot (stub logging)
 
 	w.Logger.Info("escalation notification created",
 		zap.Uint("tenant_id", notification.TenantID),

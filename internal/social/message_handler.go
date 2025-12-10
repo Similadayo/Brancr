@@ -744,6 +744,19 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	messageLower := strings.ToLower(msg.Content)
 	isMediaType := msg.MessageType == "audio" || msg.MessageType == "image" || msg.MessageType == "video" || msg.MessageType == "document" || msg.MessageType == "sticker"
 
+	// Order/payment flows need tenant confirmation so we can track fulfillment and payment mode
+	orderCue := strings.Contains(messageLower, "order") || strings.Contains(messageLower, "i'll take") || strings.Contains(messageLower, "i want one") || strings.Contains(messageLower, "add one")
+	paymentModePOD := strings.Contains(messageLower, "pay on delivery") || strings.Contains(messageLower, "cash on delivery") || strings.Contains(messageLower, "pod")
+	paymentModePrepay := strings.Contains(messageLower, "bank transfer") || strings.Contains(messageLower, "transfer") || strings.Contains(messageLower, "send account") || strings.Contains(messageLower, "account number")
+
+	if intent.Intent == "order" || orderCue {
+		return true, "order_request_requires_tenant_confirmation"
+	}
+
+	if paymentModePOD || paymentModePrepay {
+		return true, "payment_mode_confirmation_needed"
+	}
+
 	// 1. Check if customer explicitly asks for human
 	explicitHumanRequest := strings.Contains(messageLower, "speak to") ||
 		strings.Contains(messageLower, "talk to") ||
