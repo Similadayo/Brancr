@@ -14,8 +14,9 @@ import (
 
 // DashboardWorkflow handles dashboard UI workflows for managing conversations, escalations, and posts
 type DashboardWorkflow struct {
-	DB     *gorm.DB
-	Logger *zap.Logger
+	DB            *gorm.DB
+	Logger        *zap.Logger
+	MessageSender MessageSender // Interface for sending messages to customers
 }
 
 // ConversationDashboardData represents data structure for conversation dashboard
@@ -358,7 +359,23 @@ func (w *DashboardWorkflow) SendReplyFromDashboard(ctx context.Context, tenantID
 	conversation.LastMessageAt = time.Now()
 	w.DB.Save(&conversation)
 
-	// TODO: Actually send reply via social media API
+	// Actually send reply via social media API
+	if w.MessageSender != nil && conversation.Platform == "whatsapp" {
+		// Load customer for platform ID
+		var customer storage.Customer
+		if err := w.DB.First(&customer, conversation.CustomerID).Error; err != nil {
+			w.Logger.Error("failed to load customer for sending reply", zap.Error(err))
+			return fmt.Errorf("customer not found: %w", err)
+		}
+
+		if err := w.MessageSender.SendWhatsAppReply(context.Background(), tenantID, customer.PlatformID, reply); err != nil {
+			w.Logger.Error("failed to send reply to customer",
+				zap.Error(err),
+				zap.Uint("conversation_id", conversationID),
+				zap.String("customer_platform_id", customer.PlatformID))
+			return fmt.Errorf("failed to send reply: %w", err)
+		}
+	}
 
 	w.Logger.Info("reply sent from dashboard",
 		zap.Uint("tenant_id", tenantID),

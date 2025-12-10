@@ -16,13 +16,13 @@ import (
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/order"
-	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/queue"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/security"
-	"github.com/similadayo/brancr/internal/worker"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/tenantapi"
+	"github.com/similadayo/brancr/internal/worker"
 	"github.com/similadayo/brancr/internal/workflows"
 	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
@@ -38,12 +38,12 @@ type Services struct {
 	Metrics *metrics.Metrics
 
 	// Production Infrastructure
-	JobQueue      *queue.JobQueue
-	Cache         *cache.Cache
-	RateLimiter   *middleware.RateLimiter
+	JobQueue        *queue.JobQueue
+	Cache           *cache.Cache
+	RateLimiter     *middleware.RateLimiter
 	CircuitBreakers map[string]*circuitbreaker.CircuitBreaker
-	QuotaService  *quota.QuotaService
-	WorkerPool    *worker.Pool
+	QuotaService    *quota.QuotaService
+	WorkerPool      *worker.Pool
 
 	// AI Services
 	AIClient          *ai.AIClient
@@ -60,18 +60,18 @@ type Services struct {
 	WorkflowOrchestrator *workflows.WorkflowOrchestrator
 
 	// Social Services
-	MessageHandler          *social.MessageHandler
-	MetaWebhookHandler      *social.MetaWebhookHandler
-	RespondIOWebhookHandler *social.RespondIOWebhookHandler
-	GupshupWebhookHandler   *social.GupshupWebhookHandler
-	MetaOAuthHandler        *social.MetaOAuthHandler
+	MessageHandler             *social.MessageHandler
+	MetaWebhookHandler         *social.MetaWebhookHandler
+	RespondIOWebhookHandler    *social.RespondIOWebhookHandler
+	GupshupWebhookHandler      *social.GupshupWebhookHandler
+	MetaOAuthHandler           *social.MetaOAuthHandler
 	InstagramLoginOAuthHandler *social.InstagramLoginOAuthHandler // Instagram Login (Business Login for Instagram)
-	InstagramInsights       *social.InstagramInsightsService
-	Scheduler               *social.Scheduler
-	EmbeddedSignupHandler   *social.EmbeddedSignupHandler
-	TikTokOAuthHandler      *social.TikTokOAuthHandler
-	TikTokWebhookHandler    *social.TikTokWebhookHandler
-	GoogleOAuthHandler      *tenantapi.GoogleOAuthHandler // Google OAuth for tenant authentication
+	InstagramInsights          *social.InstagramInsightsService
+	Scheduler                  *social.Scheduler
+	EmbeddedSignupHandler      *social.EmbeddedSignupHandler
+	TikTokOAuthHandler         *social.TikTokOAuthHandler
+	TikTokWebhookHandler       *social.TikTokWebhookHandler
+	GoogleOAuthHandler         *tenantapi.GoogleOAuthHandler // Google OAuth for tenant authentication
 
 	// Analytics Services
 	AnalyticsService   *analytics.Service
@@ -226,7 +226,7 @@ func (s *Services) initAI() error {
 
 	// Initialize Customer Responder
 	customerResponder := ai.NewCustomerResponder(aiClient, s.DB, s.Logger, memoryService)
-	
+
 	// Set retrieval service if IndustryService is available (will be initialized later)
 	// We'll set it after IndustryService is initialized
 	s.CustomerResponder = customerResponder
@@ -243,13 +243,13 @@ func (s *Services) initAI() error {
 
 func (s *Services) initBotManager() error {
 	botManager := bot.NewTenantBotManager(s.DB, s.Config, s.Logger)
-	
+
 	// Initialize IndustrySelectionHandler if IndustryService is available
 	if s.IndustryService != nil {
 		industryHandler := bot.NewIndustrySelectionHandler(s.DB, s.IndustryService, s.Logger)
 		botManager.IndustrySelectionHandler = industryHandler
 	}
-	
+
 	s.BotManager = botManager
 	return nil
 }
@@ -287,7 +287,6 @@ func (s *Services) initSocial() error {
 		return nil
 	}
 
-
 	// Initialize Respond.io client if API key is configured
 	var respondIOClient *social.RespondIOClient
 	if s.Config.RespondIOAPIKey != "" {
@@ -308,14 +307,14 @@ func (s *Services) initSocial() error {
 
 	// Initialize Message Handler
 	messageHandler := &social.MessageHandler{
-		DB:               s.DB,
-		Logger:           s.Logger,
-		IntentDetector:   s.IntentDetector,
-		Responder:        s.CustomerResponder,
-		SystemToken:      s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp (fallback)
-		RespondIO:        respondIOClient,          // Respond.io client for WhatsApp integration
-		GupshupClient:    gupshupClient,           // Gupshup Partner client for WhatsApp integration
-		EscalationFunc:   escalationFunc,
+		DB:             s.DB,
+		Logger:         s.Logger,
+		IntentDetector: s.IntentDetector,
+		Responder:      s.CustomerResponder,
+		SystemToken:    s.Config.BrancrWABAToken, // System token for provider-owned WhatsApp (fallback)
+		RespondIO:      respondIOClient,          // Respond.io client for WhatsApp integration
+		GupshupClient:  gupshupClient,            // Gupshup Partner client for WhatsApp integration
+		EscalationFunc: escalationFunc,
 	}
 	s.MessageHandler = messageHandler
 
@@ -330,6 +329,21 @@ func (s *Services) initSocial() error {
 			// Create a wrapper that implements BotGetter interface
 			messageHandler.BotGetter = &botGetterWrapper{manager: s.BotManager}
 		}
+	}
+
+	// Link MessageHandler to WorkflowOrchestrator's EscalationWorkflow for sending escalation replies
+	if s.WorkflowOrchestrator != nil && s.WorkflowOrchestrator.EscalationWorkflow != nil {
+		s.WorkflowOrchestrator.EscalationWorkflow.MessageSender = messageHandler
+	}
+
+	// Link MessageHandler to WorkflowOrchestrator's DashboardWorkflow for sending dashboard replies
+	if s.WorkflowOrchestrator != nil && s.WorkflowOrchestrator.DashboardWorkflow != nil {
+		s.WorkflowOrchestrator.DashboardWorkflow.MessageSender = messageHandler
+	}
+
+	// Link MessageHandler to WorkflowOrchestrator's ConversationWorkflow for sending conversation replies
+	if s.WorkflowOrchestrator != nil && s.WorkflowOrchestrator.ConversationWorkflow != nil {
+		s.WorkflowOrchestrator.ConversationWorkflow.MessageSender = messageHandler
 	}
 
 	// Initialize Meta Webhook Handler
@@ -509,7 +523,7 @@ func (s *Services) initIndustry() {
 	// Initialize Industry Service
 	s.IndustryService = industry.NewService(s.DB, s.Logger)
 	s.Logger.Info("✅ Industry service initialized")
-	
+
 	// Link retrieval service to CustomerResponder if available
 	if s.CustomerResponder != nil && s.IndustryService != nil && s.IndustryService.Retrieval != nil {
 		// Create adapter to match interface
@@ -518,17 +532,17 @@ func (s *Services) initIndustry() {
 		}
 		s.CustomerResponder.RetrievalService = retrievalAdapter
 		s.Logger.Info("✅ Industry retrieval service linked to CustomerResponder")
-		
+
 		// Initialize Sales Conversation Manager
 		salesConvManager := ai.NewSalesConversationManager(s.DB, s.IndustryService, s.Logger)
 		s.CustomerResponder.SalesConversationManager = salesConvManager
 		s.Logger.Info("✅ Sales conversation manager initialized")
-		
+
 		// Initialize Payment Instruction Generator
 		paymentGen := ai.NewPaymentInstructionGenerator(s.DB, s.Logger)
 		s.CustomerResponder.PaymentInstructionGen = paymentGen
 		s.Logger.Info("✅ Payment instruction generator initialized")
-		
+
 		// Initialize Order Service
 		orderService := order.NewOrderService(s.DB, s.Logger)
 		orderServiceAdapter := &orderServiceAdapter{
@@ -536,19 +550,19 @@ func (s *Services) initIndustry() {
 		}
 		s.CustomerResponder.OrderService = orderServiceAdapter
 		s.Logger.Info("✅ Order service initialized and linked to CustomerResponder")
-		
+
 		// Initialize Customer Info Extractor
 		customerExtractor := ai.NewCustomerInfoExtractor(s.DB, s.Logger)
 		s.CustomerResponder.CustomerExtractor = customerExtractor
 		s.Logger.Info("✅ Customer info extractor initialized")
-		
+
 		// Link IndustryService to CustomerResponder
 		industryAdapter := &industryServiceAdapter{
 			industry: s.IndustryService,
 		}
 		s.CustomerResponder.IndustryService = industryAdapter
 		s.Logger.Info("✅ Industry service linked to CustomerResponder")
-		
+
 		// Link TenantBotManager for order notifications
 		if s.BotManager != nil {
 			tenantNotifierAdapter := &tenantNotifierAdapter{
@@ -648,6 +662,8 @@ type workerPoolAdapter struct {
 	pool *worker.Pool
 }
 
-func (a *workerPoolAdapter) Submit(job interface{ Execute(ctx context.Context) error }) error {
+func (a *workerPoolAdapter) Submit(job interface {
+	Execute(ctx context.Context) error
+}) error {
 	return a.pool.Submit(worker.JobFunc(job.Execute))
 }

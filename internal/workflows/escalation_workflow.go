@@ -12,12 +12,17 @@ import (
 	"gorm.io/gorm"
 )
 
+// MessageSender interface for sending replies to customers
+type MessageSender interface {
+	SendWhatsAppReply(ctx context.Context, tenantID uint, customerPlatformID, message string) error
+}
+
 // EscalationWorkflow manages escalated customer messages requiring tenant attention
 type EscalationWorkflow struct {
 	DB            *gorm.DB
 	Logger        *zap.Logger
-	BotManager    interface{} // TenantBotManager interface
-	MessageSender interface{} // Interface for sending messages to customers
+	BotManager    interface{}   // TenantBotManager interface
+	MessageSender MessageSender // Interface for sending messages to customers
 }
 
 // EscalationPriority determines the urgency of an escalation
@@ -331,6 +336,11 @@ func (w *EscalationWorkflow) resolveEscalation(ctx context.Context, interaction 
 
 // sendReplyToCustomer sends the reply to customer and updates interaction
 func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interaction *storage.Interaction, reply string) error {
+	// Validate reply is not empty
+	if reply == "" {
+		return fmt.Errorf("cannot send empty reply")
+	}
+
 	// Load conversation for thread ID
 	var conversation storage.Conversation
 	if interaction.ConversationID > 0 {
@@ -343,8 +353,19 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		return fmt.Errorf("customer not found: %w", err)
 	}
 
-	// TODO: Actually send reply via social media API
-	// This would call: messageSender.SendReply(ctx, interaction.TenantID, interaction.Platform, threadID, customer.PlatformID, reply)
+	// Actually send reply via social media API
+	if w.MessageSender != nil && interaction.Platform == "whatsapp" {
+		if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, reply); err != nil {
+			w.Logger.Error("failed to send reply to customer",
+				zap.Error(err),
+				zap.Uint("interaction_id", interaction.ID),
+				zap.String("customer_platform_id", customer.PlatformID))
+			return fmt.Errorf("failed to send reply: %w", err)
+		}
+	} else {
+		w.Logger.Warn("message sender not configured or unsupported platform",
+			zap.String("platform", interaction.Platform))
+	}
 
 	// Update interaction
 	interaction.ResponseType = "manual"
@@ -502,7 +523,7 @@ func (w *EscalationWorkflow) GetEscalationStats(ctx context.Context, tenantID ui
 	var avgResponseTime string = "N/A"
 	var interactions []storage.Interaction
 	avgQuery := w.DB.Model(&storage.Interaction{}).
-		Where("tenant_id = ? AND response_type = ? AND response_status IN ? AND escalated_at IS NOT NULL", 
+		Where("tenant_id = ? AND response_type = ? AND response_status IN ? AND escalated_at IS NOT NULL",
 			tenantID, "escalated", []string{"sent", "resolved"})
 	if !startDate.IsZero() && !endDate.IsZero() {
 		avgQuery = avgQuery.Where("created_at BETWEEN ? AND ?", startDate, endDate)
@@ -514,7 +535,7 @@ func (w *EscalationWorkflow) GetEscalationStats(ctx context.Context, tenantID ui
 			if inter.EscalatedAt != nil {
 				// Find when response was sent (check for outgoing interaction)
 				var outgoing storage.Interaction
-				if err := w.DB.Where("conversation_id = ? AND direction = ? AND created_at > ?", 
+				if err := w.DB.Where("conversation_id = ? AND direction = ? AND created_at > ?",
 					inter.ConversationID, "outgoing", *inter.EscalatedAt).
 					Order("created_at ASC").
 					First(&outgoing).Error; err == nil {

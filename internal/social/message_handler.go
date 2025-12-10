@@ -2411,3 +2411,14 @@ func (h *MessageHandler) findMentionedPost(ctx context.Context, tenantID uint, m
 
 	return ""
 }
+
+// SendWhatsAppReply sends a WhatsApp reply to a customer (used by workflows)
+func (h *MessageHandler) SendWhatsAppReply(ctx context.Context, tenantID uint, customerPlatformID, message string) error {
+	// Load social account for tenant
+	var acc storage.SocialAccount
+	if err := h.DB.Where("tenant_id = ? AND channel = ?", tenantID, "whatsapp").First(&acc).Error; err != nil {
+		return fmt.Errorf("whatsapp account not found for tenant: %w", err)
+	}
+
+	return h.sendWhatsAppReply(ctx, &acc, customerPlatformID, message)
+}

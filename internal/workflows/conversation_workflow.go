@@ -19,6 +19,7 @@ type ConversationWorkflow struct {
 	AIClient          *ai.AIClient
 	Memory            *ai.MemoryService
 	EscalationHandler interface{} // EscalationHandler interface
+	MessageSender     MessageSender // Interface for sending messages to customers
 }
 
 // ConversationContext holds the full context of an active conversation
@@ -379,7 +380,23 @@ func (w *ConversationWorkflow) HandleTenantReply(ctx context.Context, tenantID u
 		w.Memory.SaveCustomerConversation(ctx, tenantID, interaction.CustomerID, interaction.Content, reply)
 	}
 
-	// TODO: Actually send reply to customer via social media API
+	// Actually send reply to customer via social media API
+	if w.MessageSender != nil && conversation.Platform == "whatsapp" {
+		// Load customer for platform ID
+		var customer storage.Customer
+		if err := w.DB.First(&customer, interaction.CustomerID).Error; err != nil {
+			w.Logger.Error("failed to load customer for sending reply", zap.Error(err))
+			return fmt.Errorf("customer not found: %w", err)
+		}
+
+		if err := w.MessageSender.SendWhatsAppReply(ctx, tenantID, customer.PlatformID, reply); err != nil {
+			w.Logger.Error("failed to send reply to customer",
+				zap.Error(err),
+				zap.Uint("conversation_id", conversationID),
+				zap.String("customer_platform_id", customer.PlatformID))
+			return fmt.Errorf("failed to send reply: %w", err)
+		}
+	}
 
 	w.Logger.Info("tenant reply sent",
 		zap.Uint("tenant_id", tenantID),
