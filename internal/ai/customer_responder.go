@@ -227,6 +227,14 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	base := BuildCustomerBaseMessages(persona, biz)
 	messages := append([]Message{}, base...)
 
+	// Guardrails: stay on the tenant's business. If platform is not Telegram, refuse off-topic or random questions and steer back to offerings. Telegram is treated as tenant/owner so allow broader help.
+	isTelegram := strings.EqualFold(platform, "telegram")
+	if !isTelegram {
+		messages = append(messages, Message{Role: "system", Content: "Stay strictly on {{brand_name}}'s business, products, services, orders, support, and payment topics. If asked unrelated/general knowledge or random chat, decline with a light, friendly tease and steer them back to the business. If they request a full DIY/how-to (e.g., consulting advice for free), do NOT provide the full solution—give a playful hint and persuade them to book or buy so you can handle it for them. Do not answer off-brand or unrelated questions."})
+	} else {
+		messages = append(messages, Message{Role: "system", Content: "You're likely chatting with the business owner on Telegram. You may answer broader questions, but still prioritize {{brand_name}}'s business context."})
+	}
+
 	// Add conversation history - already filtered above
 	// Only include actual customer and AI messages, not system instructions
 	messages = append(messages, conversationHistory...)
