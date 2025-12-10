@@ -270,6 +270,11 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		h.DB.Save(&conversation)
 	}
 
+	// Create a dashboard notification for the new incoming message
+	if interaction.ID > 0 && conversationID > 0 {
+		h.createNotificationForIncomingMessage(msg, customer, conversationID, interaction.ID)
+	}
+
 	// Step 3.5: Check if this is a follow-up to an escalated conversation (aftermath tracking)
 	// If customer responds within 24 hours of an escalated reply, notify tenant
 	h.checkAndNotifyEscalationAftermath(ctx, msg, customer, interaction.ID, conversationID)
@@ -491,6 +496,41 @@ func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, 
 
 	// TODO: Send notification to tenant via EscalationHandler about this follow-up
 	// This will be handled after the main reply logic decides what to do
+}
+
+// createNotificationForIncomingMessage stores a dashboard notification for a new incoming message
+func (h *MessageHandler) createNotificationForIncomingMessage(msg IncomingMessage, customer *storage.Customer, conversationID, interactionID uint) {
+	name := customer.DisplayName
+	if name == "" {
+		name = customer.Username
+	}
+	if name == "" {
+		name = "Customer"
+	}
+
+	body := msg.Content
+	if len(body) > 200 {
+		body = body[:200] + "..."
+	}
+
+	notif := storage.Notification{
+		TenantID:       msg.TenantID,
+		ConversationID: conversationID,
+		InteractionID:  interactionID,
+		Type:           "message",
+		Title:          fmt.Sprintf("New message from %s", name),
+		Body:           body,
+		Severity:       "info",
+		Metadata: h.metadataToJSON(map[string]interface{}{
+			"platform":     msg.Platform,
+			"message_type": msg.MessageType,
+			"customer_id":  customer.ID,
+		}),
+	}
+
+	if err := h.DB.Create(&notif).Error; err != nil {
+		h.Logger.Warn("failed to create notification", zap.Error(err))
+	}
 }
 
 // trackCustomer ensures customer exists in database

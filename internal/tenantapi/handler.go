@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -276,10 +277,16 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Put("/tenant/templates/{id}", h.updateTemplate)
 			r.Delete("/tenant/templates/{id}", h.deleteTemplate)
 
+			// Notifications API
+			r.Get("/tenant/notifications", h.listNotifications)
+			r.Post("/tenant/notifications/{id}/read", h.markNotificationRead)
+			r.Post("/tenant/notifications/read-all", h.markAllNotificationsRead)
+
 			// Conversations API
 			r.Get("/tenant/conversations", h.listConversations)
 			r.Get("/tenant/conversations/{id}", h.getConversation)
 			r.Post("/tenant/conversations/{id}/replies", h.sendReply)
+			r.Post("/tenant/conversations/{id}/read", h.markConversationRead)
 			r.Put("/tenant/conversations/{id}", h.updateConversation)
 			r.Post("/tenant/conversations/{id}/suggest-replies", h.suggestReplies)
 
@@ -4754,6 +4761,182 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"conversations": resp,
 	})
+}
+
+// markConversationRead marks a conversation as read for the current tenant
+func (h *Handler) markConversationRead(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conversationID := chi.URLParam(r, "id")
+	if conversationID == "" {
+		http.Error(w, "conversation id required", http.StatusBadRequest)
+		return
+	}
+
+	userID := claims.TenantID
+	if userID == 0 {
+		http.Error(w, "user context required", http.StatusUnauthorized)
+		return
+	}
+
+	var conv storage.Conversation
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).First(&conv).Error; err != nil {
+		http.Error(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+
+	now := time.Now()
+	var state storage.ConversationUserState
+	err := h.DB.Where("tenant_id = ? AND conversation_id = ? AND user_id = ?", claims.TenantID, conv.ID, userID).
+		First(&state).Error
+	if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+		state = storage.ConversationUserState{
+			TenantID:       claims.TenantID,
+			ConversationID: conv.ID,
+			UserID:         userID,
+			LastReadAt:     &now,
+			UnreadCount:    0,
+		}
+		h.DB.Create(&state)
+	} else if err == nil {
+		h.DB.Model(&state).Updates(map[string]interface{}{
+			"last_read_at": &now,
+			"unread_count": 0,
+		})
+	} else {
+		h.Logger.Warn("mark read: failed to load state", zap.Error(err))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// listNotifications returns tenant notifications with optional unread filter
+func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	status := strings.ToLower(r.URL.Query().Get("status"))
+	onlyUnread := status == "" || status == "unread"
+	nType := r.URL.Query().Get("type")
+
+	limit := 20
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+	if onlyUnread {
+		query = query.Where("read_at IS NULL")
+	}
+	if nType != "" {
+		query = query.Where("type = ?", nType)
+	}
+
+	var total int64
+	query.Model(&storage.Notification{}).Count(&total)
+
+	var notifs []storage.Notification
+	if err := query.Order("created_at DESC").Limit(limit).Offset(offset).Find(&notifs).Error; err != nil {
+		h.Logger.Error("fetch notifications", zap.Error(err))
+		http.Error(w, "could not fetch notifications", http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]map[string]any, 0, len(notifs))
+	for _, n := range notifs {
+		var readAt *string
+		if n.ReadAt != nil {
+			r := n.ReadAt.Format(time.RFC3339)
+			readAt = &r
+		}
+		resp = append(resp, map[string]any{
+			"id":              n.ID,
+			"type":            n.Type,
+			"title":           n.Title,
+			"body":            n.Body,
+			"severity":        n.Severity,
+			"conversation_id": n.ConversationID,
+			"interaction_id":  n.InteractionID,
+			"read_at":         readAt,
+			"created_at":      n.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"notifications": resp,
+		"total":         total,
+		"limit":         limit,
+		"offset":        offset,
+	})
+}
+
+// markNotificationRead marks a single notification as read
+func (h *Handler) markNotificationRead(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid notification id", http.StatusBadRequest)
+		return
+	}
+
+	var notif storage.Notification
+	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, uint(id)).First(&notif).Error; err != nil {
+		http.Error(w, "notification not found", http.StatusNotFound)
+		return
+	}
+
+	now := time.Now()
+	if err := h.DB.Model(&notif).Update("read_at", now).Error; err != nil {
+		h.Logger.Warn("failed to mark notification read", zap.Error(err))
+		http.Error(w, "could not update notification", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+// markAllNotificationsRead marks all unread notifications as read
+func (h *Handler) markAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	now := time.Now()
+	if err := h.DB.Model(&storage.Notification{}).
+		Where("tenant_id = ? AND read_at IS NULL", claims.TenantID).
+		Update("read_at", now).Error; err != nil {
+		h.Logger.Warn("failed to mark all notifications read", zap.Error(err))
+		http.Error(w, "could not update notifications", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
 func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {

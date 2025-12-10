@@ -263,6 +263,20 @@ type ConversationUserState struct {
 	UnreadCount    int `gorm:"default:0"`
 }
 
+// Notification tracks dashboard notifications for a tenant
+type Notification struct {
+	gorm.Model
+	TenantID       uint   `gorm:"index"`
+	ConversationID uint   `gorm:"index"`
+	InteractionID  uint   `gorm:"index"`
+	Type           string `gorm:"size:50;index"` // message, escalation, payment, system
+	Title          string `gorm:"size:255"`
+	Body           string `gorm:"type:text"`
+	Severity       string `gorm:"size:20"` // info, warning, critical
+	ReadAt         *time.Time
+	Metadata       string `gorm:"type:jsonb"`
+}
+
 // NegotiationHistory tracks negotiation attempts
 type NegotiationHistory struct {
 	gorm.Model
