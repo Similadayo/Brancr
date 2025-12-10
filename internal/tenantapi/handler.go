@@ -4804,6 +4804,11 @@ func (h *Handler) markConversationRead(w http.ResponseWriter, r *http.Request) {
 			UnreadCount:    0,
 		}
 		if err := h.DB.Create(&state).Error; err != nil {
+			if isUndefinedTableError(err) {
+				h.Logger.Warn("mark read: conversation_user_states table missing (create)", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint("conversation_id", conv.ID), zap.Uint("user_id", userID))
+				writeJSON(w, http.StatusOK, map[string]any{"success": true, "skipped": true})
+				return
+			}
 			h.Logger.Warn("mark read: failed to create state", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint("conversation_id", conv.ID), zap.Uint("user_id", userID))
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -4813,6 +4818,11 @@ func (h *Handler) markConversationRead(w http.ResponseWriter, r *http.Request) {
 			"last_read_at": &now,
 			"unread_count": 0,
 		}).Error; err != nil {
+			if isUndefinedTableError(err) {
+				h.Logger.Warn("mark read: conversation_user_states table missing (update)", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint("conversation_id", conv.ID), zap.Uint("user_id", userID))
+				writeJSON(w, http.StatusOK, map[string]any{"success": true, "skipped": true})
+				return
+			}
 			h.Logger.Warn("mark read: failed to update state", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint("conversation_id", conv.ID), zap.Uint("user_id", userID))
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -4824,6 +4834,14 @@ func (h *Handler) markConversationRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+}
+
+func isUndefinedTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "undefined table") || strings.Contains(msg, "does not exist") || strings.Contains(msg, "conversation_user_states")
 }
 
 // listNotifications returns tenant notifications with optional unread filter
