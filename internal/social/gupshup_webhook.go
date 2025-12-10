@@ -838,7 +838,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			}
 		}
 	}
-	
+
 	// Extract text content - try multiple formats based on actual Gupshup payload structure
 	var content string
 	
@@ -851,9 +851,9 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	
 	// Method 1: payload.payload.text (nested payload structure - from logs)
 	if content == "" {
-		if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
-			if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
-				content = textStr
+	if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+		if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
+			content = textStr
 			}
 		}
 	}
@@ -1187,7 +1187,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			}
 		}
 	}
-	
+
 	// Use existing MessageHandler to process message
 	// This will automatically:
 	// 1. Find or create customer

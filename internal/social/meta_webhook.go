@@ -400,7 +400,7 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				// Skip messages with no content and no media (reactions, stickers without attachments)
 				if len(msg.Message.Reaction) > 0 {
 					h.Logger.Info("⏭️ Skipping Instagram reaction message",
-						zap.Uint("tenant_id", tenantID),
+					zap.Uint("tenant_id", tenantID),
 						zap.String("message_id", msg.Message.MID))
 				}
 				continue
@@ -460,7 +460,7 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				// Skip messages with no content and no media (reactions, stickers without attachments)
 				if len(change.Value.Message.Reaction) > 0 {
 					h.Logger.Info("⏭️ Skipping Instagram reaction message (changes format)",
-						zap.Uint("tenant_id", tenantID),
+					zap.Uint("tenant_id", tenantID),
 						zap.String("message_id", change.Value.Message.MID))
 				}
 				continue
@@ -632,19 +632,19 @@ func (h *MetaWebhookHandler) extractInstagramMessageContent(msg struct {
 
 			// If no text content, create a placeholder
 			if textContent == "" {
-				switch strings.ToLower(attachmentType) {
-				case "image":
+			switch strings.ToLower(attachmentType) {
+			case "image":
 					textContent = "[Image]"
-				case "video":
+			case "video":
 					textContent = "[Video]"
-				case "audio":
+			case "audio":
 					textContent = "[Audio]"
-				case "file":
+			case "file":
 					textContent = "[File]"
-				default:
+			default:
 					textContent = "[Media]"
-				}
 			}
+		}
 		}
 	}
 
