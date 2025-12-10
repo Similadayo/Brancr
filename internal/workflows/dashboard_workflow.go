@@ -360,7 +360,7 @@ func (w *DashboardWorkflow) SendReplyFromDashboard(ctx context.Context, tenantID
 	w.DB.Save(&conversation)
 
 	// Actually send reply via social media API
-	if w.MessageSender != nil && conversation.Platform == "whatsapp" {
+	if w.MessageSender != nil {
 		// Load customer for platform ID
 		var customer storage.Customer
 		if err := w.DB.First(&customer, conversation.CustomerID).Error; err != nil {
@@ -368,12 +368,33 @@ func (w *DashboardWorkflow) SendReplyFromDashboard(ctx context.Context, tenantID
 			return fmt.Errorf("customer not found: %w", err)
 		}
 
-		if err := w.MessageSender.SendWhatsAppReply(context.Background(), tenantID, customer.PlatformID, reply); err != nil {
-			w.Logger.Error("failed to send reply to customer",
-				zap.Error(err),
-				zap.Uint("conversation_id", conversationID),
-				zap.String("customer_platform_id", customer.PlatformID))
-			return fmt.Errorf("failed to send reply: %w", err)
+		threadID := conversation.PlatformThreadID
+		if threadID == "" {
+			threadID = customer.PlatformID
+		}
+
+		switch conversation.Platform {
+		case "whatsapp":
+			if err := w.MessageSender.SendWhatsAppReply(context.Background(), tenantID, customer.PlatformID, reply); err != nil {
+				w.Logger.Error("failed to send reply to customer",
+					zap.Error(err),
+					zap.Uint("conversation_id", conversationID),
+					zap.String("customer_platform_id", customer.PlatformID))
+				return fmt.Errorf("failed to send reply: %w", err)
+			}
+		case "instagram", "facebook":
+			if err := w.MessageSender.SendReply(context.Background(), tenantID, conversation.Platform, threadID, customer.PlatformID, reply); err != nil {
+				w.Logger.Error("failed to send reply to customer",
+					zap.Error(err),
+					zap.Uint("conversation_id", conversationID),
+					zap.String("customer_platform_id", customer.PlatformID),
+					zap.String("thread_id", threadID))
+				return fmt.Errorf("failed to send reply: %w", err)
+			}
+		default:
+			w.Logger.Warn("reply sending not implemented for platform",
+				zap.String("platform", conversation.Platform),
+				zap.Uint("conversation_id", conversationID))
 		}
 	}
 

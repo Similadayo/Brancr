@@ -1,3 +1,6 @@
+//go:build cgo
+// +build cgo
+
 package quota
 
 import (
@@ -61,7 +64,7 @@ func TestQuotaService_Integration(t *testing.T) {
 
 	// Test quota reset (via checkAndResetQuota which is called internally)
 	quota.LastResetAt = time.Now().AddDate(0, -1, 0) // 1 month ago
-	quota.AICallsUsed = quota.AICallsLimit // Set usage to limit
+	quota.AICallsUsed = quota.AICallsLimit           // Set usage to limit
 	if err := db.Save(quota).Error; err != nil {
 		t.Fatalf("failed to update quota: %v", err)
 	}
@@ -121,4 +124,3 @@ func TestQuotaService_PostQuotaIntegration(t *testing.T) {
 		t.Errorf("expected 5 failed quota checks, got %d", errorCount)
 	}
 }
-

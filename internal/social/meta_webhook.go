@@ -400,7 +400,7 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				// Skip messages with no content and no media (reactions, stickers without attachments)
 				if len(msg.Message.Reaction) > 0 {
 					h.Logger.Info("⏭️ Skipping Instagram reaction message",
-					zap.Uint("tenant_id", tenantID),
+						zap.Uint("tenant_id", tenantID),
 						zap.String("message_id", msg.Message.MID))
 				}
 				continue
@@ -460,7 +460,7 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				// Skip messages with no content and no media (reactions, stickers without attachments)
 				if len(change.Value.Message.Reaction) > 0 {
 					h.Logger.Info("⏭️ Skipping Instagram reaction message (changes format)",
-					zap.Uint("tenant_id", tenantID),
+						zap.Uint("tenant_id", tenantID),
 						zap.String("message_id", change.Value.Message.MID))
 				}
 				continue
@@ -590,9 +590,26 @@ func (h *MetaWebhookHandler) fetchInstagramUserProfile(ctx context.Context, send
 
 // InstagramMediaInfo contains extracted media information from Instagram attachments
 type InstagramMediaInfo struct {
-	URL      string
-	Type     string // image, video, audio, file
-	Payload  map[string]interface{} // Full attachment payload for processing
+	URL     string
+	Type    string                 // image, video, audio, document
+	Payload map[string]interface{} // Full attachment payload for processing
+}
+
+// normalizeMediaType maps Meta attachment types to internal processing buckets
+func normalizeMediaType(mediaType string) string {
+	typeLower := strings.ToLower(strings.TrimSpace(mediaType))
+	switch typeLower {
+	case "file", "document", "application", "pdf":
+		return "document"
+	case "voice", "voice_message", "voicenote", "audio":
+		return "audio"
+	case "photo", "picture", "sticker", "image":
+		return "image"
+	case "video":
+		return "video"
+	default:
+		return typeLower
+	}
 }
 
 // extractInstagramMessageContent extracts text content and media information from an Instagram message
@@ -613,7 +630,7 @@ func (h *MetaWebhookHandler) extractInstagramMessageContent(msg struct {
 		// Instagram attachments structure: {"type": "image", "payload": {"url": "..."}}
 		attachmentType, _ := msg.Attachments["type"].(string)
 		payload, _ := msg.Attachments["payload"].(map[string]interface{})
-		
+
 		// Try to get URL from payload
 		var mediaURL string
 		if payload != nil {
@@ -632,19 +649,19 @@ func (h *MetaWebhookHandler) extractInstagramMessageContent(msg struct {
 
 			// If no text content, create a placeholder
 			if textContent == "" {
-			switch strings.ToLower(attachmentType) {
-			case "image":
+				switch strings.ToLower(attachmentType) {
+				case "image":
 					textContent = "[Image]"
-			case "video":
+				case "video":
 					textContent = "[Video]"
-			case "audio":
+				case "audio":
 					textContent = "[Audio]"
-			case "file":
+				case "file":
 					textContent = "[File]"
-			default:
+				default:
 					textContent = "[Media]"
+				}
 			}
-		}
 		}
 	}
 
@@ -750,6 +767,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		// Determine message type based on media
 		messageType := "text"
 		if mediaInfo != nil {
+			mediaInfo.Type = normalizeMediaType(mediaInfo.Type)
 			messageType = mediaInfo.Type
 			if messageType == "" {
 				messageType = "image" // Default for media
@@ -759,7 +777,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		// Use senderID as ThreadID to ensure all messages from same customer are grouped
 		// For Instagram, ThreadID should be the customer's IGSID (senderID)
 		metadata := map[string]interface{}{
-			"entry_id":         entryID,
+			"entry_id":            entryID,
 			"original_message_id": messageID,
 		}
 
@@ -933,6 +951,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		// Determine message type based on media
 		messageType := "text"
 		if mediaInfo != nil {
+			mediaInfo.Type = normalizeMediaType(mediaInfo.Type)
 			messageType = mediaInfo.Type
 			if messageType == "" {
 				messageType = "image" // Default for media
@@ -942,7 +961,7 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 		// Still process the message even without account info
 		// The customer name might be available from webhook payload or can be set manually
 		metadata := map[string]interface{}{
-			"entry_id":         entryID,
+			"entry_id":            entryID,
 			"original_message_id": messageID,
 		}
 
@@ -1143,12 +1162,12 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 			// Extract media information from Facebook message
 			textContent := strings.TrimSpace(msg.Message.Text)
 			var mediaInfo *InstagramMediaInfo // Reuse same struct for Facebook
-			
+
 			if len(msg.Message.Attachments) > 0 {
 				// Facebook attachments structure similar to Instagram
 				attachmentType, _ := msg.Message.Attachments["type"].(string)
 				payload, _ := msg.Message.Attachments["payload"].(map[string]interface{})
-				
+
 				var mediaURL string
 				if payload != nil {
 					if url, ok := payload["url"].(string); ok && url != "" {
@@ -1182,6 +1201,7 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 
 			messageType := "text"
 			if mediaInfo != nil {
+				mediaInfo.Type = normalizeMediaType(mediaInfo.Type)
 				messageType = mediaInfo.Type
 				if messageType == "" {
 					messageType = "image"

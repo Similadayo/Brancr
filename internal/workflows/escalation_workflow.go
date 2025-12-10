@@ -15,6 +15,7 @@ import (
 // MessageSender interface for sending replies to customers
 type MessageSender interface {
 	SendWhatsAppReply(ctx context.Context, tenantID uint, customerPlatformID, message string) error
+	SendReply(ctx context.Context, tenantID uint, platform, threadID, customerPlatformID, message string) error
 }
 
 // EscalationWorkflow manages escalated customer messages requiring tenant attention
@@ -380,19 +381,44 @@ If you have any questions, feel free to reach out.`,
 		return fmt.Errorf("customer not found: %w", err)
 	}
 
+	// Use conversation thread ID if available (needed for IG/FB replies)
+	threadID := customer.PlatformID
+	if interaction.ConversationID > 0 {
+		var conversation storage.Conversation
+		if err := w.DB.First(&conversation, interaction.ConversationID).Error; err == nil {
+			if conversation.PlatformThreadID != "" {
+				threadID = conversation.PlatformThreadID
+			}
+		}
+	}
+
 	// Send receipt via MessageSender
-	if w.MessageSender != nil && interaction.Platform == "whatsapp" {
-		if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, receiptMessage); err != nil {
-			return fmt.Errorf("failed to send receipt: %w", err)
+	if w.MessageSender != nil {
+		switch interaction.Platform {
+		case "whatsapp":
+			if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, receiptMessage); err != nil {
+				return fmt.Errorf("failed to send receipt: %w", err)
+			}
+		case "instagram", "facebook":
+			if err := w.MessageSender.SendReply(ctx, interaction.TenantID, interaction.Platform, threadID, customer.PlatformID, receiptMessage); err != nil {
+				return fmt.Errorf("failed to send receipt: %w", err)
+			}
+		default:
+			w.Logger.Warn("receipt sending not implemented for platform",
+				zap.String("platform", interaction.Platform),
+				zap.Uint("interaction_id", interaction.ID))
 		}
 
-		// Update payment with receipt info
-		payment.ReceiptID = fmt.Sprintf("RCP-%s", payment.PaymentReference)
-		w.DB.Save(&payment)
+		// Update payment with receipt info for supported platforms
+		if interaction.Platform == "whatsapp" || interaction.Platform == "instagram" || interaction.Platform == "facebook" {
+			payment.ReceiptID = fmt.Sprintf("RCP-%s", payment.PaymentReference)
+			w.DB.Save(&payment)
 
-		w.Logger.Info("payment receipt sent",
-			zap.Uint("payment_id", payment.ID),
-			zap.String("receipt_id", payment.ReceiptID))
+			w.Logger.Info("payment receipt sent",
+				zap.Uint("payment_id", payment.ID),
+				zap.String("receipt_id", payment.ReceiptID),
+				zap.String("platform", interaction.Platform))
+		}
 	}
 
 	return nil
@@ -417,17 +443,38 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		return fmt.Errorf("customer not found: %w", err)
 	}
 
+	// Prefer conversation thread ID; fallback to customer platform ID
+	threadID := conversation.PlatformThreadID
+	if threadID == "" {
+		threadID = customer.PlatformID
+	}
+
 	// Actually send reply via social media API
-	if w.MessageSender != nil && interaction.Platform == "whatsapp" {
-		if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, reply); err != nil {
-			w.Logger.Error("failed to send reply to customer",
-				zap.Error(err),
-				zap.Uint("interaction_id", interaction.ID),
-				zap.String("customer_platform_id", customer.PlatformID))
-			return fmt.Errorf("failed to send reply: %w", err)
+	if w.MessageSender != nil {
+		switch interaction.Platform {
+		case "whatsapp":
+			if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, reply); err != nil {
+				w.Logger.Error("failed to send reply to customer",
+					zap.Error(err),
+					zap.Uint("interaction_id", interaction.ID),
+					zap.String("customer_platform_id", customer.PlatformID))
+				return fmt.Errorf("failed to send reply: %w", err)
+			}
+		case "instagram", "facebook":
+			if err := w.MessageSender.SendReply(ctx, interaction.TenantID, interaction.Platform, threadID, customer.PlatformID, reply); err != nil {
+				w.Logger.Error("failed to send reply to customer",
+					zap.Error(err),
+					zap.Uint("interaction_id", interaction.ID),
+					zap.String("customer_platform_id", customer.PlatformID),
+					zap.String("thread_id", threadID))
+				return fmt.Errorf("failed to send reply: %w", err)
+			}
+		default:
+			w.Logger.Warn("message sender not configured or unsupported platform",
+				zap.String("platform", interaction.Platform))
 		}
 	} else {
-		w.Logger.Warn("message sender not configured or unsupported platform",
+		w.Logger.Warn("message sender not configured",
 			zap.String("platform", interaction.Platform))
 	}
 
