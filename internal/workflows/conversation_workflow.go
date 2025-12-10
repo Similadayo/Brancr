@@ -18,7 +18,7 @@ type ConversationWorkflow struct {
 	BotManager        interface{} // TenantBotManager interface
 	AIClient          *ai.AIClient
 	Memory            *ai.MemoryService
-	EscalationHandler interface{} // EscalationHandler interface
+	EscalationHandler interface{}   // EscalationHandler interface
 	MessageSender     MessageSender // Interface for sending messages to customers
 }
 

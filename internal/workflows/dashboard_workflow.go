@@ -21,29 +21,29 @@ type DashboardWorkflow struct {
 
 // ConversationDashboardData represents data structure for conversation dashboard
 type ConversationDashboardData struct {
-	Conversations    []ConversationListItem
-	TotalCount       int64
-	ActiveCount      int64
-	UnreadCount      int64
-	EscalatedCount   int64
-	Filters          ConversationFilters
-	Pagination       PaginationInfo
+	Conversations  []ConversationListItem
+	TotalCount     int64
+	ActiveCount    int64
+	UnreadCount    int64
+	EscalatedCount int64
+	Filters        ConversationFilters
+	Pagination     PaginationInfo
 }
 
 type ConversationListItem struct {
-	ID              uint
-	CustomerName    string
-	CustomerAvatar  string
-	Platform        string
-	PlatformIcon    string
-	LastMessage     string
-	LastMessageAt   time.Time
-	Status          string
-	UnreadCount     int
-	Priority        string
-	Intent          string
-	Tags            []string
-	Preview         string
+	ID             uint
+	CustomerName   string
+	CustomerAvatar string
+	Platform       string
+	PlatformIcon   string
+	LastMessage    string
+	LastMessageAt  time.Time
+	Status         string
+	UnreadCount    int
+	Priority       string
+	Intent         string
+	Tags           []string
+	Preview        string
 }
 
 type ConversationFilters struct {
@@ -158,7 +158,7 @@ func (w *DashboardWorkflow) convertConversationToListItem(ctx context.Context, t
 	// Get last message
 	var lastInteraction storage.Interaction
 	w.DB.Where("conversation_id = ?", conv.ID).Order("created_at DESC").First(&lastInteraction)
-	
+
 	lastMessage := ""
 	lastMessageAt := conv.LastMessageAt
 	if lastInteraction.ID > 0 {
@@ -213,26 +213,26 @@ func (w *DashboardWorkflow) convertConversationToListItem(ctx context.Context, t
 
 // GetConversationDetail retrieves full conversation details for dashboard
 type ConversationDetailData struct {
-	Conversation     *storage.Conversation
-	Customer         *storage.Customer
-	Interactions     []InteractionDetail
-	SuggestedReply   string
-	CanReply         bool
-	Status           string
-	Priority         string
+	Conversation   *storage.Conversation
+	Customer       *storage.Customer
+	Interactions   []InteractionDetail
+	SuggestedReply string
+	CanReply       bool
+	Status         string
+	Priority       string
 }
 
 type InteractionDetail struct {
-	ID              uint
-	Direction       string // incoming, outgoing
-	Content         string
-	MessageType     string
-	CreatedAt       time.Time
-	ResponseStatus  string
-	DetectedIntent  string
-	DetectedTone    string
-	Confidence      float64
-	IsEscalated     bool
+	ID             uint
+	Direction      string // incoming, outgoing
+	Content        string
+	MessageType    string
+	CreatedAt      time.Time
+	ResponseStatus string
+	DetectedIntent string
+	DetectedTone   string
+	Confidence     float64
+	IsEscalated    bool
 }
 
 // GetConversationDetail loads full conversation with all interactions
@@ -387,13 +387,13 @@ func (w *DashboardWorkflow) SendReplyFromDashboard(ctx context.Context, tenantID
 
 // GetEscalationDashboard retrieves escalation dashboard data
 type EscalationDashboardData struct {
-	Escalations    []EscalationListItem
-	TotalCount     int64
-	PendingCount   int64
-	ResolvedCount  int64
-	Filters        EscalationFilters
-	Pagination     PaginationInfo
-	Stats          EscalationStats
+	Escalations   []EscalationListItem
+	TotalCount    int64
+	PendingCount  int64
+	ResolvedCount int64
+	Filters       EscalationFilters
+	Pagination    PaginationInfo
+	Stats         EscalationStats
 }
 
 type EscalationListItem struct {
@@ -411,12 +411,12 @@ type EscalationListItem struct {
 }
 
 type EscalationFilters struct {
-	Priority  string
-	Intent    string
-	Platform  string
-	Status    string // pending, resolved, ignored
-	DateFrom  time.Time
-	DateTo    time.Time
+	Priority string
+	Intent   string
+	Platform string
+	Status   string // pending, resolved, ignored
+	DateFrom time.Time
+	DateTo   time.Time
 }
 
 type EscalationStats struct {
@@ -484,7 +484,7 @@ func (w *DashboardWorkflow) GetEscalationDashboard(ctx context.Context, tenantID
 
 	// Calculate stats
 	stats := EscalationStats{
-		TotalPending: pendingCount,
+		TotalPending:  pendingCount,
 		ResolvedToday: 0, // TODO: Calculate from timestamps
 	}
 
@@ -633,4 +633,3 @@ func parseIntQuery(r *http.Request, key string, defaultValue int) int {
 	}
 	return result
 }
-
