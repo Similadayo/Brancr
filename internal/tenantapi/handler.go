@@ -4551,6 +4551,8 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := claims.TenantID
+
 	// Query parameters for filtering
 	platform := r.URL.Query().Get("platform")
 	status := r.URL.Query().Get("status")
@@ -4575,6 +4577,25 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Error("fetch conversations", zap.Error(err))
 		http.Error(w, "could not fetch conversations", http.StatusInternalServerError)
 		return
+	}
+
+	// Prefetch per-user conversation states to avoid repeated lookups
+	stateByConversation := make(map[uint]storage.ConversationUserState)
+	if userID != 0 && len(conversations) > 0 {
+		conversationIDs := make([]uint, 0, len(conversations))
+		for _, conv := range conversations {
+			conversationIDs = append(conversationIDs, conv.ID)
+		}
+
+		var states []storage.ConversationUserState
+		if err := h.DB.Where("tenant_id = ? AND user_id = ? AND conversation_id IN (?)", claims.TenantID, userID, conversationIDs).
+			Find(&states).Error; err != nil {
+			h.Logger.Warn("prefetch conversation states failed", zap.Error(err))
+		} else {
+			for _, state := range states {
+				stateByConversation[state.ConversationID] = state
+			}
+		}
 	}
 
 	// Get customer info and last message for each conversation
@@ -4632,6 +4653,46 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Compute unread count using per-user state; fallback to legacy logic if user is not identified
+		var unreadCount int64
+		if userID != 0 {
+			if state, ok := stateByConversation[conv.ID]; ok {
+				countQuery := h.DB.Model(&storage.Interaction{}).
+					Where("conversation_id = ? AND direction = ?", conv.ID, "incoming")
+				if state.LastReadAt != nil {
+					countQuery = countQuery.Where("created_at > ?", *state.LastReadAt)
+				}
+
+				if err := countQuery.Count(&unreadCount).Error; err != nil {
+					h.Logger.Warn("unread count lookup failed", zap.Error(err), zap.Uint("conversation_id", conv.ID))
+					unreadCount = int64(state.UnreadCount)
+				} else if int(unreadCount) != state.UnreadCount {
+					h.DB.Model(&state).Update("unread_count", int(unreadCount))
+				}
+			} else {
+				if err := h.DB.Model(&storage.Interaction{}).
+					Where("conversation_id = ? AND direction = ?", conv.ID, "incoming").
+					Count(&unreadCount).Error; err != nil {
+					h.Logger.Warn("unread count init failed", zap.Error(err), zap.Uint("conversation_id", conv.ID))
+					unreadCount = 0
+				} else {
+					state := storage.ConversationUserState{
+						TenantID:       claims.TenantID,
+						ConversationID: conv.ID,
+						UserID:         userID,
+						UnreadCount:    int(unreadCount),
+					}
+					if err := h.DB.Create(&state).Error; err != nil {
+						h.Logger.Warn("create conversation state failed", zap.Error(err), zap.Uint("conversation_id", conv.ID))
+					}
+				}
+			}
+		} else {
+			h.DB.Model(&storage.Interaction{}).
+				Where("conversation_id = ? AND direction = ? AND response_status != ?", conv.ID, "incoming", "sent").
+				Count(&unreadCount)
+		}
+
 		// Get last interaction (from ANY party - customer or tenant)
 		var lastInteraction storage.Interaction
 		if err := h.DB.Where("conversation_id = ?", conv.ID).
@@ -4652,12 +4713,6 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 			// Extract media information from last interaction
 			lastMessageMedia := parseMediaFromMetadata(lastInteraction.Metadata)
 
-			// Count unread messages (incoming messages not responded to)
-			var unreadCount int64
-			h.DB.Model(&storage.Interaction{}).
-				Where("conversation_id = ? AND direction = ? AND response_status != ?", conv.ID, "incoming", "sent").
-				Count(&unreadCount)
-
 			resp = append(resp, conversationResp{
 				ID:                  conv.ID,
 				CustomerID:          conv.CustomerID,
@@ -4677,12 +4732,6 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 			})
 		} else {
 			// No interactions yet - still create conversation entry
-			var unreadCount int64
-			// Extract customer phone for WhatsApp even if no interactions
-			var customerPhone, countryCode, dialCode string
-			if conv.Platform == "whatsapp" {
-				customerPhone = customer.PlatformID
-			}
 			resp = append(resp, conversationResp{
 				ID:                  conv.ID,
 				CustomerID:          conv.CustomerID,

@@ -253,6 +253,16 @@ type SalesConversation struct {
 	UpdatedAt          time.Time
 }
 
+// ConversationUserState tracks per-user read/unread state for a conversation
+type ConversationUserState struct {
+	gorm.Model
+	TenantID       uint `gorm:"index"`
+	ConversationID uint `gorm:"index"`
+	UserID         uint `gorm:"index"`
+	LastReadAt     *time.Time
+	UnreadCount    int `gorm:"default:0"`
+}
+
 // NegotiationHistory tracks negotiation attempts
 type NegotiationHistory struct {
 	gorm.Model
