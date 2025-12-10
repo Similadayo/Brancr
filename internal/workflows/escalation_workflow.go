@@ -142,73 +142,11 @@ func (w *EscalationWorkflow) CreateEscalation(ctx context.Context, interactionID
 
 // sendEscalationNotification sends escalation to tenant's Telegram control center
 func (w *EscalationWorkflow) sendEscalationNotification(ctx context.Context, notification *EscalationNotification) error {
-	// Load tenant
-	var tenant storage.Tenant
-	if err := w.DB.First(&tenant, notification.TenantID).Error; err != nil {
-		return fmt.Errorf("tenant not found: %w", err)
-	}
-
-	// Format escalation message - stored in notification for later use
-	_ = w.formatEscalationMessage(notification)
-
-	// Create inline keyboard - stored for later use
-	_ = w.createEscalationKeyboard(notification.InteractionID, notification.Priority)
-
-	// Persist dashboard notification
-	paymentMode := notification.PaymentMode
-	if paymentMode == "" {
-		paymentMode = inferPaymentMode(notification.Message)
-	}
-	if paymentMode == "" {
-		paymentMode = "unknown"
-	}
-
-	orderCue := inferOrderCue(notification.Message)
-
-	notifType := "escalation"
-	if paymentMode != "unknown" {
-		notifType = "payment"
-	} else if orderCue {
-		notifType = "order"
-	}
-
-	metadata := map[string]interface{}{
-		"conversation_id": notification.ConversationID,
-		"interaction_id":  notification.InteractionID,
-		"customer_id":     notification.CustomerID,
-		"platform":        notification.Platform,
-		"payment_mode":    paymentMode,
-		"order_intent":    orderCue,
-	}
-
-	// Attempt to include order draft metadata if exists (lightweight lookup)
-	if notification.ConversationID > 0 {
-		var salesConv storage.SalesConversation
-		if err := w.DB.Where("conversation_id = ?", notification.ConversationID).Order("created_at DESC").First(&salesConv).Error; err == nil {
-			metadata["sales_conversation_id"] = salesConv.ID
-			metadata["pending_order_status"] = salesConv.PendingOrderStatus
-			metadata["pending_order_draft"] = salesConv.PendingOrderDraft
-		}
-	}
-
-	// Notifications suppressed per request
-	w.Logger.Info("escalation notification suppressed",
+	_ = ctx
+	// Notifications disabled for conversations
+	w.Logger.Debug("escalation notification skipped",
 		zap.Uint("tenant_id", notification.TenantID),
-		zap.Uint("interaction_id", notification.InteractionID),
-		zap.String("type", notifType))
-
-	// Send via Telegram bot (stub logging)
-
-	w.Logger.Info("escalation notification created",
-		zap.Uint("tenant_id", notification.TenantID),
-		zap.Uint("interaction_id", notification.InteractionID),
-		zap.String("priority", string(notification.Priority)),
-		zap.String("intent", notification.Intent),
-	)
-
-	// TODO: Actually send Telegram message
-	// bot.Send(tgbotapi.NewMessage(tenant.OwnerTelegramID, message).WithReplyMarkup(keyboard))
-
+		zap.Uint("interaction_id", notification.InteractionID))
 	return nil
 }
 
