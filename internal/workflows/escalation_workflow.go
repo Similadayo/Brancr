@@ -191,21 +191,11 @@ func (w *EscalationWorkflow) sendEscalationNotification(ctx context.Context, not
 		}
 	}
 
-	metadataJSON, _ := json.Marshal(metadata)
-
-	notif := storage.Notification{
-		TenantID:       notification.TenantID,
-		ConversationID: notification.ConversationID,
-		InteractionID:  notification.InteractionID,
-		Type:           notifType,
-		Title:          fmt.Sprintf("Escalation from %s", notification.CustomerName),
-		Body:           notification.Message,
-		Severity:       string(notification.Priority),
-		Metadata:       string(metadataJSON),
-	}
-	if err := w.DB.Create(&notif).Error; err != nil {
-		w.Logger.Warn("failed to create escalation notification", zap.Error(err))
-	}
+	// Notifications suppressed per request
+	w.Logger.Info("escalation notification suppressed",
+		zap.Uint("tenant_id", notification.TenantID),
+		zap.Uint("interaction_id", notification.InteractionID),
+		zap.String("type", notifType))
 
 	// Send via Telegram bot (stub logging)
 
@@ -887,50 +877,8 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 
 		if err := w.DB.Create(&payment).Error; err != nil {
 			w.Logger.Warn("failed to auto-create payment for order", zap.Error(err))
-		} else {
-			meta := map[string]interface{}{
-				"order_id":          orderRec.ID,
-				"order_number":      orderRec.OrderNumber,
-				"payment_reference": orderRec.PaymentReference,
-				"amount":            total,
-				"currency":          currency,
-				"payment_mode":      paymentMode,
-			}
-			metaJSON, _ := json.Marshal(meta)
-			notif := storage.Notification{
-				TenantID:       interaction.TenantID,
-				ConversationID: interaction.ConversationID,
-				InteractionID:  interaction.ID,
-				Type:           "payment",
-				Title:          fmt.Sprintf("Payment confirmed for order %s", orderRec.OrderNumber),
-				Body:           fmt.Sprintf("Payment of %.2f %s recorded", total, currency),
-				Severity:       "info",
-				Metadata:       string(metaJSON),
-			}
-			_ = w.DB.Create(&notif).Error
 		}
 	}
-
-	orderMeta := map[string]interface{}{
-		"order_id":          orderRec.ID,
-		"order_number":      orderRec.OrderNumber,
-		"payment_reference": orderRec.PaymentReference,
-		"amount":            total,
-		"currency":          currency,
-		"payment_mode":      paymentMode,
-	}
-	orderMetaJSON, _ := json.Marshal(orderMeta)
-	notif := storage.Notification{
-		TenantID:       interaction.TenantID,
-		ConversationID: interaction.ConversationID,
-		InteractionID:  interaction.ID,
-		Type:           "order",
-		Title:          fmt.Sprintf("Order %s created", orderRec.OrderNumber),
-		Body:           fmt.Sprintf("Auto-created order for %s", customerName),
-		Severity:       "info",
-		Metadata:       string(orderMetaJSON),
-	}
-	_ = w.DB.Create(&notif).Error
 
 	w.Logger.Info("order created from escalation approval",
 		zap.Uint("order_id", orderRec.ID),

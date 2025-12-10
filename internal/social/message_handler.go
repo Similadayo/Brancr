@@ -500,37 +500,11 @@ func (h *MessageHandler) checkAndNotifyEscalationAftermath(ctx context.Context, 
 
 // createNotificationForIncomingMessage stores a dashboard notification for a new incoming message
 func (h *MessageHandler) createNotificationForIncomingMessage(msg IncomingMessage, customer *storage.Customer, conversationID, interactionID uint) {
-	name := customer.DisplayName
-	if name == "" {
-		name = customer.Username
-	}
-	if name == "" {
-		name = "Customer"
-	}
-
-	body := msg.Content
-	if len(body) > 200 {
-		body = body[:200] + "..."
-	}
-
-	notif := storage.Notification{
-		TenantID:       msg.TenantID,
-		ConversationID: conversationID,
-		InteractionID:  interactionID,
-		Type:           "message",
-		Title:          fmt.Sprintf("New message from %s", name),
-		Body:           body,
-		Severity:       "info",
-		Metadata: h.metadataToJSON(map[string]interface{}{
-			"platform":     msg.Platform,
-			"message_type": msg.MessageType,
-			"customer_id":  customer.ID,
-		}),
-	}
-
-	if err := h.DB.Create(&notif).Error; err != nil {
-		h.Logger.Warn("failed to create notification", zap.Error(err))
-	}
+	h.Logger.Debug("notification suppressed for incoming message",
+		zap.Uint("tenant_id", msg.TenantID),
+		zap.Uint("customer_id", customer.ID),
+		zap.Uint("conversation_id", conversationID),
+		zap.Uint("interaction_id", interactionID))
 }
 
 // trackCustomer ensures customer exists in database

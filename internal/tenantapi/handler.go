@@ -4851,78 +4851,13 @@ func (h *Handler) listNotifications(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	status := strings.ToLower(r.URL.Query().Get("status"))
-	onlyUnread := status == "" || status == "unread"
-	nType := r.URL.Query().Get("type")
-	sinceStr := r.URL.Query().Get("since")
-	var since *time.Time
-	if sinceStr != "" {
-		if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
-			since = &t
-		}
-	}
-
-	limit := 20
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 200 {
-			limit = parsed
-		}
-	}
-
-	offset := 0
-	if o := r.URL.Query().Get("offset"); o != "" {
-		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
-			offset = parsed
-		}
-	}
-
-	query := h.DB.Where("tenant_id = ?", claims.TenantID)
-	if onlyUnread {
-		query = query.Where("read_at IS NULL")
-	}
-	if nType != "" {
-		query = query.Where("type = ?", nType)
-	}
-	if since != nil {
-		query = query.Where("created_at >= ?", *since)
-	}
-
-	var total int64
-	query.Model(&storage.Notification{}).Count(&total)
-
-	var notifs []storage.Notification
-	if err := query.Order("created_at DESC").Limit(limit).Offset(offset).Find(&notifs).Error; err != nil {
-		h.Logger.Error("fetch notifications", zap.Error(err))
-		http.Error(w, "could not fetch notifications", http.StatusInternalServerError)
-		return
-	}
-
-	resp := make([]map[string]any, 0, len(notifs))
-	for _, n := range notifs {
-		var readAt *string
-		if n.ReadAt != nil {
-			r := n.ReadAt.Format(time.RFC3339)
-			readAt = &r
-		}
-		resp = append(resp, map[string]any{
-			"id":              n.ID,
-			"type":            n.Type,
-			"title":           n.Title,
-			"body":            n.Body,
-			"severity":        n.Severity,
-			"conversation_id": n.ConversationID,
-			"interaction_id":  n.InteractionID,
-			"read_at":         readAt,
-			"created_at":      n.CreatedAt.Format(time.RFC3339),
-		})
-	}
+	_ = claims
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"notifications": resp,
-		"total":         total,
-		"limit":         limit,
-		"offset":        offset,
+		"notifications": []any{},
+		"total":         0,
+		"limit":         0,
+		"offset":        0,
 	})
 }
 
@@ -4933,28 +4868,9 @@ func (h *Handler) markNotificationRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	_ = claims
 
-	idStr := chi.URLParam(r, "id")
-	id, err := strconv.ParseUint(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "invalid notification id", http.StatusBadRequest)
-		return
-	}
-
-	var notif storage.Notification
-	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, uint(id)).First(&notif).Error; err != nil {
-		http.Error(w, "notification not found", http.StatusNotFound)
-		return
-	}
-
-	now := time.Now()
-	if err := h.DB.Model(&notif).Update("read_at", now).Error; err != nil {
-		h.Logger.Warn("failed to mark notification read", zap.Error(err))
-		http.Error(w, "could not update notification", http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "skipped": true})
 }
 
 // markAllNotificationsRead marks all unread notifications as read
@@ -4964,17 +4880,9 @@ func (h *Handler) markAllNotificationsRead(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	_ = claims
 
-	now := time.Now()
-	if err := h.DB.Model(&storage.Notification{}).
-		Where("tenant_id = ? AND read_at IS NULL", claims.TenantID).
-		Update("read_at", now).Error; err != nil {
-		h.Logger.Warn("failed to mark all notifications read", zap.Error(err))
-		http.Error(w, "could not update notifications", http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"success": true})
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "skipped": true})
 }
 
 // notificationCounts returns total and unread counts for notifications
@@ -4984,14 +4892,11 @@ func (h *Handler) notificationCounts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	var total, unread int64
-	h.DB.Model(&storage.Notification{}).Where("tenant_id = ?", claims.TenantID).Count(&total)
-	h.DB.Model(&storage.Notification{}).Where("tenant_id = ? AND read_at IS NULL", claims.TenantID).Count(&unread)
+	_ = claims
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"total":  total,
-		"unread": unread,
+		"total":  0,
+		"unread": 0,
 	})
 }
 
