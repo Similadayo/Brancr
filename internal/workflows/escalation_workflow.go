@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/order"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -178,6 +179,16 @@ func (w *EscalationWorkflow) sendEscalationNotification(ctx context.Context, not
 		"order_intent":    orderCue,
 	}
 
+	// Attempt to include order draft metadata if exists (lightweight lookup)
+	if notification.ConversationID > 0 {
+		var salesConv storage.SalesConversation
+		if err := w.DB.Where("conversation_id = ?", notification.ConversationID).Order("created_at DESC").First(&salesConv).Error; err == nil {
+			metadata["sales_conversation_id"] = salesConv.ID
+			metadata["pending_order_status"] = salesConv.PendingOrderStatus
+			metadata["pending_order_draft"] = salesConv.PendingOrderDraft
+		}
+	}
+
 	metadataJSON, _ := json.Marshal(metadata)
 
 	notif := storage.Notification{
@@ -310,6 +321,12 @@ func (w *EscalationWorkflow) approveEscalation(ctx context.Context, interaction 
 	}
 
 	reply := interaction.SuggestedReply
+
+	// Attempt to create an order record when approving an escalation that looks like an order/payment
+	if err := w.createOrderIfPossible(ctx, interaction); err != nil {
+		w.Logger.Warn("failed to create order on escalation approval", zap.Error(err))
+	}
+
 	return w.sendReplyToCustomer(ctx, interaction, reply)
 }
 
@@ -328,6 +345,11 @@ func (w *EscalationWorkflow) customReplyEscalation(ctx context.Context, interact
 	customReply, ok := params["reply"].(string)
 	if !ok || customReply == "" {
 		return fmt.Errorf("custom reply not provided")
+	}
+
+	// If this is an order/payment related escalation, create order if possible
+	if err := w.createOrderIfPossible(ctx, interaction); err != nil {
+		w.Logger.Warn("failed to create order on custom reply", zap.Error(err))
 	}
 
 	return w.sendReplyToCustomer(ctx, interaction, customReply)
@@ -372,8 +394,11 @@ func (w *EscalationWorkflow) resolveEscalation(ctx context.Context, interaction 
 		return fmt.Errorf("failed to update interaction: %w", err)
 	}
 
-	// If this was a payment escalation, send receipt/invoice
+	// If this was a payment escalation, send receipt/invoice and ensure order exists
 	if interaction.DetectedIntent == "payment" {
+		if err := w.createOrderIfPossible(ctx, interaction); err != nil {
+			w.Logger.Warn("failed to ensure order on payment resolution", zap.Error(err))
+		}
 		if err := w.sendPaymentReceipt(ctx, interaction); err != nil {
 			w.Logger.Error("failed to send payment receipt",
 				zap.Error(err),
@@ -734,6 +759,111 @@ func inferPaymentMode(message string) string {
 func inferOrderCue(message string) bool {
 	m := strings.ToLower(message)
 	return strings.Contains(m, "order") || strings.Contains(m, "i'll take") || strings.Contains(m, "i want one") || strings.Contains(m, "add one")
+}
+
+// createOrderIfPossible tries to build an order from the sales conversation when escalations are approved/resolved
+func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interaction *storage.Interaction) error {
+	// Require a conversation to anchor order
+	if interaction.ConversationID == 0 {
+		return nil
+	}
+
+	// Load sales conversation linked to this conversation
+	var salesConv storage.SalesConversation
+	if err := w.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error; err != nil {
+		return nil // no sales conversation, skip
+	}
+
+	// Build draft items from pending_order_draft if present; else from ItemsDiscussed/PriceDiscussed
+	var draftItems []storage.OrderItem
+	var total float64
+	var currency = "NGN"
+	if salesConv.PendingOrderDraft != "" {
+		var draft map[string]interface{}
+		if err := json.Unmarshal([]byte(salesConv.PendingOrderDraft), &draft); err == nil {
+			if itemsRaw, ok := draft["items"].([]interface{}); ok {
+				for _, it := range itemsRaw {
+					if m, ok := it.(map[string]interface{}); ok {
+						name, _ := m["name"].(string)
+						qty := 1
+						if q, ok := m["quantity"].(float64); ok {
+							qty = int(q)
+						}
+						price := 0.0
+						if p, ok := m["unit_price"].(float64); ok {
+							price = p
+						}
+						if name != "" {
+							item := storage.OrderItem{Name: name, Quantity: qty, UnitPrice: price, TotalPrice: price * float64(qty)}
+							draftItems = append(draftItems, item)
+							total += item.TotalPrice
+						}
+					}
+				}
+			}
+			if t, ok := draft["total_amount"].(float64); ok && t > 0 {
+				total = t
+			}
+			if c, ok := draft["currency"].(string); ok && c != "" {
+				currency = c
+			}
+		}
+	}
+
+	// Fallback: use PriceDiscussed if no items
+	if len(draftItems) == 0 {
+		if salesConv.PriceDiscussed > 0 {
+			draftItems = append(draftItems, storage.OrderItem{Name: "Order", Quantity: 1, UnitPrice: salesConv.PriceDiscussed, TotalPrice: salesConv.PriceDiscussed})
+			total = salesConv.PriceDiscussed
+		}
+	}
+
+	// Nothing to create
+	if len(draftItems) == 0 || total <= 0 {
+		return nil
+	}
+
+	// Prevent duplicate orders recently created for same conversation/customer
+	var recent storage.Order
+	if err := w.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?", interaction.TenantID, interaction.CustomerID, interaction.Platform).
+		Where("created_at > ?", time.Now().Add(-10*time.Minute)).
+		Order("created_at DESC").First(&recent).Error; err == nil {
+		return nil
+	}
+
+	// Generate order number/reference using OrderService helpers
+	os := order.NewOrderService(w.DB, w.Logger)
+	orderNumber, err := os.GenerateOrderNumber(ctx, interaction.TenantID)
+	if err != nil {
+		return err
+	}
+	paymentRef := fmt.Sprintf("AUTO-%d-%d-%s", interaction.TenantID, interaction.CustomerID, time.Now().Format("20060102150405"))
+
+	itemsJSON, _ := json.Marshal(draftItems)
+	orderRec := storage.Order{
+		TenantID:         interaction.TenantID,
+		CustomerID:       interaction.CustomerID,
+		OrderNumber:      orderNumber,
+		PaymentReference: paymentRef,
+		Status:           "pending",
+		TotalAmount:      total,
+		Currency:         currency,
+		Items:            string(itemsJSON),
+		CustomerName:     "",
+		Platform:         interaction.Platform,
+	}
+
+	if err := w.DB.Create(&orderRec).Error; err != nil {
+		return err
+	}
+
+	w.Logger.Info("order created from escalation approval",
+		zap.Uint("order_id", orderRec.ID),
+		zap.String("order_number", orderRec.OrderNumber),
+		zap.Uint("tenant_id", interaction.TenantID),
+		zap.Uint("customer_id", interaction.CustomerID))
+
+	return nil
 }
 
 // GetEscalationStats returns statistics about escalations for a tenant
