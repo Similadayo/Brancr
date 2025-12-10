@@ -862,6 +862,11 @@ func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessa
 	interaction.EscalatedAt = &now
 	h.DB.Save(&interaction)
 
+	// If this is a payment confirmation, create pending payment record immediately
+	if intent.Intent == "payment" && h.isPaymentConfirmation(msg.Content) {
+		h.createPendingPayment(ctx, msg.TenantID, customer.ID, &interaction, msg.Content)
+	}
+
 	h.Logger.Info("📤 Escalated to tenant",
 		zap.Uint("tenant_id", msg.TenantID),
 		zap.Uint("interaction_id", interactionID),
@@ -2421,4 +2426,79 @@ func (h *MessageHandler) SendWhatsAppReply(ctx context.Context, tenantID uint, c
 	}
 
 	return h.sendWhatsAppReply(ctx, &acc, customerPlatformID, message)
+}
+
+// isPaymentConfirmation checks if message is a payment confirmation
+func (h *MessageHandler) isPaymentConfirmation(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "paid") ||
+		strings.Contains(lower, "sent payment") ||
+		strings.Contains(lower, "transferred") ||
+		strings.Contains(lower, "payment made") ||
+		strings.Contains(lower, "i have sent") ||
+		strings.Contains(lower, "i sent") ||
+		strings.Contains(lower, "already paid")
+}
+
+// createPendingPayment creates a pending payment record when customer claims payment
+func (h *MessageHandler) createPendingPayment(ctx context.Context, tenantID uint, customerID uint, interaction *storage.Interaction, message string) {
+	// Generate unique payment reference
+	paymentRef := fmt.Sprintf("PAY-%d-%d-%s", tenantID, customerID, time.Now().Format("20060102150405"))
+
+	// Extract amount from message if possible (simple regex)
+	amount := h.extractAmountFromMessage(message)
+
+	// Create pending payment record
+	payment := storage.Payment{
+		TenantID:           tenantID,
+		CustomerID:         customerID,
+		PaymentReference:   paymentRef,
+		Amount:             amount,
+		Currency:           "NGN",
+		PaymentMethod:      "bank_transfer", // Default assumption
+		Status:             "pending",
+		VerificationStatus: "unverified",
+		ClaimedByCustomer:  true,
+		Metadata:           fmt.Sprintf(`{"interaction_id":%d,"customer_message":"%s"}`, interaction.ID, strings.ReplaceAll(message, `"`, `\"`)),
+	}
+
+	now := time.Now()
+	payment.ClaimedAt = &now
+
+	if err := h.DB.Create(&payment).Error; err != nil {
+		h.Logger.Error("failed to create pending payment",
+			zap.Error(err),
+			zap.Uint("tenant_id", tenantID),
+			zap.Uint("customer_id", customerID))
+		return
+	}
+
+	h.Logger.Info("💰 Pending payment created",
+		zap.Uint("payment_id", payment.ID),
+		zap.String("payment_ref", paymentRef),
+		zap.Float64("amount", amount),
+		zap.Uint("tenant_id", tenantID))
+}
+
+// extractAmountFromMessage tries to extract payment amount from customer message
+func (h *MessageHandler) extractAmountFromMessage(message string) float64 {
+	// Remove commas and look for numbers
+	message = strings.ReplaceAll(message, ",", "")
+
+	// Common patterns: "20000", "20,000", "20000 naira", "NGN 20000"
+	// Simple extraction: find first number that looks like an amount
+	words := strings.Fields(message)
+	for _, word := range words {
+		// Remove currency symbols
+		word = strings.TrimPrefix(word, "NGN")
+		word = strings.TrimPrefix(word, "₦")
+		word = strings.TrimSpace(word)
+
+		// Try to parse as float
+		if amount, err := strconv.ParseFloat(word, 64); err == nil && amount > 0 && amount < 100000000 {
+			return amount
+		}
+	}
+
+	return 0 // Unknown amount
 }
