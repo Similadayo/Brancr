@@ -348,7 +348,7 @@ func (w *EscalationWorkflow) resolveEscalation(ctx context.Context, interaction 
 func (w *EscalationWorkflow) sendPaymentReceipt(ctx context.Context, interaction *storage.Interaction) error {
 	// Find the payment record
 	var payment storage.Payment
-	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status IN ?", 
+	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status IN ?",
 		interaction.TenantID, interaction.CustomerID, []string{"verified", "confirmed"}).
 		Order("created_at DESC").
 		First(&payment).Error
@@ -496,7 +496,7 @@ func (w *EscalationWorkflow) handlePaymentConfirmation(ctx context.Context, inte
 
 	// Check if payment already exists for this interaction
 	var existingPayment storage.Payment
-	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status = ?", 
+	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status = ?",
 		interaction.TenantID, interaction.CustomerID, "pending").
 		Order("created_at DESC").
 		First(&existingPayment).Error
@@ -510,11 +510,11 @@ func (w *EscalationWorkflow) handlePaymentConfirmation(ctx context.Context, inte
 		existingPayment.ClaimedAt = &now
 		existingPayment.VerifiedAt = &now
 		existingPayment.CompletedAt = &now
-		
+
 		if err := w.DB.Save(&existingPayment).Error; err != nil {
 			return fmt.Errorf("failed to update payment: %w", err)
 		}
-		
+
 		w.Logger.Info("payment updated",
 			zap.Uint("payment_id", existingPayment.ID),
 			zap.String("payment_ref", existingPayment.PaymentReference))
@@ -534,7 +534,7 @@ func (w *EscalationWorkflow) handlePaymentConfirmation(ctx context.Context, inte
 		ClaimedByCustomer:  true,
 		Metadata:           fmt.Sprintf(`{"interaction_id":%d,"customer_message":"%s"}`, interaction.ID, interaction.Content),
 	}
-	
+
 	now := time.Now()
 	payment.ClaimedAt = &now
 	payment.VerifiedAt = &now
