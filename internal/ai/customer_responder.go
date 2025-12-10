@@ -256,6 +256,9 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 		messages = append(messages, Message{Role: "system", Content: "You're likely chatting with the business owner on Telegram. You may answer broader questions, but still prioritize {{brand_name}}'s business context."})
 	}
 
+	// Sales-first orientation: keep replies conversion-focused
+	messages = append(messages, Message{Role: "system", Content: "Your job is to turn chats into sales/bookings. Be concise, propose the next step (choose option, pay, or book), and avoid giving free DIY/consulting. Offer to handle it for them."})
+
 	// Add conversation history - already filtered above
 	// Only include actual customer and AI messages, not system instructions
 	messages = append(messages, conversationHistory...)
