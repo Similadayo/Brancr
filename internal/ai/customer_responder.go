@@ -154,6 +154,8 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	// Fallback to old BusinessMenuItem for backward compatibility
 	var menuItems []storage.BusinessMenuItem
 	var itemsContext string
+	retrievalAvailable := r.RetrievalService != nil
+	retrievalAttempted := false
 
 	// Check if message is about pricing/packages/menu - if so, get ALL items to show complete pricing
 	messageLower := strings.ToLower(message)
@@ -177,6 +179,7 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 
 	// Try to use industry-aware retrieval if available
 	if r.RetrievalService != nil {
+		retrievalAttempted = true
 		if isPricingQuestion {
 			// For pricing/menu questions, ALWAYS get ALL active items to show complete pricing
 			items, err := r.RetrievalService.GetAllActive(ctx, tenantID, 50) // Get all items for menu/pricing
@@ -207,6 +210,23 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 	// Fallback to old BusinessMenuItem if retrieval service not available or returned no results
 	if itemsContext == "" {
 		r.DB.Where("tenant_id = ?", tenantID).Find(&menuItems)
+
+		// Log when retrieval was available but yielded no context (to debug WhatsApp missing menu/services)
+		if retrievalAvailable && retrievalAttempted {
+			r.Logger.Info("retrieval returned empty context; using menu fallback",
+				zap.Uint("tenant_id", tenantID),
+				zap.Uint("customer_id", customerID),
+				zap.String("platform", platform),
+				zap.Bool("is_pricing_question", isPricingQuestion),
+				zap.Int("fallback_menu_items", len(menuItems)),
+				zap.String("intent", intent))
+		} else if !retrievalAvailable {
+			r.Logger.Warn("retrieval service not linked; using menu fallback",
+				zap.Uint("tenant_id", tenantID),
+				zap.Uint("customer_id", customerID),
+				zap.String("platform", platform),
+				zap.String("intent", intent))
+		}
 	}
 
 	// Load FAQs for question matching
