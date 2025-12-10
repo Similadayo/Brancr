@@ -8,8 +8,10 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/order"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -763,67 +765,52 @@ func inferOrderCue(message string) bool {
 
 // createOrderIfPossible tries to build an order from the sales conversation when escalations are approved/resolved
 func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interaction *storage.Interaction) error {
-	// Require a conversation to anchor order
 	if interaction.ConversationID == 0 {
 		return nil
 	}
 
-	// Load sales conversation linked to this conversation
 	var salesConv storage.SalesConversation
 	if err := w.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error; err != nil {
-		return nil // no sales conversation, skip
-	}
-
-	// Build draft items from pending_order_draft if present; else from ItemsDiscussed/PriceDiscussed
-	var draftItems []storage.OrderItem
-	var total float64
-	var currency = "NGN"
-	if salesConv.PendingOrderDraft != "" {
-		var draft map[string]interface{}
-		if err := json.Unmarshal([]byte(salesConv.PendingOrderDraft), &draft); err == nil {
-			if itemsRaw, ok := draft["items"].([]interface{}); ok {
-				for _, it := range itemsRaw {
-					if m, ok := it.(map[string]interface{}); ok {
-						name, _ := m["name"].(string)
-						qty := 1
-						if q, ok := m["quantity"].(float64); ok {
-							qty = int(q)
-						}
-						price := 0.0
-						if p, ok := m["unit_price"].(float64); ok {
-							price = p
-						}
-						if name != "" {
-							item := storage.OrderItem{Name: name, Quantity: qty, UnitPrice: price, TotalPrice: price * float64(qty)}
-							draftItems = append(draftItems, item)
-							total += item.TotalPrice
-						}
-					}
-				}
-			}
-			if t, ok := draft["total_amount"].(float64); ok && t > 0 {
-				total = t
-			}
-			if c, ok := draft["currency"].(string); ok && c != "" {
-				currency = c
-			}
-		}
-	}
-
-	// Fallback: use PriceDiscussed if no items
-	if len(draftItems) == 0 {
-		if salesConv.PriceDiscussed > 0 {
-			draftItems = append(draftItems, storage.OrderItem{Name: "Order", Quantity: 1, UnitPrice: salesConv.PriceDiscussed, TotalPrice: salesConv.PriceDiscussed})
-			total = salesConv.PriceDiscussed
-		}
-	}
-
-	// Nothing to create
-	if len(draftItems) == 0 || total <= 0 {
 		return nil
 	}
 
-	// Prevent duplicate orders recently created for same conversation/customer
+	// Extract draft order if present
+	var draft ai.OrderDraft
+	if salesConv.PendingOrderDraft != "" {
+		_ = json.Unmarshal([]byte(salesConv.PendingOrderDraft), &draft)
+	}
+
+	items := draft.Items
+	currency := draft.Currency
+	if currency == "" {
+		currency = "NGN"
+	}
+	total := draft.TotalAmount
+	if total <= 0 && len(items) > 0 {
+		for _, it := range items {
+			total += it.TotalPrice
+		}
+	}
+	paymentMode := draft.PaymentMode
+
+	// Fallback to extracting from sales conversation if draft missing
+	if len(items) == 0 || total <= 0 {
+		os := order.NewOrderService(w.DB, w.Logger)
+		fallbackItems, fallbackTotal, err := os.ExtractOrderItems(&salesConv)
+		if err == nil {
+			items = fallbackItems
+			total = fallbackTotal
+			if currency == "" {
+				currency = "NGN"
+			}
+		}
+	}
+
+	if len(items) == 0 || total <= 0 {
+		return nil
+	}
+
+	// Prevent duplicate orders created recently for the same customer on the same platform
 	var recent storage.Order
 	if err := w.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?", interaction.TenantID, interaction.CustomerID, interaction.Platform).
 		Where("created_at > ?", time.Now().Add(-10*time.Minute)).
@@ -831,31 +818,119 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		return nil
 	}
 
-	// Generate order number/reference using OrderService helpers
+	// Load customer for metadata
+	var customer storage.Customer
+	if err := w.DB.First(&customer, interaction.CustomerID).Error; err != nil {
+		w.Logger.Warn("customer not found when creating order", zap.Uint("customer_id", interaction.CustomerID))
+	}
+	customerName := customer.DisplayName
+	if customerName == "" {
+		customerName = customer.Username
+	}
+	if customerName == "" {
+		customerName = fmt.Sprintf("Customer-%d", interaction.CustomerID)
+	}
+
 	os := order.NewOrderService(w.DB, w.Logger)
 	orderNumber, err := os.GenerateOrderNumber(ctx, interaction.TenantID)
 	if err != nil {
 		return err
 	}
-	paymentRef := fmt.Sprintf("AUTO-%d-%d-%s", interaction.TenantID, interaction.CustomerID, time.Now().Format("20060102150405"))
+	paymentRef := utils.GeneratePaymentReference(interaction.TenantID)
 
-	itemsJSON, _ := json.Marshal(draftItems)
+	itemsJSON, _ := json.Marshal(items)
+	orderStatus := "pending"
+	var confirmedAt *time.Time
+	if paymentMode == "paid" {
+		orderStatus = "confirmed"
+		now := time.Now()
+		confirmedAt = &now
+	}
+
 	orderRec := storage.Order{
 		TenantID:         interaction.TenantID,
 		CustomerID:       interaction.CustomerID,
 		OrderNumber:      orderNumber,
 		PaymentReference: paymentRef,
-		Status:           "pending",
+		Status:           orderStatus,
 		TotalAmount:      total,
 		Currency:         currency,
 		Items:            string(itemsJSON),
-		CustomerName:     "",
+		CustomerName:     customerName,
+		CustomerPhone:    customer.PlatformID,
 		Platform:         interaction.Platform,
+		ConfirmedAt:      confirmedAt,
 	}
 
 	if err := w.DB.Create(&orderRec).Error; err != nil {
 		return err
 	}
+
+	now := time.Now()
+	// Auto-create payment record if customer already indicated payment
+	if paymentMode == "paid" {
+		payment := storage.Payment{
+			TenantID:           interaction.TenantID,
+			OrderID:            orderRec.ID,
+			CustomerID:         interaction.CustomerID,
+			PaymentReference:   orderRec.PaymentReference,
+			Amount:             total,
+			Currency:           currency,
+			PaymentMethod:      "bank_transfer",
+			Status:             "verified",
+			VerificationStatus: "tenant_verified",
+			ClaimedByCustomer:  true,
+			ClaimedAt:          &now,
+			VerifiedAt:         &now,
+			CompletedAt:        &now,
+		}
+
+		if err := w.DB.Create(&payment).Error; err != nil {
+			w.Logger.Warn("failed to auto-create payment for order", zap.Error(err))
+		} else {
+			meta := map[string]interface{}{
+				"order_id":          orderRec.ID,
+				"order_number":      orderRec.OrderNumber,
+				"payment_reference": orderRec.PaymentReference,
+				"amount":            total,
+				"currency":          currency,
+				"payment_mode":      paymentMode,
+			}
+			metaJSON, _ := json.Marshal(meta)
+			notif := storage.Notification{
+				TenantID:       interaction.TenantID,
+				ConversationID: interaction.ConversationID,
+				InteractionID:  interaction.ID,
+				Type:           "payment",
+				Title:          fmt.Sprintf("Payment confirmed for order %s", orderRec.OrderNumber),
+				Body:           fmt.Sprintf("Payment of %.2f %s recorded", total, currency),
+				Severity:       "info",
+				Metadata:       string(metaJSON),
+			}
+			_ = w.DB.Create(&notif).Error
+		}
+	}
+
+	orderMeta := map[string]interface{}{
+		"order_id":          orderRec.ID,
+		"order_number":      orderRec.OrderNumber,
+		"payment_reference": orderRec.PaymentReference,
+		"amount":            total,
+		"currency":          currency,
+		"payment_mode":      paymentMode,
+	}
+	orderMetaJSON, _ := json.Marshal(orderMeta)
+	notif := storage.Notification{
+		TenantID:       interaction.TenantID,
+		ConversationID: interaction.ConversationID,
+		InteractionID:  interaction.ID,
+		Type:           "order",
+		Title:          fmt.Sprintf("Order %s created", orderRec.OrderNumber),
+		Body:           fmt.Sprintf("Auto-created order for %s", customerName),
+		Severity:       "info",
+		Metadata:       string(orderMetaJSON),
+	}
+	_ = w.DB.Create(&notif).Error
 
 	w.Logger.Info("order created from escalation approval",
 		zap.Uint("order_id", orderRec.ID),
