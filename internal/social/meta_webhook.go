@@ -275,10 +275,10 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 				} `json:"recipient"`
 				Timestamp int64 `json:"timestamp"`
 				Message   struct {
-					MID         string                 `json:"mid"`
-					Text        string                 `json:"text"`
-					Attachments map[string]interface{} `json:"attachments,omitempty"`
-					Reaction    map[string]interface{} `json:"reaction,omitempty"`
+					MID         string                   `json:"mid"`
+					Text        string                   `json:"text"`
+					Attachments []map[string]interface{} `json:"attachments,omitempty"`
+					Reaction    map[string]interface{}   `json:"reaction,omitempty"`
 				} `json:"message"`
 			} `json:"messaging"`
 			Changes []struct {
@@ -292,10 +292,10 @@ func (h *MetaWebhookHandler) processInstagramWebhook(ctx context.Context, body [
 					} `json:"recipient"`
 					Timestamp FlexibleTimestamp `json:"timestamp"` // Can be string or int64
 					Message   struct {
-						MID         string                 `json:"mid"`
-						Text        string                 `json:"text"`
-						Attachments map[string]interface{} `json:"attachments,omitempty"`
-						Reaction    map[string]interface{} `json:"reaction,omitempty"`
+						MID         string                   `json:"mid"`
+						Text        string                   `json:"text"`
+						Attachments []map[string]interface{} `json:"attachments,omitempty"`
+						Reaction    map[string]interface{}   `json:"reaction,omitempty"`
 					} `json:"message"`
 				} `json:"value"`
 			} `json:"changes"`
@@ -616,51 +616,52 @@ func normalizeMediaType(mediaType string) string {
 // Returns: (text content, media info)
 // If both are empty/nil, the message should be skipped
 func (h *MetaWebhookHandler) extractInstagramMessageContent(msg struct {
-	MID         string                 `json:"mid"`
-	Text        string                 `json:"text"`
-	Attachments map[string]interface{} `json:"attachments,omitempty"`
-	Reaction    map[string]interface{} `json:"reaction,omitempty"`
+	MID         string                   `json:"mid"`
+	Text        string                   `json:"text"`
+	Attachments []map[string]interface{} `json:"attachments,omitempty"`
+	Reaction    map[string]interface{}   `json:"reaction,omitempty"`
 }) (string, *InstagramMediaInfo) {
 	// If message has text, return it (may also have attachments)
 	textContent := strings.TrimSpace(msg.Text)
 
-	// Extract media information from attachments
+	// Extract media information from attachments (array per Meta spec)
 	var mediaInfo *InstagramMediaInfo
 	if len(msg.Attachments) > 0 {
-		// Instagram attachments structure: {"type": "image", "payload": {"url": "..."}}
-		attachmentType, _ := msg.Attachments["type"].(string)
-		payload, _ := msg.Attachments["payload"].(map[string]interface{})
+		for _, att := range msg.Attachments {
+			attachmentType, _ := att["type"].(string)
+			payload, _ := att["payload"].(map[string]interface{})
 
-		// Try to get URL from payload
-		var mediaURL string
-		if payload != nil {
-			if url, ok := payload["url"].(string); ok && url != "" {
-				mediaURL = url
-			}
-		}
-
-		// If we have a URL or type, create media info
-		if mediaURL != "" || attachmentType != "" {
-			mediaInfo = &InstagramMediaInfo{
-				URL:     mediaURL,
-				Type:    strings.ToLower(attachmentType),
-				Payload: msg.Attachments,
-			}
-
-			// If no text content, create a placeholder
-			if textContent == "" {
-				switch strings.ToLower(attachmentType) {
-				case "image":
-					textContent = "[Image]"
-				case "video":
-					textContent = "[Video]"
-				case "audio":
-					textContent = "[Audio]"
-				case "file":
-					textContent = "[File]"
-				default:
-					textContent = "[Media]"
+			// Try to get URL from payload
+			var mediaURL string
+			if payload != nil {
+				if url, ok := payload["url"].(string); ok && url != "" {
+					mediaURL = url
 				}
+			}
+
+			// If we have a URL or type, create media info (take first attachment)
+			if mediaURL != "" || attachmentType != "" {
+				mediaInfo = &InstagramMediaInfo{
+					URL:     mediaURL,
+					Type:    strings.ToLower(attachmentType),
+					Payload: att,
+				}
+
+				if textContent == "" {
+					switch strings.ToLower(attachmentType) {
+					case "image":
+						textContent = "[Image]"
+					case "video":
+						textContent = "[Video]"
+					case "audio":
+						textContent = "[Audio]"
+					case "file":
+						textContent = "[File]"
+					default:
+						textContent = "[Media]"
+					}
+				}
+				break
 			}
 		}
 	}
@@ -1117,9 +1118,9 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 				} `json:"recipient"`
 				Timestamp FlexibleTimestamp `json:"timestamp"`
 				Message   struct {
-					MID         string                 `json:"mid"`
-					Text        string                 `json:"text"`
-					Attachments map[string]interface{} `json:"attachments,omitempty"`
+					MID         string                   `json:"mid"`
+					Text        string                   `json:"text"`
+					Attachments []map[string]interface{} `json:"attachments,omitempty"`
 				} `json:"message"`
 			} `json:"messaging"`
 		} `json:"entry"`
@@ -1164,37 +1165,39 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 			var mediaInfo *InstagramMediaInfo // Reuse same struct for Facebook
 
 			if len(msg.Message.Attachments) > 0 {
-				// Facebook attachments structure similar to Instagram
-				attachmentType, _ := msg.Message.Attachments["type"].(string)
-				payload, _ := msg.Message.Attachments["payload"].(map[string]interface{})
+				for _, att := range msg.Message.Attachments {
+					attachmentType, _ := att["type"].(string)
+					payload, _ := att["payload"].(map[string]interface{})
 
-				var mediaURL string
-				if payload != nil {
-					if url, ok := payload["url"].(string); ok && url != "" {
-						mediaURL = url
-					}
-				}
-
-				if mediaURL != "" || attachmentType != "" {
-					mediaInfo = &InstagramMediaInfo{
-						URL:     mediaURL,
-						Type:    strings.ToLower(attachmentType),
-						Payload: msg.Message.Attachments,
-					}
-
-					if textContent == "" {
-						switch strings.ToLower(attachmentType) {
-						case "image":
-							textContent = "[Image]"
-						case "video":
-							textContent = "[Video]"
-						case "audio":
-							textContent = "[Audio]"
-						case "file":
-							textContent = "[File]"
-						default:
-							textContent = "[Media]"
+					var mediaURL string
+					if payload != nil {
+						if url, ok := payload["url"].(string); ok && url != "" {
+							mediaURL = url
 						}
+					}
+
+					if mediaURL != "" || attachmentType != "" {
+						mediaInfo = &InstagramMediaInfo{
+							URL:     mediaURL,
+							Type:    strings.ToLower(attachmentType),
+							Payload: att,
+						}
+
+						if textContent == "" {
+							switch strings.ToLower(attachmentType) {
+							case "image":
+								textContent = "[Image]"
+							case "video":
+								textContent = "[Video]"
+							case "audio":
+								textContent = "[Audio]"
+							case "file":
+								textContent = "[File]"
+							default:
+								textContent = "[Media]"
+							}
+						}
+						break
 					}
 				}
 			}
