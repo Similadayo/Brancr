@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -64,6 +65,7 @@ type EscalationNotification struct {
 	Confidence     float64
 	Priority       EscalationPriority
 	CreatedAt      time.Time
+	PaymentMode    string
 }
 
 // CreateEscalation creates a new escalation from an interaction
@@ -150,17 +152,43 @@ func (w *EscalationWorkflow) sendEscalationNotification(ctx context.Context, not
 	_ = w.createEscalationKeyboard(notification.InteractionID, notification.Priority)
 
 	// Persist dashboard notification
-	now := time.Now()
+	paymentMode := notification.PaymentMode
+	if paymentMode == "" {
+		paymentMode = inferPaymentMode(notification.Message)
+	}
+	if paymentMode == "" {
+		paymentMode = "unknown"
+	}
+
+	orderCue := inferOrderCue(notification.Message)
+
+	notifType := "escalation"
+	if paymentMode != "unknown" {
+		notifType = "payment"
+	} else if orderCue {
+		notifType = "order"
+	}
+
+	metadata := map[string]interface{}{
+		"conversation_id": notification.ConversationID,
+		"interaction_id":  notification.InteractionID,
+		"customer_id":     notification.CustomerID,
+		"platform":        notification.Platform,
+		"payment_mode":    paymentMode,
+		"order_intent":    orderCue,
+	}
+
+	metadataJSON, _ := json.Marshal(metadata)
+
 	notif := storage.Notification{
 		TenantID:       notification.TenantID,
 		ConversationID: notification.ConversationID,
 		InteractionID:  notification.InteractionID,
-		Type:           "escalation",
+		Type:           notifType,
 		Title:          fmt.Sprintf("Escalation from %s", notification.CustomerName),
 		Body:           notification.Message,
 		Severity:       string(notification.Priority),
-		Metadata:       "{}",
-		ReadAt:         &now,
+		Metadata:       string(metadataJSON),
 	}
 	if err := w.DB.Create(&notif).Error; err != nil {
 		w.Logger.Warn("failed to create escalation notification", zap.Error(err))
@@ -687,6 +715,25 @@ func (w *EscalationWorkflow) getPriorityEmoji(priority EscalationPriority) strin
 	default:
 		return "📌"
 	}
+}
+
+// inferPaymentMode derives a coarse payment mode from the customer message
+func inferPaymentMode(message string) string {
+	m := strings.ToLower(message)
+	switch {
+	case strings.Contains(m, "pay on delivery") || strings.Contains(m, "cash on delivery") || strings.Contains(m, "pod"):
+		return "pay_on_delivery"
+	case strings.Contains(m, "bank transfer") || strings.Contains(m, "transfer") || strings.Contains(m, "send account") || strings.Contains(m, "account number"):
+		return "bank_transfer"
+	default:
+		return "unknown"
+	}
+}
+
+// inferOrderCue checks for quick order intent cues in free text
+func inferOrderCue(message string) bool {
+	m := strings.ToLower(message)
+	return strings.Contains(m, "order") || strings.Contains(m, "i'll take") || strings.Contains(m, "i want one") || strings.Contains(m, "add one")
 }
 
 // GetEscalationStats returns statistics about escalations for a tenant
