@@ -28,6 +28,8 @@ type Tenant struct {
 	Timezone           string `gorm:"size:50;default:'UTC'"` // e.g., "America/New_York", "Europe/London"
 	IndustryID         uint   `gorm:"index"`                 // Links to Industry model
 	IndustrySettings   string `gorm:"type:jsonb"`            // Industry-specific custom settings
+	Metadata           string `gorm:"type:jsonb"`            // Additional tenant settings (webhook URLs, etc.)
+	WebhookSecret      string // Secret key for HMAC signature verification
 }
 
 // BusinessProfile represents the personality and niche of the tenant’s bot
@@ -315,21 +317,21 @@ type MediaAsset struct {
 
 type ScheduledPost struct {
 	gorm.Model
-	TenantID      uint `gorm:"index"`
-	Name          string
-	Caption       string     `gorm:"type:text"`
-	MediaAssetIDs string     `gorm:"type:text"` // e.g. [1,2,3]
-	Platforms     string     `gorm:"type:text"` // e.g. ["instagram","facebook"]
-	ScheduledAt   *time.Time `gorm:"index"`
-	Status        string     // scheduled, posting, posted, failed, cancelled
-	Attempts      int
-	LastError     string `gorm:"type:text"`
-	PostedAt      *time.Time
-	Timezone      string     `gorm:"size:50"` // Tenant's timezone when scheduled
-	OptimalTime   *time.Time // AI-suggested optimal posting time
-	Priority      int        `gorm:"default:0"` // 0=normal, 1=high, 2=urgent
-	PostingWindow string     `gorm:"type:text"` // JSON: {"start": "09:00", "end": "17:00"}
-	EnhanceCaption bool      `gorm:"default:false"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
+	TenantID       uint `gorm:"index"`
+	Name           string
+	Caption        string     `gorm:"type:text"`
+	MediaAssetIDs  string     `gorm:"type:text"` // e.g. [1,2,3]
+	Platforms      string     `gorm:"type:text"` // e.g. ["instagram","facebook"]
+	ScheduledAt    *time.Time `gorm:"index"`
+	Status         string     // scheduled, posting, posted, failed, cancelled
+	Attempts       int
+	LastError      string `gorm:"type:text"`
+	PostedAt       *time.Time
+	Timezone       string     `gorm:"size:50"` // Tenant's timezone when scheduled
+	OptimalTime    *time.Time // AI-suggested optimal posting time
+	Priority       int        `gorm:"default:0"`     // 0=normal, 1=high, 2=urgent
+	PostingWindow  string     `gorm:"type:text"`     // JSON: {"start": "09:00", "end": "17:00"}
+	EnhanceCaption bool       `gorm:"default:false"` // If true, enhance existing caption with AI (Mode 3); if false, use caption as-is (Mode 2)
 }
 
 // SOCIAL ACCOUNTS
@@ -346,7 +348,7 @@ type SocialAccount struct {
 	ExternalID         string `gorm:"index"` // Platform-specific external ID used for webhook routing (page_id, instagram_business_account.id, phone_number_id)
 	Connected          bool
 	Mode               string // manual, sandbox, oauth2, provider_owned
-	LoginMethod        string `gorm:"size:50"` // facebook_login, instagram_login (for Instagram: determines which OAuth flow was used)
+	LoginMethod        string `gorm:"size:50"`    // facebook_login, instagram_login (for Instagram: determines which OAuth flow was used)
 	WebhookVerifyToken string `gorm:"size:100"`   // Verification token for webhook setup (Meta requires this)
 	Metadata           string `gorm:"type:jsonb"` // Platform-specific metadata (e.g., TikTok authorized scopes, posting options, login method)
 	CreatedAt          time.Time
@@ -523,23 +525,23 @@ type ContentCalendar struct {
 type TenantQuota struct {
 	gorm.Model
 	TenantID uint `gorm:"uniqueIndex"` // One quota per tenant
-	
+
 	// Limits (0 = unlimited)
-	AICallsLimit      int `gorm:"default:100"`      // Daily AI API calls limit
-	PostsLimit        int `gorm:"default:50"`      // Daily posts limit
-	StorageLimitMB    int `gorm:"default:1000"`     // Storage limit in MB
-	APICallsLimit     int `gorm:"default:1000"`     // Daily API calls limit
-	
+	AICallsLimit   int `gorm:"default:100"`  // Daily AI API calls limit
+	PostsLimit     int `gorm:"default:50"`   // Daily posts limit
+	StorageLimitMB int `gorm:"default:1000"` // Storage limit in MB
+	APICallsLimit  int `gorm:"default:1000"` // Daily API calls limit
+
 	// Current usage (reset daily)
-	AICallsUsed      int       `gorm:"default:0"`
-	PostsUsed        int       `gorm:"default:0"`
-	StorageUsedMB    int       `gorm:"default:0"`
-	APICallsUsed     int       `gorm:"default:0"`
-	
+	AICallsUsed   int `gorm:"default:0"`
+	PostsUsed     int `gorm:"default:0"`
+	StorageUsedMB int `gorm:"default:0"`
+	APICallsUsed  int `gorm:"default:0"`
+
 	// Reset tracking
-	LastResetAt      time.Time `gorm:"default:CURRENT_TIMESTAMP"`
-	ResetFrequency   string    `gorm:"default:'daily'"` // daily, weekly, monthly
-	
+	LastResetAt    time.Time `gorm:"default:CURRENT_TIMESTAMP"`
+	ResetFrequency string    `gorm:"default:'daily'"` // daily, weekly, monthly
+
 	// Plan type (free, pro, enterprise)
-	PlanType         string    `gorm:"size:50;default:'free'"`
+	PlanType string `gorm:"size:50;default:'free'"`
 }

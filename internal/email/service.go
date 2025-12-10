@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"os"
 
-	"gopkg.in/gomail.v2"
 	"go.uber.org/zap"
+	"gopkg.in/gomail.v2"
 )
 
 // EmailService handles sending emails
 type EmailService struct {
-	Logger *zap.Logger
-	From   string
+	Logger   *zap.Logger
+	From     string
 	SMTPHost string
 	SMTPPort int
 	SMTPUser string
@@ -67,7 +67,7 @@ func (s *EmailService) SendEmail(to, subject, body string, attachments ...string
 // SendReceiptEmail sends a receipt email to customer
 func (s *EmailService) SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error {
 	subject := fmt.Sprintf("Receipt for Order %s", orderNumber)
-	
+
 	body := fmt.Sprintf(`
 <!DOCTYPE html>
 <html>
@@ -112,19 +112,19 @@ func (s *EmailService) SendReceiptEmail(to, customerName, orderNumber, receiptUR
 // SendOrderStatusEmail sends order status update email
 func (s *EmailService) SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error {
 	subject := fmt.Sprintf("Order %s Status Update", orderNumber)
-	
+
 	statusMessages := map[string]string{
-		"confirmed": "Your order has been confirmed and payment received.",
+		"confirmed":  "Your order has been confirmed and payment received.",
 		"processing": "Your order is now being processed.",
-		"completed": "Your order has been completed and is ready!",
-		"cancelled": "Your order has been cancelled.",
+		"completed":  "Your order has been completed and is ready!",
+		"cancelled":  "Your order has been cancelled.",
 	}
-	
+
 	message := statusMessages[status]
 	if message == "" {
 		message = fmt.Sprintf("Your order status has been updated to: %s", status)
 	}
-	
+
 	body := fmt.Sprintf(`
 <!DOCTYPE html>
 <html>
@@ -174,3 +174,78 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// SendPaymentReceiptEmail sends payment receipt to customer via email
+func (s *EmailService) SendPaymentReceiptEmail(to, customerName, businessName, paymentRef string, amount float64, currency, paymentMethod string, pdfAttachment string) error {
+	subject := fmt.Sprintf("Payment Receipt - %s", paymentRef)
+
+	body := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<style>
+		body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; background: #f3f4f6; }
+		.container { max-width: 600px; margin: 0 auto; padding: 20px; }
+		.receipt { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+		.header { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 30px 20px; text-align: center; }
+		.header h1 { margin: 0; font-size: 28px; }
+		.checkmark { font-size: 48px; margin-bottom: 10px; }
+		.content { padding: 30px 20px; }
+		.detail-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #e5e7eb; }
+		.detail-label { font-weight: 600; color: #6b7280; }
+		.detail-value { color: #111827; }
+		.amount { font-size: 32px; font-weight: bold; color: #10b981; text-align: center; margin: 20px 0; }
+		.footer { background: #f9fafb; padding: 20px; text-align: center; color: #6b7280; font-size: 14px; }
+		.button { display: inline-block; padding: 12px 24px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; margin: 20px 0; font-weight: 600; }
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="receipt">
+			<div class="header">
+				<div class="checkmark">✓</div>
+				<h1>Payment Confirmed</h1>
+				<p style="margin: 10px 0 0 0;">Thank you for your payment</p>
+			</div>
+			<div class="content">
+				<p>Hi %s,</p>
+				<p>This is to confirm that we have received your payment. Your receipt is attached as a PDF.</p>
+				
+				<div class="amount">%s %.2f</div>
+				
+				<div class="detail-row">
+					<span class="detail-label">Receipt Number</span>
+					<span class="detail-value">%s</span>
+				</div>
+				<div class="detail-row">
+					<span class="detail-label">Business</span>
+					<span class="detail-value">%s</span>
+				</div>
+				<div class="detail-row">
+					<span class="detail-label">Payment Method</span>
+					<span class="detail-value">%s</span>
+				</div>
+				<div class="detail-row">
+					<span class="detail-label">Status</span>
+					<span class="detail-value" style="color: #10b981; font-weight: 600;">✓ Verified</span>
+				</div>
+				
+				<p style="margin-top: 30px;">If you have any questions about this payment, please contact us.</p>
+			</div>
+			<div class="footer">
+				<p><strong>%s</strong></p>
+				<p style="margin: 5px 0;">Powered by Brancr</p>
+				<p style="font-size: 12px; color: #9ca3af;">This is an automated receipt. Please keep it for your records.</p>
+			</div>
+		</div>
+	</div>
+</body>
+</html>
+`, customerName, currency, amount, paymentRef, businessName, paymentMethod, businessName)
+
+	// Send with PDF attachment if provided
+	if pdfAttachment != "" {
+		return s.SendEmail(to, subject, body, pdfAttachment)
+	}
+	return s.SendEmail(to, subject, body)
+}

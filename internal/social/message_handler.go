@@ -2478,6 +2478,10 @@ func (h *MessageHandler) createPendingPayment(ctx context.Context, tenantID uint
 		zap.String("payment_ref", paymentRef),
 		zap.Float64("amount", amount),
 		zap.Uint("tenant_id", tenantID))
+
+	// TODO: Trigger payment.created webhook notification
+	// This requires WebhookService to be added to MessageHandler
+	// webhookService.NotifyPaymentCreated(ctx, &payment)
 }
 
 // extractAmountFromMessage tries to extract payment amount from customer message

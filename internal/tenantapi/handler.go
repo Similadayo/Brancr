@@ -231,10 +231,17 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 
 			// Payment management
 			r.Get("/tenant/payments", h.listPayments)
+			r.Get("/tenant/payments/stats", h.getPaymentStats)
 			r.Get("/tenant/payments/{id}", h.getPayment)
 			r.Put("/tenant/payments/{id}/verify", h.verifyPayment)
 			r.Post("/tenant/payments/{id}/generate-receipt", h.generateReceipt)
 			r.Put("/tenant/payments/{id}/dispute", h.disputePayment)
+
+			// Webhook management
+			r.Get("/tenant/webhooks", h.listWebhooks)
+			r.Post("/tenant/webhooks", h.addWebhook)
+			r.Delete("/tenant/webhooks", h.removeWebhook)
+			r.Post("/tenant/webhooks/regenerate-secret", h.regenerateWebhookSecret)
 
 			// WhatsApp provider-owned model (new)
 			r.Get("/tenant/whatsapp/numbers", h.listAvailablePhoneNumbers)

@@ -34,7 +34,7 @@ func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint
 	if interaction.TenantID != tenantID {
 		return fmt.Errorf("interaction does not belong to tenant")
 	}
-	
+
 	// Check if already resolved
 	if interaction.ResponseStatus == "resolved" {
 		if bot != nil {
@@ -51,7 +51,7 @@ func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint
 		}
 		// Different interaction - replace session and send new prompt
 	}
-	
+
 	// Store session for resolution message
 	session := &EscalationResolutionSession{
 		InteractionID: interactionID,
@@ -84,7 +84,7 @@ func (h *EscalationHandler) HandleMarkAsFixed(ctx context.Context, tenantID uint
 			bot = nil
 		}
 	}
-	
+
 	if bot != nil {
 		promptMsg := "✅ Great! Type a message to inform the customer that the issue is resolved.\n\nExample: 'Issue resolved! Your account has been activated.'\n\nOr type 'skip' to mark as fixed without sending a message."
 		bot.Send(tgbotapi.NewMessage(chatID, promptMsg))
@@ -147,19 +147,19 @@ func (h *EscalationHandler) HandleResolutionMessage(ctx context.Context, tenantI
 		} else {
 			// Log the resolution message as an outgoing interaction
 			resolutionInteraction := storage.Interaction{
-				TenantID:          tenantID,
-				CustomerID:        customer.ID,
-				ConversationID:    interaction.ConversationID,
-				Platform:          session.Platform,
-				Direction:         "outgoing",
-				MessageType:       "text",
-				Content:           resolutionMessage,
-				ResponseType:      "manual",
-				ResponseStatus:    "sent",
-				FinalReply:        resolutionMessage,
-				DetectedIntent:    "resolution",
-				DetectedTone:      "positive",
-				Confidence:        1.0,
+				TenantID:       tenantID,
+				CustomerID:     customer.ID,
+				ConversationID: interaction.ConversationID,
+				Platform:       session.Platform,
+				Direction:      "outgoing",
+				MessageType:    "text",
+				Content:        resolutionMessage,
+				ResponseType:   "manual",
+				ResponseStatus: "sent",
+				FinalReply:     resolutionMessage,
+				DetectedIntent: "resolution",
+				DetectedTone:   "positive",
+				Confidence:     1.0,
 			}
 			h.DB.Create(&resolutionInteraction)
 		}
@@ -179,6 +179,16 @@ func (h *EscalationHandler) HandleResolutionMessage(ctx context.Context, tenantI
 		if err := h.DB.First(&conversation, interaction.ConversationID).Error; err == nil {
 			conversation.Status = "resolved"
 			h.DB.Save(&conversation)
+		}
+	}
+
+	// Send payment receipt if this was a payment escalation
+	if interaction.DetectedIntent == "payment" {
+		if err := h.sendPaymentReceiptToCustomer(ctx, &interaction); err != nil {
+			h.Logger.Error("failed to send payment receipt",
+				zap.Error(err),
+				zap.Uint("interaction_id", interaction.ID))
+			// Don't fail - just log the error
 		}
 	}
 
@@ -220,13 +230,13 @@ func (h *EscalationHandler) HandleResolutionMessage(ctx context.Context, tenantI
 // GetUnresolvedEscalations returns all unresolved escalations for a tenant
 func (h *EscalationHandler) GetUnresolvedEscalations(tenantID uint) ([]storage.Interaction, error) {
 	var interactions []storage.Interaction
-	
+
 	// Find all escalated interactions that are not resolved
 	// ResponseType = "escalated" or "manual" and ResponseStatus != "resolved"
 	err := h.DB.Where("tenant_id = ? AND ((response_type = ? OR response_type = ?) AND response_status != ? AND response_status != ?)",
 		tenantID, "escalated", "manual", "resolved", "rejected").
 		Order("created_at ASC").Find(&interactions).Error
-	
+
 	return interactions, err
 }
 
@@ -274,7 +284,7 @@ func (h *EscalationHandler) SendDailyReminders(ctx context.Context) error {
 
 		for i := 0; i < maxShow; i++ {
 			esc := escalations[i]
-			
+
 			// Load customer
 			var customer storage.Customer
 			customerName := "Customer"
@@ -327,4 +337,68 @@ func (h *EscalationHandler) SendDailyReminders(ctx context.Context) error {
 	return nil
 }
 
+// sendPaymentReceiptToCustomer sends payment receipt via WhatsApp when escalation is resolved
+func (h *EscalationHandler) sendPaymentReceiptToCustomer(ctx context.Context, interaction *storage.Interaction) error {
+	// Find the payment record
+	var payment storage.Payment
+	err := h.DB.Where("tenant_id = ? AND customer_id = ? AND status IN ?",
+		interaction.TenantID, interaction.CustomerID, []string{"verified", "confirmed"}).
+		Order("created_at DESC").
+		First(&payment).Error
 
+	if err != nil {
+		h.Logger.Warn("no payment record found for receipt",
+			zap.Uint("tenant_id", interaction.TenantID),
+			zap.Uint("customer_id", interaction.CustomerID))
+		return nil // Not an error, just no payment to receipt
+	}
+
+	// Generate receipt message
+	receiptMessage := fmt.Sprintf(`✅ *PAYMENT CONFIRMED*
+
+📝 Receipt #: %s
+💰 Amount: %s %.2f
+✓ Status: Payment Verified
+
+Thank you for your payment! Your transaction has been confirmed and processed successfully.
+
+If you have any questions, feel free to reach out.`,
+		payment.PaymentReference,
+		payment.Currency,
+		payment.Amount)
+
+	// Load customer for platform ID
+	var customer storage.Customer
+	if err := h.DB.First(&customer, interaction.CustomerID).Error; err != nil {
+		return fmt.Errorf("customer not found: %w", err)
+	}
+
+	// Send receipt via MessageHandler
+	if h.MessageHandler != nil && interaction.Platform == "whatsapp" {
+		// Get conversation thread ID
+		var conversation storage.Conversation
+		threadID := customer.PlatformID // Default
+		if interaction.ConversationID > 0 {
+			if err := h.DB.First(&conversation, interaction.ConversationID).Error; err == nil {
+				threadID = conversation.PlatformThreadID
+			}
+		}
+		if threadID == "" {
+			threadID = customer.PlatformID
+		}
+
+		if err := h.MessageHandler.SendReply(ctx, interaction.TenantID, interaction.Platform, threadID, customer.PlatformID, receiptMessage); err != nil {
+			return fmt.Errorf("failed to send receipt: %w", err)
+		}
+
+		// Update payment with receipt info
+		payment.ReceiptID = fmt.Sprintf("RCP-%s", payment.PaymentReference)
+		h.DB.Save(&payment)
+
+		h.Logger.Info("payment receipt sent",
+			zap.Uint("payment_id", payment.ID),
+			zap.String("receipt_id", payment.ReceiptID))
+	}
+
+	return nil
+}

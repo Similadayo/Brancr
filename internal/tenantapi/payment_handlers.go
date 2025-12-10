@@ -76,7 +76,7 @@ func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
 		PaymentMethod      string  `json:"payment_method"`
 		Status             string  `json:"status"`
 		VerificationStatus string  `json:"verification_status"`
-		ClaimedByCustomer  bool   `json:"claimed_by_customer"`
+		ClaimedByCustomer  bool    `json:"claimed_by_customer"`
 		VerifiedAt         *string `json:"verified_at,omitempty"`
 		CreatedAt          string  `json:"created_at"`
 	}
@@ -147,21 +147,21 @@ func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"payment": map[string]any{
-			"id":                 payment.ID,
-			"order_id":           payment.OrderID,
-			"payment_reference":  payment.PaymentReference,
-			"amount":             payment.Amount,
-			"currency":           payment.Currency,
-			"payment_method":     payment.PaymentMethod,
-			"status":             payment.Status,
+			"id":                  payment.ID,
+			"order_id":            payment.OrderID,
+			"payment_reference":   payment.PaymentReference,
+			"amount":              payment.Amount,
+			"currency":            payment.Currency,
+			"payment_method":      payment.PaymentMethod,
+			"status":              payment.Status,
 			"verification_status": payment.VerificationStatus,
 			"claimed_by_customer": payment.ClaimedByCustomer,
-			"receipt_id":         payment.ReceiptID,
-			"receipt_url":        payment.ReceiptURL,
-			"portal_token":       payment.PortalToken,
-			"portal_url":         payment.PortalURL,
-			"verified_at":        verifiedAt,
-			"completed_at":       completedAt,
+			"receipt_id":          payment.ReceiptID,
+			"receipt_url":         payment.ReceiptURL,
+			"portal_token":        payment.PortalToken,
+			"portal_url":          payment.PortalURL,
+			"verified_at":         verifiedAt,
+			"completed_at":        completedAt,
 			"created_at":          payment.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	})
@@ -221,12 +221,16 @@ func (h *Handler) verifyPayment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// TODO: Auto-generate and send receipt via email/WhatsApp
+	// TODO: Trigger payment.verified webhook notification
+	// These require PDFGenerator, EmailService, and WebhookService to be added to Handler struct
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "payment verified",
 		"payment": map[string]any{
-			"id":                 payment.ID,
-			"status":             payment.Status,
+			"id":                  payment.ID,
+			"status":              payment.Status,
 			"verification_status": payment.VerificationStatus,
 		},
 	})
@@ -286,9 +290,144 @@ func (h *Handler) disputePayment(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "payment marked as disputed",
 		"payment": map[string]any{
-			"id":                 payment.ID,
+			"id":                  payment.ID,
 			"verification_status": payment.VerificationStatus,
 		},
 	})
 }
 
+// getPaymentStats returns payment statistics for the dashboard
+func (h *Handler) getPaymentStats(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var stats struct {
+		TotalPayments    int64   `json:"total_payments"`
+		PendingCount     int64   `json:"pending_count"`
+		VerifiedCount    int64   `json:"verified_count"`
+		ConfirmedCount   int64   `json:"confirmed_count"`
+		FailedCount      int64   `json:"failed_count"`
+		DisputedCount    int64   `json:"disputed_count"`
+		TotalRevenue     float64 `json:"total_revenue"`
+		PendingRevenue   float64 `json:"pending_revenue"`
+		VerifiedRevenue  float64 `json:"verified_revenue"`
+		ThisMonthRevenue float64 `json:"this_month_revenue"`
+		LastMonthRevenue float64 `json:"last_month_revenue"`
+		TodayPayments    int64   `json:"today_payments"`
+		TodayRevenue     float64 `json:"today_revenue"`
+	}
+
+	// Total payments
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ?", claims.TenantID).
+		Count(&stats.TotalPayments)
+
+	// Pending payments
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "pending").
+		Count(&stats.PendingCount)
+
+	// Verified payments
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "verified").
+		Count(&stats.VerifiedCount)
+
+	// Confirmed payments
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "confirmed").
+		Count(&stats.ConfirmedCount)
+
+	// Failed payments
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "failed").
+		Count(&stats.FailedCount)
+
+	// Disputed payments
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND verification_status = ?", claims.TenantID, "disputed").
+		Count(&stats.DisputedCount)
+
+	// Total revenue (verified + confirmed)
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status IN ?", claims.TenantID, []string{"verified", "confirmed"}).
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&stats.TotalRevenue)
+
+	// Pending revenue
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "pending").
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&stats.PendingRevenue)
+
+	// Verified revenue (not yet completed)
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "verified").
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&stats.VerifiedRevenue)
+
+	// This month revenue
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status IN ? AND created_at >= ?",
+			claims.TenantID, []string{"verified", "confirmed"}, monthStart).
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&stats.ThisMonthRevenue)
+
+	// Last month revenue
+	lastMonthStart := monthStart.AddDate(0, -1, 0)
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status IN ? AND created_at >= ? AND created_at < ?",
+			claims.TenantID, []string{"verified", "confirmed"}, lastMonthStart, monthStart).
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&stats.LastMonthRevenue)
+
+	// Today's payments
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND created_at >= ?", claims.TenantID, todayStart).
+		Count(&stats.TodayPayments)
+
+	// Today's revenue
+	h.DB.Model(&storage.Payment{}).
+		Where("tenant_id = ? AND status IN ? AND created_at >= ?",
+			claims.TenantID, []string{"verified", "confirmed"}, todayStart).
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&stats.TodayRevenue)
+
+	// Get recent payments (last 5)
+	var recentPayments []storage.Payment
+	h.DB.Where("tenant_id = ?", claims.TenantID).
+		Order("created_at DESC").
+		Limit(5).
+		Find(&recentPayments)
+
+	type recentPaymentResp struct {
+		ID               uint    `json:"id"`
+		PaymentReference string  `json:"payment_reference"`
+		Amount           float64 `json:"amount"`
+		Currency         string  `json:"currency"`
+		Status           string  `json:"status"`
+		CreatedAt        string  `json:"created_at"`
+	}
+
+	recent := make([]recentPaymentResp, len(recentPayments))
+	for i, p := range recentPayments {
+		recent[i] = recentPaymentResp{
+			ID:               p.ID,
+			PaymentReference: p.PaymentReference,
+			Amount:           p.Amount,
+			Currency:         p.Currency,
+			Status:           p.Status,
+			CreatedAt:        p.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stats":           stats,
+		"recent_payments": recent,
+	})
+}
