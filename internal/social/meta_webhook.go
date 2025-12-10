@@ -820,66 +820,84 @@ func (h *MetaWebhookHandler) processInstagramMessage(ctx context.Context, tenant
 				zap.String("media_url", mediaInfo.URL),
 				zap.Uint("tenant_id", tenantID))
 
-			// Process media in background (don't block message processing)
-			go func() {
+			// For audio, process synchronously to get transcription before replying
+			if messageType == "audio" {
 				processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-
 				result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaInfo.URL, mediaInfo.Type)
+				cancel()
 				if err != nil {
-					h.Logger.Warn("failed to process Instagram media (non-critical)",
-						zap.String("media_type", mediaInfo.Type),
+					h.Logger.Warn("failed to process Instagram audio (non-critical)",
 						zap.String("media_url", mediaInfo.URL),
 						zap.Uint("tenant_id", tenantID),
 						zap.Error(err))
-					return
-				}
-
-				// Update interaction metadata with processing results
-				// Find the interaction by message ID
-				var interaction storage.Interaction
-				if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
-					"instagram", uniqueID, "incoming").First(&interaction).Error; err == nil {
-					var existingMetadata map[string]interface{}
-					if interaction.Metadata != "" {
-						json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
-					}
-					if existingMetadata == nil {
-						existingMetadata = make(map[string]interface{})
-					}
-
-					// Add processing results
+				} else {
 					if result.StoredURL != "" {
-						existingMetadata["media_stored_url"] = result.StoredURL
+						metadata["media_stored_url"] = result.StoredURL
 					}
 					if result.Transcription != "" {
-						existingMetadata["audio_transcription"] = result.Transcription
+						metadata["audio_transcription"] = result.Transcription
+						incomingMsg.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
 					}
-					if result.ImageAnalysis != "" {
-						existingMetadata["image_analysis"] = result.ImageAnalysis
-					}
-					if result.DocumentText != "" {
-						existingMetadata["document_text"] = result.DocumentText
-					}
-
-					// Update content if we have transcription/analysis
-					if result.Transcription != "" && messageType == "audio" {
-						interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
-					} else if result.ImageAnalysis != "" && (messageType == "image" || messageType == "sticker") {
-						interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
-					}
-
-					metadataJSON, _ := json.Marshal(existingMetadata)
-					interaction.Metadata = string(metadataJSON)
-					h.DB.Save(&interaction)
-
-					h.Logger.Info("✅ Instagram media processing completed and saved",
-						zap.String("media_type", mediaInfo.Type),
-						zap.Bool("has_transcription", result.Transcription != ""),
-						zap.Bool("has_analysis", result.ImageAnalysis != ""),
-						zap.Uint("tenant_id", tenantID))
 				}
-			}()
+			} else {
+				// Non-audio: keep async to avoid blocking
+				go func(uniqueID string, mInfo *InstagramMediaInfo, msgType string) {
+					processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer cancel()
+
+					result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mInfo.URL, mInfo.Type)
+					if err != nil {
+						h.Logger.Warn("failed to process Instagram media (non-critical)",
+							zap.String("media_type", mInfo.Type),
+							zap.String("media_url", mInfo.URL),
+							zap.Uint("tenant_id", tenantID),
+							zap.Error(err))
+						return
+					}
+
+					// Update interaction metadata with processing results
+					var interaction storage.Interaction
+					if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+						"instagram", uniqueID, "incoming").First(&interaction).Error; err == nil {
+						var existingMetadata map[string]interface{}
+						if interaction.Metadata != "" {
+							json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
+						}
+						if existingMetadata == nil {
+							existingMetadata = make(map[string]interface{})
+						}
+
+						if result.StoredURL != "" {
+							existingMetadata["media_stored_url"] = result.StoredURL
+						}
+						if result.Transcription != "" {
+							existingMetadata["audio_transcription"] = result.Transcription
+							if msgType == "audio" {
+								interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+							}
+						}
+						if result.ImageAnalysis != "" {
+							existingMetadata["image_analysis"] = result.ImageAnalysis
+							if msgType == "image" || msgType == "sticker" {
+								interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+							}
+						}
+						if result.DocumentText != "" {
+							existingMetadata["document_text"] = result.DocumentText
+						}
+
+						metadataJSON, _ := json.Marshal(existingMetadata)
+						interaction.Metadata = string(metadataJSON)
+						h.DB.Save(&interaction)
+
+						h.Logger.Info("✅ Instagram media processing completed and saved",
+							zap.String("media_type", mInfo.Type),
+							zap.Bool("has_transcription", result.Transcription != ""),
+							zap.Bool("has_analysis", result.ImageAnalysis != ""),
+							zap.Uint("tenant_id", tenantID))
+					}
+				}(uniqueID, mediaInfo, messageType)
+			}
 		}
 
 		h.Logger.Info("🚀 Sending Instagram message to MessageHandler",
@@ -1247,56 +1265,76 @@ func (h *MetaWebhookHandler) processFacebookWebhook(ctx context.Context, body []
 
 			// Process media if available
 			if mediaInfo != nil && mediaInfo.URL != "" && h.MediaProcessor != nil {
-				go func(uniqueID string, mInfo *InstagramMediaInfo) {
+				if messageType == "audio" {
 					processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-					defer cancel()
-
-					result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mInfo.URL, mInfo.Type)
+					result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaInfo.URL, mediaInfo.Type)
+					cancel()
 					if err != nil {
-						h.Logger.Warn("failed to process Facebook media (non-critical)",
-							zap.String("media_type", mInfo.Type),
-							zap.String("media_url", mInfo.URL),
+						h.Logger.Warn("failed to process Facebook audio (non-critical)",
+							zap.String("media_url", mediaInfo.URL),
 							zap.Uint("tenant_id", tenantID),
 							zap.Error(err))
-						return
-					}
-
-					// Update interaction metadata with processing results
-					var interaction storage.Interaction
-					if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
-						"facebook", uniqueID, "incoming").First(&interaction).Error; err == nil {
-						var existingMetadata map[string]interface{}
-						if interaction.Metadata != "" {
-							json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
-						}
-						if existingMetadata == nil {
-							existingMetadata = make(map[string]interface{})
-						}
-
+					} else {
 						if result.StoredURL != "" {
-							existingMetadata["media_stored_url"] = result.StoredURL
+							metadata["media_stored_url"] = result.StoredURL
 						}
 						if result.Transcription != "" {
-							existingMetadata["audio_transcription"] = result.Transcription
-							if messageType == "audio" {
-								interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
-							}
+							metadata["audio_transcription"] = result.Transcription
+							incomingMsg.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
 						}
-						if result.ImageAnalysis != "" {
-							existingMetadata["image_analysis"] = result.ImageAnalysis
-							if messageType == "image" || messageType == "sticker" {
-								interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
-							}
-						}
-						if result.DocumentText != "" {
-							existingMetadata["document_text"] = result.DocumentText
+					}
+				} else {
+					go func(uniqueID string, mInfo *InstagramMediaInfo, msgType string) {
+						processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+						defer cancel()
+
+						result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mInfo.URL, mInfo.Type)
+						if err != nil {
+							h.Logger.Warn("failed to process Facebook media (non-critical)",
+								zap.String("media_type", mInfo.Type),
+								zap.String("media_url", mInfo.URL),
+								zap.Uint("tenant_id", tenantID),
+								zap.Error(err))
+							return
 						}
 
-						metadataJSON, _ := json.Marshal(existingMetadata)
-						interaction.Metadata = string(metadataJSON)
-						h.DB.Save(&interaction)
-					}
-				}(msg.Message.MID, mediaInfo)
+						// Update interaction metadata with processing results
+						var interaction storage.Interaction
+						if err := h.DB.Where("platform = ? AND platform_message_id = ? AND direction = ?",
+							"facebook", uniqueID, "incoming").First(&interaction).Error; err == nil {
+							var existingMetadata map[string]interface{}
+							if interaction.Metadata != "" {
+								json.Unmarshal([]byte(interaction.Metadata), &existingMetadata)
+							}
+							if existingMetadata == nil {
+								existingMetadata = make(map[string]interface{})
+							}
+
+							if result.StoredURL != "" {
+								existingMetadata["media_stored_url"] = result.StoredURL
+							}
+							if result.Transcription != "" {
+								existingMetadata["audio_transcription"] = result.Transcription
+								if msgType == "audio" {
+									interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+								}
+							}
+							if result.ImageAnalysis != "" {
+								existingMetadata["image_analysis"] = result.ImageAnalysis
+								if msgType == "image" || msgType == "sticker" {
+									interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+								}
+							}
+							if result.DocumentText != "" {
+								existingMetadata["document_text"] = result.DocumentText
+							}
+
+							metadataJSON, _ := json.Marshal(existingMetadata)
+							interaction.Metadata = string(metadataJSON)
+							h.DB.Save(&interaction)
+						}
+					}(msg.Message.MID, mediaInfo, messageType)
+				}
 			}
 
 			go h.MessageHandler.ProcessMessage(ctx, incomingMsg)
