@@ -80,19 +80,25 @@ Return ONLY a JSON object with this exact structure (no additional text):
 Intent should be one of: %s
 Tone should be one of: positive, neutral, negative, urgent
 Confidence should be a number between 0.0 and 1.0
-Requires escalation should be true ONLY if:
-  - Confidence is below 0.25 (very uncertain), OR
-  - Intent is payment/account/billing/refund/complaint (ALWAYS escalate these if confidence > 0.5), OR
-  - Message contains requests for sensitive information (account details, bank info, payment details, card numbers, etc.), OR
-  - Intent is refund/complaint/delivery_issue AND confidence > 0.85 AND tone is negative/urgent (real issue needing human judgment)
 
-SENSITIVE INTENT KEYWORDS (always set requires_escalation=true if detected with confidence > 0.5):
-- Payment processing: "paid", "charge", "transaction", "billing", "invoice"
-- Account/Bank info: "account", "bank", "routing", "swift", "account number", "account details", "bank details"
-- Card data: "card", "credit", "debit", "cvv", "expiry"
-- Money transfer: "transfer money", "send money", "payment details"
+IMPORTANT: Context-aware escalation rules:
+- "account" intent = Customer asking for account/bank details to PAY
+  → Set requires_escalation=false (system will auto-reply with stored details)
+- "payment" intent = Customer CONFIRMING they have paid
+  → Set requires_escalation=true (tenant must verify and send receipt)
+- "refund" intent = Customer requesting refund
+  → Set requires_escalation=true (requires human judgment)
+- "complaint" intent = Customer complaining
+  → Set requires_escalation=true (requires human judgment)
+- "billing" intent = Customer asking about invoice/billing
+  → Set requires_escalation=false (unless combined with complaint)
 
-Do NOT set requires_escalation=false for these sensitive requests even if the customer seems polite.
+Escalation Rules:
+1. Confidence below 0.25 (very uncertain) → requires_escalation=true
+2. "payment" OR "refund" OR "complaint" with confidence > 0.5 → requires_escalation=true
+3. "delivery_issue" with confidence > 0.85 AND negative/urgent tone → requires_escalation=true
+4. "account" OR "billing" asking for information → requires_escalation=false (bot can handle)
+5. Message tone is "urgent" with confidence > 0.75 → requires_escalation=true
 
 Message: "%s"
 Platform: %s

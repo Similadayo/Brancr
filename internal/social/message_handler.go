@@ -783,20 +783,22 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		strings.Contains(messageLower, "where to send") ||
 		strings.Contains(messageLower, "account number") ||
 		strings.Contains(messageLower, "bank details") ||
-		strings.Contains(messageLower, "payment details")
+		strings.Contains(messageLower, "payment details") ||
+		strings.Contains(messageLower, "account to pay") ||
+		strings.Contains(messageLower, "can i get the account")
 
 	isInvoiceRequest := strings.Contains(messageLower, "invoice") ||
 		strings.Contains(messageLower, "receipt")
 
+	// Payment inquiry (asking for account details) - can be auto-replied with stored details
+	// Check this FIRST before other escalation rules to avoid being overridden
+	if (isPaymentInquiry || intent.Intent == "account") && !isPaymentConfirmation {
+		return false, ""
+	}
+
 	// Escalate if customer confirms they paid - tenant must verify & send receipt
 	if (intent.Intent == "payment" || isPaymentConfirmation) && intent.Confidence > 0.7 {
 		return true, "payment_confirmation_requires_tenant_verification"
-	}
-
-	// Payment inquiry (asking for account details) - can be auto-replied with stored details
-	// Don't escalate - let responder check if account details are available
-	if isPaymentInquiry && intent.Intent == "account" {
-		return false, ""
 	}
 
 	// Escalate invoice requests - tenant needs to generate/send
