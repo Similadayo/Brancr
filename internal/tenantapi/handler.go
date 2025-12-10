@@ -4786,6 +4786,7 @@ func (h *Handler) markConversationRead(w http.ResponseWriter, r *http.Request) {
 
 	var conv storage.Conversation
 	if err := h.DB.Where("tenant_id = ? AND id = ?", claims.TenantID, conversationID).First(&conv).Error; err != nil {
+		h.Logger.Warn("mark read: conversation fetch failed", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.String("conversation_id", conversationID))
 		http.Error(w, "conversation not found", http.StatusNotFound)
 		return
 	}
@@ -4802,12 +4803,20 @@ func (h *Handler) markConversationRead(w http.ResponseWriter, r *http.Request) {
 			LastReadAt:     &now,
 			UnreadCount:    0,
 		}
-		h.DB.Create(&state)
+		if err := h.DB.Create(&state).Error; err != nil {
+			h.Logger.Warn("mark read: failed to create state", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint("conversation_id", conv.ID), zap.Uint("user_id", userID))
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	} else if err == nil {
-		h.DB.Model(&state).Updates(map[string]interface{}{
+		if err := h.DB.Model(&state).Updates(map[string]interface{}{
 			"last_read_at": &now,
 			"unread_count": 0,
-		})
+		}).Error; err != nil {
+			h.Logger.Warn("mark read: failed to update state", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint("conversation_id", conv.ID), zap.Uint("user_id", userID))
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 	} else {
 		h.Logger.Warn("mark read: failed to load state", zap.Error(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
