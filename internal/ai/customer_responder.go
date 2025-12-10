@@ -66,14 +66,19 @@ func (r *CustomerResponder) GenerateCustomerReply(ctx context.Context, tenantID 
 		return "", fmt.Errorf("no payment account configured - requires escalation")
 	}
 
-	// Refuse to handle payment confirmations - these need tenant verification
+	// For payment confirmations: generate a reply for tenant to review (don't auto-send)
+	// This provides suggested reply in escalation without auto-replying to customer
 	if intent == "payment" {
-		return "", fmt.Errorf("payment confirmation requires tenant verification - escalating")
+		// Generate a suggested acknowledgment for tenant to approve/edit
+		return "Thank you for confirming your payment! We're verifying your transaction now and will send your receipt shortly. Please allow a few moments for confirmation.", nil
 	}
 
-	// Refuse to handle refunds/complaints - need human judgment
-	if intent == "refund" || intent == "complaint" {
-		return "", fmt.Errorf("%s requires human judgment - escalating", intent)
+	// For refunds/complaints: generate suggested reply for tenant to review
+	if intent == "refund" {
+		return "We understand you'd like a refund. We're reviewing your request now. Our team will get back to you shortly with next steps.", nil
+	}
+	if intent == "complaint" {
+		return "We sincerely apologize for any inconvenience. Your feedback is important to us. Our team is looking into this matter and will respond shortly.", nil
 	}
 
 	var convID uint

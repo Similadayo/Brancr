@@ -306,7 +306,7 @@ func (w *EscalationWorkflow) ignoreEscalation(ctx context.Context, interaction *
 	return nil
 }
 
-// resolveEscalation marks escalation as resolved without sending reply
+// resolveEscalation marks escalation as resolved and sends receipt if it's a payment
 func (w *EscalationWorkflow) resolveEscalation(ctx context.Context, interaction *storage.Interaction) error {
 	interaction.ResponseType = "manual"
 	interaction.ResponseStatus = "resolved"
@@ -326,10 +326,74 @@ func (w *EscalationWorkflow) resolveEscalation(ctx context.Context, interaction 
 		return fmt.Errorf("failed to update interaction: %w", err)
 	}
 
+	// If this was a payment escalation, send receipt/invoice
+	if interaction.DetectedIntent == "payment" {
+		if err := w.sendPaymentReceipt(ctx, interaction); err != nil {
+			w.Logger.Error("failed to send payment receipt",
+				zap.Error(err),
+				zap.Uint("interaction_id", interaction.ID))
+			// Don't fail the whole operation
+		}
+	}
+
 	w.Logger.Info("escalation resolved",
 		zap.Uint("interaction_id", interaction.ID),
 		zap.Uint("tenant_id", interaction.TenantID),
 	)
+
+	return nil
+}
+
+// sendPaymentReceipt sends payment confirmation receipt to customer
+func (w *EscalationWorkflow) sendPaymentReceipt(ctx context.Context, interaction *storage.Interaction) error {
+	// Find the payment record
+	var payment storage.Payment
+	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status IN ?", 
+		interaction.TenantID, interaction.CustomerID, []string{"verified", "confirmed"}).
+		Order("created_at DESC").
+		First(&payment).Error
+
+	if err != nil {
+		w.Logger.Warn("no payment record found for receipt",
+			zap.Uint("tenant_id", interaction.TenantID),
+			zap.Uint("customer_id", interaction.CustomerID))
+		return nil // Not an error, just no payment to receipt
+	}
+
+	// Generate receipt message
+	receiptMessage := fmt.Sprintf(`✅ *PAYMENT CONFIRMED*
+
+📝 Receipt #: %s
+💰 Amount: %s %.2f
+✓ Status: Payment Verified
+
+Thank you for your payment! Your transaction has been confirmed and processed successfully.
+
+If you have any questions, feel free to reach out.`,
+		payment.PaymentReference,
+		payment.Currency,
+		payment.Amount)
+
+	// Load customer for platform ID
+	var customer storage.Customer
+	if err := w.DB.First(&customer, interaction.CustomerID).Error; err != nil {
+		return fmt.Errorf("customer not found: %w", err)
+	}
+
+	// Send receipt via MessageSender
+	if w.MessageSender != nil && interaction.Platform == "whatsapp" {
+		if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, receiptMessage); err != nil {
+			return fmt.Errorf("failed to send receipt: %w", err)
+		}
+
+		// Update payment with receipt info
+		payment.ReceiptID = fmt.Sprintf("RCP-%s", payment.PaymentReference)
+		w.DB.Save(&payment)
+
+		w.Logger.Info("payment receipt sent",
+			zap.Uint("payment_id", payment.ID),
+			zap.String("receipt_id", payment.ReceiptID))
+	}
 
 	return nil
 }
@@ -406,11 +470,84 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		return fmt.Errorf("failed to create outgoing interaction: %w", err)
 	}
 
+	// If this was a payment confirmation, create/update payment record
+	if interaction.DetectedIntent == "payment" && strings.Contains(strings.ToLower(interaction.Content), "paid") {
+		if err := w.handlePaymentConfirmation(ctx, interaction); err != nil {
+			w.Logger.Error("failed to handle payment confirmation",
+				zap.Error(err),
+				zap.Uint("interaction_id", interaction.ID))
+			// Don't fail the whole operation, just log it
+		}
+	}
+
 	w.Logger.Info("reply sent to customer",
 		zap.Uint("interaction_id", interaction.ID),
 		zap.Uint("tenant_id", interaction.TenantID),
 		zap.Uint("customer_id", interaction.CustomerID),
 	)
+
+	return nil
+}
+
+// handlePaymentConfirmation creates/updates payment record when tenant approves payment
+func (w *EscalationWorkflow) handlePaymentConfirmation(ctx context.Context, interaction *storage.Interaction) error {
+	// Generate unique payment reference
+	paymentRef := fmt.Sprintf("PAY-%d-%d-%s", interaction.TenantID, interaction.CustomerID, time.Now().Format("20060102150405"))
+
+	// Check if payment already exists for this interaction
+	var existingPayment storage.Payment
+	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status = ?", 
+		interaction.TenantID, interaction.CustomerID, "pending").
+		Order("created_at DESC").
+		First(&existingPayment).Error
+
+	if err == nil {
+		// Update existing payment
+		existingPayment.Status = "verified"
+		existingPayment.VerificationStatus = "tenant_verified"
+		existingPayment.ClaimedByCustomer = true
+		now := time.Now()
+		existingPayment.ClaimedAt = &now
+		existingPayment.VerifiedAt = &now
+		existingPayment.CompletedAt = &now
+		
+		if err := w.DB.Save(&existingPayment).Error; err != nil {
+			return fmt.Errorf("failed to update payment: %w", err)
+		}
+		
+		w.Logger.Info("payment updated",
+			zap.Uint("payment_id", existingPayment.ID),
+			zap.String("payment_ref", existingPayment.PaymentReference))
+		return nil
+	}
+
+	// Create new payment record
+	payment := storage.Payment{
+		TenantID:           interaction.TenantID,
+		CustomerID:         interaction.CustomerID,
+		PaymentReference:   paymentRef,
+		Amount:             0, // TODO: Extract from order if linked
+		Currency:           "NGN",
+		PaymentMethod:      "bank_transfer", // Default, could be extracted from message
+		Status:             "verified",
+		VerificationStatus: "tenant_verified",
+		ClaimedByCustomer:  true,
+		Metadata:           fmt.Sprintf(`{"interaction_id":%d,"customer_message":"%s"}`, interaction.ID, interaction.Content),
+	}
+	
+	now := time.Now()
+	payment.ClaimedAt = &now
+	payment.VerifiedAt = &now
+	payment.CompletedAt = &now
+
+	if err := w.DB.Create(&payment).Error; err != nil {
+		return fmt.Errorf("failed to create payment: %w", err)
+	}
+
+	w.Logger.Info("payment record created",
+		zap.Uint("payment_id", payment.ID),
+		zap.String("payment_ref", payment.PaymentReference),
+		zap.Uint("tenant_id", interaction.TenantID))
 
 	return nil
 }
