@@ -516,8 +516,13 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	}
 
 	if len(items) == 0 {
-		items = []storage.OrderItem{}
-		total = 0
+		items = []storage.OrderItem{{
+			Name:       "Order",
+			Quantity:   1,
+			UnitPrice:  1,
+			TotalPrice: 1,
+		}}
+		total = 1
 	}
 
 	itemsJSON, _ := json.Marshal(items)
