@@ -522,7 +522,14 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 
 	itemsJSON, _ := json.Marshal(items)
 	orderNumber := fmt.Sprintf("ORD-TG-%d", time.Now().Unix())
-	paymentRef := utils.GeneratePaymentReference(interaction.TenantID)
+
+	var tenant storage.Tenant
+	_ = h.DB.First(&tenant, interaction.TenantID).Error
+	itemLabel := ""
+	if len(items) > 0 {
+		itemLabel = items[0].Name
+	}
+	paymentRef := utils.GeneratePaymentReference(tenant.Name, interaction.TenantID, itemLabel)
 
 	customerName := customer.DisplayName
 	handle := customer.Username

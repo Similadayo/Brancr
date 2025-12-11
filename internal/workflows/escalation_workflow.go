@@ -868,7 +868,14 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	if err != nil {
 		return err
 	}
-	paymentRef := utils.GeneratePaymentReference(interaction.TenantID)
+
+	var tenant storage.Tenant
+	_ = w.DB.First(&tenant, interaction.TenantID).Error
+	itemLabel := ""
+	if len(items) > 0 {
+		itemLabel = items[0].Name
+	}
+	paymentRef := utils.GeneratePaymentReference(tenant.Name, interaction.TenantID, itemLabel)
 
 	itemsJSON, _ := json.Marshal(items)
 	orderStatus := "pending"

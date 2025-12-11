@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -14,13 +15,25 @@ func GenerateOrderNumber(tenantID uint, sequenceNumber int) string {
 	return fmt.Sprintf("ORD-%d-%06d", year, sequenceNumber)
 }
 
-// GeneratePaymentReference generates a unique payment reference code
-// Format: BRNCR-{TENANT_ID}-{DATE}-{RANDOM}
-// Example: BRNCR-123-20241204-ABC123
-func GeneratePaymentReference(tenantID uint) string {
+// GeneratePaymentReference generates a unique payment reference code that starts with the tenant name
+// and includes a hint of the ordered item.
+// Format: {TENANT}-{ITEM}-{DATE}-{RANDOM}
+// Example: ACME-CAKE-20241204-ABC1
+func GeneratePaymentReference(tenantName string, tenantID uint, itemLabel string) string {
 	date := time.Now().Format("20060102") // YYYYMMDD format
-	random := generateRandomString(6)
-	return fmt.Sprintf("BRNCR-%d-%s-%s", tenantID, date, random)
+	random := generateRandomString(4)
+
+	tenantSlug := refSlug(tenantName, 10)
+	if tenantSlug == "" {
+		tenantSlug = fmt.Sprintf("TENANT%d", tenantID)
+	}
+
+	itemSlug := refSlug(itemLabel, 10)
+	if itemSlug == "" {
+		itemSlug = "ORDER"
+	}
+
+	return fmt.Sprintf("%s-%s-%s-%s", tenantSlug, itemSlug, date, random)
 }
 
 // generateRandomString generates a random alphanumeric string
@@ -32,6 +45,21 @@ func generateRandomString(length int) string {
 		b[i] = charset[seededRand.Intn(len(charset))]
 	}
 	return string(b)
+}
+
+// refSlug uppercases, removes spaces/non-alphanumerics, and truncates to maxLen.
+func refSlug(val string, maxLen int) string {
+	val = strings.ToUpper(strings.TrimSpace(val))
+	slug := strings.Builder{}
+	for _, r := range val {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			slug.WriteRune(r)
+		}
+		if slug.Len() >= maxLen {
+			break
+		}
+	}
+	return slug.String()
 }
 
 // GenerateReceiptID generates a unique receipt ID
@@ -48,4 +76,3 @@ func GenerateReceiptID() string {
 func GeneratePortalToken() string {
 	return generateRandomString(32)
 }
-

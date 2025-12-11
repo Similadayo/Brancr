@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -90,11 +91,9 @@ func (g *PaymentInstructionGenerator) GeneratePaymentInstructions(ctx context.Co
 	return instructions.String(), nil
 }
 
-// GeneratePaymentReference generates a unique payment reference code
-func (g *PaymentInstructionGenerator) GeneratePaymentReference(tenantID uint) string {
-	// Format: BRNCR-{TENANT_ID}-{DATE}-{RANDOM}
-	// Example: BRNCR-123-20241204-ABC123
-	return fmt.Sprintf("BRNCR-%d-%s", tenantID, generateRandomString(6))
+// GeneratePaymentReference generates a unique payment reference code prefixed by tenant name and item label
+func (g *PaymentInstructionGenerator) GeneratePaymentReference(tenantName string, tenantID uint, itemLabel string) string {
+	return utils.GeneratePaymentReference(tenantName, tenantID, itemLabel)
 }
 
 // generateRandomString generates a random alphanumeric string
@@ -106,4 +105,3 @@ func generateRandomString(length int) string {
 	}
 	return string(b)
 }
-
