@@ -973,6 +973,10 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	if payment.PortalToken == "" {
 		payment.PortalToken = utils.GeneratePortalToken()
 	}
+	// Ensure receipt id is unique per payment
+	if payment.ReceiptID == "" {
+		payment.ReceiptID = utils.GenerateReceiptID()
+	}
 
 	if err := w.DB.Create(&payment).Error; err != nil {
 		w.Logger.Warn("failed to auto-create payment for order",

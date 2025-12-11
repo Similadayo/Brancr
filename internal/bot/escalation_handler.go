@@ -620,6 +620,10 @@ func (h *EscalationHandler) ensurePaymentForOrder(interaction *storage.Interacti
 	if payment.PortalToken == "" {
 		payment.PortalToken = utils.GeneratePortalToken()
 	}
+	// Generate a unique receipt id to avoid duplicate key on idx_payments_receipt_id.
+	if payment.ReceiptID == "" {
+		payment.ReceiptID = utils.GenerateReceiptID()
+	}
 
 	if status == "verified" {
 		payment.VerifiedAt = &now
