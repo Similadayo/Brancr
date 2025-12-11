@@ -573,6 +573,38 @@ TASK: Look at the customer's current message above ("%s"). Reply to THAT message
 			customerName, customerPhone, customerEmail, _ := r.CustomerExtractor.ExtractCustomerInfo(
 				ctx, tenantID, customerID, conversationID, platform)
 
+			// Platform-specific identity enrichment
+			var customerRec storage.Customer
+			if err := r.DB.First(&customerRec, customerID).Error; err == nil {
+				handle := customerRec.Username
+				if handle == "" {
+					handle = customerRec.PlatformID
+				}
+
+				if customerName == "" {
+					customerName = customerRec.DisplayName
+				}
+				if customerName == "" {
+					customerName = customerRec.Username
+				}
+				if customerName == "" {
+					customerName = fmt.Sprintf("Customer-%d", customerRec.ID)
+				}
+
+				switch strings.ToLower(platform) {
+				case "whatsapp":
+					if customerPhone == "" {
+						customerPhone = customerRec.PlatformID
+					}
+				case "instagram", "facebook":
+					customerPhone = handle // store handle for visibility
+				default:
+					if customerPhone == "" {
+						customerPhone = customerRec.PlatformID
+					}
+				}
+			}
+
 			// Check if order details are complete OR customer is committed
 			detailsComplete := r.SalesConversationManager.DetectCompleteOrderDetails(ctx, salesConv, message, customerPhone)
 			isCommitted := salesConv.CommitmentLevel == "committed" && salesConv.Stage == "payment_instructions"

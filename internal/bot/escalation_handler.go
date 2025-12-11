@@ -499,6 +499,12 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 		}
 	}
 
+	if len(items) > 0 && total == 0 {
+		for _, it := range items {
+			total += it.TotalPrice
+		}
+	}
+
 	if len(items) == 0 && salesConv.PriceDiscussed > 0 {
 		items = []storage.OrderItem{{
 			Name:       "Order",
@@ -510,18 +516,38 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	}
 
 	if len(items) == 0 {
-		items = []storage.OrderItem{{
-			Name:       "Order",
-			Quantity:   1,
-			UnitPrice:  1,
-			TotalPrice: 1,
-		}}
-		total = 1
+		items = []storage.OrderItem{}
+		total = 0
 	}
 
 	itemsJSON, _ := json.Marshal(items)
 	orderNumber := fmt.Sprintf("ORD-TG-%d", time.Now().Unix())
 	paymentRef := utils.GeneratePaymentReference(interaction.TenantID)
+
+	customerName := customer.DisplayName
+	handle := customer.Username
+	if customerName == "" {
+		customerName = handle
+	}
+	if customerName == "" {
+		customerName = fmt.Sprintf("Customer-%d", customer.ID)
+	}
+
+	customerPhone := customer.PlatformID
+	switch strings.ToLower(interaction.Platform) {
+	case "whatsapp":
+		// keep phone as the chat number
+		if customerName == "" {
+			customerName = customer.Username
+		}
+	case "instagram", "facebook":
+		if handle == "" {
+			handle = customer.PlatformID
+		}
+		customerPhone = handle // store handle for visibility in dashboard
+	default:
+		// leave defaults
+	}
 	orderRec := storage.Order{
 		TenantID:         interaction.TenantID,
 		CustomerID:       interaction.CustomerID,
@@ -531,15 +557,9 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 		TotalAmount:      total,
 		Currency:         currency,
 		Items:            string(itemsJSON),
-		CustomerName:     customer.DisplayName,
-		CustomerPhone:    customer.PlatformID,
+		CustomerName:     customerName,
+		CustomerPhone:    customerPhone,
 		Platform:         interaction.Platform,
-	}
-	if orderRec.CustomerName == "" {
-		orderRec.CustomerName = customer.Username
-	}
-	if orderRec.CustomerName == "" {
-		orderRec.CustomerName = fmt.Sprintf("Customer-%d", customer.ID)
 	}
 
 	if err := h.DB.Create(&orderRec).Error; err != nil {
