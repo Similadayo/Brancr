@@ -794,6 +794,13 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	var draft ai.OrderDraft
 	if salesConv.PendingOrderDraft != "" {
 		_ = json.Unmarshal([]byte(salesConv.PendingOrderDraft), &draft)
+		w.Logger.Info("order draft parsed",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("conversation_id", interaction.ConversationID),
+			zap.Int("draft_item_count", len(draft.Items)),
+			zap.Float64("draft_total", draft.TotalAmount),
+			zap.String("draft_currency", draft.Currency),
+			zap.String("draft_payment_mode", draft.PaymentMode))
 	}
 
 	items := draft.Items
@@ -819,6 +826,12 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 			if currency == "" {
 				currency = "NGN"
 			}
+			w.Logger.Info("order payload extracted from sales conversation",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("conversation_id", interaction.ConversationID),
+				zap.Int("item_count", len(items)),
+				zap.Float64("total", total),
+				zap.String("currency", currency))
 		}
 	}
 
@@ -840,6 +853,11 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		if currency == "" {
 			currency = "NGN"
 		}
+		w.Logger.Warn("order payload missing details; using fallback pricing",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("conversation_id", interaction.ConversationID),
+			zap.Float64("fallback_total", fallbackTotal),
+			zap.Float64("price_discussed", salesConv.PriceDiscussed))
 	}
 
 	// Prevent duplicate orders created recently for the same customer on the same platform
@@ -939,7 +957,12 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	}
 
 	if err := w.DB.Create(&payment).Error; err != nil {
-		w.Logger.Warn("failed to auto-create payment for order", zap.Error(err))
+		w.Logger.Warn("failed to auto-create payment for order",
+			zap.Error(err),
+			zap.Uint("order_id", orderRec.ID),
+			zap.String("payment_reference", orderRec.PaymentReference),
+			zap.Float64("amount", total),
+			zap.String("currency", currency))
 	}
 
 	w.Logger.Info("order created from escalation approval",
