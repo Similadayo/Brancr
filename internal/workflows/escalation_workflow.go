@@ -30,6 +30,22 @@ type EscalationWorkflow struct {
 	MessageSender MessageSender // Interface for sending messages to customers
 }
 
+// getBot attempts to fetch a Telegram bot for the tenant via BotManager.
+func (w *EscalationWorkflow) getBot(tenantID uint) (*tgbotapi.BotAPI, bool) {
+	if w.BotManager == nil {
+		return nil, false
+	}
+
+	manager, ok := w.BotManager.(interface {
+		GetBot(id uint) (*tgbotapi.BotAPI, bool)
+	})
+	if !ok {
+		return nil, false
+	}
+
+	return manager.GetBot(tenantID)
+}
+
 // EscalationPriority determines the urgency of an escalation
 type EscalationPriority string
 
@@ -142,11 +158,46 @@ func (w *EscalationWorkflow) CreateEscalation(ctx context.Context, interactionID
 
 // sendEscalationNotification sends escalation to tenant's Telegram control center
 func (w *EscalationWorkflow) sendEscalationNotification(ctx context.Context, notification *EscalationNotification) error {
-	_ = ctx
-	// Notifications disabled for conversations
-	w.Logger.Debug("escalation notification skipped",
+	// Load tenant for chat target
+	var tenant storage.Tenant
+	if err := w.DB.First(&tenant, notification.TenantID).Error; err != nil {
+		return fmt.Errorf("tenant not found: %w", err)
+	}
+
+	if tenant.OwnerTelegramID == 0 {
+		w.Logger.Warn("skipping escalation notification - no owner telegram id",
+			zap.Uint("tenant_id", notification.TenantID),
+			zap.Uint("interaction_id", notification.InteractionID))
+		return nil
+	}
+
+	bot, ok := w.getBot(notification.TenantID)
+	if !ok || bot == nil {
+		w.Logger.Warn("skipping escalation notification - bot not available",
+			zap.Uint("tenant_id", notification.TenantID),
+			zap.Uint("interaction_id", notification.InteractionID))
+		return nil
+	}
+
+	messageText := w.formatEscalationMessage(notification)
+	keyboard := w.createEscalationKeyboard(notification.InteractionID, notification.Priority)
+	msg := tgbotapi.NewMessage(tenant.OwnerTelegramID, messageText)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+
+	if _, err := bot.Send(msg); err != nil {
+		w.Logger.Warn("failed to send escalation notification",
+			zap.Error(err),
+			zap.Uint("tenant_id", notification.TenantID),
+			zap.Uint("interaction_id", notification.InteractionID))
+		return nil // soft-fail so escalation flow continues
+	}
+
+	w.Logger.Info("escalation notification sent",
 		zap.Uint("tenant_id", notification.TenantID),
-		zap.Uint("interaction_id", notification.InteractionID))
+		zap.Uint("interaction_id", notification.InteractionID),
+		zap.String("platform", notification.Platform))
+
 	return nil
 }
 
@@ -449,25 +500,26 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		threadID = customer.PlatformID
 	}
 
-	// Actually send reply via social media API
+	// Actually send reply via social media API; soft-fail so we still record the outgoing interaction
+	sendErr := error(nil)
 	if w.MessageSender != nil {
 		switch interaction.Platform {
 		case "whatsapp":
 			if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, reply); err != nil {
-				w.Logger.Error("failed to send reply to customer",
+				sendErr = err
+				w.Logger.Warn("failed to send reply to customer",
 					zap.Error(err),
 					zap.Uint("interaction_id", interaction.ID),
 					zap.String("customer_platform_id", customer.PlatformID))
-				return fmt.Errorf("failed to send reply: %w", err)
 			}
 		case "instagram", "facebook":
 			if err := w.MessageSender.SendReply(ctx, interaction.TenantID, interaction.Platform, threadID, customer.PlatformID, reply); err != nil {
-				w.Logger.Error("failed to send reply to customer",
+				sendErr = err
+				w.Logger.Warn("failed to send reply to customer",
 					zap.Error(err),
 					zap.Uint("interaction_id", interaction.ID),
 					zap.String("customer_platform_id", customer.PlatformID),
 					zap.String("thread_id", threadID))
-				return fmt.Errorf("failed to send reply: %w", err)
 			}
 		default:
 			w.Logger.Warn("message sender not configured or unsupported platform",
@@ -480,7 +532,11 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 
 	// Update interaction
 	interaction.ResponseType = "manual"
-	interaction.ResponseStatus = "sent"
+	if sendErr != nil {
+		interaction.ResponseStatus = "delivery_failed"
+	} else {
+		interaction.ResponseStatus = "sent"
+	}
 	interaction.FinalReply = reply
 	now := time.Now()
 	interaction.EscalatedAt = &now
@@ -497,6 +553,15 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 	}
 
 	// Create outgoing interaction record
+	metadata := "{}"
+	if sendErr != nil {
+		metadataBytes, _ := json.Marshal(map[string]interface{}{
+			"delivery_failed": true,
+			"error":           sendErr.Error(),
+		})
+		metadata = string(metadataBytes)
+	}
+
 	outgoingInteraction := storage.Interaction{
 		TenantID:       interaction.TenantID,
 		CustomerID:     interaction.CustomerID,
@@ -506,9 +571,9 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		MessageType:    "text",
 		Content:        reply,
 		ResponseType:   "manual",
-		ResponseStatus: "sent",
+		ResponseStatus: interaction.ResponseStatus,
 		FinalReply:     reply,
-		Metadata:       "{}", // Empty JSON object - required for JSONB field
+		Metadata:       metadata,
 		CreatedAt:      time.Now(),
 	}
 
@@ -734,8 +799,24 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		}
 	}
 
+	// Final fallback: create a single-line manual item to ensure order persistence
 	if len(items) == 0 || total <= 0 {
-		return nil
+		fallbackTotal := salesConv.PriceDiscussed
+		if fallbackTotal <= 0 {
+			fallbackTotal = 1 // minimal non-zero to allow order creation
+		}
+		items = []storage.OrderItem{
+			{
+				Name:       "Order",
+				Quantity:   1,
+				UnitPrice:  fallbackTotal,
+				TotalPrice: fallbackTotal,
+			},
+		}
+		total = fallbackTotal
+		if currency == "" {
+			currency = "NGN"
+		}
 	}
 
 	// Prevent duplicate orders created recently for the same customer on the same platform
