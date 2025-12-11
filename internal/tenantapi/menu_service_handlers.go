@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/middleware"
@@ -181,16 +182,16 @@ func (h *Handler) createMenuItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"success": true,
 		"menu_item": map[string]any{
-			"id":              item.ID,
-			"name":            item.Name,
-			"description":     item.Description,
-			"price":           item.Price,
-			"currency":        item.Currency,
-			"category":        item.Category,
+			"id":               item.ID,
+			"name":             item.Name,
+			"description":      item.Description,
+			"price":            item.Price,
+			"currency":         item.Currency,
+			"category":         item.Category,
 			"preparation_time": item.PreparationTime,
-			"spice_level":     item.SpiceLevel,
-			"availability":    item.Availability,
-			"is_active":       item.IsActive,
+			"spice_level":      item.SpiceLevel,
+			"availability":     item.Availability,
+			"is_active":        item.IsActive,
 		},
 	})
 }
@@ -235,20 +236,20 @@ func (h *Handler) getMenuItem(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"menu_item": map[string]any{
-			"id":              item.ID,
-			"name":            item.Name,
-			"description":     item.Description,
-			"price":           item.Price,
-			"currency":        item.Currency,
-			"category":        item.Category,
+			"id":               item.ID,
+			"name":             item.Name,
+			"description":      item.Description,
+			"price":            item.Price,
+			"currency":         item.Currency,
+			"category":         item.Category,
 			"preparation_time": item.PreparationTime,
-			"spice_level":     item.SpiceLevel,
-			"availability":    item.Availability,
-			"is_active":       item.IsActive,
-			"dietary_info":    dietary,
-			"images":          images,
-			"created_at":      item.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"updated_at":      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"spice_level":      item.SpiceLevel,
+			"availability":     item.Availability,
+			"is_active":        item.IsActive,
+			"dietary_info":     dietary,
+			"images":           images,
+			"created_at":       item.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at":       item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -345,16 +346,16 @@ func (h *Handler) updateMenuItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"menu_item": map[string]any{
-			"id":              item.ID,
-			"name":            item.Name,
-			"description":     item.Description,
-			"price":           item.Price,
-			"currency":        item.Currency,
-			"category":        item.Category,
+			"id":               item.ID,
+			"name":             item.Name,
+			"description":      item.Description,
+			"price":            item.Price,
+			"currency":         item.Currency,
+			"category":         item.Category,
 			"preparation_time": item.PreparationTime,
-			"spice_level":     item.SpiceLevel,
-			"availability":    item.Availability,
-			"is_active":       item.IsActive,
+			"spice_level":      item.SpiceLevel,
+			"availability":     item.Availability,
+			"is_active":        item.IsActive,
 		},
 	})
 }
@@ -438,17 +439,17 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type serviceResp struct {
-		ID          uint                   `json:"id"`
-		Name        string                 `json:"name"`
-		Description string                 `json:"description"`
-		Pricing     map[string]interface{} `json:"pricing,omitempty"`
-		Packages    []interface{}          `json:"packages,omitempty"`
-		Duration    string                 `json:"duration"`
-		Deliverables string                `json:"deliverables"`
-		Category    string                 `json:"category"`
-		IsActive    bool                   `json:"is_active"`
-		CreatedAt   string                 `json:"created_at"`
-		UpdatedAt   string                 `json:"updated_at"`
+		ID           uint                   `json:"id"`
+		Name         string                 `json:"name"`
+		Description  string                 `json:"description"`
+		Pricing      map[string]interface{} `json:"pricing,omitempty"`
+		Packages     []interface{}          `json:"packages,omitempty"`
+		Duration     string                 `json:"duration"`
+		Deliverables string                 `json:"deliverables"`
+		Category     string                 `json:"category"`
+		IsActive     bool                   `json:"is_active"`
+		CreatedAt    string                 `json:"created_at"`
+		UpdatedAt    string                 `json:"updated_at"`
 	}
 
 	resp := make([]serviceResp, len(services))
@@ -514,22 +515,38 @@ func (h *Handler) createService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	service := storage.Service{
-		TenantID:    claims.TenantID,
-		Name:        req.Name,
-		Description: req.Description,
-		Duration:    req.Duration,
+		TenantID:     claims.TenantID,
+		Name:         req.Name,
+		Description:  req.Description,
+		Duration:     req.Duration,
 		Deliverables: req.Deliverables,
-		Category:    req.Category,
-		IsActive:    req.IsActive,
+		Category:     req.Category,
+		IsActive:     req.IsActive,
 	}
 
+	// Marshal pricing/packages safely; default to empty JSON to avoid invalid jsonb inserts
 	if req.Pricing != nil {
-		pricingJSON, _ := json.Marshal(req.Pricing)
+		pricingJSON, err := json.Marshal(req.Pricing)
+		if err != nil {
+			h.Logger.Error("invalid pricing payload", zap.Error(err))
+			http.Error(w, "invalid pricing", http.StatusBadRequest)
+			return
+		}
 		service.Pricing = string(pricingJSON)
+	} else {
+		service.Pricing = "{}"
 	}
+
 	if req.Packages != nil {
-		packagesJSON, _ := json.Marshal(req.Packages)
+		packagesJSON, err := json.Marshal(req.Packages)
+		if err != nil {
+			h.Logger.Error("invalid packages payload", zap.Error(err))
+			http.Error(w, "invalid packages", http.StatusBadRequest)
+			return
+		}
 		service.Packages = string(packagesJSON)
+	} else {
+		service.Packages = "[]"
 	}
 
 	ctx := r.Context()
@@ -671,12 +688,30 @@ func (h *Handler) updateService(w http.ResponseWriter, r *http.Request) {
 		service.IsActive = *req.IsActive
 	}
 	if req.Pricing != nil {
-		pricingJSON, _ := json.Marshal(req.Pricing)
+		pricingJSON, err := json.Marshal(req.Pricing)
+		if err != nil {
+			h.Logger.Error("invalid pricing payload", zap.Error(err))
+			http.Error(w, "invalid pricing", http.StatusBadRequest)
+			return
+		}
 		service.Pricing = string(pricingJSON)
 	}
 	if req.Packages != nil {
-		packagesJSON, _ := json.Marshal(req.Packages)
+		packagesJSON, err := json.Marshal(req.Packages)
+		if err != nil {
+			h.Logger.Error("invalid packages payload", zap.Error(err))
+			http.Error(w, "invalid packages", http.StatusBadRequest)
+			return
+		}
 		service.Packages = string(packagesJSON)
+	}
+
+	// Ensure we never persist empty strings into jsonb columns
+	if strings.TrimSpace(service.Pricing) == "" {
+		service.Pricing = "{}"
+	}
+	if strings.TrimSpace(service.Packages) == "" {
+		service.Packages = "[]"
 	}
 
 	if err := serviceRepo.Update(ctx, service); err != nil {
@@ -737,4 +772,3 @@ func (h *Handler) deleteService(w http.ResponseWriter, r *http.Request) {
 		"message": "service deleted",
 	})
 }
-
