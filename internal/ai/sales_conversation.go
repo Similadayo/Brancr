@@ -266,6 +266,9 @@ func (m *SalesConversationManager) BuildOrderDraft(salesConv *storage.SalesConve
 	if err != nil {
 		return nil, err
 	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("no items discussed; cannot build order draft")
+	}
 	return &OrderDraft{
 		Items:       items,
 		TotalAmount: total,
@@ -315,10 +318,14 @@ func (m *SalesConversationManager) extractOrderItemsFromConversation(salesConv *
 	var items []storage.OrderItem
 	var totalAmount float64
 
-	if salesConv.ItemsDiscussed != "" {
+	rawItems := strings.TrimSpace(salesConv.ItemsDiscussed)
+	if rawItems != "" {
 		var discussedItems []map[string]interface{}
-		if err := json.Unmarshal([]byte(salesConv.ItemsDiscussed), &discussedItems); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse items discussed: %w", err)
+		if err := json.Unmarshal([]byte(rawItems), &discussedItems); err != nil {
+			m.Logger.Warn("resetting invalid items_discussed json", zap.Error(err), zap.Uint("sales_conversation_id", salesConv.ID))
+			discussedItems = []map[string]interface{}{}
+			salesConv.ItemsDiscussed = "[]"
+			m.DB.Model(salesConv).Update("items_discussed", "[]")
 		}
 
 		for _, item := range discussedItems {
@@ -654,14 +661,19 @@ func minInt(a, b int) int {
 // DetectCompleteOrderDetails detects if all order details have been collected
 // Returns true if items, quantity, delivery info, and contact info are present
 func (m *SalesConversationManager) DetectCompleteOrderDetails(ctx context.Context, salesConv *storage.SalesConversation, message string, customerPhone string) bool {
-	// Check if items are discussed
-	hasItems := false
-	if salesConv.ItemsDiscussed != "" && salesConv.ItemsDiscussed != "[]" {
-		var items []map[string]interface{}
-		if err := json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items); err == nil && len(items) > 0 {
-			hasItems = true
+	var parsedItems []map[string]interface{}
+	rawItems := strings.TrimSpace(salesConv.ItemsDiscussed)
+	if rawItems != "" && rawItems != "[]" {
+		if err := json.Unmarshal([]byte(rawItems), &parsedItems); err != nil {
+			m.Logger.Warn("resetting invalid items_discussed json", zap.Error(err), zap.Uint("sales_conversation_id", salesConv.ID))
+			parsedItems = nil
+			salesConv.ItemsDiscussed = "[]"
+			m.DB.Model(salesConv).Update("items_discussed", "[]")
 		}
 	}
+
+	// Check if items are discussed
+	hasItems := len(parsedItems) > 0
 
 	// Check if price is discussed
 	hasPrice := salesConv.PriceDiscussed > 0
@@ -682,17 +694,14 @@ func (m *SalesConversationManager) DetectCompleteOrderDetails(ctx context.Contex
 
 	// Check for quantity in message or items
 	hasQuantity := false
-	if salesConv.ItemsDiscussed != "" {
-		var items []map[string]interface{}
-		if err := json.Unmarshal([]byte(salesConv.ItemsDiscussed), &items); err == nil {
-			for _, item := range items {
-				if q, ok := item["quantity"].(float64); ok && q > 0 {
-					hasQuantity = true
-					break
-				} else if q, ok := item["quantity"].(int); ok && q > 0 {
-					hasQuantity = true
-					break
-				}
+	if len(parsedItems) > 0 {
+		for _, item := range parsedItems {
+			if q, ok := item["quantity"].(float64); ok && q > 0 {
+				hasQuantity = true
+				break
+			} else if q, ok := item["quantity"].(int); ok && q > 0 {
+				hasQuantity = true
+				break
 			}
 		}
 	}

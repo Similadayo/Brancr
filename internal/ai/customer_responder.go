@@ -348,13 +348,25 @@ func (r *CustomerResponder) GenerateCustomerReplyWithSales(ctx context.Context, 
 				}
 			}
 
+			detailsComplete := r.SalesConversationManager.DetectCompleteOrderDetails(ctx, salesConv, message, "")
+
 			// Detect commitment
 			isCommitted, _ = r.SalesConversationManager.DetectCommitment(ctx, message, salesConv)
 			if isCommitted {
-				r.SalesConversationManager.UpdateCommitmentLevel(ctx, salesConv.ID, "committed")
-				r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, "payment_instructions")
-				// Build and store a pending order draft, then notify tenant for approval
-				r.buildAndNotifyOrderDraft(ctx, salesConv, biz, platform)
+				if detailsComplete {
+					r.SalesConversationManager.UpdateCommitmentLevel(ctx, salesConv.ID, "committed")
+					r.SalesConversationManager.UpdateStage(ctx, salesConv.ID, "payment_instructions")
+					// Build and store a pending order draft, then notify tenant for approval
+					r.buildAndNotifyOrderDraft(ctx, salesConv, biz, platform)
+				} else {
+					isCommitted = false
+					if r.Logger != nil {
+						r.Logger.Info("commit detected but details incomplete; holding escalation",
+							zap.Uint("sales_conversation_id", salesConv.ID),
+							zap.Bool("has_items", salesConv.ItemsDiscussed != "" && salesConv.ItemsDiscussed != "[]"),
+							zap.Bool("details_complete", detailsComplete))
+					}
+				}
 			}
 
 			// Detect negotiation

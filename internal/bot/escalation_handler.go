@@ -581,6 +581,7 @@ func (h *EscalationHandler) ensurePaymentForOrder(interaction *storage.Interacti
 		VerificationStatus: verification,
 		ClaimedByCustomer:  true,
 		ClaimedAt:          &now,
+		Metadata:           "{}",
 	}
 
 	if status == "verified" {
