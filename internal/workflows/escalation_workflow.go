@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -846,10 +844,10 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	if len(items) == 0 || total <= 0 {
 		fallbackTotal := salesConv.PriceDiscussed
 		if fallbackTotal <= 0 {
-			fallbackTotal = extractAmountFromText(interaction.Content)
+			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.Content)
 		}
 		if fallbackTotal <= 0 {
-			fallbackTotal = extractAmountFromText(interaction.FinalReply + " " + interaction.SuggestedReply)
+			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
 		}
 		if fallbackTotal <= 0 {
 			fallbackTotal = 1 // minimal non-zero to allow order creation
@@ -994,24 +992,6 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		zap.Uint("customer_id", interaction.CustomerID))
 
 	return nil
-}
-
-var amountRegex = regexp.MustCompile(`([0-9]{1,3}(?:[,0-9]*)(?:\.[0-9]+)?)`)
-
-// extractAmountFromText pulls the largest numeric amount from free text (naira strings like 50,000 or 50000)
-// to use as a last-resort price fallback.
-func extractAmountFromText(text string) float64 {
-	matches := amountRegex.FindAllString(text, -1)
-	var max float64
-	for _, m := range matches {
-		clean := strings.ReplaceAll(m, ",", "")
-		if val, err := strconv.ParseFloat(clean, 64); err == nil {
-			if val > max {
-				max = val
-			}
-		}
-	}
-	return max
 }
 
 // GetEscalationStats returns statistics about escalations for a tenant

@@ -727,8 +727,13 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return true, "order_request_requires_tenant_confirmation"
 	}
 
-	if paymentModePOD || paymentModePrepay {
+	if paymentModePOD {
 		return true, "payment_mode_confirmation_needed"
+	}
+
+	// Do not escalate when customer asks for account/bank details; handle via auto-reply flow.
+	if paymentModePrepay {
+		return false, ""
 	}
 
 	// 1. Check if customer explicitly asks for human

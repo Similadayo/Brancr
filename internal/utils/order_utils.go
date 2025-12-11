@@ -3,6 +3,8 @@ package utils
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,4 +77,37 @@ func GenerateReceiptID() string {
 // Format: {RANDOM_32_CHARS}
 func GeneratePortalToken() string {
 	return generateRandomString(32)
+}
+
+var ngnAmountRegex = regexp.MustCompile(`(?i)(?:\bngn\b|\bnaira\b|₦)?\s*([0-9]{1,3}(?:[,0-9]*)(?:\.[0-9]+)?)`)
+
+// ExtractLikelyAmountNGN attempts to extract a likely NGN amount from free text.
+// It prioritizes values explicitly marked with NGN/naira/₦ and ignores phone-like numbers when unmarked.
+func ExtractLikelyAmountNGN(text string) float64 {
+	text = strings.ToLower(text)
+
+	matches := ngnAmountRegex.FindAllStringSubmatch(text, -1)
+	var best float64
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		num := strings.ReplaceAll(m[1], ",", "")
+		// Ignore phone-like numbers (typically 10+ digits) unless currency is explicitly present.
+		if len(num) >= 10 {
+			full := m[0]
+			if !strings.Contains(full, "ngn") && !strings.Contains(full, "naira") && !strings.Contains(full, "₦") {
+				continue
+			}
+		}
+		val, err := strconv.ParseFloat(num, 64)
+		if err != nil {
+			continue
+		}
+		if val > best {
+			best = val
+		}
+	}
+
+	return best
 }

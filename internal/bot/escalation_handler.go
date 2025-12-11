@@ -54,7 +54,7 @@ func paymentModeFromText(text string) string {
 	switch {
 	case strings.Contains(lower, "cash on delivery") || strings.Contains(lower, "pay on delivery") || strings.Contains(lower, "pod"):
 		return "cash_on_delivery"
-	case strings.Contains(lower, "transfer") || strings.Contains(lower, "account") || strings.Contains(lower, "bank"):
+	case strings.Contains(lower, "i have paid") || strings.Contains(lower, "i've paid") || strings.Contains(lower, "paid") || strings.Contains(lower, "payment made") || strings.Contains(lower, "sent payment") || strings.Contains(lower, "transferred"):
 		return "bank_transfer"
 	default:
 		return "unknown"
@@ -455,7 +455,7 @@ func (h *EscalationHandler) sendApprovedReply(ctx context.Context, esc *PendingE
 
 // ensureOrderAndPayment creates an order and payment when approving via Telegram
 func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interaction *storage.Interaction) {
-	if interaction == nil || interaction.ConversationID == 0 {
+	if interaction == nil {
 		return
 	}
 
@@ -476,9 +476,11 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 		return
 	}
 
-	// Try to pull sales conversation to infer items/amount
+	// Try to pull sales conversation to infer items/amount (if available)
 	var salesConv storage.SalesConversation
-	_ = h.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error
+	if interaction.ConversationID != 0 {
+		_ = h.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error
+	}
 
 	items := []storage.OrderItem{}
 	total := 0.0
@@ -516,13 +518,23 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	}
 
 	if len(items) == 0 {
+		fallbackTotal := salesConv.PriceDiscussed
+		if fallbackTotal <= 0 {
+			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.Content)
+		}
+		if fallbackTotal <= 0 {
+			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
+		}
+		if fallbackTotal <= 0 {
+			fallbackTotal = 1
+		}
 		items = []storage.OrderItem{{
 			Name:       "Order",
 			Quantity:   1,
-			UnitPrice:  1,
-			TotalPrice: 1,
+			UnitPrice:  fallbackTotal,
+			TotalPrice: fallbackTotal,
 		}}
-		total = 1
+		total = fallbackTotal
 	}
 
 	itemsJSON, _ := json.Marshal(items)
