@@ -906,27 +906,40 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	}
 
 	now := time.Now()
-	// Auto-create payment record if customer already indicated payment
-	if paymentMode == "paid" {
-		payment := storage.Payment{
-			TenantID:           interaction.TenantID,
-			OrderID:            orderRec.ID,
-			CustomerID:         interaction.CustomerID,
-			PaymentReference:   orderRec.PaymentReference,
-			Amount:             total,
-			Currency:           currency,
-			PaymentMethod:      "bank_transfer",
-			Status:             "verified",
-			VerificationStatus: "tenant_verified",
-			ClaimedByCustomer:  true,
-			ClaimedAt:          &now,
-			VerifiedAt:         &now,
-			CompletedAt:        &now,
-		}
+	paymentStatus := "pending"
+	verificationStatus := "tenant_verified"
+	method := "cash_on_delivery"
+	claimed := false
+	var verifiedAt *time.Time
+	var completedAt *time.Time
 
-		if err := w.DB.Create(&payment).Error; err != nil {
-			w.Logger.Warn("failed to auto-create payment for order", zap.Error(err))
-		}
+	if paymentMode == "paid" {
+		paymentStatus = "verified"
+		method = "bank_transfer"
+		claimed = true
+		verifiedAt = &now
+		completedAt = &now
+	}
+
+	payment := storage.Payment{
+		TenantID:           interaction.TenantID,
+		OrderID:            orderRec.ID,
+		CustomerID:         interaction.CustomerID,
+		PaymentReference:   orderRec.PaymentReference,
+		Amount:             total,
+		Currency:           currency,
+		PaymentMethod:      method,
+		Status:             paymentStatus,
+		VerificationStatus: verificationStatus,
+		ClaimedByCustomer:  claimed,
+		ClaimedAt:          &now,
+		VerifiedAt:         verifiedAt,
+		CompletedAt:        completedAt,
+		Metadata:           "{}",
+	}
+
+	if err := w.DB.Create(&payment).Error; err != nil {
+		w.Logger.Warn("failed to auto-create payment for order", zap.Error(err))
 	}
 
 	w.Logger.Info("order created from escalation approval",
