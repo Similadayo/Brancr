@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/order"
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
@@ -412,19 +414,40 @@ func (w *EscalationWorkflow) sendPaymentReceipt(ctx context.Context, interaction
 		return nil // Not an error, just no payment to receipt
 	}
 
+	// Ensure we have a receipt URL (generate if missing)
+	if payment.ReceiptURL == "" || payment.ReceiptID == "" {
+		cloudinaryURL := os.Getenv("CLOUDINARY_URL")
+		publicURL := os.Getenv("PUBLIC_URL")
+		if publicURL == "" {
+			publicURL = "https://api.brancr.com"
+		}
+		receiptService := receipt.NewReceiptService(w.DB, w.Logger, cloudinaryURL, publicURL, nil)
+		if generated, err := receiptService.GenerateReceipt(ctx, payment.ID, payment.TenantID); err == nil {
+			payment = *generated
+		} else {
+			w.Logger.Warn("failed to generate receipt url", zap.Error(err), zap.Uint("payment_id", payment.ID))
+		}
+	}
+
+	linkLine := ""
+	if payment.ReceiptURL != "" {
+		linkLine = fmt.Sprintf("\n🔗 Receipt: %s", payment.ReceiptURL)
+	}
+
 	// Generate receipt message
 	receiptMessage := fmt.Sprintf(`✅ *PAYMENT CONFIRMED*
 
 📝 Receipt #: %s
 💰 Amount: %s %.2f
-✓ Status: Payment Verified
+✓ Status: Payment Verified%s
 
 Thank you for your payment! Your transaction has been confirmed and processed successfully.
 
 If you have any questions, feel free to reach out.`,
 		payment.PaymentReference,
 		payment.Currency,
-		payment.Amount)
+		payment.Amount,
+		linkLine)
 
 	// Load customer for platform ID
 	var customer storage.Customer
