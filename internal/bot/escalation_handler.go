@@ -616,6 +616,11 @@ func (h *EscalationHandler) ensurePaymentForOrder(interaction *storage.Interacti
 		Metadata:           "{}",
 	}
 
+	// Generate a portal token to avoid duplicate key on idx_payments_portal_token.
+	if payment.PortalToken == "" {
+		payment.PortalToken = utils.GeneratePortalToken()
+	}
+
 	if status == "verified" {
 		payment.VerifiedAt = &now
 	}

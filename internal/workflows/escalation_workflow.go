@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -832,12 +834,23 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 				zap.Int("item_count", len(items)),
 				zap.Float64("total", total),
 				zap.String("currency", currency))
+		} else {
+			w.Logger.Warn("order payload: failed to extract from sales conversation",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("conversation_id", interaction.ConversationID),
+				zap.Error(err))
 		}
 	}
 
 	// Final fallback: create a single-line manual item to ensure order persistence
 	if len(items) == 0 || total <= 0 {
 		fallbackTotal := salesConv.PriceDiscussed
+		if fallbackTotal <= 0 {
+			fallbackTotal = extractAmountFromText(interaction.Content)
+		}
+		if fallbackTotal <= 0 {
+			fallbackTotal = extractAmountFromText(interaction.FinalReply + " " + interaction.SuggestedReply)
+		}
 		if fallbackTotal <= 0 {
 			fallbackTotal = 1 // minimal non-zero to allow order creation
 		}
@@ -956,6 +969,11 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		Metadata:           "{}",
 	}
 
+	// Prevent unique constraint collisions on portal_token by generating one if empty.
+	if payment.PortalToken == "" {
+		payment.PortalToken = utils.GeneratePortalToken()
+	}
+
 	if err := w.DB.Create(&payment).Error; err != nil {
 		w.Logger.Warn("failed to auto-create payment for order",
 			zap.Error(err),
@@ -972,6 +990,24 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		zap.Uint("customer_id", interaction.CustomerID))
 
 	return nil
+}
+
+var amountRegex = regexp.MustCompile(`([0-9]{1,3}(?:[,0-9]*)(?:\.[0-9]+)?)`)
+
+// extractAmountFromText pulls the largest numeric amount from free text (naira strings like 50,000 or 50000)
+// to use as a last-resort price fallback.
+func extractAmountFromText(text string) float64 {
+	matches := amountRegex.FindAllString(text, -1)
+	var max float64
+	for _, m := range matches {
+		clean := strings.ReplaceAll(m, ",", "")
+		if val, err := strconv.ParseFloat(clean, 64); err == nil {
+			if val > max {
+				max = val
+			}
+		}
+	}
+	return max
 }
 
 // GetEscalationStats returns statistics about escalations for a tenant
