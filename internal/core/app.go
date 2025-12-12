@@ -152,9 +152,9 @@ func NewApp(cfg *config.Config) (*App, error) {
 		if maxIdle == 0 {
 			maxIdle = 10 // Default
 		}
-		
-		sqlDB2.SetMaxOpenConns(maxOpen)                 // Maximum open connections
-		sqlDB2.SetMaxIdleConns(maxIdle)                  // Maximum idle connections
+
+		sqlDB2.SetMaxOpenConns(maxOpen)             // Maximum open connections
+		sqlDB2.SetMaxIdleConns(maxIdle)             // Maximum idle connections
 		sqlDB2.SetConnMaxLifetime(time.Hour)        // Connection max lifetime
 		sqlDB2.SetConnMaxIdleTime(10 * time.Minute) // Idle connection timeout
 		// Set connection timeout for establishing new connections (30 seconds)
@@ -168,6 +168,9 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// 🧱 Run migrations
 	// First run GORM AutoMigrate for model synchronization
 	if err := storage.AutoMigrate(db); err != nil {
+		if cfg.AppEnv == "production" {
+			return nil, fmt.Errorf("gorm auto-migration failed: %w", err)
+		}
 		logger.Warn("gorm auto-migration failed", zap.Error(err))
 	} else {
 		logger.Info("gorm auto-migration complete")
@@ -176,8 +179,10 @@ func NewApp(cfg *config.Config) (*App, error) {
 	// Then run SQL migrations for schema changes, indexes, etc.
 	migrationsPath := "migrations"
 	if err := storage.RunMigrations(db, migrationsPath, logger); err != nil {
+		if cfg.AppEnv == "production" {
+			return nil, fmt.Errorf("sql migrations failed: %w", err)
+		}
 		logger.Warn("sql migrations failed", zap.Error(err))
-		// Don't fail startup if migrations fail - allow manual intervention
 	}
 
 	// 📊 Create database indexes for production performance
