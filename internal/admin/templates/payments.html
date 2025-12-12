@@ -1,0 +1,45 @@
+{{define "title"}}Payments — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Payments</h1>
+  <p>Recent payments across all tenants ({{.Total}})</p>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Tenant</th>
+        <th>Payment Ref</th>
+        <th>Order ID</th>
+        <th>Status</th>
+        <th>Verification</th>
+        <th>Amount</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Payments}}
+      <tr>
+        <td>{{.ID}}</td>
+        <td>
+          <a href="/admin/tenants/{{.TenantID}}" style="color: var(--accent); text-decoration: none;">{{if .TenantName}}{{.TenantName}}{{else}}Tenant #{{.TenantID}}{{end}}</a>
+        </td>
+        <td style="font-weight: 500;">{{.PaymentRef}}</td>
+        <td style="color: var(--text-secondary);">{{.OrderID}}</td>
+        <td><span class="badge info">{{.Status}}</span></td>
+        <td style="color: var(--text-secondary);">{{.Verification}}</td>
+        <td style="color: var(--text-secondary);">{{printf "%.2f" .Amount}} {{.Currency}}</td>
+        <td style="color: var(--text-secondary);">{{.CreatedAt}}</td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="8" style="text-align:center; padding: 40px; color: var(--text-secondary);">No payments found</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "layout.html" .}}

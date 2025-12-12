@@ -1,0 +1,160 @@
+{{define "title"}}Tenant — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>{{.Tenant.Name}}</h1>
+  <p>Tenant #{{.Tenant.ID}} • {{.Tenant.Email}}</p>
+</div>
+
+<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Status</div>
+        <div class="stat-card-value">{{.Tenant.Status}}</div>
+      </div>
+      <div class="stat-card-icon {{if eq .Tenant.Status "active"}}green{{else if eq .Tenant.Status "suspended"}}danger{{else}}orange{{end}}">⚙️</div>
+    </div>
+  </div>
+
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Plan</div>
+        <div class="stat-card-value">{{if .Quota}}{{.Quota.PlanType}}{{else}}{{.Tenant.PlanType}}{{end}}</div>
+      </div>
+      <div class="stat-card-icon blue">🏷️</div>
+    </div>
+  </div>
+
+  <div class="card stat-card">
+    <div class="stat-card-header">
+      <div>
+        <div class="stat-card-label">Pending Escalations</div>
+        <div class="stat-card-value">{{.PendingEscalations}}</div>
+      </div>
+      <div class="stat-card-icon orange">🚨</div>
+    </div>
+    <div style="margin-top: 12px;">
+      <a class="btn-secondary" style="display:inline-block; padding: 8px 12px;" href="/admin/escalations">Open inbox</a>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+  <div class="card">
+    <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 600;">Tenant Controls</h3>
+
+    <form method="POST" action="/admin/tenants/{{.Tenant.ID}}/status" style="display:flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 220px;">
+        <label for="tenant_status" style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Status</label>
+        <select id="tenant_status" name="status" aria-label="Status" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);">
+          <option value="active" {{if eq .Tenant.Status "active"}}selected{{end}}>active</option>
+          <option value="pending" {{if eq .Tenant.Status "pending"}}selected{{end}}>pending</option>
+          <option value="suspended" {{if eq .Tenant.Status "suspended"}}selected{{end}}>suspended</option>
+        </select>
+      </div>
+      <button type="submit" class="btn-primary" style="padding: 10px 14px;">Update status</button>
+    </form>
+
+    <div style="height: 16px;"></div>
+
+    <form method="POST" action="/admin/tenants/{{.Tenant.ID}}/quota" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+      <div style="grid-column: 1 / -1;">
+        <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Plan type</label>
+        <input name="plan_type" value="{{if .Quota}}{{.Quota.PlanType}}{{else}}{{.Tenant.PlanType}}{{end}}" placeholder="free / pro / enterprise" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+      </div>
+
+      <div>
+        <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">AI calls limit</label>
+        <input name="ai_calls_limit" value="{{if .Quota}}{{.Quota.AICallsLimit}}{{end}}" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+      </div>
+      <div>
+        <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Posts limit</label>
+        <input name="posts_limit" value="{{if .Quota}}{{.Quota.PostsLimit}}{{end}}" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+      </div>
+      <div>
+        <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Storage limit (MB)</label>
+        <input name="storage_limit_mb" value="{{if .Quota}}{{.Quota.StorageLimitMB}}{{end}}" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+      </div>
+      <div>
+        <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">API calls limit</label>
+        <input name="api_calls_limit" value="{{if .Quota}}{{.Quota.APICallsLimit}}{{end}}" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+      </div>
+
+      <div style="grid-column: 1 / -1; display:flex; gap: 10px; justify-content: space-between; align-items:center;">
+        <div style="font-size: 12px; color: var(--text-secondary);">Leave a field unchanged to keep existing value.</div>
+        <button type="submit" class="btn-primary" style="padding: 10px 14px;">Update plan & limits</button>
+      </div>
+    </form>
+
+    <div style="margin-top: 16px; display:flex; gap: 10px; flex-wrap: wrap;">
+      <a class="btn-secondary" style="display:inline-block; padding: 8px 12px;" href="/admin/tenants/{{.Tenant.ID}}/analytics">View analytics</a>
+      <a class="btn-secondary" style="display:inline-block; padding: 8px 12px;" href="/admin/usage?tenant_id={{.Tenant.ID}}">View usage</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 600;">Connected Accounts</h3>
+
+    <div class="table-container" style="box-shadow: none; border: 1px solid var(--border-color);">
+      <table>
+        <thead>
+          <tr>
+            <th>Platform</th>
+            <th>Mode</th>
+            <th>Status</th>
+            <th>Username</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Accounts}}
+          <tr>
+            <td style="font-weight: 500;">{{.Platform}}</td>
+            <td style="color: var(--text-secondary);">{{.Mode}}</td>
+            <td>
+              <span class="badge {{if .Connected}}success{{else}}warning{{end}}">{{if .Connected}}connected{{else}}disconnected{{end}}</span>
+            </td>
+            <td style="color: var(--text-secondary);">{{.Username}}</td>
+          </tr>
+          {{else}}
+          <tr>
+            <td colspan="4" style="text-align:center; padding: 24px; color: var(--text-secondary);">No accounts found</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+
+    <div style="height: 16px;"></div>
+
+    <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 600;">Recent Scheduled Posts</h3>
+    <div class="table-container" style="box-shadow: none; border: 1px solid var(--border-color);">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Status</th>
+            <th>Platforms</th>
+            <th>Scheduled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .ScheduledPosts}}
+          <tr>
+            <td>{{.ID}}</td>
+            <td><span class="badge info">{{.Status}}</span></td>
+            <td style="color: var(--text-secondary);">{{.Platforms}}</td>
+            <td style="color: var(--text-secondary);">{{.ScheduledAt.Format "Jan 2, 2006 15:04"}}</td>
+          </tr>
+          {{else}}
+          <tr>
+            <td colspan="4" style="text-align:center; padding: 24px; color: var(--text-secondary);">No scheduled posts found</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{{end}}
+{{template "layout.html" .}}

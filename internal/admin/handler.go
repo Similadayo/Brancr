@@ -828,7 +828,7 @@ func DashboardHandler(ctx *AdminContext) http.HandlerFunc {
 // ✅ GET /admin/tenants
 func TenantsHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		type Tenant struct {
+		type tenantView struct {
 			ID        uint
 			Name      string
 			Email     string
@@ -837,11 +837,23 @@ func TenantsHandler(ctx *AdminContext) http.HandlerFunc {
 			CreatedAt time.Time
 		}
 
-		var tenants []Tenant
+		var dbTenants []storage.Tenant
 		if ctx.DB != nil {
-			if err := ctx.DB.Model(&Tenant{}).Order("created_at DESC").Find(&tenants).Error; err != nil {
+			if err := ctx.DB.Order("created_at DESC").Find(&dbTenants).Error; err != nil {
 				ctx.Logger.Warn("failed to fetch tenants", zap.Error(err))
 			}
+		}
+
+		tenants := make([]tenantView, 0, len(dbTenants))
+		for _, t := range dbTenants {
+			tenants = append(tenants, tenantView{
+				ID:        t.ID,
+				Name:      t.Name,
+				Email:     t.Email,
+				PlanType:  t.PlanType,
+				Status:    t.Status,
+				CreatedAt: t.CreatedAt,
+			})
 		}
 
 		data := map[string]any{
@@ -851,15 +863,6 @@ func TenantsHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		renderTemplate(w, r, "tenants.html", data, ctx.Logger)
-	}
-}
-
-// ✅ GET /admin/tenants/{id}
-func TenantDetailHandler(ctx *AdminContext) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// For now, just redirect back to tenants list
-		// Can be extended later to show tenant details
-		http.Redirect(w, r, "/admin/tenants", http.StatusSeeOther)
 	}
 }
 

@@ -1,0 +1,54 @@
+{{define "title"}}Escalations — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Escalations</h1>
+  <p>Pending escalations across all tenants ({{.Total}})</p>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Tenant</th>
+        <th>Platform</th>
+        <th>Customer</th>
+        <th>Intent</th>
+        <th>Message</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Escalations}}
+      <tr>
+        <td>{{.InteractionID}}</td>
+        <td>
+          <a href="/admin/tenants/{{.TenantID}}" style="color: var(--accent); text-decoration: none;">{{if .TenantName}}{{.TenantName}}{{else}}Tenant #{{.TenantID}}{{end}}</a>
+        </td>
+        <td style="color: var(--text-secondary);">{{.Platform}}</td>
+        <td style="color: var(--text-secondary);">{{.CustomerName}}</td>
+        <td><span class="badge info">{{.Intent}}</span></td>
+        <td style="max-width: 420px; color: var(--text-secondary);">
+          {{.ContentPreview}}
+        </td>
+        <td style="color: var(--text-secondary);">{{.CreatedAt}}</td>
+        <td>
+          <form method="POST" action="/admin/escalations/{{.InteractionID}}/resolve" style="display:inline;">
+            <button type="submit" class="btn-primary" style="padding: 6px 10px; font-size: 12px;">Resolve</button>
+          </form>
+          <form method="POST" action="/admin/escalations/{{.InteractionID}}/resolve?action=ignore" style="display:inline; margin-left: 6px;">
+            <button type="submit" class="btn-secondary" style="padding: 6px 10px; font-size: 12px;">Ignore</button>
+          </form>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="8" style="text-align:center; padding: 40px; color: var(--text-secondary);">No pending escalations</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "layout.html" .}}
