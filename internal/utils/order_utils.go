@@ -93,15 +93,20 @@ func ExtractLikelyAmountNGN(text string) float64 {
 			continue
 		}
 		num := strings.ReplaceAll(m[1], ",", "")
+		full := m[0]
 		// Ignore phone-like numbers (typically 10+ digits) unless currency is explicitly present.
 		if len(num) >= 10 {
-			full := m[0]
 			if !strings.Contains(full, "ngn") && !strings.Contains(full, "naira") && !strings.Contains(full, "₦") {
 				continue
 			}
 		}
 		val, err := strconv.ParseFloat(num, 64)
 		if err != nil {
+			continue
+		}
+		// Ignore tiny numbers that are likely option selections (e.g. "go for 1") unless explicitly currency-marked.
+		hasCurrency := strings.Contains(full, "ngn") || strings.Contains(full, "naira") || strings.Contains(full, "₦")
+		if !hasCurrency && val > 0 && val < 50 {
 			continue
 		}
 		if val > best {

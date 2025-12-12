@@ -55,3 +55,14 @@ func TestShouldEscalateToHuman_PriceQuestion_DoesNotEscalate(t *testing.T) {
 		t.Fatalf("expected no escalation for price question")
 	}
 }
+
+func TestShouldEscalateToHuman_OrderOptionSelection_DoesNotEscalate(t *testing.T) {
+	h := &MessageHandler{}
+	msg := IncomingMessage{Content: "I will like to go for 1", MessageType: "text"}
+	intent := &ai.DetectedIntent{Intent: "order", Tone: "neutral", Confidence: 0.9}
+
+	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
+	if should {
+		t.Fatalf("expected no escalation for simple option selection")
+	}
+}

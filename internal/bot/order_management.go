@@ -18,7 +18,7 @@ import (
 // showOrdersMenu displays the orders management menu
 func (h *TenantWebhookHandler) showOrdersMenu(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
 	// Get order stats
-	var totalOrders, pendingOrders, confirmedOrders int64
+	var totalOrders, pendingOrders, completedOrders int64
 	h.Manager.DB.Model(&storage.Order{}).
 		Where("tenant_id = ?", tenantID).
 		Count(&totalOrders)
@@ -26,17 +26,17 @@ func (h *TenantWebhookHandler) showOrdersMenu(bot *tgbotapi.BotAPI, chatID int64
 		Where("tenant_id = ? AND status = ?", tenantID, "pending").
 		Count(&pendingOrders)
 	h.Manager.DB.Model(&storage.Order{}).
-		Where("tenant_id = ? AND status = ?", tenantID, "confirmed").
-		Count(&confirmedOrders)
+		Where("tenant_id = ? AND status = ?", tenantID, "completed").
+		Count(&completedOrders)
 
 	text := fmt.Sprintf(
 		"📦 *Order Management*\n\n"+
 			"📊 *Stats:*\n"+
 			"• Total: %d\n"+
 			"• Pending: %d\n"+
-			"• Confirmed: %d\n\n"+
+			"• Completed: %d\n\n"+
 			"Select an option:",
-		totalOrders, pendingOrders, confirmedOrders)
+		totalOrders, pendingOrders, completedOrders)
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -44,7 +44,7 @@ func (h *TenantWebhookHandler) showOrdersMenu(bot *tgbotapi.BotAPI, chatID int64
 			tgbotapi.NewInlineKeyboardButtonData("⏳ Pending", "orders:list:pending"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✅ Confirmed", "orders:list:confirmed"),
+			tgbotapi.NewInlineKeyboardButtonData("🎉 Completed", "orders:list:completed"),
 			tgbotapi.NewInlineKeyboardButtonData("📊 Stats", "orders:stats"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
@@ -190,13 +190,6 @@ func (h *TenantWebhookHandler) viewOrderDetails(bot *tgbotapi.BotAPI, chatID int
 		})
 	}
 
-	if order.Status == "confirmed" {
-		keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
-			tgbotapi.NewInlineKeyboardButtonData("✅ Mark Complete", fmt.Sprintf("order:complete:%d", order.ID)),
-			tgbotapi.NewInlineKeyboardButtonData("📄 Generate Receipt", fmt.Sprintf("order:receipt:%d", order.ID)),
-		})
-	}
-
 	keyboardRows = append(keyboardRows, []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("⬅️ Back to Orders", "orders:list:all"),
 	})
@@ -212,7 +205,6 @@ func (h *TenantWebhookHandler) showOrderStats(bot *tgbotapi.BotAPI, chatID int64
 	var stats struct {
 		TotalOrders       int64
 		PendingOrders     int64
-		ConfirmedOrders   int64
 		CompletedOrders   int64
 		TotalRevenue      float64
 		PendingRevenue    float64
@@ -228,15 +220,11 @@ func (h *TenantWebhookHandler) showOrderStats(bot *tgbotapi.BotAPI, chatID int64
 		Count(&stats.PendingOrders)
 
 	h.Manager.DB.Model(&storage.Order{}).
-		Where("tenant_id = ? AND status = ?", tenantID, "confirmed").
-		Count(&stats.ConfirmedOrders)
-
-	h.Manager.DB.Model(&storage.Order{}).
 		Where("tenant_id = ? AND status = ?", tenantID, "completed").
 		Count(&stats.CompletedOrders)
 
 	h.Manager.DB.Model(&storage.Order{}).
-		Where("tenant_id = ? AND status IN ?", tenantID, []string{"confirmed", "completed"}).
+		Where("tenant_id = ? AND status = ?", tenantID, "completed").
 		Select("COALESCE(SUM(total_amount), 0)").
 		Scan(&stats.TotalRevenue)
 
@@ -254,7 +242,6 @@ func (h *TenantWebhookHandler) showOrderStats(bot *tgbotapi.BotAPI, chatID int64
 			"*Overview:*\n"+
 			"• Total Orders: %d\n"+
 			"• Pending: %d\n"+
-			"• Confirmed: %d\n"+
 			"• Completed: %d\n\n"+
 			"*Revenue:*\n"+
 			"• Total: NGN %.2f\n"+
@@ -262,7 +249,6 @@ func (h *TenantWebhookHandler) showOrderStats(bot *tgbotapi.BotAPI, chatID int64
 			"• Average Order: NGN %.2f\n",
 		stats.TotalOrders,
 		stats.PendingOrders,
-		stats.ConfirmedOrders,
 		stats.CompletedOrders,
 		stats.TotalRevenue,
 		stats.PendingRevenue,
@@ -286,7 +272,10 @@ func (h *TenantWebhookHandler) handleOrderCallback(bot *tgbotapi.BotAPI, tenantI
 	case "menu":
 		h.showOrdersMenu(bot, chatID, tenantID)
 	case "list":
-		// arg format: "all", "pending", "confirmed"
+		// arg format: "all", "pending", "completed" ("confirmed" accepted for backward compatibility)
+		if arg == "confirmed" {
+			arg = "completed"
+		}
 		h.listOrders(bot, chatID, tenantID, arg)
 	case "view":
 		// arg is order ID
@@ -312,14 +301,6 @@ func (h *TenantWebhookHandler) handleOrderCallback(bot *tgbotapi.BotAPI, tenantI
 			return
 		}
 		h.markOrderComplete(bot, chatID, tenantID, uint(orderID))
-	case "receipt":
-		// arg is order ID - generate receipt
-		orderID, err := strconv.ParseUint(arg, 10, 32)
-		if err != nil {
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid order ID."))
-			return
-		}
-		h.generateOrderReceipt(bot, chatID, tenantID, uint(orderID))
 	case "stats":
 		h.showOrderStats(bot, chatID, tenantID)
 	case "notes":
@@ -370,11 +351,12 @@ func (h *TenantWebhookHandler) confirmOrderPayment(bot *tgbotapi.BotAPI, chatID 
 
 	// Update order status
 	now := time.Now()
-	order.Status = "confirmed"
+	order.Status = "completed"
 	order.ConfirmedAt = &now
+	order.CompletedAt = &now
 	h.Manager.DB.Save(&order)
 
-	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Payment confirmed for order %s", order.OrderNumber)))
+	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("🎉 Order %s marked as completed (payment verified)", order.OrderNumber)))
 	h.viewOrderDetails(bot, chatID, tenantID, orderID)
 }
 

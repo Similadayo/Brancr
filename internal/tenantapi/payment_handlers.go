@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 )
@@ -215,15 +216,25 @@ func (h *Handler) verifyPayment(w http.ResponseWriter, r *http.Request) {
 	var order storage.Order
 	if err := h.DB.First(&order, payment.OrderID).Error; err == nil {
 		if order.Status == "pending" {
-			order.Status = "confirmed"
+			order.Status = "completed"
 			order.ConfirmedAt = &now
+			order.CompletedAt = &now
 			h.DB.Save(&order)
 		}
 	}
 
-	// TODO: Auto-generate and send receipt via email/WhatsApp
-	// TODO: Trigger payment.verified webhook notification
-	// These require PDFGenerator, EmailService, and WebhookService to be added to Handler struct
+	// Auto-generate receipt on the payment (best-effort)
+	cloudinaryURL := h.getCloudinaryURL()
+	publicURL := h.Config.PublicURL
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com"
+	}
+	receiptService := receipt.NewReceiptService(h.DB, h.Logger, cloudinaryURL, publicURL, h.EmailService)
+	if generated, err := receiptService.GenerateReceipt(r.Context(), payment.ID, claims.TenantID); err == nil {
+		payment = *generated
+	} else {
+		h.Logger.Warn("failed to auto-generate receipt", zap.Error(err), zap.Uint("payment_id", payment.ID))
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -232,6 +243,8 @@ func (h *Handler) verifyPayment(w http.ResponseWriter, r *http.Request) {
 			"id":                  payment.ID,
 			"status":              payment.Status,
 			"verification_status": payment.VerificationStatus,
+			"receipt_id":          payment.ReceiptID,
+			"receipt_url":         payment.ReceiptURL,
 		},
 	})
 }

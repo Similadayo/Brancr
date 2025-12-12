@@ -319,8 +319,9 @@ func (h *Handler) confirmOrderPayment(w http.ResponseWriter, r *http.Request) {
 
 	// Update order status
 	now := time.Now()
-	order.Status = "confirmed"
+	order.Status = "completed"
 	order.ConfirmedAt = &now
+	order.CompletedAt = &now
 	if req.Notes != "" {
 		if order.Notes != "" {
 			order.Notes += "\n\n" + req.Notes
@@ -425,9 +426,9 @@ func (h *Handler) getOrderStats(w http.ResponseWriter, r *http.Request) {
 		Where("tenant_id = ? AND status = ?", claims.TenantID, "completed").
 		Count(&stats.CompletedOrders)
 
-	// Total revenue (from confirmed and completed orders)
+	// Total revenue (from completed orders)
 	h.DB.Model(&storage.Order{}).
-		Where("tenant_id = ? AND status IN (?)", claims.TenantID, []string{"confirmed", "completed"}).
+		Where("tenant_id = ? AND status = ?", claims.TenantID, "completed").
 		Select("COALESCE(SUM(total_amount), 0)").
 		Scan(&stats.TotalRevenue)
 

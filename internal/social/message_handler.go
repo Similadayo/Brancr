@@ -718,14 +718,9 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	messageLower := strings.ToLower(msg.Content)
 	isMediaType := msg.MessageType == "audio" || msg.MessageType == "image" || msg.MessageType == "video" || msg.MessageType == "document" || msg.MessageType == "sticker"
 
-	// Order flows may need tenant confirmation so we can track fulfillment and payment mode.
-	orderCue := strings.Contains(messageLower, "order") || strings.Contains(messageLower, "i'll take") || strings.Contains(messageLower, "i want one") || strings.Contains(messageLower, "add one")
+	// Payment mode cues.
 	paymentModePOD := strings.Contains(messageLower, "pay on delivery") || strings.Contains(messageLower, "cash on delivery") || strings.Contains(messageLower, "pod")
 	paymentModePrepay := strings.Contains(messageLower, "bank transfer") || strings.Contains(messageLower, "transfer") || strings.Contains(messageLower, "send account") || strings.Contains(messageLower, "account number")
-
-	if intent.Intent == "order" || orderCue {
-		return true, "order_request_requires_tenant_confirmation"
-	}
 
 	// Pay-on-delivery selection can require tenant approval.
 	if paymentModePOD {
@@ -734,6 +729,14 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 
 	// Do not escalate when customer asks for account/bank details; handle via auto-reply flow.
 	if paymentModePrepay {
+		return false, ""
+	}
+
+	// Simple ordering / option selections should be handled by the AI (no escalation).
+	trimmed := strings.TrimSpace(messageLower)
+	isBareOption := trimmed == "1" || trimmed == "2" || trimmed == "3" || trimmed == "4" || trimmed == "5"
+	orderCue := strings.Contains(messageLower, "i'll take") || strings.Contains(messageLower, "i want one") || strings.Contains(messageLower, "add one") || strings.Contains(messageLower, "go for") || strings.Contains(messageLower, "option ")
+	if intent.Intent == "order" || orderCue || isBareOption {
 		return false, ""
 	}
 

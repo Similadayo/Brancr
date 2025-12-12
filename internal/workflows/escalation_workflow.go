@@ -979,10 +979,12 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	itemsJSON, _ := json.Marshal(items)
 	orderStatus := "pending"
 	var confirmedAt *time.Time
+	var completedAt *time.Time
 	if paymentMode == "paid" {
-		orderStatus = "confirmed"
+		orderStatus = "completed"
 		now := time.Now()
 		confirmedAt = &now
+		completedAt = &now
 	}
 
 	orderRec := storage.Order{
@@ -998,6 +1000,7 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		CustomerPhone:    customer.PlatformID,
 		Platform:         interaction.Platform,
 		ConfirmedAt:      confirmedAt,
+		CompletedAt:      completedAt,
 	}
 
 	if err := w.DB.Create(&orderRec).Error; err != nil {
@@ -1010,7 +1013,6 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	method := "cash_on_delivery"
 	claimed := false
 	var verifiedAt *time.Time
-	var completedAt *time.Time
 
 	if paymentMode == "paid" {
 		paymentStatus = "verified"

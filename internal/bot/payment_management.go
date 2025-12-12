@@ -241,8 +241,9 @@ func (h *TenantWebhookHandler) verifyPayment(bot *tgbotapi.BotAPI, chatID int64,
 	// Update associated order status
 	var order storage.Order
 	if err := h.Manager.DB.First(&order, payment.OrderID).Error; err == nil {
-		order.Status = "confirmed"
+		order.Status = "completed"
 		order.ConfirmedAt = &now
+		order.CompletedAt = &now
 		h.Manager.DB.Save(&order)
 	}
 
