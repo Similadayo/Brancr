@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -23,6 +24,7 @@ type ReceiptService struct {
 	PublicURL     string // Public URL for receipt links
 	EmailService  interface {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+		SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
 	} // Optional email service
 }
 
@@ -30,6 +32,7 @@ type ReceiptService struct {
 // cloudinaryURL can be empty (will try to get from env), publicURL is required for portal links, emailService is optional
 func NewReceiptService(db *gorm.DB, logger *zap.Logger, cloudinaryURL, publicURL string, emailService interface {
 	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+	SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
 }) *ReceiptService {
 	// If cloudinaryURL is empty, try to get from environment
 	if cloudinaryURL == "" {
@@ -122,7 +125,15 @@ func (s *ReceiptService) GenerateReceipt(ctx context.Context, paymentID uint, te
 	}
 
 	// Send email receipt if email service is configured and customer email exists
-	if s.EmailService != nil && order.CustomerEmail != "" {
+	sendReceiptEmail := s.EmailService != nil && order.CustomerEmail != ""
+	if sendReceiptEmail {
+		var settings storage.TenantNotificationSettings
+		if err := s.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).First(&settings).Error; err == nil {
+			sendReceiptEmail = settings.EmailNotificationsEnabled && settings.EmailReceiptGenerated
+		}
+	}
+
+	if sendReceiptEmail {
 		portalURL := ""
 		if payment.PortalToken != "" && s.PublicURL != "" {
 			portalURL = fmt.Sprintf("%s/portal/order?token=%s", s.PublicURL, payment.PortalToken)
@@ -448,6 +459,9 @@ const receiptHTMLTemplate = `
 
 // GeneratePortalTokenAndURL generates a portal token and URL for customer access
 func (s *ReceiptService) GeneratePortalTokenAndURL(ctx context.Context, orderID uint, tenantID uint, publicURL string) (string, string, error) {
+	expiryDays := getPortalTokenExpiryDays()
+	expiresAt := time.Now().AddDate(0, 0, expiryDays)
+
 	// Check if payment exists for this order
 	var payment storage.Payment
 	if err := s.DB.Where("order_id = ? AND tenant_id = ?", orderID, tenantID).First(&payment).Error; err != nil {
@@ -471,6 +485,7 @@ func (s *ReceiptService) GeneratePortalTokenAndURL(ctx context.Context, orderID 
 			Currency:         order.Currency,
 			Status:           "pending",
 			PortalToken:      portalToken,
+			TokenExpiresAt:   &expiresAt,
 			CreatedAt:        time.Now(),
 		}
 
@@ -481,8 +496,23 @@ func (s *ReceiptService) GeneratePortalTokenAndURL(ctx context.Context, orderID 
 		// Generate portal token if not exists
 		portalToken := utils.GeneratePortalToken()
 		payment.PortalToken = portalToken
+		payment.TokenExpiresAt = &expiresAt
 		if err := s.DB.Save(&payment).Error; err != nil {
 			return "", "", fmt.Errorf("failed to save portal token: %w", err)
+		}
+	} else if payment.TokenExpiresAt == nil {
+		// Backfill token expiration for existing records
+		payment.TokenExpiresAt = &expiresAt
+		if err := s.DB.Save(&payment).Error; err != nil {
+			return "", "", fmt.Errorf("failed to save token expiration: %w", err)
+		}
+	} else if time.Now().After(*payment.TokenExpiresAt) {
+		// Token expired - rotate
+		portalToken := utils.GeneratePortalToken()
+		payment.PortalToken = portalToken
+		payment.TokenExpiresAt = &expiresAt
+		if err := s.DB.Save(&payment).Error; err != nil {
+			return "", "", fmt.Errorf("failed to rotate expired portal token: %w", err)
 		}
 	}
 
@@ -495,4 +525,16 @@ func (s *ReceiptService) GeneratePortalTokenAndURL(ctx context.Context, orderID 
 	}
 
 	return payment.PortalToken, portalURL, nil
+}
+
+func getPortalTokenExpiryDays() int {
+	v := os.Getenv("PORTAL_TOKEN_EXPIRY_DAYS")
+	if v == "" {
+		return 90
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 90
+	}
+	return n
 }

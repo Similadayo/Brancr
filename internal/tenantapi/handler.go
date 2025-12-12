@@ -70,6 +70,7 @@ type Handler struct {
 	InstagramInsights    *social.InstagramInsightsService // Instagram insights service
 	EmailService         interface {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+		SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
 	} // Optional email service for sending receipts
 
 	signupCache sync.Map
@@ -78,6 +79,7 @@ type Handler struct {
 
 func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service, instagramInsights *social.InstagramInsightsService, emailService interface {
 	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+	SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
 }, cacheService *cache.Cache) *Handler {
 	return &Handler{
 		DB:                   db,
@@ -153,6 +155,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Put("/tenant/settings/business-details", h.updateBusinessDetailsSettings)
 			r.Get("/tenant/settings/negotiation", h.getNegotiationSettings)
 			r.Put("/tenant/settings/negotiation", h.updateNegotiationSettings)
+			r.Get("/tenant/settings/notifications", h.getNotificationSettings)
+			r.Put("/tenant/settings/notifications", h.updateNotificationSettings)
+			r.Post("/tenant/settings/notifications/test", h.testNotificationSettings)
 
 			r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 

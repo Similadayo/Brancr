@@ -54,6 +54,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&Conversation{},
 		&ConversationUserState{},
 		&Notification{},
+		&TenantNotificationSettings{},
 		&Interaction{},
 		// Recurring templates
 		&RecurringTemplate{},

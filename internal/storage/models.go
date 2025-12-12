@@ -302,6 +302,28 @@ type NegotiationHistory struct {
 	UpdatedAt           time.Time
 }
 
+// TenantNotificationSettings stores tenant-configurable notification preferences.
+// This is used by order/payment notification delivery (email + webhooks).
+type TenantNotificationSettings struct {
+	gorm.Model
+	TenantID uint `gorm:"uniqueIndex"`
+
+	// Email notifications
+	EmailNotificationsEnabled bool `gorm:"default:true"`
+	EmailOrderStatusChanges   bool `gorm:"default:true"`
+	EmailPaymentConfirmations bool `gorm:"default:true"`
+	EmailReceiptGenerated     bool `gorm:"default:true"`
+
+	// Webhooks
+	WebhookEnabled bool   `gorm:"default:false"`
+	WebhookURL     string `gorm:"type:text"`
+	WebhookEvents  string `gorm:"type:jsonb"` // JSON array of event types
+	WebhookSecret  string `gorm:"size:255"`   // For webhook signing
+
+	LastTestAt     *time.Time
+	LastTestStatus string `gorm:"size:50"` // success, failed
+}
+
 // ACTIVITY & LOGGING
 
 type EventLog struct {

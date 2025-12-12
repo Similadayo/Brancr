@@ -35,10 +35,10 @@
         <td style="color: var(--text-secondary);">{{.CreatedAt}}</td>
         <td>
           <form method="POST" action="/admin/escalations/{{.InteractionID}}/resolve" style="display:inline;">
-            <button type="submit" class="btn-primary" style="padding: 6px 10px; font-size: 12px;">Resolve</button>
+            <button type="submit" class="btn-primary btn-sm">Resolve</button>
           </form>
           <form method="POST" action="/admin/escalations/{{.InteractionID}}/resolve?action=ignore" style="display:inline; margin-left: 6px;">
-            <button type="submit" class="btn-secondary" style="padding: 6px 10px; font-size: 12px;">Ignore</button>
+            <button type="submit" class="btn-secondary btn-sm">Ignore</button>
           </form>
         </td>
       </tr>

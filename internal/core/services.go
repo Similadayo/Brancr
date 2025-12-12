@@ -83,6 +83,7 @@ type Services struct {
 	// Email Service
 	EmailService interface {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
+		SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
 	}
 }
 

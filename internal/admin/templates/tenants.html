@@ -28,7 +28,7 @@
         <td><span class="badge {{if eq .Status "active"}}success{{else}}warning{{end}}">{{.Status}}</span></td>
         <td style="color: var(--text-secondary);">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
         <td>
-          <a href="/admin/tenants/{{.ID}}" class="btn-primary" style="padding: 6px 12px; font-size: 12px; text-decoration: none; display: inline-block;">View</a>
+          <a href="/admin/tenants/{{.ID}}" class="btn-primary btn-sm">View</a>
         </td>
       </tr>
       {{else}}

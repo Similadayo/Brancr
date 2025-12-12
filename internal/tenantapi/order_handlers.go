@@ -8,8 +8,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/notifications"
 	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/webhooks"
 	"go.uber.org/zap"
 )
 
@@ -253,9 +255,12 @@ func (h *Handler) updateOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Send notification if status changed (notification service will be added to handler if needed)
-		// For now, we'll skip notifications in updateOrder to avoid breaking changes
-		_ = oldStatus // Keep for future notification integration
+		ns := notifications.NewOrderNotificationService(h.DB, h.Logger)
+		if h.EmailService != nil {
+			ns.SetEmailService(h.EmailService)
+		}
+		ns.SetWebhookService(webhooks.NewWebhookService(h.DB, h.Logger))
+		_ = ns.NotifyOrderStatusChange(r.Context(), &order, oldStatus, order.Status)
 	} else {
 		// No status change, just update notes
 		if req.Notes != nil {
@@ -319,6 +324,7 @@ func (h *Handler) confirmOrderPayment(w http.ResponseWriter, r *http.Request) {
 
 	// Update order status
 	now := time.Now()
+	oldStatus := order.Status
 	order.Status = "completed"
 	order.ConfirmedAt = &now
 	order.CompletedAt = &now
@@ -335,6 +341,13 @@ func (h *Handler) confirmOrderPayment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to confirm payment", http.StatusInternalServerError)
 		return
 	}
+
+	ns := notifications.NewOrderNotificationService(h.DB, h.Logger)
+	if h.EmailService != nil {
+		ns.SetEmailService(h.EmailService)
+	}
+	ns.SetWebhookService(webhooks.NewWebhookService(h.DB, h.Logger))
+	_ = ns.NotifyOrderStatusChange(r.Context(), &order, oldStatus, order.Status)
 
 	// Update or create payment record
 	var payment storage.Payment

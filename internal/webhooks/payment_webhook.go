@@ -75,22 +75,58 @@ func (s *PaymentWebhookService) NotifyPaymentFailed(ctx context.Context, payment
 
 // sendWebhook sends webhook notification to all configured endpoints for the tenant
 func (s *PaymentWebhookService) sendWebhook(ctx context.Context, event string, payment *storage.Payment) error {
-	// Get tenant's webhook URLs from settings
+	// Prefer tenant notification settings model.
+	var settings storage.TenantNotificationSettings
+	if err := s.DB.WithContext(ctx).Where("tenant_id = ?", payment.TenantID).First(&settings).Error; err == nil {
+		if !settings.WebhookEnabled || settings.WebhookURL == "" {
+			return nil
+		}
+		if !eventAllowed(settings.WebhookEvents, event) {
+			return nil
+		}
+		payload := s.buildPayload(event, payment)
+		if err := s.sendToURL(ctx, settings.WebhookURL, payload, settings.WebhookSecret); err != nil {
+			s.Logger.Error("failed to send webhook", zap.Error(err), zap.String("url", settings.WebhookURL), zap.String("event", event))
+			return nil
+		}
+		return nil
+	}
+
+	// Fallback: legacy metadata webhook_urls.
 	var tenant storage.Tenant
 	if err := s.DB.First(&tenant, payment.TenantID).Error; err != nil {
 		return fmt.Errorf("tenant not found: %w", err)
 	}
 
-	// Parse webhook URLs from tenant metadata
 	webhookURLs := s.getWebhookURLs(&tenant)
 	if len(webhookURLs) == 0 {
-		s.Logger.Debug("no webhook URLs configured for tenant",
-			zap.Uint("tenant_id", payment.TenantID))
-		return nil // Not an error, just no webhooks configured
+		s.Logger.Debug("no webhook URLs configured for tenant", zap.Uint("tenant_id", payment.TenantID))
+		return nil
 	}
 
-	// Build payload
-	payload := PaymentWebhookPayload{
+	payload := s.buildPayload(event, payment)
+
+	// Send to all configured webhook URLs
+	for _, url := range webhookURLs {
+		if err := s.sendToURL(ctx, url, payload, tenant.WebhookSecret); err != nil {
+			s.Logger.Error("failed to send webhook",
+				zap.Error(err),
+				zap.String("url", url),
+				zap.String("event", event))
+			// Continue sending to other URLs even if one fails
+		} else {
+			s.Logger.Info("webhook sent successfully",
+				zap.String("url", url),
+				zap.String("event", event),
+				zap.Uint("payment_id", payment.ID))
+		}
+	}
+
+	return nil
+}
+
+func (s *PaymentWebhookService) buildPayload(event string, payment *storage.Payment) *PaymentWebhookPayload {
+	payload := &PaymentWebhookPayload{
 		Event:     event,
 		Timestamp: time.Now(),
 	}
@@ -110,23 +146,7 @@ func (s *PaymentWebhookService) sendWebhook(ctx context.Context, event string, p
 		payload.Data.VerifiedAt = &verifiedAt
 	}
 
-	// Send to all configured webhook URLs
-	for _, url := range webhookURLs {
-		if err := s.sendToURL(ctx, url, &payload, tenant.WebhookSecret); err != nil {
-			s.Logger.Error("failed to send webhook",
-				zap.Error(err),
-				zap.String("url", url),
-				zap.String("event", event))
-			// Continue sending to other URLs even if one fails
-		} else {
-			s.Logger.Info("webhook sent successfully",
-				zap.String("url", url),
-				zap.String("event", event),
-				zap.Uint("payment_id", payment.ID))
-		}
-	}
-
-	return nil
+	return payload
 }
 
 // sendToURL sends webhook payload to a specific URL

@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
@@ -48,6 +49,15 @@ func (s *OrderNotificationService) NotifyOrderStatusChange(ctx context.Context, 
 		return nil // No change
 	}
 
+	// Tenant notification settings (missing settings -> defaults).
+	emailAllowed := true
+	webhookAllowed := false
+	var settings storage.TenantNotificationSettings
+	if err := s.DB.WithContext(ctx).Where("tenant_id = ?", order.TenantID).First(&settings).Error; err == nil {
+		emailAllowed = settings.EmailNotificationsEnabled && settings.EmailOrderStatusChanges
+		webhookAllowed = settings.WebhookEnabled && eventAllowed(settings.WebhookEvents, "order.status_changed")
+	}
+
 	// Get payment to find portal URL
 	var payment storage.Payment
 	portalURL := ""
@@ -55,8 +65,8 @@ func (s *OrderNotificationService) NotifyOrderStatusChange(ctx context.Context, 
 		portalURL = payment.PortalURL
 	}
 
-	// Send email notification if email service is configured and customer email exists
-	if s.EmailService != nil && order.CustomerEmail != "" {
+	// Send email notification if enabled.
+	if emailAllowed && s.EmailService != nil && order.CustomerEmail != "" {
 		if err := s.EmailService.SendOrderStatusEmail(
 			order.CustomerEmail,
 			order.CustomerName,
@@ -71,8 +81,8 @@ func (s *OrderNotificationService) NotifyOrderStatusChange(ctx context.Context, 
 		}
 	}
 
-	// Send webhook notification if webhook service is configured
-	if s.WebhookService != nil {
+	// Send webhook notification if enabled.
+	if webhookAllowed && s.WebhookService != nil {
 		payload := map[string]interface{}{
 			"event":       "order.status_changed",
 			"order_id":    order.ID,
@@ -94,5 +104,24 @@ func (s *OrderNotificationService) NotifyOrderStatusChange(ctx context.Context, 
 	}
 
 	return nil
+}
+
+func eventAllowed(eventsJSON string, event string) bool {
+	if eventsJSON == "" {
+		return true
+	}
+	var events []string
+	if err := json.Unmarshal([]byte(eventsJSON), &events); err != nil {
+		return true
+	}
+	if len(events) == 0 {
+		return true
+	}
+	for _, e := range events {
+		if e == event {
+			return true
+		}
+	}
+	return false
 }
 
