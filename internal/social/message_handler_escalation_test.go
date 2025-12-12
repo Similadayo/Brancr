@@ -33,6 +33,17 @@ func TestShouldEscalateToHuman_PaymentConfirmation_Escalates(t *testing.T) {
 	}
 }
 
+func TestShouldEscalateToHuman_PaymentConfirmation_Escalates_EvenIfIntentOrder(t *testing.T) {
+	h := &MessageHandler{}
+	msg := IncomingMessage{Content: "I already made the payment 50000", MessageType: "text"}
+	intent := &ai.DetectedIntent{Intent: "order", Tone: "neutral", Confidence: 0.9}
+
+	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
+	if !should {
+		t.Fatalf("expected escalation for payment confirmation even when intent=order")
+	}
+}
+
 func TestShouldEscalateToHuman_PayOnDelivery_NoEscalation(t *testing.T) {
 	h := &MessageHandler{}
 	msg := IncomingMessage{Content: "pay on delivery", MessageType: "text"}
@@ -41,6 +52,17 @@ func TestShouldEscalateToHuman_PayOnDelivery_NoEscalation(t *testing.T) {
 	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
 	if !should {
 		t.Fatalf("expected escalation for pay-on-delivery approval")
+	}
+}
+
+func TestShouldEscalateToHuman_PayOnDelivery_Inquiry_DoesNotEscalate(t *testing.T) {
+	h := &MessageHandler{}
+	msg := IncomingMessage{Content: "Do you do pay on delivery?", MessageType: "text"}
+	intent := &ai.DetectedIntent{Intent: "inquiry", Tone: "neutral", Confidence: 0.9}
+
+	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
+	if should {
+		t.Fatalf("expected no escalation for POD inquiry")
 	}
 }
 

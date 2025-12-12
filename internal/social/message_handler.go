@@ -718,28 +718,6 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	messageLower := strings.ToLower(msg.Content)
 	isMediaType := msg.MessageType == "audio" || msg.MessageType == "image" || msg.MessageType == "video" || msg.MessageType == "document" || msg.MessageType == "sticker"
 
-	// Payment mode cues.
-	paymentModePOD := strings.Contains(messageLower, "pay on delivery") || strings.Contains(messageLower, "cash on delivery") || strings.Contains(messageLower, "pod")
-	paymentModePrepay := strings.Contains(messageLower, "bank transfer") || strings.Contains(messageLower, "transfer") || strings.Contains(messageLower, "send account") || strings.Contains(messageLower, "account number")
-
-	// Pay-on-delivery selection can require tenant approval.
-	if paymentModePOD {
-		return true, "payment_mode_confirmation_needed"
-	}
-
-	// Do not escalate when customer asks for account/bank details; handle via auto-reply flow.
-	if paymentModePrepay {
-		return false, ""
-	}
-
-	// Simple ordering / option selections should be handled by the AI (no escalation).
-	trimmed := strings.TrimSpace(messageLower)
-	isBareOption := trimmed == "1" || trimmed == "2" || trimmed == "3" || trimmed == "4" || trimmed == "5"
-	orderCue := strings.Contains(messageLower, "i'll take") || strings.Contains(messageLower, "i want one") || strings.Contains(messageLower, "add one") || strings.Contains(messageLower, "go for") || strings.Contains(messageLower, "option ")
-	if intent.Intent == "order" || orderCue || isBareOption {
-		return false, ""
-	}
-
 	// 1. Check if customer explicitly asks for human
 	explicitHumanRequest := strings.Contains(messageLower, "speak to") ||
 		strings.Contains(messageLower, "talk to") ||
@@ -754,6 +732,41 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 
 	if explicitHumanRequest {
 		return true, "customer_explicitly_requested_human"
+	}
+
+	// 2. Payment confirmation MUST escalate (tenant needs to verify & send receipt)
+	// Do this early so misclassification (e.g. intent=order) doesn't suppress escalation.
+	isPaymentConfirmation := h.isPaymentConfirmation(msg.Content)
+	if isPaymentConfirmation && intent.Confidence > 0.35 {
+		return true, "payment_confirmation_requires_tenant_verification"
+	}
+
+	// 3. Payment mode cues.
+	paymentModePOD := strings.Contains(messageLower, "pay on delivery") || strings.Contains(messageLower, "cash on delivery") || strings.Contains(messageLower, "pod")
+	paymentModePrepay := strings.Contains(messageLower, "bank transfer") || strings.Contains(messageLower, "transfer") || strings.Contains(messageLower, "send account") || strings.Contains(messageLower, "account number")
+
+	// Pay-on-delivery: escalate only when it's a selection/commitment, not a question.
+	if paymentModePOD {
+		isInquiry := strings.Contains(messageLower, "do you") || strings.Contains(messageLower, "can i") || strings.Contains(messageLower, "can we") ||
+			strings.Contains(messageLower, "is it") || strings.Contains(messageLower, "is there") || strings.Contains(messageLower, "available") ||
+			strings.Contains(messageLower, "possible") || strings.Contains(messageLower, "how") || strings.Contains(messageLower, "?")
+		if !isInquiry {
+			return true, "payment_mode_confirmation_needed"
+		}
+		return false, ""
+	}
+
+	// Do not escalate when customer asks for account/bank details; handle via auto-reply flow.
+	if paymentModePrepay {
+		return false, ""
+	}
+
+	// 4. Simple ordering / option selections should be handled by the AI (no escalation).
+	trimmed := strings.TrimSpace(messageLower)
+	isBareOption := trimmed == "1" || trimmed == "2" || trimmed == "3" || trimmed == "4" || trimmed == "5"
+	orderCue := strings.Contains(messageLower, "i'll take") || strings.Contains(messageLower, "i want one") || strings.Contains(messageLower, "add one") || strings.Contains(messageLower, "go for") || strings.Contains(messageLower, "option ")
+	if intent.Intent == "order" || orderCue || isBareOption {
+		return false, ""
 	}
 
 	// 2. Check conversation history for repeated frustration
@@ -805,8 +818,6 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	// Customer CONFIRMS they paid: Must escalate for tenant to verify & send receipt
 	// Customer asking WHEN TO PAY: Can auto-reply with POD info if applicable
 
-	isPaymentConfirmation := h.isPaymentConfirmation(msg.Content)
-
 	isPaymentInquiry := strings.Contains(messageLower, "how to pay") ||
 		strings.Contains(messageLower, "payment method") ||
 		strings.Contains(messageLower, "where to send") ||
@@ -825,11 +836,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return false, ""
 	}
 
-	// Escalate if customer confirms they paid - tenant must verify & send receipt
-	// Only escalate when we have a real payment-confirmation signal (avoid escalating on price/payment-method talk).
-	if isPaymentConfirmation && intent.Confidence > 0.5 {
-		return true, "payment_confirmation_requires_tenant_verification"
-	}
+	// Escalate if customer confirms they paid - handled early above.
 
 	// Escalate invoice requests - tenant needs to generate/send
 	if isInvoiceRequest {
@@ -2474,6 +2481,9 @@ func (h *MessageHandler) isPaymentConfirmation(message string) bool {
 		strings.Contains(lower, "sent payment") ||
 		strings.Contains(lower, "transferred") ||
 		strings.Contains(lower, "payment made") ||
+		strings.Contains(lower, "made the payment") ||
+		strings.Contains(lower, "made payment") ||
+		strings.Contains(lower, "payment done") ||
 		strings.Contains(lower, "i have sent") ||
 		strings.Contains(lower, "i sent") ||
 		strings.Contains(lower, "already paid")
