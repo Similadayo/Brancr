@@ -377,8 +377,9 @@ func (w *EscalationWorkflow) resolveEscalation(ctx context.Context, interaction 
 		return fmt.Errorf("failed to update interaction: %w", err)
 	}
 
-	// If this was a payment escalation, send receipt/invoice and ensure order exists
-	if interaction.DetectedIntent == "payment" {
+	// If this was a payment escalation, send receipt/invoice and ensure order exists.
+	// Prefer event signal (stored in metadata) and keep DetectedIntent as fallback.
+	if interaction.DetectedIntent == "payment" || ai.MetadataHasEvent(interaction.Metadata, ai.EventPaymentConfirmation) {
 		if err := w.createOrderIfPossible(ctx, interaction); err != nil {
 			w.Logger.Warn("failed to ensure order on payment resolution", zap.Error(err))
 		}
@@ -614,8 +615,11 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 		return fmt.Errorf("failed to create outgoing interaction: %w", err)
 	}
 
-	// If this was a payment confirmation, create/update payment record
-	if interaction.DetectedIntent == "payment" && strings.Contains(strings.ToLower(interaction.Content), "paid") {
+	// If this was a payment confirmation, create/update payment record.
+	// Prefer event signal (stored in metadata) and keep DetectedIntent+keyword as fallback.
+	isPaymentConfirmation := ai.MetadataHasEvent(interaction.Metadata, ai.EventPaymentConfirmation) ||
+		(interaction.DetectedIntent == "payment" && strings.Contains(strings.ToLower(interaction.Content), "paid"))
+	if isPaymentConfirmation {
 		if err := w.handlePaymentConfirmation(ctx, interaction); err != nil {
 			w.Logger.Error("failed to handle payment confirmation",
 				zap.Error(err),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
@@ -185,8 +186,9 @@ func (h *EscalationHandler) HandleResolutionMessage(ctx context.Context, tenantI
 		}
 	}
 
-	// Send payment receipt if this was a payment escalation
-	if interaction.DetectedIntent == "payment" {
+	// Send payment receipt if this was a payment escalation.
+	// Prefer event signal stored in metadata; keep legacy intent as fallback.
+	if interaction.DetectedIntent == "payment" || ai.MetadataHasEvent(interaction.Metadata, ai.EventPaymentConfirmation) {
 		if err := h.sendPaymentReceiptToCustomer(ctx, &interaction); err != nil {
 			h.Logger.Error("failed to send payment receipt",
 				zap.Error(err),

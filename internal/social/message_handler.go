@@ -191,6 +191,13 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	}
 
 	// Step 3: Log interaction (update lock interaction if exists, otherwise create new)
+	metadataMap := make(map[string]interface{})
+	for k, v := range msg.Metadata {
+		metadataMap[k] = v
+	}
+	ai.AttachEventsToMetadata(metadataMap, ai.ExtractEvents(msg.Content))
+	interactionMetadataJSON := h.metadataToJSON(metadataMap)
+
 	var interaction storage.Interaction
 	if lockInteractionID > 0 {
 		// Update the existing lock interaction with full details
@@ -202,7 +209,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			interaction.Confidence = intent.Confidence
 			interaction.ResponseType = "auto_reply"
 			interaction.ResponseStatus = "pending"
-			interaction.Metadata = h.metadataToJSON(msg.Metadata)
+			interaction.Metadata = interactionMetadataJSON
 
 			if err := h.DB.Save(&interaction).Error; err != nil {
 				h.Logger.Error("failed to update lock interaction", zap.Error(err))
@@ -234,7 +241,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			Confidence:        intent.Confidence,
 			ResponseType:      "auto_reply",
 			ResponseStatus:    "pending",
-			Metadata:          h.metadataToJSON(msg.Metadata),
+			Metadata:          interactionMetadataJSON,
 		}
 
 		if err := h.DB.Create(&interaction).Error; err != nil {
@@ -732,6 +739,11 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 
 	if explicitHumanRequest {
 		return true, "customer_explicitly_requested_human"
+	}
+
+	// Event-driven fast path (backward compatible): use deterministic events when sufficient.
+	if d := ai.DecideEscalationFromEvents(ai.ExtractEvents(msg.Content)); d.Handled {
+		return d.ShouldEscalate, d.Reason
 	}
 
 	// 2. Payment confirmation MUST escalate (tenant needs to verify & send receipt)

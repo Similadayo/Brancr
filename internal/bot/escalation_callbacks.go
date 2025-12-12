@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 )
@@ -21,19 +22,19 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid callback format. Please try typing 'approve <id>' or 'edit <id>' instead."))
 		return
 	}
-	
+
 	action := parts[0] // "approve", "edit", "ignore"
 	interactionIDStr := parts[1]
-	
+
 	interactionID, err := strconv.ParseUint(interactionIDStr, 10, 32)
 	if err != nil {
 		h.Manager.Logger.Warn("invalid interaction ID in escalation callback", zap.String("id", interactionIDStr))
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Invalid escalation ID. Please try again."))
 		return
 	}
-	
+
 	ctx := context.Background()
-	
+
 	switch action {
 	case "approve":
 		// 🔒 SECURITY: Verify access for payment escalations
@@ -41,7 +42,8 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 			// Check if this is a payment escalation
 			var interaction storage.Interaction
 			if err := h.Manager.DB.First(&interaction, interactionID).Error; err == nil {
-				if interaction.SecurityLevel == "payment" || interaction.DetectedIntent == "payment" {
+				isPaymentEscalation := interaction.SecurityLevel == "payment" || interaction.DetectedIntent == "payment" || ai.MetadataHasEvent(interaction.Metadata, ai.EventPaymentConfirmation)
+				if isPaymentEscalation {
 					// Verify access and log
 					allowed, err := h.Manager.EscalationHandler.PaymentSecurity.VerifyPaymentAccess(tenantID, uint(interactionID), chatID)
 					if !allowed || err != nil {
@@ -53,7 +55,7 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 						bot.Send(tgbotapi.NewMessage(chatID, "❌ Unauthorized: Payment escalations require owner verification."))
 						return
 					}
-					
+
 					// Check rate limit
 					rateOk, err := h.Manager.EscalationHandler.PaymentSecurity.CheckRateLimit(tenantID, chatID)
 					if !rateOk || err != nil {
@@ -63,13 +65,13 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 						bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Too many requests. Please wait a moment before trying again."))
 						return
 					}
-					
+
 					// Log authorized access
 					h.Manager.EscalationHandler.PaymentSecurity.LogPaymentAccess(ctx, tenantID, uint(interactionID), "approve", chatID, true, "")
 				}
 			}
 		}
-		
+
 		// Approve and send suggested reply
 		// Access EscalationHandler through Manager
 		if h.Manager.EscalationHandler != nil {
@@ -79,16 +81,16 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 			if err == nil && processingMsg.MessageID > 0 {
 				processingMsgID = processingMsg.MessageID
 			}
-			
+
 			sendErr := h.Manager.EscalationHandler.HandleEscalationResponse(ctx, tenantID, chatID, fmt.Sprintf("approve %d", interactionID))
 			if sendErr != nil {
 				h.Manager.Logger.Error("failed to approve escalation", zap.Error(sendErr), zap.Uint64("interaction_id", interactionID))
-				
+
 				// Delete processing message
 				if processingMsgID > 0 {
 					bot.Request(tgbotapi.NewDeleteMessage(chatID, processingMsgID))
 				}
-				
+
 				// Send error message with helpful details
 				errorMsg := fmt.Sprintf("❌ Couldn't send reply: %v\n\n", sendErr)
 				if strings.Contains(sendErr.Error(), "INSTAGRAM MESSAGING CAPABILITY") || strings.Contains(sendErr.Error(), "Error Code 3") {
@@ -109,25 +111,25 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 			h.Manager.Logger.Warn("escalation handler not configured in bot manager")
 			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Escalation handler not yet configured. Please use text commands: 'approve <interaction_id>' or type your reply."))
 		}
-		
+
 	case "edit":
 		// Prompt user to edit the reply
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✏️ Type your custom reply for interaction %d. It will be sent immediately.", interactionID)))
 		// Store that we're waiting for edited reply
 		// TODO: Store edit session state
-		
+
 	case "ignore":
 		// Remove from pending escalations
 		if h.Manager.EscalationHandler != nil {
 			// Mark interaction as ignored
 			bot.Send(tgbotapi.NewMessage(chatID, "👌 Ignored. You can respond later if needed."))
 		}
-		
+
 	case "fixed":
 		// Mark escalation as fixed - prompt for resolution message
 		if h.Manager.EscalationHandler != nil {
 			ctx := context.Background()
-			
+
 			// HandleMarkAsFixed will check for existing session and send prompt only once
 			if err := h.Manager.EscalationHandler.HandleMarkAsFixed(ctx, tenantID, uint(interactionID), chatID, bot); err != nil {
 				h.Manager.Logger.Error("failed to start fixed escalation flow", zap.Error(err))
@@ -136,7 +138,7 @@ func (h *TenantWebhookHandler) handleEscalationCallback(bot *tgbotapi.BotAPI, te
 			}
 			// Prompt message is now sent inside HandleMarkAsFixed to prevent duplicates
 		}
-		
+
 	default:
 		h.Manager.Logger.Warn("unknown escalation action", zap.String("action", action))
 	}
@@ -149,14 +151,14 @@ func (h *TenantWebhookHandler) handlePlatformSelectionCallback(bot *tgbotapi.Bot
 		bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Post session expired. Please start over."))
 		return
 	}
-	
+
 	parts := strings.Split(arg, ":")
 	if len(parts) < 2 {
 		return
 	}
-	
+
 	action := parts[1]
-	
+
 	switch action {
 	case "toggle":
 		if len(parts) < 4 {
@@ -164,7 +166,7 @@ func (h *TenantWebhookHandler) handlePlatformSelectionCallback(bot *tgbotapi.Bot
 		}
 		platform := parts[2]
 		shouldSelect := parts[3] == "true"
-		
+
 		// Toggle platform in session
 		found := false
 		var newPlatforms []string
@@ -182,22 +184,22 @@ func (h *TenantWebhookHandler) handlePlatformSelectionCallback(bot *tgbotapi.Bot
 			newPlatforms = append(newPlatforms, platform)
 		}
 		sess.Platforms = newPlatforms
-		
+
 		// Refresh the platform selection UI
 		h.Manager.showPlatformSelection(bot, chatID, sess)
-		
+
 	case "all":
 		// Select all available platforms
 		sess.Platforms = []string{"instagram", "facebook", "whatsapp", "tiktok", "youtube"}
 		h.Manager.showPlatformSelection(bot, chatID, sess)
-		
+
 	case "confirm":
 		// Confirm selection and move to next step
 		if len(sess.Platforms) == 0 {
 			bot.Send(tgbotapi.NewMessage(chatID, "⚠️ Please select at least one platform."))
 			return
 		}
-		
+
 		// Check if TikTok is selected - if so, ask for TikTok posting options
 		hasTikTok := false
 		for _, p := range sess.Platforms {
@@ -206,15 +208,14 @@ func (h *TenantWebhookHandler) handlePlatformSelectionCallback(bot *tgbotapi.Bot
 				break
 			}
 		}
-		
+
 		if hasTikTok && !sess.TikTokOptionsAsked {
 			// Show TikTok options UI
 			h.Manager.showTikTokPostingOptions(bot, chatID, sess)
 			return
 		}
-		
+
 		sess.Step = 5
 		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
 	}
 }
-
