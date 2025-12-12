@@ -421,6 +421,60 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	}
 
 	// Step 8.6: Create outgoing interaction record (so it appears in conversation history)
+	// Also persist expected_amount to support linking later payment confirmations that contain no amount.
+	metadataJSON := "{}"
+	{
+		var latestSalesConv *storage.SalesConversation
+		if conversationID > 0 {
+			var sc storage.SalesConversation
+			if err := h.DB.Where("tenant_id = ? AND customer_id = ? AND conversation_id = ?", msg.TenantID, customer.ID, conversationID).
+				Order("updated_at DESC").
+				First(&sc).Error; err == nil {
+				latestSalesConv = &sc
+			}
+		}
+		if latestSalesConv == nil {
+			latestSalesConv = salesConv
+		}
+		if latestSalesConv != nil {
+			// Important: negotiated prices can change. Only persist expected_amount when we are
+			// actually at/near payment (or have a draft awaiting confirmation), not during early negotiation.
+			stage := strings.ToLower(strings.TrimSpace(latestSalesConv.Stage))
+			commitment := strings.ToLower(strings.TrimSpace(latestSalesConv.CommitmentLevel))
+			shouldPersistExpected := false
+			if strings.TrimSpace(latestSalesConv.PendingOrderDraft) != "" {
+				shouldPersistExpected = true
+			} else if stage == "payment_instructions" || stage == "commitment_confirmation" {
+				shouldPersistExpected = true
+			} else if commitment == "committed" || commitment == "payment_ready" {
+				shouldPersistExpected = true
+			}
+
+			expectedAmount := 0.0
+			expectedCurrency := "NGN"
+			if shouldPersistExpected && strings.TrimSpace(latestSalesConv.PendingOrderDraft) != "" {
+				var draft ai.OrderDraft
+				if err := json.Unmarshal([]byte(latestSalesConv.PendingOrderDraft), &draft); err == nil {
+					if draft.TotalAmount > 0 {
+						expectedAmount = draft.TotalAmount
+					}
+					if strings.TrimSpace(draft.Currency) != "" {
+						expectedCurrency = draft.Currency
+					}
+				}
+			}
+			if shouldPersistExpected && expectedAmount <= 0 && latestSalesConv.PriceDiscussed > 0 {
+				expectedAmount = latestSalesConv.PriceDiscussed
+			}
+			if shouldPersistExpected && expectedAmount > 0 {
+				m := map[string]interface{}{}
+				ai.AttachExpectedAmountToMetadata(m, expectedAmount, expectedCurrency)
+				if b, err := json.Marshal(m); err == nil {
+					metadataJSON = string(b)
+				}
+			}
+		}
+	}
 	outgoingInteraction := storage.Interaction{
 		TenantID:       msg.TenantID,
 		CustomerID:     customer.ID,
@@ -435,7 +489,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 		DetectedIntent: intent.Intent,
 		DetectedTone:   intent.Tone,
 		Confidence:     intent.Confidence,
-		Metadata:       "{}", // Valid JSON object (empty object, not empty string)
+		Metadata:       metadataJSON, // Valid JSON object (empty object, not empty string)
 	}
 	if err := h.DB.Create(&outgoingInteraction).Error; err != nil {
 		h.Logger.Warn("failed to create outgoing interaction for auto-reply", zap.Error(err))

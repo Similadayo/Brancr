@@ -10,6 +10,7 @@ import (
 
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -495,6 +496,14 @@ Customer message: "%s"`, message)
 		return m.extractOrderDetailsFallback(ctx, message, salesConv)
 	}
 
+	// If the extractor returns items but no prices, fill prices from the tenant's catalog.
+	// This is critical because ensureOrderAndPayment relies on a deterministic amount.
+	filledTotal, filledCurrency := m.fillMissingItemPricesFromCatalog(ctx, tenantID, extracted.Items)
+	if extracted.TotalPrice <= 0 && filledTotal > 0 {
+		extracted.TotalPrice = filledTotal
+	}
+	_ = filledCurrency
+
 	// Update sales conversation with extracted items
 	if len(extracted.Items) > 0 {
 		// Merge with existing items
@@ -561,6 +570,275 @@ Customer message: "%s"`, message)
 
 	// Save updated sales conversation
 	return m.DB.Save(salesConv).Error
+}
+
+func (m *SalesConversationManager) fillMissingItemPricesFromCatalog(ctx context.Context, tenantID uint, items []map[string]interface{}) (float64, string) {
+	if len(items) == 0 {
+		return 0, ""
+	}
+
+	total := 0.0
+	currency := "NGN"
+
+	for _, item := range items {
+		name, _ := item["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		qty := 1.0
+		if q, ok := item["quantity"].(float64); ok && q > 0 {
+			qty = q
+		} else if q, ok := item["quantity"].(int); ok && q > 0 {
+			qty = float64(q)
+		}
+
+		price := 0.0
+		switch v := item["price"].(type) {
+		case float64:
+			price = v
+		case int:
+			price = float64(v)
+		case string:
+			price = utils.ExtractLikelyAmountNGN(v)
+		}
+
+		if price <= 0 {
+			catalogPrice, catalogCurrency, ok := m.lookupCatalogPriceForName(ctx, tenantID, name)
+			if ok && catalogPrice > 0 {
+				price = catalogPrice
+				item["price"] = catalogPrice
+				if catalogCurrency != "" {
+					currency = catalogCurrency
+				}
+			}
+		}
+
+		if price > 0 {
+			total += price * qty
+		}
+	}
+
+	return total, currency
+}
+
+func (m *SalesConversationManager) lookupCatalogPriceForName(ctx context.Context, tenantID uint, rawName string) (float64, string, bool) {
+	needle := strings.ToLower(strings.TrimSpace(rawName))
+	if needle == "" {
+		return 0, "", false
+	}
+
+	// Exact matches first (fast + deterministic)
+	{
+		var p storage.Product
+		err := m.DB.WithContext(ctx).
+			Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Where("LOWER(name) = ?", needle).
+			First(&p).Error
+		if err == nil && p.Price > 0 {
+			return p.Price, p.Currency, true
+		}
+	}
+	{
+		var mi storage.MenuItem
+		err := m.DB.WithContext(ctx).
+			Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Where("LOWER(name) = ?", needle).
+			First(&mi).Error
+		if err == nil && mi.Price > 0 {
+			return mi.Price, mi.Currency, true
+		}
+	}
+	{
+		var svc storage.Service
+		err := m.DB.WithContext(ctx).
+			Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Where("LOWER(name) = ?", needle).
+			First(&svc).Error
+		if err == nil {
+			if amt, ok := parseServiceFixedAmount(svc.Pricing); ok {
+				return amt, "NGN", true
+			}
+		}
+	}
+	{
+		var bmi storage.BusinessMenuItem
+		err := m.DB.WithContext(ctx).
+			Where("tenant_id = ?", tenantID).
+			Where("LOWER(name) = ?", needle).
+			First(&bmi).Error
+		if err == nil {
+			if amt := parseBusinessMenuPriceNGN(bmi.Price); amt > 0 {
+				return amt, "NGN", true
+			}
+		}
+	}
+
+	// Fuzzy/contains fallback (still deterministic: only use clear matches)
+	bestScore := 0
+	bestAmount := 0.0
+	bestCurrency := ""
+
+	// Products
+	{
+		var candidates []storage.Product
+		_ = m.DB.WithContext(ctx).
+			Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Where("LOWER(name) LIKE ?", "%"+needle+"%").
+			Limit(20).
+			Find(&candidates).Error
+		for _, c := range candidates {
+			score := nameMatchScore(rawName, c.Name)
+			if score > bestScore && c.Price > 0 {
+				bestScore = score
+				bestAmount = c.Price
+				bestCurrency = c.Currency
+			}
+		}
+	}
+
+	// Menu items
+	{
+		var candidates []storage.MenuItem
+		_ = m.DB.WithContext(ctx).
+			Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Where("LOWER(name) LIKE ?", "%"+needle+"%").
+			Limit(20).
+			Find(&candidates).Error
+		for _, c := range candidates {
+			score := nameMatchScore(rawName, c.Name)
+			if score > bestScore && c.Price > 0 {
+				bestScore = score
+				bestAmount = c.Price
+				bestCurrency = c.Currency
+			}
+		}
+	}
+
+	// Services
+	{
+		var candidates []storage.Service
+		_ = m.DB.WithContext(ctx).
+			Where("tenant_id = ? AND is_active = ?", tenantID, true).
+			Where("LOWER(name) LIKE ?", "%"+needle+"%").
+			Limit(20).
+			Find(&candidates).Error
+		for _, c := range candidates {
+			score := nameMatchScore(rawName, c.Name)
+			amt, ok := parseServiceFixedAmount(c.Pricing)
+			if score > bestScore && ok && amt > 0 {
+				bestScore = score
+				bestAmount = amt
+				bestCurrency = "NGN"
+			}
+		}
+	}
+
+	// BusinessMenuItem
+	{
+		var candidates []storage.BusinessMenuItem
+		_ = m.DB.WithContext(ctx).
+			Where("tenant_id = ?", tenantID).
+			Where("LOWER(name) LIKE ?", "%"+needle+"%").
+			Limit(20).
+			Find(&candidates).Error
+		for _, c := range candidates {
+			score := nameMatchScore(rawName, c.Name)
+			amt := parseBusinessMenuPriceNGN(c.Price)
+			if score > bestScore && amt > 0 {
+				bestScore = score
+				bestAmount = amt
+				bestCurrency = "NGN"
+			}
+		}
+	}
+
+	if bestScore >= 60 && bestAmount > 0 {
+		return bestAmount, bestCurrency, true
+	}
+
+	return 0, "", false
+}
+
+func parseServiceFixedAmount(pricingJSON string) (float64, bool) {
+	pricingJSON = strings.TrimSpace(pricingJSON)
+	if pricingJSON == "" {
+		return 0, false
+	}
+
+	var parsed struct {
+		Type   string  `json:"type"`
+		Amount float64 `json:"amount"`
+		Rate   float64 `json:"rate"`
+	}
+
+	if err := json.Unmarshal([]byte(pricingJSON), &parsed); err != nil {
+		return 0, false
+	}
+
+	// Only use fixed pricing deterministically
+	if parsed.Amount > 0 && (parsed.Type == "fixed" || parsed.Type == "" /* older data */) {
+		return parsed.Amount, true
+	}
+
+	return 0, false
+}
+
+func parseBusinessMenuPriceNGN(price string) float64 {
+	price = strings.TrimSpace(price)
+	if price == "" {
+		return 0
+	}
+	if amt := utils.ExtractLikelyAmountNGN(price); amt > 0 {
+		return amt
+	}
+	if f, err := strconv.ParseFloat(price, 64); err == nil {
+		return f
+	}
+	return 0
+}
+
+func normalizeNameForMatch(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.Join(strings.Fields(s), " ")
+	// remove punctuation except spaces and alphanumerics
+	s = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == ' ' {
+			return r
+		}
+		return -1
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	return s
+}
+
+func nameMatchScore(query, candidate string) int {
+	q := normalizeNameForMatch(query)
+	c := normalizeNameForMatch(candidate)
+	if q == "" || c == "" {
+		return 0
+	}
+	if q == c {
+		return 100
+	}
+	if strings.Contains(c, q) || strings.Contains(q, c) {
+		return 80
+	}
+	qt := strings.Fields(q)
+	ct := strings.Fields(c)
+	overlap := 0
+	for _, qtok := range qt {
+		for _, ctok := range ct {
+			if qtok == ctok {
+				overlap++
+				break
+			}
+		}
+	}
+	return overlap * 10
 }
 
 // extractOrderDetailsFallback uses simple pattern matching as fallback

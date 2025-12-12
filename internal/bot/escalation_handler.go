@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/ai"
 	"github.com/similadayo/brancr/internal/security"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
@@ -557,6 +559,14 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
 		}
 		if fallbackTotal <= 0 {
+			expectedAmount, expectedCurrency, expectedSource := h.inferExpectedAmount(ctx, interaction)
+			if expectedAmount > 0 {
+				fallbackTotal = expectedAmount
+				currency = expectedCurrency
+				amountSource = expectedSource
+			}
+		}
+		if fallbackTotal <= 0 {
 			// If we can't infer an amount from the current message, try to reuse a single recent pending order.
 			// This is common on payment-confirmation messages like "I've paid" which contain no amount.
 			var pending []storage.Order
@@ -564,7 +574,7 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 				Where("tenant_id = ? AND customer_id = ? AND platform = ? AND status = ? AND total_amount > 0", interaction.TenantID, interaction.CustomerID, interaction.Platform, "pending").
 				Where("created_at > ?", time.Now().Add(-7*24*time.Hour)).
 				Order("created_at DESC").
-				Limit(2).
+				Limit(10).
 				Find(&pending).Error; err == nil {
 				if len(pending) == 1 {
 					h.Logger.Info("ensureOrderAndPayment: reusing existing pending order (no amount in message)",
@@ -578,12 +588,43 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 					return
 				}
 				if len(pending) > 1 {
-					h.Logger.Warn("ensureOrderAndPayment: multiple pending orders found; skipping auto-link",
-						zap.Uint("interaction_id", interaction.ID),
-						zap.Uint("tenant_id", interaction.TenantID),
-						zap.Uint("customer_id", interaction.CustomerID),
-						zap.String("platform", interaction.Platform),
-						zap.Uint("most_recent_order_id", pending[0].ID))
+					expectedAmount, _, expectedSource := h.inferExpectedAmount(ctx, interaction)
+					if expectedAmount > 0 {
+						matches := make([]storage.Order, 0, len(pending))
+						for _, o := range pending {
+							if math.Abs(o.TotalAmount-expectedAmount) < 0.01 {
+								matches = append(matches, o)
+							}
+						}
+						if len(matches) == 1 {
+							h.Logger.Info("ensureOrderAndPayment: matched pending order via expected amount",
+							zap.Uint("interaction_id", interaction.ID),
+							zap.Uint("tenant_id", interaction.TenantID),
+							zap.Uint("customer_id", interaction.CustomerID),
+							zap.String("platform", interaction.Platform),
+							zap.Float64("expected_amount", expectedAmount),
+							zap.String("expected_source", expectedSource),
+							zap.Uint("order_id", matches[0].ID))
+							h.ensurePaymentForOrder(interaction, &matches[0])
+							return
+						}
+						h.Logger.Warn("ensureOrderAndPayment: multiple pending orders match expected amount; skipping auto-link",
+							zap.Uint("interaction_id", interaction.ID),
+							zap.Uint("tenant_id", interaction.TenantID),
+							zap.Uint("customer_id", interaction.CustomerID),
+							zap.String("platform", interaction.Platform),
+							zap.Float64("expected_amount", expectedAmount),
+							zap.String("expected_source", expectedSource),
+							zap.Int("pending_count", len(pending)),
+							zap.Int("match_count", len(matches)))
+					} else {
+						h.Logger.Warn("ensureOrderAndPayment: multiple pending orders found; skipping auto-link",
+							zap.Uint("interaction_id", interaction.ID),
+							zap.Uint("tenant_id", interaction.TenantID),
+							zap.Uint("customer_id", interaction.CustomerID),
+							zap.String("platform", interaction.Platform),
+							zap.Uint("most_recent_order_id", pending[0].ID))
+					}
 				}
 			}
 			h.Logger.Warn("ensureOrderAndPayment: skipping auto-order creation (no amount inferred)",
@@ -602,7 +643,9 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 			TotalPrice: fallbackTotal,
 		}}
 		total = fallbackTotal
-		amountSource = "fallback.manual_item"
+		if amountSource == "" {
+			amountSource = "fallback.manual_item"
+		}
 	}
 
 	if logAmountDecisions {
@@ -680,6 +723,62 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	}
 
 	h.ensurePaymentForOrder(interaction, &orderRec)
+}
+
+func (h *EscalationHandler) inferExpectedAmount(ctx context.Context, interaction *storage.Interaction) (amount float64, currency string, source string) {
+	if interaction == nil {
+		return 0, "", ""
+	}
+
+	if amt, cur, ok := ai.ExpectedAmountFromMetadataJSON(interaction.Metadata); ok {
+		return amt, cur, "interaction.metadata.expected_amount"
+	}
+
+	// Prefer recent outgoing messages in the same conversation.
+	if interaction.ConversationID != 0 {
+		var outgoing []storage.Interaction
+		_ = h.DB.WithContext(ctx).
+			Where("conversation_id = ? AND direction = ?", interaction.ConversationID, "outgoing").
+			Order("created_at DESC").
+			Limit(10).
+			Find(&outgoing).Error
+		for _, out := range outgoing {
+			if amt, cur, ok := ai.ExpectedAmountFromMetadataJSON(out.Metadata); ok {
+				return amt, cur, "conversation.outgoing.metadata.expected_amount"
+			}
+			content := out.Content
+			if out.FinalReply != "" {
+				content += " " + out.FinalReply
+			}
+			if amt := utils.ExtractLikelyAmountNGN(content); amt > 0 {
+				return amt, "NGN", "conversation.outgoing.text.amount"
+			}
+		}
+	}
+
+	// Fallback: recent outgoing for this tenant/customer/platform.
+	{
+		var outgoing []storage.Interaction
+		_ = h.DB.WithContext(ctx).
+			Where("tenant_id = ? AND customer_id = ? AND platform = ? AND direction = ?", interaction.TenantID, interaction.CustomerID, interaction.Platform, "outgoing").
+			Order("created_at DESC").
+			Limit(10).
+			Find(&outgoing).Error
+		for _, out := range outgoing {
+			if amt, cur, ok := ai.ExpectedAmountFromMetadataJSON(out.Metadata); ok {
+				return amt, cur, "customer.outgoing.metadata.expected_amount"
+			}
+			content := out.Content
+			if out.FinalReply != "" {
+				content += " " + out.FinalReply
+			}
+			if amt := utils.ExtractLikelyAmountNGN(content); amt > 0 {
+				return amt, "NGN", "customer.outgoing.text.amount"
+			}
+		}
+	}
+
+	return 0, "", ""
 }
 
 // ensurePaymentForOrder creates a payment record if missing for the given order

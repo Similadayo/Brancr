@@ -46,6 +46,10 @@ func MergeMetadataJSON(existing string, update map[string]interface{}) (string, 
 type metadataEnvelope struct {
 	BrancrAI struct {
 		Events []Event `json:"events"`
+		// ExpectedAmount is the amount the system expects the customer to pay for the current purchase.
+		// Stored to reliably link payment confirmations that contain no amount.
+		ExpectedAmount   float64 `json:"expected_amount"`
+		ExpectedCurrency string  `json:"expected_currency"`
 	} `json:"brancr_ai"`
 }
 
@@ -67,4 +71,44 @@ func MetadataHasEvent(metadataJSON string, eventType EventType) bool {
 		}
 	}
 	return false
+}
+
+// AttachExpectedAmountToMetadata stores expected payment amount (and optional currency) into metadata.
+func AttachExpectedAmountToMetadata(metadata map[string]interface{}, amount float64, currency string) {
+	if metadata == nil {
+		return
+	}
+	if amount <= 0 {
+		return
+	}
+
+	ns, _ := metadata["brancr_ai"].(map[string]interface{})
+	if ns == nil {
+		ns = make(map[string]interface{})
+	}
+
+	ns["expected_amount"] = amount
+	if currency != "" {
+		ns["expected_currency"] = currency
+	}
+	metadata["brancr_ai"] = ns
+}
+
+// ExpectedAmountFromMetadataJSON reads the expected amount from metadata.
+func ExpectedAmountFromMetadataJSON(metadataJSON string) (amount float64, currency string, ok bool) {
+	if metadataJSON == "" || metadataJSON == "{}" {
+		return 0, "", false
+	}
+	var env metadataEnvelope
+	if err := json.Unmarshal([]byte(metadataJSON), &env); err != nil {
+		return 0, "", false
+	}
+	if env.BrancrAI.ExpectedAmount <= 0 {
+		return 0, "", false
+	}
+	cur := env.BrancrAI.ExpectedCurrency
+	if cur == "" {
+		cur = "NGN"
+	}
+	return env.BrancrAI.ExpectedAmount, cur, true
 }
