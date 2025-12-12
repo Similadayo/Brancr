@@ -838,9 +838,10 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 
 	// Escalate if customer confirms they paid - handled early above.
 
-	// Escalate invoice requests - tenant needs to generate/send
+	// Invoice/receipt requests are informational by default.
+	// Payment confirmations escalate earlier; otherwise the bot can explain that receipts are issued after verification.
 	if isInvoiceRequest {
-		return true, "invoice_request_needs_tenant_action"
+		return false, ""
 	}
 
 	// 5. Escalate refund/complaint

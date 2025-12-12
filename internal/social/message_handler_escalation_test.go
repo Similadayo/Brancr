@@ -66,6 +66,39 @@ func TestShouldEscalateToHuman_PayOnDelivery_Inquiry_DoesNotEscalate(t *testing.
 	}
 }
 
+func TestShouldEscalateToHuman_InvoiceRequest_DoesNotEscalate(t *testing.T) {
+	h := &MessageHandler{}
+	msg := IncomingMessage{Content: "Can I get an invoice?", MessageType: "text"}
+	intent := &ai.DetectedIntent{Intent: "billing", Tone: "neutral", Confidence: 0.9}
+
+	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
+	if should {
+		t.Fatalf("expected no escalation for invoice request")
+	}
+}
+
+func TestShouldEscalateToHuman_ReceiptRequest_DoesNotEscalate(t *testing.T) {
+	h := &MessageHandler{}
+	msg := IncomingMessage{Content: "Please send receipt", MessageType: "text"}
+	intent := &ai.DetectedIntent{Intent: "billing", Tone: "neutral", Confidence: 0.9}
+
+	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
+	if should {
+		t.Fatalf("expected no escalation for receipt request")
+	}
+}
+
+func TestShouldEscalateToHuman_PaymentConfirmationWithReceipt_Escalates(t *testing.T) {
+	h := &MessageHandler{}
+	msg := IncomingMessage{Content: "I have paid, please send receipt", MessageType: "text"}
+	intent := &ai.DetectedIntent{Intent: "billing", Tone: "neutral", Confidence: 0.9}
+
+	should, _ := h.shouldEscalateToHuman(context.Background(), msg, &storage.Customer{}, intent, 0)
+	if !should {
+		t.Fatalf("expected escalation for payment confirmation even if receipt is mentioned")
+	}
+}
+
 func TestShouldEscalateToHuman_PriceQuestion_DoesNotEscalate(t *testing.T) {
 	h := &MessageHandler{}
 	msg := IncomingMessage{Content: "How much is this?", MessageType: "text"}
