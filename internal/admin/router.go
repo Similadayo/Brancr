@@ -17,42 +17,61 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 
 	r.Group(func(r chi.Router) {
 		r.Use(AdminAuthMiddleware(ctx))
-		r.Get("/", DashboardHandler(ctx))
-		r.Get("/health", HealthHandler(ctx))
-		r.Get("/_health", HealthJSONHandler(ctx))
-		r.Get("/_health_partial", HealthPartialHandler(ctx))
-		r.Get("/logs", LogsHandler(ctx))
-		r.Get("/logs/_partial", LogsPartialHandler(ctx))
-		r.Get("/tenants", TenantsHandler(ctx))
-		r.Get("/tenants/{id}", TenantDetailHandler(ctx))
-		r.Post("/tenants/{id}/status", TenantUpdateStatusHandler(ctx))
-		r.Post("/tenants/{id}/quota", TenantUpdateQuotaHandler(ctx))
-		r.Get("/tenants/{id}/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetTenantAnalytics(ctx))
-		r.Get("/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetAnalyticsDashboard(ctx))
-		r.Get("/escalations", EscalationsHandler(ctx))
-		r.Post("/escalations/{id}/resolve", EscalationResolveHandler(ctx))
-		r.Get("/orders", OrdersHandler(ctx))
-		r.Get("/payments", PaymentsHandler(ctx))
-		r.Get("/scheduled", ScheduledHandler(ctx))
-		r.Get("/scheduled/force_cancel_form", ForceCancelFormHandler(ctx))
-		r.Post("/scheduled/force_cancel", ForceCancelHandler(ctx))
-		r.Get("/social", (SocialAccountsHandler(ctx)))
-		r.Get("/usage", UsageStatsPageHandler(ctx))    // HTML page
-		r.Get("/usage/api", UsageStatsAPIHandler(ctx)) // JSON API endpoint
+
+		// Main
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/", DashboardHandler(ctx))
+
+		// Tenants
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/tenants", TenantsHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/tenants/{id}", TenantDetailHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/tenants/{id}/status", TenantUpdateStatusHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleBillingAdmin)).Post("/tenants/{id}/quota", TenantUpdateQuotaHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator)).Get("/tenants/{id}/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetTenantAnalytics(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetAnalyticsDashboard(ctx))
+
+		// Operations
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/escalations", EscalationsHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/escalations/{id}/resolve", EscalationResolveHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleBillingAdmin)).Get("/orders", OrdersHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleBillingAdmin)).Get("/payments", PaymentsHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/scheduled", ScheduledHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/scheduled/force_cancel_form", ForceCancelFormHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/scheduled/force_cancel", ForceCancelHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/social", (SocialAccountsHandler(ctx)))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/usage", UsageStatsPageHandler(ctx))    // HTML page
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/usage/api", UsageStatsAPIHandler(ctx)) // JSON API endpoint
 
 		// WhatsApp phone number management
-		r.Get("/whatsapp", WhatsAppNumbersPageHandler(ctx))     // HTML page
-		r.Get("/whatsapp/numbers", WhatsAppNumbersHandler(ctx)) // JSON API endpoint
-		r.Post("/whatsapp/sync", WhatsAppSyncHandler(ctx))
-		r.Post("/whatsapp/register", WhatsAppRegisterNumberHandler(ctx)) // Register phone number (required before verify)
-		r.Post("/whatsapp/request-code", WhatsAppAddNumberHandler(ctx))  // Request verification code for existing number
-		r.Post("/whatsapp/verify", WhatsAppVerifyNumberHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/whatsapp", WhatsAppNumbersPageHandler(ctx))     // HTML page
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/whatsapp/numbers", WhatsAppNumbersHandler(ctx)) // JSON API endpoint
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/sync", WhatsAppSyncHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/register", WhatsAppRegisterNumberHandler(ctx)) // Register phone number (required before verify)
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/request-code", WhatsAppAddNumberHandler(ctx))  // Request verification code for existing number
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/verify", WhatsAppVerifyNumberHandler(ctx))
 
 		// WhatsApp phone number requests from tenants
-		r.Get("/whatsapp/requests", WhatsAppRequestsHandler(ctx))              // List all requests
-		r.Post("/whatsapp/requests/mark-added", WhatsAppMarkAddedHandler(ctx)) // Mark as added to Meta
-		r.Post("/whatsapp/requests/verify", WhatsAppVerifyRequestHandler(ctx)) // Verify with code from tenant
-		r.Post("/whatsapp/requests/reject", WhatsAppRejectRequestHandler(ctx)) // Reject request
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/whatsapp/requests", WhatsAppRequestsHandler(ctx))              // List all requests
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/requests/mark-added", WhatsAppMarkAddedHandler(ctx)) // Mark as added to Meta
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/requests/verify", WhatsAppVerifyRequestHandler(ctx)) // Verify with code from tenant
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Post("/whatsapp/requests/reject", WhatsAppRejectRequestHandler(ctx)) // Reject request
+
+		// System
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/health", HealthHandler(ctx))
+		r.Get("/_health", HealthJSONHandler(ctx))
+		r.Get("/_health_partial", HealthPartialHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/logs", LogsHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/logs/_partial", LogsPartialHandler(ctx))
+
+		// Security
+		r.With(requireAnyRole(RoleSuperAdmin)).Get("/security/admin-users", AdminUsersPageHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin)).Post("/security/admin-users/create", AdminUsersCreateHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin)).Post("/security/admin-users/update", AdminUsersUpdateHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin)).Get("/security/audit-logs", AuditLogsPageHandler(ctx))
+
+		// Support
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/support/impersonate", ImpersonationPageHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/support/impersonate", ImpersonationStartHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/support/stop-impersonation", ImpersonationStopHandler(ctx))
 
 		r.Post("/logout", LogoutHandler(ctx))
 

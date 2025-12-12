@@ -1,0 +1,86 @@
+{{define "title"}}Admin Users — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Admin Users</h1>
+  <p>Create and manage admin accounts (SuperAdmin only)</p>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 600;">Create admin user</h3>
+  <form method="POST" action="/admin/security/admin-users/create" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items:end;">
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Email</label>
+      <input name="email" placeholder="admin@company.com" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+    </div>
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Role</label>
+      <select name="role" aria-label="Role" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);">
+        {{range .Roles}}
+          <option value="{{.}}">{{.}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Temp password</label>
+      <input name="password" type="password" placeholder="min 8 chars" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+    </div>
+    <div style="display:flex; gap: 10px; justify-content:flex-end;">
+      <button type="submit" class="btn-primary" style="padding: 10px 14px;">Create</button>
+    </div>
+  </form>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Status</th>
+        <th>Last login</th>
+        <th>Created</th>
+        <th>Update</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Users}}
+      <tr>
+        <td>{{.ID}}</td>
+        <td style="font-weight: 500;">{{.Email}}</td>
+        <td>
+          <span class="badge info">{{.Role}}</span>
+        </td>
+        <td>
+          <span class="badge {{if .Active}}success{{else}}warning{{end}}">{{if .Active}}active{{else}}disabled{{end}}</span>
+        </td>
+        <td style="color: var(--text-secondary);">{{if .LastLogin}}{{.LastLogin.Format "Jan 2, 2006 15:04"}}{{else}}—{{end}}</td>
+        <td style="color: var(--text-secondary);">{{.CreatedAt.Format "Jan 2, 2006"}}</td>
+        <td>
+          <form method="POST" action="/admin/security/admin-users/update" style="display:flex; flex-wrap:wrap; gap: 8px; align-items:center;">
+            <input type="hidden" name="id" value="{{.ID}}" />
+            {{$currentRole := .Role}}
+            <select name="role" aria-label="Role" style="padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);">
+              {{range $.Roles}}
+                <option value="{{.}}" {{if eq . $currentRole}}selected{{end}}>{{.}}</option>
+              {{end}}
+            </select>
+            <label style="display:flex; gap: 6px; align-items:center; font-size: 12px; color: var(--text-secondary);">
+              <input type="checkbox" name="active" {{if .Active}}checked{{end}} />
+              Active
+            </label>
+            <input name="password" type="password" placeholder="reset password (optional)" style="min-width: 220px; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+            <button type="submit" class="btn-secondary btn-sm">Save</button>
+          </form>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-secondary);">No admin users found</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "layout.html" .}}

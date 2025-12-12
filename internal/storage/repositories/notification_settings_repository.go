@@ -25,17 +25,17 @@ func (r *NotificationSettingsRepository) GetOrCreateDefault(ctx context.Context,
 	}
 
 	settings = storage.TenantNotificationSettings{
-		TenantID:                   tenantID,
-		EmailNotificationsEnabled:  true,
-		EmailOrderStatusChanges:    true,
-		EmailPaymentConfirmations:  true,
-		EmailReceiptGenerated:      true,
-		WebhookEnabled:             false,
-		WebhookURL:                 "",
-		WebhookEvents:              "[]",
-		WebhookSecret:              "",
-		LastTestAt:                 nil,
-		LastTestStatus:             "",
+		TenantID:                  tenantID,
+		EmailNotificationsEnabled: true,
+		EmailOrderStatusChanges:   true,
+		EmailPaymentConfirmations: true,
+		EmailReceiptGenerated:     true,
+		WebhookEnabled:            false,
+		WebhookURL:                "",
+		WebhookEvents:             "[]",
+		WebhookSecret:             "",
+		LastTestAt:                nil,
+		LastTestStatus:            "",
 	}
 
 	if err := r.db.WithContext(ctx).Create(&settings).Error; err != nil {

@@ -1,0 +1,70 @@
+{{define "title"}}Audit Logs — Brancr Admin{{end}}
+{{define "content"}}
+<div class="page-header">
+  <h1>Audit Logs</h1>
+  <p>Admin actions and requests (SuperAdmin only)</p>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <form method="GET" action="/admin/security/audit-logs" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items:end;">
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Admin email</label>
+      <input name="admin_email" value="{{index .Query "admin_email"}}" placeholder="admin@company.com" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+    </div>
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Action</label>
+      <input name="action" value="{{index .Query "action"}}" placeholder="admin.user.create" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+    </div>
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Tenant ID</label>
+      <input name="tenant_id" value="{{index .Query "tenant_id"}}" placeholder="123" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+    </div>
+    <div>
+      <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Limit</label>
+      <input name="limit" value="{{.Limit}}" placeholder="200" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+    </div>
+    <div style="display:flex; gap: 10px; justify-content:flex-end;">
+      <button type="submit" class="btn-primary" style="padding: 10px 14px;">Apply</button>
+      <a class="btn-secondary btn-sm" href="/admin/security/audit-logs">Reset</a>
+    </div>
+  </form>
+</div>
+
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Admin</th>
+        <th>Role</th>
+        <th>Action</th>
+        <th>Method</th>
+        <th>Path</th>
+        <th>Tenant</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Logs}}
+      <tr>
+        <td style="color: var(--text-secondary);">{{.CreatedAt.Format "Jan 2, 2006 15:04:05"}}</td>
+        <td style="font-weight: 500;">{{.AdminEmail}}</td>
+        <td><span class="badge info">{{.AdminRole}}</span></td>
+        <td>{{.Action}}</td>
+        <td style="color: var(--text-secondary);">{{.Method}}</td>
+        <td style="max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{.Path}}">{{.Path}}</td>
+        <td>{{if .TenantID}}{{.TenantID}}{{else}}—{{end}}</td>
+        <td>
+          <span class="badge {{if .Success}}success{{else}}danger{{end}}">{{.StatusCode}}</span>
+        </td>
+      </tr>
+      {{else}}
+      <tr>
+        <td colspan="8" style="text-align: center; padding: 40px; color: var(--text-secondary);">No audit logs found</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "layout.html" .}}

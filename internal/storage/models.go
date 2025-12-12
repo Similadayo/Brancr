@@ -324,6 +324,25 @@ type TenantNotificationSettings struct {
 	LastTestStatus string `gorm:"size:50"` // success, failed
 }
 
+// AdminAuditLog records admin actions for compliance and traceability.
+// Content access should be logged explicitly in addition to request logs.
+type AdminAuditLog struct {
+	gorm.Model
+	AdminEmail string `gorm:"size:255;index"`
+	AdminRole  string `gorm:"size:50;index"`
+	Action     string `gorm:"size:100;index"`
+	Method     string `gorm:"size:10"`
+	Path       string `gorm:"type:text"`
+	TenantID   *uint  `gorm:"index"`
+	Resource   string `gorm:"size:50;index"`  // tenant, integration, post, message, billing, system
+	ResourceID string `gorm:"size:100;index"` // string for flexibility
+	Success    bool   `gorm:"default:true"`
+	StatusCode int
+	IP         string `gorm:"size:64"`
+	UserAgent  string `gorm:"type:text"`
+	Metadata   string `gorm:"type:jsonb"` // optional JSON
+}
+
 // ACTIVITY & LOGGING
 
 type EventLog struct {

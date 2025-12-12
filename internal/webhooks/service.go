@@ -120,4 +120,3 @@ func generateSignature(payload []byte, secret string) string {
 	mac.Write(payload)
 	return hex.EncodeToString(mac.Sum(nil))
 }
-

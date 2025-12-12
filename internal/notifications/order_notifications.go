@@ -84,12 +84,12 @@ func (s *OrderNotificationService) NotifyOrderStatusChange(ctx context.Context, 
 	// Send webhook notification if enabled.
 	if webhookAllowed && s.WebhookService != nil {
 		payload := map[string]interface{}{
-			"event":       "order.status_changed",
-			"order_id":    order.ID,
+			"event":        "order.status_changed",
+			"order_id":     order.ID,
 			"order_number": order.OrderNumber,
-			"old_status":  oldStatus,
-			"new_status":  newStatus,
-			"customer_id": order.CustomerID,
+			"old_status":   oldStatus,
+			"new_status":   newStatus,
+			"customer_id":  order.CustomerID,
 			"total_amount": order.TotalAmount,
 			"currency":     order.Currency,
 			"timestamp":    order.CreatedAt,
@@ -124,4 +124,3 @@ func eventAllowed(eventsJSON string, event string) bool {
 	}
 	return false
 }
-

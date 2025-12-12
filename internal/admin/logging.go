@@ -2,10 +2,13 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
 )
@@ -18,7 +21,7 @@ func AdminLoggingMiddleware(ctx *AdminContext, m *metrics.Metrics) func(http.Han
 
 			// Get request ID from context
 			requestID := middleware.GetRequestID(r.Context())
-			
+
 			// Create logger with request context
 			logger := ctx.Logger.With(
 				zap.String("request_id", requestID),
@@ -80,8 +83,52 @@ func AdminLoggingMiddleware(ctx *AdminContext, m *metrics.Metrics) func(http.Han
 					logger.Info("admin request", fields...)
 				}
 			}
+
+			// Persist audit logs for state-changing requests.
+			if r.Method != http.MethodGet && r.URL.Path != "/admin/_health" && r.URL.Path != "/admin/_health_partial" {
+				persistAdminAuditLog(ctx, r, wrapped.statusCode)
+			}
 		})
 	}
+}
+
+func persistAdminAuditLog(ctx *AdminContext, r *http.Request, status int) {
+	if ctx == nil || ctx.DB == nil {
+		return
+	}
+
+	adminEmail := getAdminUserFromRequest(r)
+	adminRole := AdminRoleFromRequest(r)
+
+	var tenantID *uint
+	if tid := r.URL.Query().Get("tenant_id"); tid != "" {
+		if v, err := strconv.ParseUint(tid, 10, 64); err == nil {
+			t := uint(v)
+			tenantID = &t
+		}
+	}
+
+	metaBytes, _ := json.Marshal(map[string]any{
+		"query": r.URL.RawQuery,
+	})
+
+	entry := storage.AdminAuditLog{
+		AdminEmail: adminEmail,
+		AdminRole:  adminRole,
+		Action:     "admin.request",
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		TenantID:   tenantID,
+		Resource:   "admin",
+		ResourceID: "",
+		Success:    status < 400,
+		StatusCode: status,
+		IP:         r.RemoteAddr,
+		UserAgent:  r.UserAgent(),
+		Metadata:   string(metaBytes),
+	}
+
+	_ = ctx.DB.WithContext(r.Context()).Create(&entry).Error
 }
 
 // adminResponseWriter wraps http.ResponseWriter to capture status code
@@ -143,4 +190,3 @@ func LogAdminError(r *http.Request, action string, err error, fields ...zap.Fiel
 
 	logger.Error("admin action failed", allFields...)
 }
-

@@ -17,12 +17,13 @@ func jwtSecret(ctx *AdminContext) []byte {
 	return []byte(secret)
 }
 
-func createToken(ctx *AdminContext, adminEmail string, exp time.Duration) (string, error) {
+func createToken(ctx *AdminContext, adminEmail string, role string, exp time.Duration) (string, error) {
 	claims := jwt.MapClaims{
-		"sub": adminEmail,
-		"exp": time.Now().Add(exp).Unix(),
-		"iat": time.Now().Unix(),
-		"iss": "brancr",
+		"sub":  adminEmail,
+		"role": role,
+		"exp":  time.Now().Add(exp).Unix(),
+		"iat":  time.Now().Unix(),
+		"iss":  "brancr",
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return t.SignedString(jwtSecret(ctx))
@@ -70,6 +71,27 @@ func AdminAuthMiddleware(ctx *AdminContext) func(next http.Handler) http.Handler
 				if email, ok := claims["sub"].(string); ok {
 					// Store admin email in context for logging
 					r = r.WithContext(context.WithValue(r.Context(), "admin_email", email))
+
+					// If AdminUser exists in DB, enforce active + role.
+					if ctx.DB != nil {
+						var adminUser struct {
+							Email  string
+							Role   string
+							Active bool
+						}
+						if err := ctx.DB.Table("admin_users").Select("email, role, active").Where("email = ?", email).First(&adminUser).Error; err == nil {
+							if !adminUser.Active {
+								clearAdminCookie(w)
+								http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+								return
+							}
+							r = r.WithContext(context.WithValue(r.Context(), adminRoleKey, adminUser.Role))
+						} else if role, ok := claims["role"].(string); ok {
+							r = r.WithContext(context.WithValue(r.Context(), adminRoleKey, role))
+						}
+					} else if role, ok := claims["role"].(string); ok {
+						r = r.WithContext(context.WithValue(r.Context(), adminRoleKey, role))
+					}
 				}
 			}
 

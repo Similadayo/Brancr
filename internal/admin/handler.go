@@ -762,6 +762,36 @@ func PostLoginHandler(ctx *AdminContext) http.HandlerFunc {
 		cfgEmail := ctx.AdminEmail
 		cfgPassword := ctx.AdminPassword
 
+		// Prefer DB-backed admin users when available.
+		var dbAdmin storage.AdminUser
+		if ctx.DB != nil {
+			if err := ctx.DB.Where("email = ?", email).First(&dbAdmin).Error; err == nil {
+				if !dbAdmin.Active {
+					http.Error(w, "account disabled", http.StatusUnauthorized)
+					return
+				}
+				if err := bcrypt.CompareHashAndPassword([]byte(dbAdmin.PasswordHash), []byte(password)); err != nil {
+					logger.Warn("admin login failed: invalid password", zap.String("email", email))
+					http.Error(w, "invalid credentials", http.StatusUnauthorized)
+					return
+				}
+
+				now := time.Now()
+				_ = ctx.DB.Model(&storage.AdminUser{}).Where("id = ?", dbAdmin.ID).Update("last_login", &now).Error
+
+				tokenStr, err := createToken(ctx, dbAdmin.Email, dbAdmin.Role, 24*time.Hour)
+				if err != nil {
+					logger.Error("admin login failed: token creation error", zap.Error(err))
+					http.Error(w, "could not create token", http.StatusInternalServerError)
+					return
+				}
+				setAdminCookie(w, tokenStr)
+				logger.Info("admin login successful", zap.String("email", email), zap.String("role", dbAdmin.Role))
+				http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+				return
+			}
+		}
+
 		if cfgEmail == "" || cfgPassword == "" {
 			ctx.Logger.Warn("admin credentials not set in config")
 			http.Error(w, "admin credentials not configured", http.StatusInternalServerError)
@@ -792,7 +822,7 @@ func PostLoginHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
-		tokenStr, err := createToken(ctx, cfgEmail, 24*time.Hour)
+		tokenStr, err := createToken(ctx, cfgEmail, RoleSuperAdmin, 24*time.Hour)
 		if err != nil {
 			logger.Error("admin login failed: token creation error", zap.Error(err))
 			http.Error(w, "could not create token", http.StatusInternalServerError)

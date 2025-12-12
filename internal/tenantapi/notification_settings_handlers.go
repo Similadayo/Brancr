@@ -14,14 +14,14 @@ import (
 )
 
 type notificationSettingsPayload struct {
-	EmailNotificationsEnabled bool     `json:"email_notifications_enabled"`
-	EmailOrderStatusChanges   bool     `json:"email_order_status_changes"`
-	EmailPaymentConfirmations bool     `json:"email_payment_confirmations"`
-	EmailReceiptGenerated     bool     `json:"email_receipt_generated"`
-	WebhookEnabled            bool     `json:"webhook_enabled"`
-	WebhookURL                string   `json:"webhook_url"`
-	WebhookEvents             []string `json:"webhook_events"`
-	WebhookSecret             string   `json:"webhook_secret"`
+	EmailNotificationsEnabled bool       `json:"email_notifications_enabled"`
+	EmailOrderStatusChanges   bool       `json:"email_order_status_changes"`
+	EmailPaymentConfirmations bool       `json:"email_payment_confirmations"`
+	EmailReceiptGenerated     bool       `json:"email_receipt_generated"`
+	WebhookEnabled            bool       `json:"webhook_enabled"`
+	WebhookURL                string     `json:"webhook_url"`
+	WebhookEvents             []string   `json:"webhook_events"`
+	WebhookSecret             string     `json:"webhook_secret"`
 	LastTestAt                *time.Time `json:"last_test_at,omitempty"`
 	LastTestStatus            string     `json:"last_test_status"`
 }
@@ -200,7 +200,7 @@ func (h *Handler) testNotificationSettings(w http.ResponseWriter, r *http.Reques
 	_ = repo.Update(r.Context(), settings)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":      emailOK && webhookOK,
+		"success":         emailOK && webhookOK,
 		"email_success":   emailOK,
 		"webhook_success": webhookOK,
 	})
