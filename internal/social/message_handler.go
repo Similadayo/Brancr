@@ -718,7 +718,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	messageLower := strings.ToLower(msg.Content)
 	isMediaType := msg.MessageType == "audio" || msg.MessageType == "image" || msg.MessageType == "video" || msg.MessageType == "document" || msg.MessageType == "sticker"
 
-	// Order/payment flows need tenant confirmation so we can track fulfillment and payment mode
+	// Order flows may need tenant confirmation so we can track fulfillment and payment mode.
 	orderCue := strings.Contains(messageLower, "order") || strings.Contains(messageLower, "i'll take") || strings.Contains(messageLower, "i want one") || strings.Contains(messageLower, "add one")
 	paymentModePOD := strings.Contains(messageLower, "pay on delivery") || strings.Contains(messageLower, "cash on delivery") || strings.Contains(messageLower, "pod")
 	paymentModePrepay := strings.Contains(messageLower, "bank transfer") || strings.Contains(messageLower, "transfer") || strings.Contains(messageLower, "send account") || strings.Contains(messageLower, "account number")
@@ -727,6 +727,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 		return true, "order_request_requires_tenant_confirmation"
 	}
 
+	// Pay-on-delivery selection can require tenant approval.
 	if paymentModePOD {
 		return true, "payment_mode_confirmation_needed"
 	}
@@ -801,10 +802,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	// Customer CONFIRMS they paid: Must escalate for tenant to verify & send receipt
 	// Customer asking WHEN TO PAY: Can auto-reply with POD info if applicable
 
-	isPaymentConfirmation := strings.Contains(messageLower, "paid") ||
-		strings.Contains(messageLower, "sent payment") ||
-		strings.Contains(messageLower, "transferred") ||
-		strings.Contains(messageLower, "payment made")
+	isPaymentConfirmation := h.isPaymentConfirmation(msg.Content)
 
 	isPaymentInquiry := strings.Contains(messageLower, "how to pay") ||
 		strings.Contains(messageLower, "payment method") ||
@@ -825,7 +823,8 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 	}
 
 	// Escalate if customer confirms they paid - tenant must verify & send receipt
-	if (intent.Intent == "payment" || isPaymentConfirmation) && intent.Confidence > 0.7 {
+	// Only escalate when we have a real payment-confirmation signal (avoid escalating on price/payment-method talk).
+	if isPaymentConfirmation && intent.Confidence > 0.5 {
 		return true, "payment_confirmation_requires_tenant_verification"
 	}
 

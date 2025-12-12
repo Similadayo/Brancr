@@ -3,11 +3,14 @@ package bot
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
 )
 
@@ -353,19 +356,57 @@ func (h *EscalationHandler) sendPaymentReceiptToCustomer(ctx context.Context, in
 		return nil // Not an error, just no payment to receipt
 	}
 
+	publicURL := os.Getenv("PUBLIC_URL")
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com"
+	}
+
+	// Ensure portal token exists for link fallback
+	if payment.PortalToken == "" {
+		payment.PortalToken = utils.GeneratePortalToken()
+		if err := h.DB.Save(&payment).Error; err != nil {
+			h.Logger.Warn("failed to save portal token", zap.Error(err), zap.Uint("payment_id", payment.ID))
+		}
+	}
+
+	// Ensure we have a receipt URL (generate if missing)
+	if payment.ReceiptURL == "" || payment.ReceiptID == "" {
+		cloudinaryURL := os.Getenv("CLOUDINARY_URL")
+		receiptService := receipt.NewReceiptService(h.DB, h.Logger, cloudinaryURL, publicURL, nil)
+		if generated, err := receiptService.GenerateReceipt(ctx, payment.ID, payment.TenantID); err == nil {
+			payment = *generated
+		} else {
+			h.Logger.Warn("failed to generate receipt", zap.Error(err), zap.Uint("payment_id", payment.ID))
+		}
+	}
+
+	linkLine := ""
+	receiptLink := ""
+	if strings.HasPrefix(payment.ReceiptURL, "https://") || strings.HasPrefix(payment.ReceiptURL, "http://") {
+		receiptLink = payment.ReceiptURL
+	} else if payment.PortalToken != "" {
+		receiptLink = fmt.Sprintf("%s/portal/receipt?token=%s", publicURL, payment.PortalToken)
+	} else if payment.PortalURL != "" {
+		receiptLink = payment.PortalURL
+	}
+	if receiptLink != "" {
+		linkLine = fmt.Sprintf("\n🔗 Receipt: %s", receiptLink)
+	}
+
 	// Generate receipt message
 	receiptMessage := fmt.Sprintf(`✅ *PAYMENT CONFIRMED*
 
 📝 Receipt #: %s
 💰 Amount: %s %.2f
-✓ Status: Payment Verified
+✓ Status: Payment Verified%s
 
 Thank you for your payment! Your transaction has been confirmed and processed successfully.
 
 If you have any questions, feel free to reach out.`,
 		payment.PaymentReference,
 		payment.Currency,
-		payment.Amount)
+		payment.Amount,
+		linkLine)
 
 	// Load customer for platform ID
 	var customer storage.Customer
@@ -374,13 +415,15 @@ If you have any questions, feel free to reach out.`,
 	}
 
 	// Send receipt via MessageHandler
-	if h.MessageHandler != nil && interaction.Platform == "whatsapp" {
-		// Get conversation thread ID
-		var conversation storage.Conversation
-		threadID := customer.PlatformID // Default
+	if h.MessageHandler != nil {
+		// Default to customer platform ID; for IG/FB prefer thread ID
+		threadID := customer.PlatformID
 		if interaction.ConversationID > 0 {
+			var conversation storage.Conversation
 			if err := h.DB.First(&conversation, interaction.ConversationID).Error; err == nil {
-				threadID = conversation.PlatformThreadID
+				if conversation.PlatformThreadID != "" {
+					threadID = conversation.PlatformThreadID
+				}
 			}
 		}
 		if threadID == "" {
@@ -391,13 +434,10 @@ If you have any questions, feel free to reach out.`,
 			return fmt.Errorf("failed to send receipt: %w", err)
 		}
 
-		// Update payment with receipt info
-		payment.ReceiptID = fmt.Sprintf("RCP-%s", payment.PaymentReference)
-		h.DB.Save(&payment)
-
 		h.Logger.Info("payment receipt sent",
 			zap.Uint("payment_id", payment.ID),
-			zap.String("receipt_id", payment.ReceiptID))
+			zap.String("receipt_id", payment.ReceiptID),
+			zap.String("platform", interaction.Platform))
 	}
 
 	return nil

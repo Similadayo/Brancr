@@ -1,13 +1,18 @@
 package bot
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
+	"go.uber.org/zap"
 )
 
 // showPaymentsMenu displays the payments management menu
@@ -317,21 +322,55 @@ func (h *TenantWebhookHandler) generatePaymentReceipt(bot *tgbotapi.BotAPI, chat
 		return
 	}
 
-	if payment.ReceiptURL != "" {
-		text := fmt.Sprintf(
-			"📄 *Receipt Already Generated*\n\n"+
-				"Receipt URL: %s\n\n"+
-				"Portal Link: %s",
-			payment.ReceiptURL, payment.PortalURL)
-		msg := tgbotapi.NewMessage(chatID, text)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
+	publicURL := os.Getenv("PUBLIC_URL")
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com"
+	}
+
+	// Ensure portal token exists for link fallback
+	if payment.PortalToken == "" {
+		payment.PortalToken = utils.GeneratePortalToken()
+		if err := h.Manager.DB.Save(&payment).Error; err != nil {
+			h.Manager.Logger.Warn("failed to save portal token", zap.Error(err), zap.Uint("payment_id", payment.ID))
+		}
+	}
+
+	// Ensure we have a receipt URL (generate if missing)
+	if payment.ReceiptURL == "" || payment.ReceiptID == "" {
+		cloudinaryURL := os.Getenv("CLOUDINARY_URL")
+		receiptService := receipt.NewReceiptService(h.Manager.DB, h.Manager.Logger, cloudinaryURL, publicURL, nil)
+		if generated, err := receiptService.GenerateReceipt(context.Background(), payment.ID, payment.TenantID); err == nil {
+			payment = *generated
+		} else {
+			h.Manager.Logger.Warn("failed to generate receipt", zap.Error(err), zap.Uint("payment_id", payment.ID))
+		}
+	}
+
+	receiptLink := ""
+	if strings.HasPrefix(payment.ReceiptURL, "https://") || strings.HasPrefix(payment.ReceiptURL, "http://") {
+		receiptLink = payment.ReceiptURL
+	} else if payment.PortalToken != "" {
+		receiptLink = fmt.Sprintf("%s/portal/receipt?token=%s", publicURL, payment.PortalToken)
+	} else if payment.PortalURL != "" {
+		receiptLink = payment.PortalURL
+	}
+
+	if receiptLink == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Could not generate a receipt link for this payment."))
 		return
 	}
 
-	// Receipt generation should be done via API endpoint
-	bot.Send(tgbotapi.NewMessage(chatID,
-		"📄 Receipt generation is available via the dashboard.\n\n"+
-			"Visit: https://www.brancr.com/dashboard/payments"))
+	text := fmt.Sprintf(
+		"📄 *Receipt*\n\n"+
+			"Payment: *%s*\n"+
+			"Amount: %s %.2f\n\n"+
+			"🔗 %s",
+		payment.PaymentReference,
+		payment.Currency,
+		payment.Amount,
+		receiptLink,
+	)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
 }
-

@@ -84,8 +84,10 @@ Confidence should be a number between 0.0 and 1.0
 IMPORTANT: Context-aware escalation rules:
 - "account" intent = Customer asking for account/bank details to PAY
   → Set requires_escalation=false (system will auto-reply with stored details)
-- "payment" intent = Customer CONFIRMING they have paid
+	- "payment" intent = Customer CONFIRMING they have already paid (e.g. "I have paid", "I transferred")
   → Set requires_escalation=true (tenant must verify and send receipt)
+	- Price questions like "how much", "price", "cost" are NOT payment confirmations
+	  → Prefer intent="inquiry" (or "billing" if about invoice/receipt)
 - "refund" intent = Customer requesting refund
   → Set requires_escalation=true (requires human judgment)
 - "complaint" intent = Customer complaining
@@ -95,7 +97,7 @@ IMPORTANT: Context-aware escalation rules:
 
 Escalation Rules:
 1. Confidence below 0.25 (very uncertain) → requires_escalation=true
-2. "payment" OR "refund" OR "complaint" with confidence > 0.5 → requires_escalation=true
+2. "payment" (confirmation only) OR "refund" OR "complaint" with confidence > 0.5 → requires_escalation=true
 3. "delivery_issue" with confidence > 0.85 AND negative/urgent tone → requires_escalation=true
 4. "account" OR "billing" asking for information → requires_escalation=false (bot can handle)
 5. Message tone is "urgent" with confidence > 0.75 → requires_escalation=true
@@ -141,6 +143,8 @@ func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 	requiresEscalation := false
 
 	// Intent detection
+	// NOTE: We intentionally reserve intent="payment" for payment confirmations.
+	// Price questions / payment methods are treated as inquiry/account/billing, not payment.
 	if strings.Contains(lower, "refund") || strings.Contains(lower, "return") || strings.Contains(lower, "money back") {
 		intent = "refund"
 		// Only escalate if it's clearly negative/urgent, not just asking about policy
@@ -165,10 +169,19 @@ func (d *IntentDetector) FallbackDetection(message string) *DetectedIntent {
 		} else {
 			tone = "neutral" // Routine delivery inquiry
 		}
+	} else if strings.Contains(lower, "account number") || strings.Contains(lower, "bank details") || strings.Contains(lower, "payment details") ||
+		strings.Contains(lower, "send account") || strings.Contains(lower, "where to send") || strings.Contains(lower, "how to pay") {
+		intent = "account"
+		requiresEscalation = false
+	} else if strings.Contains(lower, "i have paid") || strings.Contains(lower, "i've paid") || strings.Contains(lower, "paid") ||
+		strings.Contains(lower, "payment made") || strings.Contains(lower, "sent payment") || strings.Contains(lower, "transferred") {
+		intent = "payment"
+		requiresEscalation = true
+	} else if strings.Contains(lower, "invoice") || strings.Contains(lower, "billing") || strings.Contains(lower, "receipt") {
+		intent = "billing"
+		requiresEscalation = false
 	} else if strings.Contains(lower, "order") || strings.Contains(lower, "buy") || strings.Contains(lower, "purchase") {
 		intent = "order"
-	} else if strings.Contains(lower, "pay") || strings.Contains(lower, "price") || strings.Contains(lower, "cost") || strings.Contains(lower, "how much") {
-		intent = "payment"
 	} else if strings.Contains(lower, "?") || strings.Contains(lower, "what") || strings.Contains(lower, "how") || strings.Contains(lower, "when") {
 		intent = "inquiry"
 	}

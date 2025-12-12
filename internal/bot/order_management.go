@@ -1,14 +1,18 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/receipt"
 	"github.com/similadayo/brancr/internal/storage"
+	"github.com/similadayo/brancr/internal/utils"
 )
 
 // showOrdersMenu displays the orders management menu
@@ -206,12 +210,12 @@ func (h *TenantWebhookHandler) viewOrderDetails(bot *tgbotapi.BotAPI, chatID int
 // showOrderStats displays order statistics
 func (h *TenantWebhookHandler) showOrderStats(bot *tgbotapi.BotAPI, chatID int64, tenantID uint) {
 	var stats struct {
-		TotalOrders      int64
-		PendingOrders    int64
-		ConfirmedOrders  int64
-		CompletedOrders  int64
-		TotalRevenue     float64
-		PendingRevenue   float64
+		TotalOrders       int64
+		PendingOrders     int64
+		ConfirmedOrders   int64
+		CompletedOrders   int64
+		TotalRevenue      float64
+		PendingRevenue    float64
 		AverageOrderValue float64
 	}
 
@@ -406,23 +410,55 @@ func (h *TenantWebhookHandler) generateOrderReceipt(bot *tgbotapi.BotAPI, chatID
 		return
 	}
 
-	if payment.ReceiptURL != "" {
-		text := fmt.Sprintf(
-			"📄 *Receipt Already Generated*\n\n"+
-				"Receipt URL: %s\n\n"+
-				"Portal Link: %s",
-			payment.ReceiptURL, payment.PortalURL)
-		msg := tgbotapi.NewMessage(chatID, text)
-		msg.ParseMode = "Markdown"
-		bot.Send(msg)
+	publicURL := os.Getenv("PUBLIC_URL")
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com"
+	}
+
+	// Ensure portal token exists for link fallback
+	if payment.PortalToken == "" {
+		payment.PortalToken = utils.GeneratePortalToken()
+		_ = h.Manager.DB.Save(&payment).Error
+	}
+
+	// Ensure we have a receipt URL (generate if missing)
+	if payment.ReceiptURL == "" || payment.ReceiptID == "" {
+		cloudinaryURL := os.Getenv("CLOUDINARY_URL")
+		receiptService := receipt.NewReceiptService(h.Manager.DB, h.Manager.Logger, cloudinaryURL, publicURL, nil)
+		if generated, err := receiptService.GenerateReceipt(context.Background(), payment.ID, payment.TenantID); err == nil {
+			payment = *generated
+		}
+	}
+
+	receiptLink := ""
+	if strings.HasPrefix(payment.ReceiptURL, "https://") || strings.HasPrefix(payment.ReceiptURL, "http://") {
+		receiptLink = payment.ReceiptURL
+	} else if payment.PortalToken != "" {
+		receiptLink = fmt.Sprintf("%s/portal/receipt?token=%s", publicURL, payment.PortalToken)
+	} else if payment.PortalURL != "" {
+		receiptLink = payment.PortalURL
+	}
+
+	if receiptLink == "" {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Could not generate a receipt link for this order."))
 		return
 	}
 
-	// Receipt generation should be done via API endpoint
-	// For now, inform user to use dashboard
-	bot.Send(tgbotapi.NewMessage(chatID,
-		"📄 Receipt generation is available via the dashboard.\n\n"+
-			"Visit: https://www.brancr.com/dashboard/orders"))
+	text := fmt.Sprintf(
+		"📄 *Receipt*\n\n"+
+			"Order: *%s*\n"+
+			"Payment: *%s*\n"+
+			"Amount: %s %.2f\n\n"+
+			"🔗 %s",
+		order.OrderNumber,
+		payment.PaymentReference,
+		payment.Currency,
+		payment.Amount,
+		receiptLink,
+	)
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "Markdown"
+	bot.Send(msg)
 }
 
 // promptOrderNotes prompts user to add notes to an order
@@ -435,4 +471,3 @@ func (h *TenantWebhookHandler) promptOrderNotes(bot *tgbotapi.BotAPI, chatID int
 			"Or visit the dashboard to manage orders.",
 			orderID)))
 }
-
