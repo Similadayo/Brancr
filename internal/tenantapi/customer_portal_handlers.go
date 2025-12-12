@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -78,33 +79,33 @@ func (h *Handler) getOrderByPortalToken(w http.ResponseWriter, r *http.Request) 
 	// Build response
 	response := map[string]any{
 		"order": map[string]any{
-			"id":               order.ID,
-			"order_number":     order.OrderNumber,
+			"id":                order.ID,
+			"order_number":      order.OrderNumber,
 			"payment_reference": order.PaymentReference,
-			"status":           order.Status,
-			"total_amount":     order.TotalAmount,
-			"currency":         order.Currency,
-			"items":            items,
-			"customer_name":    order.CustomerName,
-			"customer_phone":   order.CustomerPhone,
-			"customer_email":   order.CustomerEmail,
-			"platform":         order.Platform,
-			"created_at":       order.CreatedAt,
-			"confirmed_at":     order.ConfirmedAt,
-			"completed_at":     order.CompletedAt,
+			"status":            order.Status,
+			"total_amount":      order.TotalAmount,
+			"currency":          order.Currency,
+			"items":             items,
+			"customer_name":     order.CustomerName,
+			"customer_phone":    order.CustomerPhone,
+			"customer_email":    order.CustomerEmail,
+			"platform":          order.Platform,
+			"created_at":        order.CreatedAt,
+			"confirmed_at":      order.ConfirmedAt,
+			"completed_at":      order.CompletedAt,
 		},
 		"payment": map[string]any{
-			"id":                 payment.ID,
-			"payment_reference":  payment.PaymentReference,
-			"amount":             payment.Amount,
-			"currency":           payment.Currency,
-			"payment_method":     payment.PaymentMethod,
-			"status":             payment.Status,
+			"id":                  payment.ID,
+			"payment_reference":   payment.PaymentReference,
+			"amount":              payment.Amount,
+			"currency":            payment.Currency,
+			"payment_method":      payment.PaymentMethod,
+			"status":              payment.Status,
 			"verification_status": payment.VerificationStatus,
-			"receipt_id":         payment.ReceiptID,
-			"receipt_url":        payment.ReceiptURL,
-			"created_at":         payment.CreatedAt,
-			"completed_at":       payment.CompletedAt,
+			"receipt_id":          payment.ReceiptID,
+			"receipt_url":         payment.ReceiptURL,
+			"created_at":          payment.CreatedAt,
+			"completed_at":        payment.CompletedAt,
 		},
 		"business": map[string]any{
 			"name":     tenant.BusinessProfile.Name,
@@ -185,9 +186,14 @@ func (h *Handler) getReceiptByPortalToken(w http.ResponseWriter, r *http.Request
 	}
 
 	// Return receipt HTML
+	if strings.HasPrefix(payment.ReceiptURL, "https://") || strings.HasPrefix(payment.ReceiptURL, "http://") {
+		http.Redirect(w, r, payment.ReceiptURL, http.StatusFound)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(payment.ReceiptURL))
+	_, _ = w.Write([]byte(payment.ReceiptURL))
 }
 
 // listCustomerOrders lists all orders for a customer (using portal token)
@@ -240,16 +246,16 @@ func (h *Handler) listCustomerOrders(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal([]byte(order.Items), &items)
 
 		orderList = append(orderList, map[string]any{
-			"id":               order.ID,
-			"order_number":     order.OrderNumber,
+			"id":                order.ID,
+			"order_number":      order.OrderNumber,
 			"payment_reference": order.PaymentReference,
-			"status":           order.Status,
-			"total_amount":     order.TotalAmount,
-			"currency":         order.Currency,
-			"items":            items,
-			"created_at":       order.CreatedAt,
-			"confirmed_at":     order.ConfirmedAt,
-			"completed_at":     order.CompletedAt,
+			"status":            order.Status,
+			"total_amount":      order.TotalAmount,
+			"currency":          order.Currency,
+			"items":             items,
+			"created_at":        order.CreatedAt,
+			"confirmed_at":      order.ConfirmedAt,
+			"completed_at":      order.CompletedAt,
 		})
 	}
 
@@ -314,4 +320,3 @@ func (h *Handler) generatePortalToken(w http.ResponseWriter, r *http.Request) {
 		"message":      "Portal token generated successfully",
 	})
 }
-

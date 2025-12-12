@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -485,6 +486,23 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	items := []storage.OrderItem{}
 	total := 0.0
 	currency := "NGN"
+	amountSource := ""
+	logAmountDecisions := os.Getenv("BRANCR_LOG_AMOUNT_DECISIONS") == "1"
+	amountFromContent := 0.0
+	amountFromReplies := 0.0
+	if logAmountDecisions {
+		amountFromContent = utils.ExtractLikelyAmountNGN(interaction.Content)
+		amountFromReplies = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
+		h.Logger.Info("tg approval: order amount decision (start)",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("tenant_id", interaction.TenantID),
+			zap.Uint("customer_id", interaction.CustomerID),
+			zap.Uint("conversation_id", interaction.ConversationID),
+			zap.String("platform", interaction.Platform),
+			zap.Float64("salesconv_price_discussed", salesConv.PriceDiscussed),
+			zap.Float64("amount_from_content", amountFromContent),
+			zap.Float64("amount_from_replies", amountFromReplies))
+	}
 
 	if salesConv.PendingOrderDraft != "" {
 		var draft struct {
@@ -495,6 +513,9 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 		if err := json.Unmarshal([]byte(salesConv.PendingOrderDraft), &draft); err == nil {
 			items = draft.Items
 			total = draft.TotalAmount
+			if total > 0 {
+				amountSource = "draft.total_amount"
+			}
 			if draft.Currency != "" {
 				currency = draft.Currency
 			}
@@ -504,6 +525,9 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	if len(items) > 0 && total == 0 {
 		for _, it := range items {
 			total += it.TotalPrice
+		}
+		if total > 0 {
+			amountSource = "draft.items_sum"
 		}
 	}
 
@@ -515,6 +539,7 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 			TotalPrice: salesConv.PriceDiscussed,
 		}}
 		total = salesConv.PriceDiscussed
+		amountSource = "salesconv.price_discussed"
 	}
 
 	if len(items) == 0 {
@@ -526,7 +551,13 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
 		}
 		if fallbackTotal <= 0 {
-			fallbackTotal = 1
+			h.Logger.Warn("ensureOrderAndPayment: skipping auto-order creation (no amount inferred)",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("tenant_id", interaction.TenantID),
+				zap.Uint("customer_id", interaction.CustomerID),
+				zap.String("platform", interaction.Platform),
+				zap.Float64("price_discussed", salesConv.PriceDiscussed))
+			return
 		}
 		items = []storage.OrderItem{{
 			Name:       "Order",
@@ -535,18 +566,39 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 			TotalPrice: fallbackTotal,
 		}}
 		total = fallbackTotal
+		amountSource = "fallback.manual_item"
+	}
+
+	if logAmountDecisions {
+		h.Logger.Info("tg approval: order amount decision (final)",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("tenant_id", interaction.TenantID),
+			zap.Uint("customer_id", interaction.CustomerID),
+			zap.Uint("conversation_id", interaction.ConversationID),
+			zap.String("platform", interaction.Platform),
+			zap.String("currency", currency),
+			zap.Int("final_item_count", len(items)),
+			zap.Float64("final_total", total),
+			zap.String("amount_source", amountSource),
+			zap.Float64("salesconv_price_discussed", salesConv.PriceDiscussed),
+			zap.Float64("amount_from_content", amountFromContent),
+			zap.Float64("amount_from_replies", amountFromReplies))
 	}
 
 	itemsJSON, _ := json.Marshal(items)
 	orderNumber := fmt.Sprintf("ORD-TG-%d", time.Now().Unix())
 
 	var tenant storage.Tenant
-	_ = h.DB.First(&tenant, interaction.TenantID).Error
+	_ = h.DB.Preload("BusinessProfile").First(&tenant, interaction.TenantID).Error
 	itemLabel := ""
 	if len(items) > 0 {
 		itemLabel = items[0].Name
 	}
-	paymentRef := utils.GeneratePaymentReference(tenant.Name, interaction.TenantID, itemLabel)
+	businessName := tenant.BusinessProfile.Name
+	if businessName == "" {
+		businessName = tenant.Name
+	}
+	paymentRef := utils.GeneratePaymentReference(businessName, interaction.TenantID, itemLabel)
 
 	customerName := customer.DisplayName
 	handle := customer.Username

@@ -414,13 +414,14 @@ func (w *EscalationWorkflow) sendPaymentReceipt(ctx context.Context, interaction
 		return nil // Not an error, just no payment to receipt
 	}
 
+	publicURL := os.Getenv("PUBLIC_URL")
+	if publicURL == "" {
+		publicURL = "https://api.brancr.com"
+	}
+
 	// Ensure we have a receipt URL (generate if missing)
 	if payment.ReceiptURL == "" || payment.ReceiptID == "" {
 		cloudinaryURL := os.Getenv("CLOUDINARY_URL")
-		publicURL := os.Getenv("PUBLIC_URL")
-		if publicURL == "" {
-			publicURL = "https://api.brancr.com"
-		}
 		receiptService := receipt.NewReceiptService(w.DB, w.Logger, cloudinaryURL, publicURL, nil)
 		if generated, err := receiptService.GenerateReceipt(ctx, payment.ID, payment.TenantID); err == nil {
 			payment = *generated
@@ -430,8 +431,16 @@ func (w *EscalationWorkflow) sendPaymentReceipt(ctx context.Context, interaction
 	}
 
 	linkLine := ""
-	if payment.ReceiptURL != "" {
-		linkLine = fmt.Sprintf("\n🔗 Receipt: %s", payment.ReceiptURL)
+	receiptLink := ""
+	if strings.HasPrefix(payment.ReceiptURL, "https://") || strings.HasPrefix(payment.ReceiptURL, "http://") {
+		receiptLink = payment.ReceiptURL
+	} else if payment.PortalToken != "" {
+		receiptLink = fmt.Sprintf("%s/portal/receipt?token=%s", publicURL, payment.PortalToken)
+	} else if payment.PortalURL != "" {
+		receiptLink = payment.PortalURL
+	}
+	if receiptLink != "" {
+		linkLine = fmt.Sprintf("\n🔗 Receipt: %s", receiptLink)
 	}
 
 	// Generate receipt message
@@ -473,7 +482,7 @@ If you have any questions, feel free to reach out.`,
 			if err := w.MessageSender.SendWhatsAppReply(ctx, interaction.TenantID, customer.PlatformID, receiptMessage); err != nil {
 				return fmt.Errorf("failed to send receipt: %w", err)
 			}
-		case "instagram", "facebook":
+		case "instagram", "facebook", "telegram":
 			if err := w.MessageSender.SendReply(ctx, interaction.TenantID, interaction.Platform, threadID, customer.PlatformID, receiptMessage); err != nil {
 				return fmt.Errorf("failed to send receipt: %w", err)
 			}
@@ -484,7 +493,7 @@ If you have any questions, feel free to reach out.`,
 		}
 
 		// Update payment with receipt info for supported platforms
-		if interaction.Platform == "whatsapp" || interaction.Platform == "instagram" || interaction.Platform == "facebook" {
+		if interaction.Platform == "whatsapp" || interaction.Platform == "instagram" || interaction.Platform == "facebook" || interaction.Platform == "telegram" {
 			payment.ReceiptID = fmt.Sprintf("RCP-%s", payment.PaymentReference)
 			w.DB.Save(&payment)
 
@@ -809,12 +818,43 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		currency = "NGN"
 	}
 	total := draft.TotalAmount
+	amountSource := ""
+	if total > 0 {
+		amountSource = "draft.total_amount"
+	}
 	if total <= 0 && len(items) > 0 {
 		for _, it := range items {
 			total += it.TotalPrice
 		}
+		if total > 0 {
+			amountSource = "draft.items_sum"
+		}
 	}
 	paymentMode := draft.PaymentMode
+
+	logAmountDecisions := os.Getenv("BRANCR_LOG_AMOUNT_DECISIONS") == "1"
+	amountFromContent := 0.0
+	amountFromReplies := 0.0
+	fallbackExtractTotal := 0.0
+	fallbackExtractItemCount := 0
+	if logAmountDecisions {
+		amountFromContent = utils.ExtractLikelyAmountNGN(interaction.Content)
+		amountFromReplies = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
+		w.Logger.Info("order amount decision (initial)",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("conversation_id", interaction.ConversationID),
+			zap.Uint("tenant_id", interaction.TenantID),
+			zap.Uint("customer_id", interaction.CustomerID),
+			zap.String("platform", interaction.Platform),
+			zap.Int("draft_item_count", len(draft.Items)),
+			zap.Float64("draft_total_amount", draft.TotalAmount),
+			zap.String("draft_currency", draft.Currency),
+			zap.Float64("draft_items_sum_total", total),
+			zap.Float64("salesconv_price_discussed", salesConv.PriceDiscussed),
+			zap.Float64("amount_from_content", amountFromContent),
+			zap.Float64("amount_from_replies", amountFromReplies),
+			zap.String("current_amount_source", amountSource))
+	}
 
 	// Fallback to extracting from sales conversation if draft missing
 	if len(items) == 0 || total <= 0 {
@@ -823,6 +863,9 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 		if err == nil {
 			items = fallbackItems
 			total = fallbackTotal
+			amountSource = "sales_conversation.extract_order_items"
+			fallbackExtractTotal = fallbackTotal
+			fallbackExtractItemCount = len(fallbackItems)
 			if currency == "" {
 				currency = "NGN"
 			}
@@ -850,8 +893,13 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
 		}
 		if fallbackTotal <= 0 {
-			fallbackTotal = 1 // minimal non-zero to allow order creation
+			w.Logger.Warn("order payload missing details; skipping auto-order creation (no amount inferred)",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("conversation_id", interaction.ConversationID),
+				zap.Float64("price_discussed", salesConv.PriceDiscussed))
+			return nil
 		}
+		amountSource = "fallback.manual_item"
 		items = []storage.OrderItem{
 			{
 				Name:       "Order",
@@ -869,6 +917,24 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 			zap.Uint("conversation_id", interaction.ConversationID),
 			zap.Float64("fallback_total", fallbackTotal),
 			zap.Float64("price_discussed", salesConv.PriceDiscussed))
+	}
+
+	if logAmountDecisions {
+		w.Logger.Info("order amount decision (final)",
+			zap.Uint("interaction_id", interaction.ID),
+			zap.Uint("conversation_id", interaction.ConversationID),
+			zap.Uint("tenant_id", interaction.TenantID),
+			zap.Uint("customer_id", interaction.CustomerID),
+			zap.String("platform", interaction.Platform),
+			zap.String("currency", currency),
+			zap.Int("final_item_count", len(items)),
+			zap.Float64("final_total", total),
+			zap.String("amount_source", amountSource),
+			zap.Float64("salesconv_price_discussed", salesConv.PriceDiscussed),
+			zap.Float64("extract_order_items_total", fallbackExtractTotal),
+			zap.Int("extract_order_items_count", fallbackExtractItemCount),
+			zap.Float64("amount_from_content", amountFromContent),
+			zap.Float64("amount_from_replies", amountFromReplies))
 	}
 
 	// Prevent duplicate orders created recently for the same customer on the same platform
@@ -899,12 +965,16 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 	}
 
 	var tenant storage.Tenant
-	_ = w.DB.First(&tenant, interaction.TenantID).Error
+	_ = w.DB.Preload("BusinessProfile").First(&tenant, interaction.TenantID).Error
 	itemLabel := ""
 	if len(items) > 0 {
 		itemLabel = items[0].Name
 	}
-	paymentRef := utils.GeneratePaymentReference(tenant.Name, interaction.TenantID, itemLabel)
+	businessName := tenant.BusinessProfile.Name
+	if businessName == "" {
+		businessName = tenant.Name
+	}
+	paymentRef := utils.GeneratePaymentReference(businessName, interaction.TenantID, itemLabel)
 
 	itemsJSON, _ := json.Marshal(items)
 	orderStatus := "pending"
