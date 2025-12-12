@@ -127,3 +127,13 @@ func dedupeEvents(in []Event) []Event {
 	}
 	return out
 }
+
+// HasEvent returns true if events contains at least one event of type t.
+func HasEvent(events []Event, t EventType) bool {
+	for _, e := range events {
+		if e.Type == t {
+			return true
+		}
+	}
+	return false
+}

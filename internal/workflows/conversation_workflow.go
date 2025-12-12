@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -100,6 +101,31 @@ func (w *ConversationWorkflow) HandleCustomerMessage(ctx context.Context, tenant
 	interaction.DetectedIntent = intent.Intent
 	interaction.DetectedTone = emotion.Label
 	interaction.Confidence = intent.Confidence
+
+	// Step 4.5: Deterministic events + persisted conversation state.
+	events := ai.ExtractEvents(message)
+	metadataMap := map[string]interface{}{}
+	ai.AttachEventsToMetadata(metadataMap, events)
+	if b, mErr := json.Marshal(metadataMap); mErr == nil {
+		interaction.Metadata = string(b)
+	}
+	if conversation.ID > 0 {
+		scManager := &ai.SalesConversationManager{DB: w.DB, Logger: w.Logger}
+		if _, scErr := scManager.ApplyDeterministicSignals(ctx, tenantID, customerID, conversation.ID, intent.Intent, events); scErr != nil {
+			w.Logger.Warn("failed to apply deterministic sales conversation signals", zap.Error(scErr), zap.Uint("tenant_id", tenantID), zap.Uint("conversation_id", conversation.ID))
+		}
+	}
+
+	// If events are sufficient to decide escalation, prefer them over probabilistic policy.
+	if d := ai.DecideEscalationFromEvents(events); d.Handled {
+		if d.ShouldEscalate {
+			decision.Action = "escalate"
+			decision.ShouldHuman = true
+		} else {
+			decision.Action = "auto_reply"
+			decision.ShouldHuman = false
+		}
+	}
 
 	// Step 5: Determine response action based on policy decision
 	switch decision.Action {

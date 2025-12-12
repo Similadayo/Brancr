@@ -191,11 +191,12 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	}
 
 	// Step 3: Log interaction (update lock interaction if exists, otherwise create new)
+	events := ai.ExtractEvents(msg.Content)
 	metadataMap := make(map[string]interface{})
 	for k, v := range msg.Metadata {
 		metadataMap[k] = v
 	}
-	ai.AttachEventsToMetadata(metadataMap, ai.ExtractEvents(msg.Content))
+	ai.AttachEventsToMetadata(metadataMap, events)
 	interactionMetadataJSON := h.metadataToJSON(metadataMap)
 
 	var interaction storage.Interaction
@@ -286,8 +287,20 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	// If customer responds within 24 hours of an escalated reply, notify tenant
 	h.checkAndNotifyEscalationAftermath(ctx, msg, customer, interaction.ID, conversationID)
 
-	// Step 4: Smart escalation decision - check multiple factors
-	shouldEscalate, escalationReason := h.shouldEscalateToHuman(ctx, msg, customer, intent, conversationID)
+	// Step 3.75: Update persisted conversation state (SalesConversation) from deterministic events.
+	// This makes follow-ups route correctly even when the follow-up message is vague (e.g. "any update?").
+	var salesConv *storage.SalesConversation
+	if conversationID > 0 {
+		scManager := &ai.SalesConversationManager{DB: h.DB, Logger: h.Logger}
+		if updated, scErr := scManager.ApplyDeterministicSignals(ctx, msg.TenantID, customer.ID, conversationID, intent.Intent, events); scErr != nil {
+			h.Logger.Warn("failed to apply deterministic sales conversation signals", zap.Error(scErr), zap.Uint("tenant_id", msg.TenantID), zap.Uint("conversation_id", conversationID))
+		} else {
+			salesConv = updated
+		}
+	}
+
+	// Step 4: Smart escalation decision - prefer (state, events) with legacy fallbacks
+	shouldEscalate, escalationReason := h.shouldEscalateToHuman(ctx, msg, customer, intent, conversationID, events, salesConv)
 
 	if shouldEscalate {
 		h.Logger.Info("🚨 Escalation required",
@@ -295,7 +308,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 			zap.String("intent", intent.Intent),
 			zap.String("tone", intent.Tone),
 			zap.Float64("confidence", intent.Confidence))
-		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
+		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID, events)
 	}
 
 	// Send "typing..." indicator simulation before generating reply
@@ -307,7 +320,7 @@ func (h *MessageHandler) processMessageInternal(ctx context.Context, msg Incomin
 	if err != nil {
 		h.Logger.Error("failed to generate reply", zap.Error(err))
 		// If reply generation fails, escalate as fallback
-		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID)
+		return h.escalateToTenant(ctx, msg, customer, intent, interaction.ID, events)
 	}
 
 	// Step 6.5: Extract image URLs if customer asked about items
@@ -721,29 +734,30 @@ func (h *MessageHandler) createConversationFallback(ctx context.Context, msg Inc
 
 // shouldEscalateToHuman determines if a message needs human intervention
 // Returns (shouldEscalate, reason)
-func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, conversationID uint) (bool, string) {
+func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, conversationID uint, events []ai.Event, salesConv *storage.SalesConversation) (bool, string) {
 	messageLower := strings.ToLower(msg.Content)
 	isMediaType := msg.MessageType == "audio" || msg.MessageType == "image" || msg.MessageType == "video" || msg.MessageType == "document" || msg.MessageType == "sticker"
 
-	// 1. Check if customer explicitly asks for human
-	explicitHumanRequest := strings.Contains(messageLower, "speak to") ||
-		strings.Contains(messageLower, "talk to") ||
-		strings.Contains(messageLower, "human") ||
-		strings.Contains(messageLower, "person") ||
-		strings.Contains(messageLower, "manager") ||
-		strings.Contains(messageLower, "owner") ||
-		strings.Contains(messageLower, "real person") ||
-		strings.Contains(messageLower, "actual person") ||
-		strings.Contains(messageLower, "get me someone") ||
-		strings.Contains(messageLower, "connect me")
-
-	if explicitHumanRequest {
-		return true, "customer_explicitly_requested_human"
+	// Event-driven fast path (backward compatible): use deterministic events when sufficient.
+	if events == nil {
+		events = ai.ExtractEvents(msg.Content)
+	}
+	if d := ai.DecideEscalationFromEvents(events); d.Handled {
+		return d.ShouldEscalate, d.Reason
 	}
 
-	// Event-driven fast path (backward compatible): use deterministic events when sufficient.
-	if d := ai.DecideEscalationFromEvents(ai.ExtractEvents(msg.Content)); d.Handled {
-		return d.ShouldEscalate, d.Reason
+	// State-driven fallback: if we're already in a human-needed stage, keep routing to human
+	// even when the follow-up message is vague and event extraction yields nothing.
+	if salesConv != nil {
+		stage := strings.ToLower(strings.TrimSpace(salesConv.Stage))
+		switch stage {
+		case "needs_human":
+			return true, "conversation_in_needs_human_stage"
+		case "payment_confirmation":
+			return true, "payment_confirmation_requires_tenant_verification"
+		case "refund":
+			return true, "refund_requires_human_judgment"
+		}
 	}
 
 	// 2. Payment confirmation MUST escalate (tenant needs to verify & send receipt)
@@ -889,7 +903,7 @@ func (h *MessageHandler) shouldEscalateToHuman(ctx context.Context, msg Incoming
 }
 
 // escalateToTenant sends message to tenant's Telegram control center
-func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, interactionID uint) error {
+func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessage, customer *storage.Customer, intent *ai.DetectedIntent, interactionID uint, events []ai.Event) error {
 	// Load interaction first
 	var interaction storage.Interaction
 	if err := h.DB.First(&interaction, interactionID).Error; err != nil {
@@ -922,7 +936,10 @@ func (h *MessageHandler) escalateToTenant(ctx context.Context, msg IncomingMessa
 	h.DB.Save(&interaction)
 
 	// If this is a payment confirmation, create pending payment record immediately
-	if intent.Intent == "payment" && h.isPaymentConfirmation(msg.Content) {
+	if events == nil {
+		events = ai.ExtractEvents(msg.Content)
+	}
+	if ai.HasEvent(events, ai.EventPaymentConfirmation) || (intent.Intent == "payment" && h.isPaymentConfirmation(msg.Content)) {
 		h.createPendingPayment(ctx, msg.TenantID, customer.ID, &interaction, msg.Content)
 	}
 
