@@ -635,64 +635,125 @@ func (w *EscalationWorkflow) sendReplyToCustomer(ctx context.Context, interactio
 
 // handlePaymentConfirmation creates/updates payment record when tenant approves payment
 func (w *EscalationWorkflow) handlePaymentConfirmation(ctx context.Context, interaction *storage.Interaction) error {
-	// Generate unique payment reference
-	paymentRef := fmt.Sprintf("PAY-%d-%d-%s", interaction.TenantID, interaction.CustomerID, time.Now().Format("20060102150405"))
-
-	// Check if payment already exists for this interaction
-	var existingPayment storage.Payment
-	err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status = ?",
-		interaction.TenantID, interaction.CustomerID, "pending").
-		Order("created_at DESC").
-		First(&existingPayment).Error
-
-	if err == nil {
-		// Update existing payment
-		existingPayment.Status = "verified"
-		existingPayment.VerificationStatus = "tenant_verified"
-		existingPayment.ClaimedByCustomer = true
-		now := time.Now()
-		existingPayment.ClaimedAt = &now
-		existingPayment.VerifiedAt = &now
-		existingPayment.CompletedAt = &now
-
-		if err := w.DB.Save(&existingPayment).Error; err != nil {
-			return fmt.Errorf("failed to update payment: %w", err)
-		}
-
-		w.Logger.Info("payment updated",
-			zap.Uint("payment_id", existingPayment.ID),
-			zap.String("payment_ref", existingPayment.PaymentReference))
+	if interaction == nil {
 		return nil
 	}
 
-	// Create new payment record
-	payment := storage.Payment{
-		TenantID:           interaction.TenantID,
-		CustomerID:         interaction.CustomerID,
-		PaymentReference:   paymentRef,
-		Amount:             0, // TODO: Extract from order if linked
-		Currency:           "NGN",
-		PaymentMethod:      "bank_transfer", // Default, could be extracted from message
-		Status:             "verified",
-		VerificationStatus: "tenant_verified",
-		ClaimedByCustomer:  true,
-		Metadata:           fmt.Sprintf(`{"interaction_id":%d,"customer_message":"%s"}`, interaction.ID, interaction.Content),
+	// Prefer attaching payment confirmation to an unambiguous recent pending order.
+	var pending []storage.Order
+	if err := w.DB.
+		Where("tenant_id = ? AND customer_id = ? AND platform = ? AND status = ? AND total_amount > 0", interaction.TenantID, interaction.CustomerID, interaction.Platform, "pending").
+		Where("created_at > ?", time.Now().Add(-7*24*time.Hour)).
+		Order("created_at DESC").
+		Limit(2).
+		Find(&pending).Error; err == nil {
+		if len(pending) == 1 {
+			now := time.Now()
+			var payment storage.Payment
+			if err := w.DB.Where("tenant_id = ? AND order_id = ?", pending[0].TenantID, pending[0].ID).First(&payment).Error; err == nil {
+				payment.Status = "verified"
+				payment.VerificationStatus = "tenant_verified"
+				payment.ClaimedByCustomer = true
+				payment.ClaimedAt = &now
+				payment.VerifiedAt = &now
+				payment.CompletedAt = &now
+				if payment.Amount <= 0 {
+					payment.Amount = pending[0].TotalAmount
+				}
+				if payment.Currency == "" {
+					payment.Currency = pending[0].Currency
+					if payment.Currency == "" {
+						payment.Currency = "NGN"
+					}
+				}
+				if payment.PortalToken == "" {
+					payment.PortalToken = utils.GeneratePortalToken()
+				}
+				if payment.ReceiptID == "" {
+					payment.ReceiptID = utils.GenerateReceiptID()
+				}
+				_ = w.DB.Save(&payment).Error
+			} else {
+				payment = storage.Payment{
+					TenantID:           pending[0].TenantID,
+					OrderID:            pending[0].ID,
+					CustomerID:         pending[0].CustomerID,
+					PaymentReference:   pending[0].PaymentReference,
+					Amount:             pending[0].TotalAmount,
+					Currency:           pending[0].Currency,
+					PaymentMethod:      "bank_transfer",
+					Status:             "verified",
+					VerificationStatus: "tenant_verified",
+					ClaimedByCustomer:  true,
+					ClaimedAt:          &now,
+					VerifiedAt:         &now,
+					CompletedAt:        &now,
+					Metadata:           fmt.Sprintf(`{"interaction_id":%d}`, interaction.ID),
+					CreatedAt:          now,
+				}
+				if payment.Currency == "" {
+					payment.Currency = "NGN"
+				}
+				if payment.PortalToken == "" {
+					payment.PortalToken = utils.GeneratePortalToken()
+				}
+				if payment.ReceiptID == "" {
+					payment.ReceiptID = utils.GenerateReceiptID()
+				}
+				_ = w.DB.Create(&payment).Error
+			}
+
+			_ = w.DB.Model(&storage.Order{}).
+				Where("id = ?", pending[0].ID).
+				Updates(map[string]interface{}{"status": "completed", "completed_at": &now}).Error
+
+			w.Logger.Info("payment confirmation attached to pending order",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("order_id", pending[0].ID),
+				zap.Uint("tenant_id", interaction.TenantID),
+				zap.Uint("customer_id", interaction.CustomerID))
+			return nil
+		}
+		if len(pending) > 1 {
+			w.Logger.Warn("payment confirmation ambiguous: multiple pending orders; skipping auto-link",
+				zap.Uint("interaction_id", interaction.ID),
+				zap.Uint("tenant_id", interaction.TenantID),
+				zap.Uint("customer_id", interaction.CustomerID),
+				zap.String("platform", interaction.Platform),
+				zap.Uint("most_recent_order_id", pending[0].ID))
+			return nil
+		}
 	}
 
-	now := time.Now()
-	payment.ClaimedAt = &now
-	payment.VerifiedAt = &now
-	payment.CompletedAt = &now
-
-	if err := w.DB.Create(&payment).Error; err != nil {
-		return fmt.Errorf("failed to create payment: %w", err)
+	// Fallback: if there's already a pending payment for this customer, verify it.
+	var existingPayment storage.Payment
+	if err := w.DB.Where("tenant_id = ? AND customer_id = ? AND status = ? AND amount > 0",
+		interaction.TenantID, interaction.CustomerID, "pending").
+		Order("created_at DESC").
+		First(&existingPayment).Error; err == nil {
+		now := time.Now()
+		existingPayment.Status = "verified"
+		existingPayment.VerificationStatus = "tenant_verified"
+		existingPayment.ClaimedByCustomer = true
+		existingPayment.ClaimedAt = &now
+		existingPayment.VerifiedAt = &now
+		existingPayment.CompletedAt = &now
+		if existingPayment.PortalToken == "" {
+			existingPayment.PortalToken = utils.GeneratePortalToken()
+		}
+		if existingPayment.ReceiptID == "" {
+			existingPayment.ReceiptID = utils.GenerateReceiptID()
+		}
+		_ = w.DB.Save(&existingPayment).Error
+		return nil
 	}
 
-	w.Logger.Info("payment record created",
-		zap.Uint("payment_id", payment.ID),
-		zap.String("payment_ref", payment.PaymentReference),
-		zap.Uint("tenant_id", interaction.TenantID))
-
+	// No safe amount/order to attach to; do not create a zero-amount payment.
+	w.Logger.Warn("payment confirmation had no attachable order/amount; skipping payment creation",
+		zap.Uint("interaction_id", interaction.ID),
+		zap.Uint("tenant_id", interaction.TenantID),
+		zap.Uint("customer_id", interaction.CustomerID),
+		zap.String("platform", interaction.Platform))
 	return nil
 }
 
@@ -790,13 +851,21 @@ func inferOrderCue(message string) bool {
 
 // createOrderIfPossible tries to build an order from the sales conversation when escalations are approved/resolved
 func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interaction *storage.Interaction) error {
-	if interaction.ConversationID == 0 {
+	if interaction == nil {
 		return nil
 	}
 
 	var salesConv storage.SalesConversation
-	if err := w.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error; err != nil {
-		return nil
+	if interaction.ConversationID != 0 {
+		_ = w.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error
+	}
+	if salesConv.ID == 0 {
+		// Fallback: some interactions don't have ConversationID populated.
+		if err := w.DB.Where("tenant_id = ? AND customer_id = ?", interaction.TenantID, interaction.CustomerID).
+			Order("updated_at DESC").
+			First(&salesConv).Error; err != nil {
+			return nil
+		}
 	}
 
 	// Extract draft order if present
@@ -893,9 +962,68 @@ func (w *EscalationWorkflow) createOrderIfPossible(ctx context.Context, interact
 			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
 		}
 		if fallbackTotal <= 0 {
+			// If we can't infer an amount from the current message, try to reuse a single recent pending order.
+			// This is common on payment-confirmation messages like "I've paid" which contain no amount.
+			var pending []storage.Order
+			if err := w.DB.
+				Where("tenant_id = ? AND customer_id = ? AND platform = ? AND status = ? AND total_amount > 0", interaction.TenantID, interaction.CustomerID, interaction.Platform, "pending").
+				Where("created_at > ?", time.Now().Add(-7*24*time.Hour)).
+				Order("created_at DESC").
+				Limit(2).
+				Find(&pending).Error; err == nil {
+				if len(pending) == 1 {
+					var existing storage.Payment
+					if err := w.DB.Where("tenant_id = ? AND order_id = ?", pending[0].TenantID, pending[0].ID).First(&existing).Error; err != nil {
+						now := time.Now()
+						p := storage.Payment{
+							TenantID:           pending[0].TenantID,
+							OrderID:            pending[0].ID,
+							CustomerID:         pending[0].CustomerID,
+							PaymentReference:   pending[0].PaymentReference,
+							Amount:             pending[0].TotalAmount,
+							Currency:           pending[0].Currency,
+							PaymentMethod:      "unknown",
+							Status:             "pending",
+							VerificationStatus: "unverified",
+							Metadata:           "{}",
+							CreatedAt:          now,
+						}
+						if p.Currency == "" {
+							p.Currency = "NGN"
+						}
+						if p.PortalToken == "" {
+							p.PortalToken = utils.GeneratePortalToken()
+						}
+						if p.ReceiptID == "" {
+							p.ReceiptID = utils.GenerateReceiptID()
+						}
+						_ = w.DB.Create(&p).Error
+					}
+					w.Logger.Info("createOrderIfPossible: reused existing pending order (no amount inferred)",
+						zap.Uint("interaction_id", interaction.ID),
+						zap.Uint("tenant_id", interaction.TenantID),
+						zap.Uint("customer_id", interaction.CustomerID),
+						zap.Uint("order_id", pending[0].ID),
+						zap.String("platform", interaction.Platform),
+						zap.Float64("order_total", pending[0].TotalAmount))
+					return nil
+				}
+				if len(pending) > 1 {
+					w.Logger.Warn("createOrderIfPossible: multiple pending orders found; skipping auto-link",
+						zap.Uint("interaction_id", interaction.ID),
+						zap.Uint("tenant_id", interaction.TenantID),
+						zap.Uint("customer_id", interaction.CustomerID),
+						zap.String("platform", interaction.Platform),
+						zap.Uint("most_recent_order_id", pending[0].ID))
+				}
+			}
+
 			w.Logger.Warn("order payload missing details; skipping auto-order creation (no amount inferred)",
 				zap.Uint("interaction_id", interaction.ID),
 				zap.Uint("conversation_id", interaction.ConversationID),
+				zap.Uint("tenant_id", interaction.TenantID),
+				zap.Uint("customer_id", interaction.CustomerID),
+				zap.String("platform", interaction.Platform),
 				zap.Float64("price_discussed", salesConv.PriceDiscussed))
 			return nil
 		}

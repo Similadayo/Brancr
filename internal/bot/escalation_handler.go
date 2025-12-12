@@ -482,6 +482,12 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 	if interaction.ConversationID != 0 {
 		_ = h.DB.Where("conversation_id = ?", interaction.ConversationID).Order("created_at DESC").First(&salesConv).Error
 	}
+	if salesConv.ID == 0 {
+		// Fallback: interactions sometimes lack ConversationID; use latest sales conversation for this tenant/customer.
+		_ = h.DB.Where("tenant_id = ? AND customer_id = ?", interaction.TenantID, interaction.CustomerID).
+			Order("updated_at DESC").
+			First(&salesConv).Error
+	}
 
 	items := []storage.OrderItem{}
 	total := 0.0
@@ -551,10 +557,40 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 			fallbackTotal = utils.ExtractLikelyAmountNGN(interaction.FinalReply + " " + interaction.SuggestedReply)
 		}
 		if fallbackTotal <= 0 {
+			// If we can't infer an amount from the current message, try to reuse a single recent pending order.
+			// This is common on payment-confirmation messages like "I've paid" which contain no amount.
+			var pending []storage.Order
+			if err := h.DB.
+				Where("tenant_id = ? AND customer_id = ? AND platform = ? AND status = ? AND total_amount > 0", interaction.TenantID, interaction.CustomerID, interaction.Platform, "pending").
+				Where("created_at > ?", time.Now().Add(-7*24*time.Hour)).
+				Order("created_at DESC").
+				Limit(2).
+				Find(&pending).Error; err == nil {
+				if len(pending) == 1 {
+					h.Logger.Info("ensureOrderAndPayment: reusing existing pending order (no amount in message)",
+						zap.Uint("interaction_id", interaction.ID),
+						zap.Uint("tenant_id", interaction.TenantID),
+						zap.Uint("customer_id", interaction.CustomerID),
+						zap.Uint("order_id", pending[0].ID),
+						zap.String("platform", interaction.Platform),
+						zap.Float64("order_total", pending[0].TotalAmount))
+					h.ensurePaymentForOrder(interaction, &pending[0])
+					return
+				}
+				if len(pending) > 1 {
+					h.Logger.Warn("ensureOrderAndPayment: multiple pending orders found; skipping auto-link",
+						zap.Uint("interaction_id", interaction.ID),
+						zap.Uint("tenant_id", interaction.TenantID),
+						zap.Uint("customer_id", interaction.CustomerID),
+						zap.String("platform", interaction.Platform),
+						zap.Uint("most_recent_order_id", pending[0].ID))
+				}
+			}
 			h.Logger.Warn("ensureOrderAndPayment: skipping auto-order creation (no amount inferred)",
 				zap.Uint("interaction_id", interaction.ID),
 				zap.Uint("tenant_id", interaction.TenantID),
 				zap.Uint("customer_id", interaction.CustomerID),
+				zap.Uint("conversation_id", interaction.ConversationID),
 				zap.String("platform", interaction.Platform),
 				zap.Float64("price_discussed", salesConv.PriceDiscussed))
 			return
