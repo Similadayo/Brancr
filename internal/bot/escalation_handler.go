@@ -598,13 +598,13 @@ func (h *EscalationHandler) ensureOrderAndPayment(ctx context.Context, interacti
 						}
 						if len(matches) == 1 {
 							h.Logger.Info("ensureOrderAndPayment: matched pending order via expected amount",
-							zap.Uint("interaction_id", interaction.ID),
-							zap.Uint("tenant_id", interaction.TenantID),
-							zap.Uint("customer_id", interaction.CustomerID),
-							zap.String("platform", interaction.Platform),
-							zap.Float64("expected_amount", expectedAmount),
-							zap.String("expected_source", expectedSource),
-							zap.Uint("order_id", matches[0].ID))
+								zap.Uint("interaction_id", interaction.ID),
+								zap.Uint("tenant_id", interaction.TenantID),
+								zap.Uint("customer_id", interaction.CustomerID),
+								zap.String("platform", interaction.Platform),
+								zap.Float64("expected_amount", expectedAmount),
+								zap.String("expected_source", expectedSource),
+								zap.Uint("order_id", matches[0].ID))
 							h.ensurePaymentForOrder(interaction, &matches[0])
 							return
 						}
