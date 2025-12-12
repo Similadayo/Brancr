@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/similadayo/brancr/internal/middleware"
@@ -196,21 +197,24 @@ func (h *Handler) listProducts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type productResp struct {
-		ID           uint                   `json:"id"`
-		Name         string                 `json:"name"`
-		Description  string                 `json:"description"`
-		Price        float64                `json:"price"`
-		Currency     string                 `json:"currency"`
-		Category     string                 `json:"category"`
-		StockCount   int                    `json:"stock_count"`
-		Availability string                 `json:"availability"`
-		IsActive     bool                   `json:"is_active"`
-		SKU          string                 `json:"sku"`
-		Variants     map[string]interface{} `json:"variants,omitempty"`
-		Tags         []string               `json:"tags,omitempty"`
-		Images       []string               `json:"images,omitempty"`
-		CreatedAt    string                 `json:"created_at"`
-		UpdatedAt    string                 `json:"updated_at"`
+		ID                  uint                   `json:"id"`
+		Name                string                 `json:"name"`
+		Description         string                 `json:"description"`
+		Price               float64                `json:"price"`
+		Currency            string                 `json:"currency"`
+		NegotiationMode     string                 `json:"negotiation_mode"`
+		NegotiationMinPrice float64                `json:"negotiation_min_price"`
+		NegotiationMaxPrice float64                `json:"negotiation_max_price"`
+		Category            string                 `json:"category"`
+		StockCount          int                    `json:"stock_count"`
+		Availability        string                 `json:"availability"`
+		IsActive            bool                   `json:"is_active"`
+		SKU                 string                 `json:"sku"`
+		Variants            map[string]interface{} `json:"variants,omitempty"`
+		Tags                []string               `json:"tags,omitempty"`
+		Images              []string               `json:"images,omitempty"`
+		CreatedAt           string                 `json:"created_at"`
+		UpdatedAt           string                 `json:"updated_at"`
 	}
 
 	resp := make([]productResp, len(products))
@@ -230,21 +234,24 @@ func (h *Handler) listProducts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp[i] = productResp{
-			ID:           p.ID,
-			Name:         p.Name,
-			Description:  p.Description,
-			Price:        p.Price,
-			Currency:     p.Currency,
-			Category:     p.Category,
-			StockCount:   p.StockCount,
-			Availability: p.Availability,
-			IsActive:     p.IsActive,
-			SKU:          p.SKU,
-			Variants:     variants,
-			Tags:         tags,
-			Images:       images,
-			CreatedAt:    p.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:    p.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:                  p.ID,
+			Name:                p.Name,
+			Description:         p.Description,
+			Price:               p.Price,
+			Currency:            p.Currency,
+			NegotiationMode:     p.NegotiationMode,
+			NegotiationMinPrice: p.NegotiationMinPrice,
+			NegotiationMaxPrice: p.NegotiationMaxPrice,
+			Category:            p.Category,
+			StockCount:          p.StockCount,
+			Availability:        p.Availability,
+			IsActive:            p.IsActive,
+			SKU:                 p.SKU,
+			Variants:            variants,
+			Tags:                tags,
+			Images:              images,
+			CreatedAt:           p.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:           p.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -263,18 +270,21 @@ func (h *Handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         string                 `json:"name"`
-		Description  string                 `json:"description"`
-		Price        float64                `json:"price"`
-		Currency     string                 `json:"currency"`
-		Category     string                 `json:"category"`
-		StockCount   int                    `json:"stock_count"`
-		Availability string                 `json:"availability"`
-		IsActive     bool                   `json:"is_active"`
-		SKU          string                 `json:"sku"`
-		Variants     map[string]interface{} `json:"variants"`
-		Tags         []string               `json:"tags"`
-		Images       []string               `json:"images"`
+		Name                string                 `json:"name"`
+		Description         string                 `json:"description"`
+		Price               float64                `json:"price"`
+		Currency            string                 `json:"currency"`
+		NegotiationMode     string                 `json:"negotiation_mode"`
+		NegotiationMinPrice float64                `json:"negotiation_min_price"`
+		NegotiationMaxPrice float64                `json:"negotiation_max_price"`
+		Category            string                 `json:"category"`
+		StockCount          int                    `json:"stock_count"`
+		Availability        string                 `json:"availability"`
+		IsActive            bool                   `json:"is_active"`
+		SKU                 string                 `json:"sku"`
+		Variants            map[string]interface{} `json:"variants"`
+		Tags                []string               `json:"tags"`
+		Images              []string               `json:"images"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -288,16 +298,30 @@ func (h *Handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	product := storage.Product{
-		TenantID:     claims.TenantID,
-		Name:         req.Name,
-		Description:  req.Description,
-		Price:        req.Price,
-		Currency:     req.Currency,
-		Category:     req.Category,
-		StockCount:   req.StockCount,
-		Availability: req.Availability,
-		IsActive:     req.IsActive,
-		SKU:          req.SKU,
+		TenantID:            claims.TenantID,
+		Name:                req.Name,
+		Description:         req.Description,
+		Price:               req.Price,
+		Currency:            req.Currency,
+		NegotiationMode:     "",
+		NegotiationMinPrice: req.NegotiationMinPrice,
+		NegotiationMaxPrice: req.NegotiationMaxPrice,
+		Category:            req.Category,
+		StockCount:          req.StockCount,
+		Availability:        req.Availability,
+		IsActive:            req.IsActive,
+		SKU:                 req.SKU,
+	}
+
+	mode, ok := normalizeNegotiationMode(req.NegotiationMode)
+	if !ok {
+		http.Error(w, "invalid negotiation_mode", http.StatusBadRequest)
+		return
+	}
+	product.NegotiationMode = mode
+	if err := validateNegotiation(product.NegotiationMode, product.NegotiationMinPrice, product.NegotiationMaxPrice); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	if req.Variants != nil {
@@ -331,15 +355,18 @@ func (h *Handler) createProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"success": true,
 		"product": map[string]any{
-			"id":           product.ID,
-			"name":         product.Name,
-			"description":  product.Description,
-			"price":        product.Price,
-			"currency":     product.Currency,
-			"category":     product.Category,
-			"stock_count":  product.StockCount,
-			"availability": product.Availability,
-			"is_active":    product.IsActive,
+			"id":                    product.ID,
+			"name":                  product.Name,
+			"description":           product.Description,
+			"price":                 product.Price,
+			"currency":              product.Currency,
+			"negotiation_mode":      product.NegotiationMode,
+			"negotiation_min_price": product.NegotiationMinPrice,
+			"negotiation_max_price": product.NegotiationMaxPrice,
+			"category":              product.Category,
+			"stock_count":           product.StockCount,
+			"availability":          product.Availability,
+			"is_active":             product.IsActive,
 		},
 	})
 }
@@ -388,21 +415,24 @@ func (h *Handler) getProduct(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"product": map[string]any{
-			"id":           product.ID,
-			"name":         product.Name,
-			"description":  product.Description,
-			"price":        product.Price,
-			"currency":     product.Currency,
-			"category":     product.Category,
-			"stock_count":  product.StockCount,
-			"availability": product.Availability,
-			"is_active":    product.IsActive,
-			"sku":          product.SKU,
-			"variants":     variants,
-			"tags":         tags,
-			"images":       images,
-			"created_at":   product.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"updated_at":   product.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"id":                    product.ID,
+			"name":                  product.Name,
+			"description":           product.Description,
+			"price":                 product.Price,
+			"currency":              product.Currency,
+			"negotiation_mode":      product.NegotiationMode,
+			"negotiation_min_price": product.NegotiationMinPrice,
+			"negotiation_max_price": product.NegotiationMaxPrice,
+			"category":              product.Category,
+			"stock_count":           product.StockCount,
+			"availability":          product.Availability,
+			"is_active":             product.IsActive,
+			"sku":                   product.SKU,
+			"variants":              variants,
+			"tags":                  tags,
+			"images":                images,
+			"created_at":            product.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at":            product.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -436,18 +466,21 @@ func (h *Handler) updateProduct(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         *string                `json:"name"`
-		Description  *string                `json:"description"`
-		Price        *float64               `json:"price"`
-		Currency     *string                `json:"currency"`
-		Category     *string                `json:"category"`
-		StockCount   *int                   `json:"stock_count"`
-		Availability *string                `json:"availability"`
-		IsActive     *bool                  `json:"is_active"`
-		SKU          *string                `json:"sku"`
-		Variants     map[string]interface{} `json:"variants"`
-		Tags         []string               `json:"tags"`
-		Images       []string               `json:"images"`
+		Name                *string                `json:"name"`
+		Description         *string                `json:"description"`
+		Price               *float64               `json:"price"`
+		Currency            *string                `json:"currency"`
+		NegotiationMode     *string                `json:"negotiation_mode"`
+		NegotiationMinPrice *float64               `json:"negotiation_min_price"`
+		NegotiationMaxPrice *float64               `json:"negotiation_max_price"`
+		Category            *string                `json:"category"`
+		StockCount          *int                   `json:"stock_count"`
+		Availability        *string                `json:"availability"`
+		IsActive            *bool                  `json:"is_active"`
+		SKU                 *string                `json:"sku"`
+		Variants            map[string]interface{} `json:"variants"`
+		Tags                []string               `json:"tags"`
+		Images              []string               `json:"images"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -466,6 +499,29 @@ func (h *Handler) updateProduct(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Currency != nil {
 		product.Currency = *req.Currency
+	}
+	if req.NegotiationMode != nil {
+		mode, ok := normalizeNegotiationMode(*req.NegotiationMode)
+		if !ok {
+			http.Error(w, "invalid negotiation_mode", http.StatusBadRequest)
+			return
+		}
+		product.NegotiationMode = mode
+	} else {
+		product.NegotiationMode = strings.TrimSpace(strings.ToLower(product.NegotiationMode))
+		if product.NegotiationMode == "" {
+			product.NegotiationMode = negotiationModeDefault
+		}
+	}
+	if req.NegotiationMinPrice != nil {
+		product.NegotiationMinPrice = *req.NegotiationMinPrice
+	}
+	if req.NegotiationMaxPrice != nil {
+		product.NegotiationMaxPrice = *req.NegotiationMaxPrice
+	}
+	if err := validateNegotiation(product.NegotiationMode, product.NegotiationMinPrice, product.NegotiationMaxPrice); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	if req.Category != nil {
 		product.Category = *req.Category
@@ -504,15 +560,18 @@ func (h *Handler) updateProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"product": map[string]any{
-			"id":           product.ID,
-			"name":         product.Name,
-			"description":  product.Description,
-			"price":        product.Price,
-			"currency":     product.Currency,
-			"category":     product.Category,
-			"stock_count":  product.StockCount,
-			"availability": product.Availability,
-			"is_active":    product.IsActive,
+			"id":                    product.ID,
+			"name":                  product.Name,
+			"description":           product.Description,
+			"price":                 product.Price,
+			"currency":              product.Currency,
+			"negotiation_mode":      product.NegotiationMode,
+			"negotiation_min_price": product.NegotiationMinPrice,
+			"negotiation_max_price": product.NegotiationMaxPrice,
+			"category":              product.Category,
+			"stock_count":           product.StockCount,
+			"availability":          product.Availability,
+			"is_active":             product.IsActive,
 		},
 	})
 }
@@ -556,4 +615,3 @@ func (h *Handler) deleteProduct(w http.ResponseWriter, r *http.Request) {
 		"message": "product deleted",
 	})
 }
-

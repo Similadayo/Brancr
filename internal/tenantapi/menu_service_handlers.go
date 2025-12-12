@@ -52,20 +52,23 @@ func (h *Handler) listMenuItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type menuItemResp struct {
-		ID              uint     `json:"id"`
-		Name            string   `json:"name"`
-		Description     string   `json:"description"`
-		Price           float64  `json:"price"`
-		Currency        string   `json:"currency"`
-		Category        string   `json:"category"`
-		PreparationTime int      `json:"preparation_time"`
-		SpiceLevel      string   `json:"spice_level"`
-		Availability    string   `json:"availability"`
-		IsActive        bool     `json:"is_active"`
-		DietaryInfo     []string `json:"dietary_info,omitempty"`
-		Images          []string `json:"images,omitempty"`
-		CreatedAt       string   `json:"created_at"`
-		UpdatedAt       string   `json:"updated_at"`
+		ID                  uint     `json:"id"`
+		Name                string   `json:"name"`
+		Description         string   `json:"description"`
+		Price               float64  `json:"price"`
+		Currency            string   `json:"currency"`
+		NegotiationMode     string   `json:"negotiation_mode"`
+		NegotiationMinPrice float64  `json:"negotiation_min_price"`
+		NegotiationMaxPrice float64  `json:"negotiation_max_price"`
+		Category            string   `json:"category"`
+		PreparationTime     int      `json:"preparation_time"`
+		SpiceLevel          string   `json:"spice_level"`
+		Availability        string   `json:"availability"`
+		IsActive            bool     `json:"is_active"`
+		DietaryInfo         []string `json:"dietary_info,omitempty"`
+		Images              []string `json:"images,omitempty"`
+		CreatedAt           string   `json:"created_at"`
+		UpdatedAt           string   `json:"updated_at"`
 	}
 
 	resp := make([]menuItemResp, len(items))
@@ -81,20 +84,23 @@ func (h *Handler) listMenuItems(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp[i] = menuItemResp{
-			ID:              item.ID,
-			Name:            item.Name,
-			Description:     item.Description,
-			Price:           item.Price,
-			Currency:        item.Currency,
-			Category:        item.Category,
-			PreparationTime: item.PreparationTime,
-			SpiceLevel:      item.SpiceLevel,
-			Availability:    item.Availability,
-			IsActive:        item.IsActive,
-			DietaryInfo:     dietary,
-			Images:          images,
-			CreatedAt:       item.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:       item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:                  item.ID,
+			Name:                item.Name,
+			Description:         item.Description,
+			Price:               item.Price,
+			Currency:            item.Currency,
+			NegotiationMode:     item.NegotiationMode,
+			NegotiationMinPrice: item.NegotiationMinPrice,
+			NegotiationMaxPrice: item.NegotiationMaxPrice,
+			Category:            item.Category,
+			PreparationTime:     item.PreparationTime,
+			SpiceLevel:          item.SpiceLevel,
+			Availability:        item.Availability,
+			IsActive:            item.IsActive,
+			DietaryInfo:         dietary,
+			Images:              images,
+			CreatedAt:           item.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:           item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -113,17 +119,20 @@ func (h *Handler) createMenuItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name            string   `json:"name"`
-		Description     string   `json:"description"`
-		Price           float64  `json:"price"`
-		Currency        string   `json:"currency"`
-		Category        string   `json:"category"`
-		PreparationTime int      `json:"preparation_time"`
-		SpiceLevel      string   `json:"spice_level"`
-		Availability    string   `json:"availability"`
-		IsActive        bool     `json:"is_active"`
-		DietaryInfo     []string `json:"dietary_info"`
-		Images          []string `json:"images"`
+		Name                string   `json:"name"`
+		Description         string   `json:"description"`
+		Price               float64  `json:"price"`
+		Currency            string   `json:"currency"`
+		NegotiationMode     string   `json:"negotiation_mode"`
+		NegotiationMinPrice float64  `json:"negotiation_min_price"`
+		NegotiationMaxPrice float64  `json:"negotiation_max_price"`
+		Category            string   `json:"category"`
+		PreparationTime     int      `json:"preparation_time"`
+		SpiceLevel          string   `json:"spice_level"`
+		Availability        string   `json:"availability"`
+		IsActive            bool     `json:"is_active"`
+		DietaryInfo         []string `json:"dietary_info"`
+		Images              []string `json:"images"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -137,16 +146,30 @@ func (h *Handler) createMenuItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item := storage.MenuItem{
-		TenantID:        claims.TenantID,
-		Name:            req.Name,
-		Description:     req.Description,
-		Price:           req.Price,
-		Currency:        req.Currency,
-		Category:        req.Category,
-		PreparationTime: req.PreparationTime,
-		SpiceLevel:      req.SpiceLevel,
-		Availability:    req.Availability,
-		IsActive:        req.IsActive,
+		TenantID:            claims.TenantID,
+		Name:                req.Name,
+		Description:         req.Description,
+		Price:               req.Price,
+		Currency:            req.Currency,
+		NegotiationMode:     "",
+		NegotiationMinPrice: req.NegotiationMinPrice,
+		NegotiationMaxPrice: req.NegotiationMaxPrice,
+		Category:            req.Category,
+		PreparationTime:     req.PreparationTime,
+		SpiceLevel:          req.SpiceLevel,
+		Availability:        req.Availability,
+		IsActive:            req.IsActive,
+	}
+
+	mode, ok := normalizeNegotiationMode(req.NegotiationMode)
+	if !ok {
+		http.Error(w, "invalid negotiation_mode", http.StatusBadRequest)
+		return
+	}
+	item.NegotiationMode = mode
+	if err := validateNegotiation(item.NegotiationMode, item.NegotiationMinPrice, item.NegotiationMaxPrice); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	if req.DietaryInfo != nil {
@@ -182,16 +205,19 @@ func (h *Handler) createMenuItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"success": true,
 		"menu_item": map[string]any{
-			"id":               item.ID,
-			"name":             item.Name,
-			"description":      item.Description,
-			"price":            item.Price,
-			"currency":         item.Currency,
-			"category":         item.Category,
-			"preparation_time": item.PreparationTime,
-			"spice_level":      item.SpiceLevel,
-			"availability":     item.Availability,
-			"is_active":        item.IsActive,
+			"id":                    item.ID,
+			"name":                  item.Name,
+			"description":           item.Description,
+			"price":                 item.Price,
+			"currency":              item.Currency,
+			"negotiation_mode":      item.NegotiationMode,
+			"negotiation_min_price": item.NegotiationMinPrice,
+			"negotiation_max_price": item.NegotiationMaxPrice,
+			"category":              item.Category,
+			"preparation_time":      item.PreparationTime,
+			"spice_level":           item.SpiceLevel,
+			"availability":          item.Availability,
+			"is_active":             item.IsActive,
 		},
 	})
 }
@@ -236,20 +262,23 @@ func (h *Handler) getMenuItem(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"menu_item": map[string]any{
-			"id":               item.ID,
-			"name":             item.Name,
-			"description":      item.Description,
-			"price":            item.Price,
-			"currency":         item.Currency,
-			"category":         item.Category,
-			"preparation_time": item.PreparationTime,
-			"spice_level":      item.SpiceLevel,
-			"availability":     item.Availability,
-			"is_active":        item.IsActive,
-			"dietary_info":     dietary,
-			"images":           images,
-			"created_at":       item.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"updated_at":       item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"id":                    item.ID,
+			"name":                  item.Name,
+			"description":           item.Description,
+			"price":                 item.Price,
+			"currency":              item.Currency,
+			"negotiation_mode":      item.NegotiationMode,
+			"negotiation_min_price": item.NegotiationMinPrice,
+			"negotiation_max_price": item.NegotiationMaxPrice,
+			"category":              item.Category,
+			"preparation_time":      item.PreparationTime,
+			"spice_level":           item.SpiceLevel,
+			"availability":          item.Availability,
+			"is_active":             item.IsActive,
+			"dietary_info":          dietary,
+			"images":                images,
+			"created_at":            item.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at":            item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -283,17 +312,20 @@ func (h *Handler) updateMenuItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name            *string  `json:"name"`
-		Description     *string  `json:"description"`
-		Price           *float64 `json:"price"`
-		Currency        *string  `json:"currency"`
-		Category        *string  `json:"category"`
-		PreparationTime *int     `json:"preparation_time"`
-		SpiceLevel      *string  `json:"spice_level"`
-		Availability    *string  `json:"availability"`
-		IsActive        *bool    `json:"is_active"`
-		DietaryInfo     []string `json:"dietary_info"`
-		Images          []string `json:"images"`
+		Name                *string  `json:"name"`
+		Description         *string  `json:"description"`
+		Price               *float64 `json:"price"`
+		Currency            *string  `json:"currency"`
+		NegotiationMode     *string  `json:"negotiation_mode"`
+		NegotiationMinPrice *float64 `json:"negotiation_min_price"`
+		NegotiationMaxPrice *float64 `json:"negotiation_max_price"`
+		Category            *string  `json:"category"`
+		PreparationTime     *int     `json:"preparation_time"`
+		SpiceLevel          *string  `json:"spice_level"`
+		Availability        *string  `json:"availability"`
+		IsActive            *bool    `json:"is_active"`
+		DietaryInfo         []string `json:"dietary_info"`
+		Images              []string `json:"images"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -312,6 +344,29 @@ func (h *Handler) updateMenuItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Currency != nil {
 		item.Currency = *req.Currency
+	}
+	if req.NegotiationMode != nil {
+		mode, ok := normalizeNegotiationMode(*req.NegotiationMode)
+		if !ok {
+			http.Error(w, "invalid negotiation_mode", http.StatusBadRequest)
+			return
+		}
+		item.NegotiationMode = mode
+	} else {
+		item.NegotiationMode = strings.TrimSpace(strings.ToLower(item.NegotiationMode))
+		if item.NegotiationMode == "" {
+			item.NegotiationMode = negotiationModeDefault
+		}
+	}
+	if req.NegotiationMinPrice != nil {
+		item.NegotiationMinPrice = *req.NegotiationMinPrice
+	}
+	if req.NegotiationMaxPrice != nil {
+		item.NegotiationMaxPrice = *req.NegotiationMaxPrice
+	}
+	if err := validateNegotiation(item.NegotiationMode, item.NegotiationMinPrice, item.NegotiationMaxPrice); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	if req.Category != nil {
 		item.Category = *req.Category
@@ -346,16 +401,19 @@ func (h *Handler) updateMenuItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"menu_item": map[string]any{
-			"id":               item.ID,
-			"name":             item.Name,
-			"description":      item.Description,
-			"price":            item.Price,
-			"currency":         item.Currency,
-			"category":         item.Category,
-			"preparation_time": item.PreparationTime,
-			"spice_level":      item.SpiceLevel,
-			"availability":     item.Availability,
-			"is_active":        item.IsActive,
+			"id":                    item.ID,
+			"name":                  item.Name,
+			"description":           item.Description,
+			"price":                 item.Price,
+			"currency":              item.Currency,
+			"negotiation_mode":      item.NegotiationMode,
+			"negotiation_min_price": item.NegotiationMinPrice,
+			"negotiation_max_price": item.NegotiationMaxPrice,
+			"category":              item.Category,
+			"preparation_time":      item.PreparationTime,
+			"spice_level":           item.SpiceLevel,
+			"availability":          item.Availability,
+			"is_active":             item.IsActive,
 		},
 	})
 }
@@ -439,17 +497,20 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type serviceResp struct {
-		ID           uint                   `json:"id"`
-		Name         string                 `json:"name"`
-		Description  string                 `json:"description"`
-		Pricing      map[string]interface{} `json:"pricing,omitempty"`
-		Packages     []interface{}          `json:"packages,omitempty"`
-		Duration     string                 `json:"duration"`
-		Deliverables string                 `json:"deliverables"`
-		Category     string                 `json:"category"`
-		IsActive     bool                   `json:"is_active"`
-		CreatedAt    string                 `json:"created_at"`
-		UpdatedAt    string                 `json:"updated_at"`
+		ID                  uint                   `json:"id"`
+		Name                string                 `json:"name"`
+		Description         string                 `json:"description"`
+		NegotiationMode     string                 `json:"negotiation_mode"`
+		NegotiationMinPrice float64                `json:"negotiation_min_price"`
+		NegotiationMaxPrice float64                `json:"negotiation_max_price"`
+		Pricing             map[string]interface{} `json:"pricing,omitempty"`
+		Packages            []interface{}          `json:"packages,omitempty"`
+		Duration            string                 `json:"duration"`
+		Deliverables        string                 `json:"deliverables"`
+		Category            string                 `json:"category"`
+		IsActive            bool                   `json:"is_active"`
+		CreatedAt           string                 `json:"created_at"`
+		UpdatedAt           string                 `json:"updated_at"`
 	}
 
 	resp := make([]serviceResp, len(services))
@@ -465,17 +526,20 @@ func (h *Handler) listServices(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp[i] = serviceResp{
-			ID:           s.ID,
-			Name:         s.Name,
-			Description:  s.Description,
-			Pricing:      pricing,
-			Packages:     packages,
-			Duration:     s.Duration,
-			Deliverables: s.Deliverables,
-			Category:     s.Category,
-			IsActive:     s.IsActive,
-			CreatedAt:    s.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:    s.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			ID:                  s.ID,
+			Name:                s.Name,
+			Description:         s.Description,
+			NegotiationMode:     s.NegotiationMode,
+			NegotiationMinPrice: s.NegotiationMinPrice,
+			NegotiationMaxPrice: s.NegotiationMaxPrice,
+			Pricing:             pricing,
+			Packages:            packages,
+			Duration:            s.Duration,
+			Deliverables:        s.Deliverables,
+			Category:            s.Category,
+			IsActive:            s.IsActive,
+			CreatedAt:           s.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:           s.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
@@ -494,14 +558,17 @@ func (h *Handler) createService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         string                 `json:"name"`
-		Description  string                 `json:"description"`
-		Pricing      map[string]interface{} `json:"pricing"`
-		Packages     []interface{}          `json:"packages"`
-		Duration     string                 `json:"duration"`
-		Deliverables string                 `json:"deliverables"`
-		Category     string                 `json:"category"`
-		IsActive     bool                   `json:"is_active"`
+		Name                string                 `json:"name"`
+		Description         string                 `json:"description"`
+		NegotiationMode     string                 `json:"negotiation_mode"`
+		NegotiationMinPrice float64                `json:"negotiation_min_price"`
+		NegotiationMaxPrice float64                `json:"negotiation_max_price"`
+		Pricing             map[string]interface{} `json:"pricing"`
+		Packages            []interface{}          `json:"packages"`
+		Duration            string                 `json:"duration"`
+		Deliverables        string                 `json:"deliverables"`
+		Category            string                 `json:"category"`
+		IsActive            bool                   `json:"is_active"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -515,13 +582,27 @@ func (h *Handler) createService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	service := storage.Service{
-		TenantID:     claims.TenantID,
-		Name:         req.Name,
-		Description:  req.Description,
-		Duration:     req.Duration,
-		Deliverables: req.Deliverables,
-		Category:     req.Category,
-		IsActive:     req.IsActive,
+		TenantID:            claims.TenantID,
+		Name:                req.Name,
+		Description:         req.Description,
+		NegotiationMode:     "",
+		NegotiationMinPrice: req.NegotiationMinPrice,
+		NegotiationMaxPrice: req.NegotiationMaxPrice,
+		Duration:            req.Duration,
+		Deliverables:        req.Deliverables,
+		Category:            req.Category,
+		IsActive:            req.IsActive,
+	}
+
+	mode, ok := normalizeNegotiationMode(req.NegotiationMode)
+	if !ok {
+		http.Error(w, "invalid negotiation_mode", http.StatusBadRequest)
+		return
+	}
+	service.NegotiationMode = mode
+	if err := validateNegotiation(service.NegotiationMode, service.NegotiationMinPrice, service.NegotiationMaxPrice); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Marshal pricing/packages safely; default to empty JSON to avoid invalid jsonb inserts
@@ -560,12 +641,15 @@ func (h *Handler) createService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"success": true,
 		"service": map[string]any{
-			"id":          service.ID,
-			"name":        service.Name,
-			"description": service.Description,
-			"duration":    service.Duration,
-			"category":    service.Category,
-			"is_active":   service.IsActive,
+			"id":                    service.ID,
+			"name":                  service.Name,
+			"description":           service.Description,
+			"negotiation_mode":      service.NegotiationMode,
+			"negotiation_min_price": service.NegotiationMinPrice,
+			"negotiation_max_price": service.NegotiationMaxPrice,
+			"duration":              service.Duration,
+			"category":              service.Category,
+			"is_active":             service.IsActive,
 		},
 	})
 }
@@ -610,17 +694,20 @@ func (h *Handler) getService(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": map[string]any{
-			"id":           service.ID,
-			"name":         service.Name,
-			"description":  service.Description,
-			"pricing":      pricing,
-			"packages":     packages,
-			"duration":     service.Duration,
-			"deliverables": service.Deliverables,
-			"category":     service.Category,
-			"is_active":    service.IsActive,
-			"created_at":   service.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			"updated_at":   service.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			"id":                    service.ID,
+			"name":                  service.Name,
+			"description":           service.Description,
+			"negotiation_mode":      service.NegotiationMode,
+			"negotiation_min_price": service.NegotiationMinPrice,
+			"negotiation_max_price": service.NegotiationMaxPrice,
+			"pricing":               pricing,
+			"packages":              packages,
+			"duration":              service.Duration,
+			"deliverables":          service.Deliverables,
+			"category":              service.Category,
+			"is_active":             service.IsActive,
+			"created_at":            service.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"updated_at":            service.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		},
 	})
 }
@@ -654,14 +741,17 @@ func (h *Handler) updateService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         *string                `json:"name"`
-		Description  *string                `json:"description"`
-		Pricing      map[string]interface{} `json:"pricing"`
-		Packages     []interface{}          `json:"packages"`
-		Duration     *string                `json:"duration"`
-		Deliverables *string                `json:"deliverables"`
-		Category     *string                `json:"category"`
-		IsActive     *bool                  `json:"is_active"`
+		Name                *string                `json:"name"`
+		Description         *string                `json:"description"`
+		NegotiationMode     *string                `json:"negotiation_mode"`
+		NegotiationMinPrice *float64               `json:"negotiation_min_price"`
+		NegotiationMaxPrice *float64               `json:"negotiation_max_price"`
+		Pricing             map[string]interface{} `json:"pricing"`
+		Packages            []interface{}          `json:"packages"`
+		Duration            *string                `json:"duration"`
+		Deliverables        *string                `json:"deliverables"`
+		Category            *string                `json:"category"`
+		IsActive            *bool                  `json:"is_active"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -674,6 +764,29 @@ func (h *Handler) updateService(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Description != nil {
 		service.Description = *req.Description
+	}
+	if req.NegotiationMode != nil {
+		mode, ok := normalizeNegotiationMode(*req.NegotiationMode)
+		if !ok {
+			http.Error(w, "invalid negotiation_mode", http.StatusBadRequest)
+			return
+		}
+		service.NegotiationMode = mode
+	} else {
+		service.NegotiationMode = strings.TrimSpace(strings.ToLower(service.NegotiationMode))
+		if service.NegotiationMode == "" {
+			service.NegotiationMode = negotiationModeDefault
+		}
+	}
+	if req.NegotiationMinPrice != nil {
+		service.NegotiationMinPrice = *req.NegotiationMinPrice
+	}
+	if req.NegotiationMaxPrice != nil {
+		service.NegotiationMaxPrice = *req.NegotiationMaxPrice
+	}
+	if err := validateNegotiation(service.NegotiationMode, service.NegotiationMinPrice, service.NegotiationMaxPrice); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	if req.Duration != nil {
 		service.Duration = *req.Duration
@@ -723,12 +836,15 @@ func (h *Handler) updateService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"service": map[string]any{
-			"id":          service.ID,
-			"name":        service.Name,
-			"description": service.Description,
-			"duration":    service.Duration,
-			"category":    service.Category,
-			"is_active":   service.IsActive,
+			"id":                    service.ID,
+			"name":                  service.Name,
+			"description":           service.Description,
+			"negotiation_mode":      service.NegotiationMode,
+			"negotiation_min_price": service.NegotiationMinPrice,
+			"negotiation_max_price": service.NegotiationMaxPrice,
+			"duration":              service.Duration,
+			"category":              service.Category,
+			"is_active":             service.IsActive,
 		},
 	})
 }

@@ -151,6 +151,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Put("/tenant/settings/business-profile", h.updateBusinessProfileSettings)
 			r.Put("/tenant/settings/persona", h.updatePersonaSettings)
 			r.Put("/tenant/settings/business-details", h.updateBusinessDetailsSettings)
+			r.Get("/tenant/settings/negotiation", h.getNegotiationSettings)
+			r.Put("/tenant/settings/negotiation", h.updateNegotiationSettings)
 
 			r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 

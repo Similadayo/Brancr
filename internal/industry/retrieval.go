@@ -33,16 +33,28 @@ func NewRetrievalService(industryService *Service, productRepo *repositories.Pro
 
 // RetrievalResult represents a retrieved item (product, menu item, or service)
 type RetrievalResult struct {
-	Type        string   // "product", "menu_item", "service"
+	Type        string // "product", "menu_item", "service"
 	Name        string
 	Description string
-	Price        float64
-	Currency     string
-	Category     string
-	Available    bool
-	ImageURLs    []string // Image URLs for the item
-	Metadata     map[string]interface{} // Additional fields (variants, dietary info, etc.)
+	Price       float64
+	Currency    string
+	Category    string
+	Available   bool
+	ImageURLs   []string               // Image URLs for the item
+	Metadata    map[string]interface{} // Additional fields (variants, dietary info, etc.)
 }
+
+type negotiationPolicy struct {
+	Mode     string
+	MinPrice float64
+	MaxPrice float64
+}
+
+const (
+	negotiationModeDefault    = "default"
+	negotiationModeFixed      = "fixed"
+	negotiationModeNegotiable = "negotiable"
+)
 
 // SearchItems searches for items based on tenant's industry and query
 func (r *RetrievalService) SearchItems(ctx context.Context, tenantID uint, query string, limit int) ([]RetrievalResult, error) {
@@ -57,6 +69,7 @@ func (r *RetrievalService) SearchItems(ctx context.Context, tenantID uint, query
 	}
 
 	var results []RetrievalResult
+	negDefault := r.getNegotiationDefault(ctx, tenantID)
 
 	// Search based on industry type
 	if capabilities.HasProducts {
@@ -65,7 +78,7 @@ func (r *RetrievalService) SearchItems(ctx context.Context, tenantID uint, query
 			r.logger.Warn("failed to search products", zap.Error(err))
 		} else {
 			for _, p := range products {
-				results = append(results, r.productToResult(p))
+				results = append(results, r.productToResultWithNegotiation(p, negDefault))
 			}
 		}
 	}
@@ -76,7 +89,7 @@ func (r *RetrievalService) SearchItems(ctx context.Context, tenantID uint, query
 			r.logger.Warn("failed to search menu items", zap.Error(err))
 		} else {
 			for _, m := range menuItems {
-				results = append(results, r.menuItemToResult(m))
+				results = append(results, r.menuItemToResultWithNegotiation(m, negDefault))
 			}
 		}
 	}
@@ -87,7 +100,7 @@ func (r *RetrievalService) SearchItems(ctx context.Context, tenantID uint, query
 			r.logger.Warn("failed to search services", zap.Error(err))
 		} else {
 			for _, s := range services {
-				results = append(results, r.serviceToResult(s))
+				results = append(results, r.serviceToResultWithNegotiation(s, negDefault))
 			}
 		}
 	}
@@ -112,6 +125,7 @@ func (r *RetrievalService) GetByCategory(ctx context.Context, tenantID uint, cat
 	}
 
 	var results []RetrievalResult
+	negDefault := r.getNegotiationDefault(ctx, tenantID)
 
 	if capabilities.HasProducts {
 		products, err := r.productRepo.GetByCategory(ctx, tenantID, category)
@@ -119,7 +133,7 @@ func (r *RetrievalService) GetByCategory(ctx context.Context, tenantID uint, cat
 			r.logger.Warn("failed to get products by category", zap.Error(err))
 		} else {
 			for _, p := range products {
-				results = append(results, r.productToResult(p))
+				results = append(results, r.productToResultWithNegotiation(p, negDefault))
 			}
 		}
 	}
@@ -130,7 +144,7 @@ func (r *RetrievalService) GetByCategory(ctx context.Context, tenantID uint, cat
 			r.logger.Warn("failed to get menu items by category", zap.Error(err))
 		} else {
 			for _, m := range menuItems {
-				results = append(results, r.menuItemToResult(m))
+				results = append(results, r.menuItemToResultWithNegotiation(m, negDefault))
 			}
 		}
 	}
@@ -141,7 +155,7 @@ func (r *RetrievalService) GetByCategory(ctx context.Context, tenantID uint, cat
 			r.logger.Warn("failed to get services by category", zap.Error(err))
 		} else {
 			for _, s := range services {
-				results = append(results, r.serviceToResult(s))
+				results = append(results, r.serviceToResultWithNegotiation(s, negDefault))
 			}
 		}
 	}
@@ -165,6 +179,7 @@ func (r *RetrievalService) GetAllActive(ctx context.Context, tenantID uint, limi
 	}
 
 	var results []RetrievalResult
+	negDefault := r.getNegotiationDefault(ctx, tenantID)
 
 	if capabilities.HasProducts {
 		products, err := r.productRepo.GetActiveByTenant(ctx, tenantID)
@@ -172,7 +187,7 @@ func (r *RetrievalService) GetAllActive(ctx context.Context, tenantID uint, limi
 			r.logger.Warn("failed to get active products", zap.Error(err))
 		} else {
 			for _, p := range products {
-				results = append(results, r.productToResult(p))
+				results = append(results, r.productToResultWithNegotiation(p, negDefault))
 			}
 		}
 	}
@@ -183,7 +198,7 @@ func (r *RetrievalService) GetAllActive(ctx context.Context, tenantID uint, limi
 			r.logger.Warn("failed to get active menu items", zap.Error(err))
 		} else {
 			for _, m := range menuItems {
-				results = append(results, r.menuItemToResult(m))
+				results = append(results, r.menuItemToResultWithNegotiation(m, negDefault))
 			}
 		}
 	}
@@ -194,7 +209,7 @@ func (r *RetrievalService) GetAllActive(ctx context.Context, tenantID uint, limi
 			r.logger.Warn("failed to get active services", zap.Error(err))
 		} else {
 			for _, s := range services {
-				results = append(results, r.serviceToResult(s))
+				results = append(results, r.serviceToResultWithNegotiation(s, negDefault))
 			}
 		}
 	}
@@ -209,7 +224,7 @@ func (r *RetrievalService) GetAllActive(ctx context.Context, tenantID uint, limi
 // GetItemsWithImages returns image URLs for items that match the customer's message
 func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint, message string) ([]string, error) {
 	messageLower := strings.ToLower(message)
-	
+
 	// Check if customer explicitly wants to see images (stronger detection)
 	wantsImages := strings.Contains(messageLower, "image") ||
 		strings.Contains(messageLower, "picture") ||
@@ -221,21 +236,21 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 		(strings.Contains(messageLower, "send") && (strings.Contains(messageLower, "picture") || strings.Contains(messageLower, "image") || strings.Contains(messageLower, "photo"))) ||
 		strings.Contains(messageLower, "can i see") ||
 		strings.Contains(messageLower, "i want to see")
-	
+
 	// Also check for menu questions that would benefit from images
 	isMenuQuestion := strings.Contains(messageLower, "menu") ||
 		strings.Contains(messageLower, "what do you have") ||
 		strings.Contains(messageLower, "what's available") ||
 		strings.Contains(messageLower, "what can i get")
-	
+
 	if !wantsImages && !isMenuQuestion {
 		return nil, nil
 	}
-	
+
 	// Get items based on message
 	var results []RetrievalResult
 	var err error
-	
+
 	// If customer asks for picture of specific item, search for that item
 	if wantsImages {
 		// Extract item name from message (e.g., "can i see the image of the banana bread?" -> "banana bread")
@@ -257,7 +272,7 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 		// Remove multiple spaces
 		query = strings.Join(strings.Fields(query), " ")
 		query = strings.TrimSpace(query)
-		
+
 		if len(query) > 3 && !strings.Contains(messageLower, "menu") {
 			// Search for specific item
 			if len(query) > 50 {
@@ -275,7 +290,7 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 			r.logger.Info("🔍 Search results",
 				zap.Int("result_count", len(results)),
 				zap.String("query", query))
-			
+
 			// If search returned no results, try getting all active items as fallback
 			if len(results) == 0 {
 				r.logger.Info("⚠️ Search returned no results, trying GetAllActive as fallback")
@@ -303,19 +318,19 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 		}
 		results, err = r.SearchItems(ctx, tenantID, query, 5)
 	}
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Extract image URLs - match items to what customer specifically asked for
 	var imageURLs []string
 	messageLower = strings.ToLower(message)
-	
+
 	r.logger.Info("🔍 Processing search results for images",
 		zap.Int("result_count", len(results)),
 		zap.String("original_message", message))
-	
+
 	// If customer asks for specific item, only return that item's images
 	// Otherwise, return images from all matching items
 	for i, item := range results {
@@ -323,17 +338,17 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 			zap.Int("item_index", i),
 			zap.String("item_name", item.Name),
 			zap.Int("image_count", len(item.ImageURLs)))
-		
+
 		if len(item.ImageURLs) == 0 {
 			r.logger.Info("⚠️ Item has no images, skipping",
 				zap.String("item_name", item.Name))
 			continue
 		}
-		
+
 		// Check if this item matches what customer asked for
 		itemNameLower := strings.ToLower(item.Name)
 		itemDescLower := strings.ToLower(item.Description)
-		
+
 		// If customer asked for specific item (e.g., "picture of banana bread")
 		// Since we already searched for the item, if it's in results, it matches
 		// Only do additional filtering if we got ALL items (not a specific search)
@@ -357,7 +372,7 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 			extractedQuery = strings.ReplaceAll(extractedQuery, "?", "")
 			extractedQuery = strings.ReplaceAll(extractedQuery, ".", "")
 			extractedQuery = strings.TrimSpace(extractedQuery)
-			
+
 			// If we have a specific query, verify at least one word matches
 			if len(extractedQuery) > 3 {
 				queryWords := strings.Fields(extractedQuery)
@@ -379,7 +394,7 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 					zap.Bool("matches_query", matchesQuery))
 			}
 		}
-		
+
 		if matchesQuery {
 			// Add first image from matching item
 			imageURLs = append(imageURLs, item.ImageURLs[0])
@@ -395,18 +410,18 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 				zap.String("extracted_query", extractedQuery))
 		}
 	}
-	
+
 	r.logger.Info("📸 Final image URLs extracted",
 		zap.Int("count", len(imageURLs)),
 		zap.Strings("urls", imageURLs),
 		zap.String("original_message", message))
-	
+
 	// Final fallback: if no images found but we have results, just return first item with images
 	if len(imageURLs) == 0 && len(results) > 0 {
 		r.logger.Warn("⚠️ No images extracted from search results, trying fallback",
 			zap.Int("search_result_count", len(results)),
 			zap.String("message", message))
-		
+
 		// Just return the first item that has images (no filtering)
 		for _, item := range results {
 			if len(item.ImageURLs) > 0 {
@@ -418,14 +433,14 @@ func (r *RetrievalService) GetItemsWithImages(ctx context.Context, tenantID uint
 			}
 		}
 	}
-	
+
 	if len(imageURLs) == 0 {
 		r.logger.Warn("⚠️ No images found at all",
 			zap.Int("search_result_count", len(results)),
 			zap.String("message", message),
 			zap.Uint("tenant_id", tenantID))
 	}
-	
+
 	return imageURLs, nil
 }
 
@@ -441,14 +456,18 @@ func (r *RetrievalService) FormatForAI(items []RetrievalResult) string {
 		if item.Price == 0 {
 			priceStr = "Price on request"
 		}
+		negStr := formatNegotiationForAI(item)
+		if negStr != "" {
+			priceStr = priceStr + " (" + negStr + ")"
+		}
 
 		line := fmt.Sprintf("- %s (%s): %s - %s", item.Name, item.Category, priceStr, item.Description)
-		
+
 		// Add image URLs if available (for AI context - images will be sent separately)
 		if len(item.ImageURLs) > 0 {
 			line += fmt.Sprintf(" [Has %d image(s)]", len(item.ImageURLs))
 		}
-		
+
 		// Add metadata if available
 		if len(item.Metadata) > 0 {
 			var metaParts []string
@@ -485,6 +504,24 @@ func (r *RetrievalService) FormatForAI(items []RetrievalResult) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func formatNegotiationForAI(item RetrievalResult) string {
+	mode, _ := item.Metadata["negotiation_mode"].(string)
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	switch mode {
+	case negotiationModeFixed:
+		return "Fixed price"
+	case negotiationModeNegotiable:
+		min, _ := item.Metadata["negotiation_min_price"].(float64)
+		max, _ := item.Metadata["negotiation_max_price"].(float64)
+		if min > 0 && max > 0 {
+			return fmt.Sprintf("Negotiable: %.2f-%.2f %s", min, max, item.Currency)
+		}
+		return "Negotiable"
+	default:
+		return ""
+	}
 }
 
 // Helper methods to convert models to RetrievalResult
@@ -532,6 +569,12 @@ func (r *RetrievalService) productToResult(p storage.Product) RetrievalResult {
 	return result
 }
 
+func (r *RetrievalService) productToResultWithNegotiation(p storage.Product, def negotiationPolicy) RetrievalResult {
+	result := r.productToResult(p)
+	applyNegotiationToResult(&result, p.NegotiationMode, p.NegotiationMinPrice, p.NegotiationMaxPrice, def)
+	return result
+}
+
 func (r *RetrievalService) menuItemToResult(m storage.MenuItem) RetrievalResult {
 	result := RetrievalResult{
 		Type:        "menu_item",
@@ -572,6 +615,12 @@ func (r *RetrievalService) menuItemToResult(m storage.MenuItem) RetrievalResult 
 		}
 	}
 
+	return result
+}
+
+func (r *RetrievalService) menuItemToResultWithNegotiation(m storage.MenuItem, def negotiationPolicy) RetrievalResult {
+	result := r.menuItemToResult(m)
+	applyNegotiationToResult(&result, m.NegotiationMode, m.NegotiationMinPrice, m.NegotiationMaxPrice, def)
 	return result
 }
 
@@ -617,3 +666,74 @@ func (r *RetrievalService) serviceToResult(s storage.Service) RetrievalResult {
 	return result
 }
 
+func (r *RetrievalService) serviceToResultWithNegotiation(s storage.Service, def negotiationPolicy) RetrievalResult {
+	result := r.serviceToResult(s)
+	applyNegotiationToResult(&result, s.NegotiationMode, s.NegotiationMinPrice, s.NegotiationMaxPrice, def)
+	return result
+}
+
+func (r *RetrievalService) getNegotiationDefault(ctx context.Context, tenantID uint) negotiationPolicy {
+	def := negotiationPolicy{Mode: negotiationModeFixed, MinPrice: 0, MaxPrice: 0}
+	if r.industryService == nil {
+		return def
+	}
+	settings, err := r.industryService.GetIndustrySettings(ctx, tenantID)
+	if err != nil {
+		return def
+	}
+	raw, ok := settings["negotiation_default"].(map[string]interface{})
+	if !ok {
+		return def
+	}
+	if mode, ok := raw["mode"].(string); ok {
+		def.Mode = strings.TrimSpace(strings.ToLower(mode))
+	}
+	if min, ok := raw["min_price"].(float64); ok {
+		def.MinPrice = min
+	}
+	if max, ok := raw["max_price"].(float64); ok {
+		def.MaxPrice = max
+	}
+	if def.Mode != negotiationModeFixed && def.Mode != negotiationModeNegotiable {
+		def.Mode = negotiationModeFixed
+		def.MinPrice = 0
+		def.MaxPrice = 0
+		return def
+	}
+	if def.Mode == negotiationModeNegotiable {
+		if !(def.MinPrice > 0 && def.MaxPrice > 0 && def.MinPrice <= def.MaxPrice) {
+			def.Mode = negotiationModeFixed
+			def.MinPrice = 0
+			def.MaxPrice = 0
+		}
+	}
+	return def
+}
+
+func applyNegotiationToResult(result *RetrievalResult, itemMode string, itemMin, itemMax float64, def negotiationPolicy) {
+	mode := strings.TrimSpace(strings.ToLower(itemMode))
+	if mode == "" {
+		mode = negotiationModeDefault
+	}
+
+	effective := negotiationPolicy{Mode: negotiationModeFixed, MinPrice: 0, MaxPrice: 0}
+	switch mode {
+	case negotiationModeFixed:
+		effective = negotiationPolicy{Mode: negotiationModeFixed, MinPrice: 0, MaxPrice: 0}
+	case negotiationModeNegotiable:
+		if itemMin > 0 && itemMax > 0 && itemMin <= itemMax {
+			effective = negotiationPolicy{Mode: negotiationModeNegotiable, MinPrice: itemMin, MaxPrice: itemMax}
+		} else {
+			effective = negotiationPolicy{Mode: negotiationModeFixed, MinPrice: 0, MaxPrice: 0}
+		}
+	default:
+		effective = def
+	}
+
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]interface{})
+	}
+	result.Metadata["negotiation_mode"] = effective.Mode
+	result.Metadata["negotiation_min_price"] = effective.MinPrice
+	result.Metadata["negotiation_max_price"] = effective.MaxPrice
+}

@@ -806,7 +806,7 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 		context.WriteString("\nAVAILABLE PRODUCTS/SERVICES (USE THESE EXACT PRICES - DO NOT MAKE UP PRICES):\n")
 		context.WriteString(itemsContext)
 		context.WriteString("\n")
-		context.WriteString("IMPORTANT: When customers ask about menu, pricing, or what you offer, use ONLY the items listed above with their EXACT prices. Never invent prices or items.\n")
+		context.WriteString("IMPORTANT: When customers ask about menu, pricing, or what you offer, use ONLY the items listed above with their EXACT prices. Never invent prices or items. If an item is marked 'Fixed price', do NOT negotiate. If an item is marked 'Negotiable: min-max', you may negotiate ONLY within that range and never go outside it.\n")
 	}
 
 	// ALWAYS include knowledge base if available (contains comprehensive business information)
@@ -834,7 +834,7 @@ func (r *CustomerResponder) buildBusinessContextWithItems(itemsContext string, f
 
 	result := context.String()
 	if result != "" {
-		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nCRITICAL: Use the EXACT pricing, services, and information from above. When asked about pricing, quote the exact prices from AVAILABLE PRODUCTS/SERVICES. When asked about services, reference the knowledge base and FAQs. Never make up pricing or services.", result)
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nCRITICAL: Use the EXACT pricing, services, and information from above. When asked about pricing, quote the exact prices from AVAILABLE PRODUCTS/SERVICES. Respect negotiation rules shown next to each item (Fixed vs Negotiable range). Never make up pricing or services.", result)
 	}
 	return ""
 }
@@ -857,6 +857,15 @@ func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMen
 			}
 			if item.Price != "" {
 				context.WriteString(fmt.Sprintf(" - %s", item.Price))
+			}
+			if strings.EqualFold(strings.TrimSpace(item.NegotiationMode), "fixed") {
+				context.WriteString(" (Fixed price)")
+			} else if strings.EqualFold(strings.TrimSpace(item.NegotiationMode), "negotiable") {
+				if item.NegotiationMinPrice > 0 && item.NegotiationMaxPrice > 0 {
+					context.WriteString(fmt.Sprintf(" (Negotiable: %.2f-%.2f)", item.NegotiationMinPrice, item.NegotiationMaxPrice))
+				} else {
+					context.WriteString(" (Negotiable)")
+				}
 			}
 			if item.Description != "" {
 				context.WriteString(fmt.Sprintf(": %s", item.Description))
@@ -891,7 +900,7 @@ func (r *CustomerResponder) buildBusinessContext(menuItems []storage.BusinessMen
 
 	result := context.String()
 	if result != "" {
-		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nCRITICAL: Use the EXACT pricing, services, and information from above. When asked about pricing, quote the exact prices from AVAILABLE PRODUCTS/SERVICES. When asked about services, reference the knowledge base and FAQs. Never make up pricing or services.", result)
+		return fmt.Sprintf("BUSINESS INFORMATION:\n%s\nCRITICAL: Use the EXACT pricing, services, and information from above. When asked about pricing, quote the exact prices from AVAILABLE PRODUCTS/SERVICES. Respect negotiation rules shown next to each item (Fixed vs Negotiable range). Never make up pricing or services.", result)
 	}
 	return ""
 }

@@ -52,12 +52,15 @@ type BusinessProfile struct {
 // BusinessMenuItem represents a product or service offering with optional pricing.
 type BusinessMenuItem struct {
 	gorm.Model
-	TenantID    uint `gorm:"index"`
-	Name        string
-	Category    string
-	Price       string
-	Description string `gorm:"type:text"`
-	Tags        string `gorm:"type:text"`
+	TenantID            uint `gorm:"index"`
+	Name                string
+	Category            string
+	Price               string
+	NegotiationMode     string  `gorm:"size:20;default:'default'"`
+	NegotiationMinPrice float64 `gorm:"default:0"`
+	NegotiationMaxPrice float64 `gorm:"default:0"`
+	Description         string  `gorm:"type:text"`
+	Tags                string  `gorm:"type:text"`
 }
 
 // BusinessFAQ captures frequently asked questions and scripted answers.
@@ -89,50 +92,59 @@ type Industry struct {
 // Product represents a product for e-commerce businesses
 type Product struct {
 	gorm.Model
-	TenantID     uint   `gorm:"index"`
-	Name         string `gorm:"size:255;index"`
-	Description  string `gorm:"type:text"`
-	Price        float64
-	Currency     string `gorm:"size:10;default:'NGN'"`
-	Category     string `gorm:"size:100;index"`
-	Images       string `gorm:"type:jsonb"`                 // JSON array of image URLs
-	Variants     string `gorm:"type:jsonb"`                 // JSON: {"size": ["S", "M", "L"], "color": ["Red", "Blue"]}
-	Tags         string `gorm:"type:jsonb"`                 // JSON array of tags for search
-	StockCount   int    `gorm:"default:-1"`                 // -1 = unlimited, 0+ = actual stock
-	Availability string `gorm:"size:20;default:'in_stock'"` // in_stock, out_of_stock, low_stock
-	IsActive     bool   `gorm:"default:true"`
-	SKU          string `gorm:"size:100;index"` // Stock Keeping Unit (optional)
+	TenantID            uint   `gorm:"index"`
+	Name                string `gorm:"size:255;index"`
+	Description         string `gorm:"type:text"`
+	Price               float64
+	Currency            string  `gorm:"size:10;default:'NGN'"`
+	NegotiationMode     string  `gorm:"size:20;default:'default'"`
+	NegotiationMinPrice float64 `gorm:"default:0"`
+	NegotiationMaxPrice float64 `gorm:"default:0"`
+	Category            string  `gorm:"size:100;index"`
+	Images              string  `gorm:"type:jsonb"`                 // JSON array of image URLs
+	Variants            string  `gorm:"type:jsonb"`                 // JSON: {"size": ["S", "M", "L"], "color": ["Red", "Blue"]}
+	Tags                string  `gorm:"type:jsonb"`                 // JSON array of tags for search
+	StockCount          int     `gorm:"default:-1"`                 // -1 = unlimited, 0+ = actual stock
+	Availability        string  `gorm:"size:20;default:'in_stock'"` // in_stock, out_of_stock, low_stock
+	IsActive            bool    `gorm:"default:true"`
+	SKU                 string  `gorm:"size:100;index"` // Stock Keeping Unit (optional)
 }
 
 // MenuItem represents a menu item for restaurant businesses
 type MenuItem struct {
 	gorm.Model
-	TenantID        uint   `gorm:"index"`
-	Name            string `gorm:"size:255;index"`
-	Description     string `gorm:"type:text"`
-	Price           float64
-	Currency        string `gorm:"size:10;default:'NGN'"`
-	Category        string `gorm:"size:100;index"` // appetizer, main, dessert, drink, etc.
-	Images          string `gorm:"type:jsonb"`     // JSON array of image URLs
-	DietaryInfo     string `gorm:"type:jsonb"`     // JSON: ["vegetarian", "vegan", "gluten-free"]
-	PreparationTime int    // Minutes
-	Availability    string `gorm:"size:20;default:'available'"` // available, unavailable, limited
-	IsActive        bool   `gorm:"default:true"`
-	SpiceLevel      string `gorm:"size:20"` // mild, medium, hot, etc. (optional)
+	TenantID            uint   `gorm:"index"`
+	Name                string `gorm:"size:255;index"`
+	Description         string `gorm:"type:text"`
+	Price               float64
+	Currency            string  `gorm:"size:10;default:'NGN'"`
+	NegotiationMode     string  `gorm:"size:20;default:'default'"`
+	NegotiationMinPrice float64 `gorm:"default:0"`
+	NegotiationMaxPrice float64 `gorm:"default:0"`
+	Category            string  `gorm:"size:100;index"` // appetizer, main, dessert, drink, etc.
+	Images              string  `gorm:"type:jsonb"`     // JSON array of image URLs
+	DietaryInfo         string  `gorm:"type:jsonb"`     // JSON: ["vegetarian", "vegan", "gluten-free"]
+	PreparationTime     int     // Minutes
+	Availability        string  `gorm:"size:20;default:'available'"` // available, unavailable, limited
+	IsActive            bool    `gorm:"default:true"`
+	SpiceLevel          string  `gorm:"size:20"` // mild, medium, hot, etc. (optional)
 }
 
 // Service represents a service for consultant/agency businesses
 type Service struct {
 	gorm.Model
-	TenantID     uint   `gorm:"index"`
-	Name         string `gorm:"size:255;index"`
-	Description  string `gorm:"type:text"`
-	Pricing      string `gorm:"type:jsonb"` // JSON: {"type": "fixed", "amount": 50000} or {"type": "hourly", "rate": 5000}
-	Packages     string `gorm:"type:jsonb"` // JSON array of package options
-	Duration     string `gorm:"size:50"`    // e.g., "1 hour", "2 weeks", "1 month"
-	Deliverables string `gorm:"type:text"`  // What the customer gets
-	IsActive     bool   `gorm:"default:true"`
-	Category     string `gorm:"size:100;index"` // consultation, project, retainer, etc.
+	TenantID            uint    `gorm:"index"`
+	Name                string  `gorm:"size:255;index"`
+	Description         string  `gorm:"type:text"`
+	Pricing             string  `gorm:"type:jsonb"` // JSON: {"type": "fixed", "amount": 50000} or {"type": "hourly", "rate": 5000}
+	NegotiationMode     string  `gorm:"size:20;default:'default'"`
+	NegotiationMinPrice float64 `gorm:"default:0"`
+	NegotiationMaxPrice float64 `gorm:"default:0"`
+	Packages            string  `gorm:"type:jsonb"` // JSON array of package options
+	Duration            string  `gorm:"size:50"`    // e.g., "1 hour", "2 weeks", "1 month"
+	Deliverables        string  `gorm:"type:text"`  // What the customer gets
+	IsActive            bool    `gorm:"default:true"`
+	Category            string  `gorm:"size:100;index"` // consultation, project, retainer, etc.
 }
 
 // ADMIN USERS (SYSTEM)
