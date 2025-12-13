@@ -15,6 +15,10 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 	r.Get("/login", GetLoginHandler(ctx))
 	r.Post("/login", PostLoginHandler(ctx))
 
+	// Serve built SPA assets without auth (static-only, no tenant content).
+	// This avoids browsers receiving HTML (login/redirect) when fetching CSS/JS.
+	r.Get("/app/assets/*", AdminSPAAssetsServe("adminapp/dist"))
+
 	r.Group(func(r chi.Router) {
 		r.Use(AdminAuthMiddleware(ctx))
 
@@ -22,6 +26,9 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		spa := AdminSPAServe("adminapp/dist")
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app", spa)
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app/*", spa)
+
+			r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/stats", AdminAppStatsHandler(ctx))
+			r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
 
 		// Main
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/", DashboardHandler(ctx))

@@ -1,26 +1,83 @@
+import { useEffect, useMemo, useState } from 'react';
+
+type AnalyticsStats = {
+  TotalTenants: number;
+  ActiveTenants: number;
+  EventsToday: number;
+  PaymentsToday: number;
+  DeliveriesToday: number;
+  AppointmentsToday: number;
+  OpenRouterUsage: number;
+  CloudinaryUsage: number;
+};
+
+type AdminAppStatsResponse = {
+  timestamp: string;
+  window_hours: number;
+  stats: AnalyticsStats;
+};
+
 export default function OverviewPage() {
+  const nf = useMemo(() => new Intl.NumberFormat(), []);
+  const [stats, setStats] = useState<AnalyticsStats | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const res = await fetch('/admin/api/stats', { headers: { Accept: 'application/json' } });
+        if (!res.ok) return;
+        const body = (await res.json()) as AdminAppStatsResponse;
+        if (!cancelled) setStats(body.stats);
+      } catch {
+        // ignore
+      }
+    };
+
+    load();
+
+    const es = new EventSource('/admin/api/events');
+    const onStats = (evt: MessageEvent) => {
+      try {
+        const body = JSON.parse(evt.data) as AdminAppStatsResponse;
+        setStats(body.stats);
+      } catch {
+        // ignore
+      }
+    };
+    es.addEventListener('stats', onStats as EventListener);
+
+    return () => {
+      cancelled = true;
+      es.close();
+    };
+  }, []);
+
+  const v = (n: number | null | undefined) => (typeof n === 'number' ? nf.format(n) : '—');
+
   return (
     <div className="grid">
       <div className="kpis">
         <div className="kpi kpiAccent">
           <div className="kpiLabel">Active tenants (24h)</div>
-          <div className="kpiValue">—</div>
+          <div className="kpiValue">{v(stats?.ActiveTenants)}</div>
           <div className="kpiHint">live</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Messages today</div>
-          <div className="kpiValue">—</div>
+          <div className="kpiLabel">Events (24h)</div>
+          <div className="kpiValue">{v(stats?.EventsToday)}</div>
           <div className="kpiHint">aggregated</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">AI requests today</div>
-          <div className="kpiValue">—</div>
+          <div className="kpiLabel">Payments (24h)</div>
+          <div className="kpiValue">{v(stats?.PaymentsToday)}</div>
           <div className="kpiHint">aggregated</div>
         </div>
         <div className="kpi">
-          <div className="kpiLabel">Failed jobs/webhooks</div>
-          <div className="kpiValue">—</div>
-          <div className="kpiHint">actionable</div>
+          <div className="kpiLabel">OpenRouter tokens</div>
+          <div className="kpiValue">{v(stats?.OpenRouterUsage)}</div>
+          <div className="kpiHint">aggregated</div>
         </div>
       </div>
 
