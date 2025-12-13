@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
+	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/similadayo/brancr/internal/config"
@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	googleStateCookie = "tenant_google_oauth_state"
-	googleScopeEmail  = "https://www.googleapis.com/auth/userinfo.email"
+	googleStateCookie  = "tenant_google_oauth_state"
+	googleScopeEmail   = "https://www.googleapis.com/auth/userinfo.email"
 	googleScopeProfile = "https://www.googleapis.com/auth/userinfo.profile"
 )
 
@@ -92,7 +92,7 @@ func (h *GoogleOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 			successRedirect = "https://brancr.com/app" // Default to app dashboard
 		}
 	}
-	
+
 	// Ensure redirect URL is absolute (not relative)
 	// If it's a relative path, prepend the frontend URL
 	if !strings.HasPrefix(successRedirect, "http://") && !strings.HasPrefix(successRedirect, "https://") {
@@ -121,7 +121,7 @@ func (h *GoogleOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) 
 
 	// Store state in cookie with redirect URL
 	stateData := map[string]string{
-		"state":           state,
+		"state":            state,
 		"success_redirect": successRedirect,
 	}
 	stateJSON, _ := json.Marshal(stateData)
@@ -181,7 +181,7 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	successRedirect := stateData["success_redirect"]
-	
+
 	// If no redirect was stored, use FrontendURL and append /app if needed
 	// Only use FrontendURL if it's absolute (starts with http:// or https://)
 	// Otherwise, fallback to hardcoded default to avoid path duplication
@@ -198,7 +198,7 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			successRedirect = baseURL
 		}
 	}
-	
+
 	// Ensure redirect URL is absolute (not relative)
 	// If it's a relative path, prepend the frontend URL
 	if !strings.HasPrefix(successRedirect, "http://") && !strings.HasPrefix(successRedirect, "https://") {
@@ -266,11 +266,9 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	// Find or create tenant
 	var tenant storage.Tenant
-	var isNewTenant bool
 	err = h.DB.Where("email = ?", email).First(&tenant).Error
 
 	if err == gorm.ErrRecordNotFound {
-		isNewTenant = true
 		// Create new tenant
 		companyName := userInfo.Name
 		if companyName == "" {
@@ -301,11 +299,12 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			OwnerName:          userInfo.Name,
 			PasswordHash:       string(hash),
 			PlanType:           "trial",
-			Status:             "active",
+			Status:             "pending_onboarding",
 			OnboardingStep:     "business_profile",
 			OnboardingComplete: false,
 			IndustryID:         defaultIndustryID,
 			IndustrySettings:   "{}",
+			Metadata:           "{}",
 		}
 
 		if err := h.DB.Create(&tenant).Error; err != nil {
@@ -314,8 +313,12 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Don't create default BusinessProfile or Persona - let user fill them out during onboarding
-		// This prevents auto-completion from triggering immediately
+		if err := storage.EnsureTenantOnboarding(r.Context(), h.DB, tenant.ID, companyName); err != nil {
+			h.Logger.Error("failed to initialize onboarding for Google OAuth tenant", zap.Error(err), zap.Uint("tenant_id", tenant.ID), zap.String("email", email))
+			http.Error(w, "failed to initialize onboarding", http.StatusInternalServerError)
+			return
+		}
+
 		h.Logger.Info("created new tenant from Google OAuth", zap.Uint("tenant_id", tenant.ID), zap.String("email", email))
 	} else if err != nil {
 		h.Logger.Error("failed to query tenant", zap.Error(err), zap.String("email", email))
@@ -335,10 +338,10 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect new users to onboarding, existing users to their intended destination
+	// Redirect users to onboarding until onboarding is completed.
 	var finalRedirect string
-	if isNewTenant {
-		// New users should go to onboarding, not dashboard
+	if !tenant.OnboardingComplete {
+		// Users must complete onboarding before dashboard
 		// Determine base URL for onboarding
 		baseURL := h.Config.FrontendURL
 		if baseURL == "" || (!strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://")) {
@@ -346,7 +349,7 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		}
 		baseURL = strings.TrimRight(baseURL, "/")
 		finalRedirect = baseURL + "/app/onboarding"
-		h.Logger.Info("redirecting new tenant to onboarding",
+		h.Logger.Info("redirecting tenant to onboarding",
 			zap.Uint("tenant_id", tenant.ID),
 			zap.String("email", email),
 			zap.String("redirect_url", finalRedirect))
@@ -358,4 +361,3 @@ func (h *GoogleOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	// Redirect to frontend
 	http.Redirect(w, r, finalRedirect, http.StatusSeeOther)
 }
-

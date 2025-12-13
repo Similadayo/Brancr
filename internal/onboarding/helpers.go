@@ -1,6 +1,7 @@
 package onboarding
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -43,20 +44,16 @@ func RegisterTenant(db *gorm.DB, ownerTelegramID int64, businessName, email, bot
 		TelegramBotToken: encryptedToken,
 		OwnerTelegramID:  ownerTelegramID,
 		PlanType:         "trial",
-		Status:           "active",
+		Status:           "pending_onboarding",
 	}
 
 	if err := db.Create(&tenant).Error; err != nil {
 		return nil, fmt.Errorf("failed to save tenant: %v", err)
 	}
 
-	// Business Profile
-	profile := storage.BusinessProfile{
-		TenantID: tenant.ID,
-		Name:     businessName,
-		Tone:     "friendly",
+	if err := storage.EnsureTenantOnboarding(context.Background(), db, tenant.ID, businessName); err != nil {
+		return nil, fmt.Errorf("failed to initialize onboarding: %v", err)
 	}
-	db.Create(&profile)
 
 	publicURL, err := utils.GetPublicURL()
 	if err == nil {

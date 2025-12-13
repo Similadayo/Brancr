@@ -97,7 +97,7 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		OwnerName:          req.Name,
 		OwnerPhone:         strings.TrimSpace(req.Phone),
 		PlanType:           "trial",
-		Status:             "active",
+		Status:             "pending_onboarding",
 		PasswordHash:       string(hash),
 		OnboardingStep:     "business_profile",
 		OnboardingComplete: false,
@@ -115,40 +115,12 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create initial business profile
-	profile := storage.BusinessProfile{
-		TenantID: tenant.ID,
-		Name:     req.CompanyName,
-		Tone:     "friendly",
-	}
-	if err := h.DB.Create(&profile).Error; err != nil {
-		h.Logger.Error("create business profile failed", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
-		// Try to clean up tenant if profile creation fails
+	if err := storage.EnsureTenantOnboarding(r.Context(), h.DB, tenant.ID, req.CompanyName); err != nil {
+		h.Logger.Error("signup: failed to initialize onboarding", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
 		h.DB.Delete(&tenant)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error":   "signup_failed",
-			"message": "Could not create business profile. Please try again.",
-		})
-		return
-	}
-
-	// Create initial persona
-	persona := storage.Persona{
-		TenantID:   tenant.ID,
-		BotName:    "Assistant",
-		Tone:       "friendly, helpful",
-		Language:   "en",
-		Humor:      true,
-		StyleNotes: "",
-	}
-	if err := h.DB.Create(&persona).Error; err != nil {
-		h.Logger.Error("create persona failed", zap.Error(err), zap.Uint("tenant_id", tenant.ID))
-		// Try to clean up tenant and profile if persona creation fails
-		h.DB.Delete(&profile)
-		h.DB.Delete(&tenant)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":   "signup_failed",
-			"message": "Could not create persona. Please try again.",
+			"message": "Could not initialize onboarding. Please try again.",
 		})
 		return
 	}
@@ -160,11 +132,13 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"success":   true,
-		"tenant_id": tenant.ID,
-		"name":      tenant.Name,
-		"email":     tenant.Email,
-		"message":   "Account created successfully",
+		"success":             true,
+		"tenant_id":           tenant.ID,
+		"name":                tenant.Name,
+		"email":               tenant.Email,
+		"onboarding_required": true,
+		"redirect_to":         "/app/onboarding",
+		"message":             "Account created successfully",
 	})
 }
 
@@ -220,11 +194,18 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":   true,
-		"tenant_id": tenant.ID,
-		"name":      tenant.Name,
-		"email":     tenant.Email,
-		"message":   "Login successful",
+		"success":             true,
+		"tenant_id":           tenant.ID,
+		"name":                tenant.Name,
+		"email":               tenant.Email,
+		"onboarding_required": !tenant.OnboardingComplete,
+		"redirect_to": func() string {
+			if tenant.OnboardingComplete {
+				return "/app"
+			}
+			return "/app/onboarding"
+		}(),
+		"message": "Login successful",
 	})
 }
 
@@ -335,6 +316,13 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
+		"onboarding_required": !tenant.OnboardingComplete,
+		"redirect_to": func() string {
+			if tenant.OnboardingComplete {
+				return ""
+			}
+			return "/app/onboarding"
+		}(),
 		"tenant": map[string]any{
 			"id":                  tenant.ID,
 			"name":                tenant.Name,

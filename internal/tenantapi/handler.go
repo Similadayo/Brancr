@@ -2312,25 +2312,11 @@ func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 		return // Already complete
 	}
 
-	// Get business profile
-	var profile storage.BusinessProfile
-	h.DB.Where("tenant_id = ?", tenant.ID).First(&profile)
-
-	// Get persona
-	var persona storage.Persona
-	h.DB.Where("tenant_id = ?", tenant.ID).First(&persona)
-
-	// Get business menu items
-	var menuItemsCount int64
-	h.DB.Model(&storage.BusinessMenuItem{}).Where("tenant_id = ?", tenant.ID).Count(&menuItemsCount)
-
-	// Get business FAQs
-	var faqsCount int64
-	h.DB.Model(&storage.BusinessFAQ{}).Where("tenant_id = ?", tenant.ID).Count(&faqsCount)
-
-	hasBusinessProfile := profile.Name != "" || profile.Industry != "" || profile.Description != ""
-	hasPersona := persona.BotName != "" && persona.Tone != ""
-	hasBusinessDetails := menuItemsCount > 0 || faqsCount > 0 || profile.Keywords != "" || profile.KnowledgeBase != ""
+	// Enforce onboarding-first for new tenants.
+	// Only auto-complete legacy tenants that predate the onboarding flow (missing onboarding_step).
+	if tenant.OnboardingStep != "" && tenant.OnboardingStep != "complete" {
+		return
+	}
 
 	// Check if tenant has been using the system (has posts, media, or social accounts)
 	var postCount int64
@@ -2344,10 +2330,8 @@ func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 
 	hasActivity := postCount > 0 || mediaCount > 0 || socialAccountCount > 0
 
-	// Auto-complete if tenant has:
-	// 1. Business profile AND persona (minimum required)
-	// 2. OR has been actively using the system (posts/media/social accounts)
-	if (hasBusinessProfile && hasPersona) || hasActivity {
+	// Auto-complete legacy tenants only if they have been actively using the system.
+	if hasActivity {
 		// Store original values before modifying in case we need to revert
 		originalStep := tenant.OnboardingStep
 		originalComplete := tenant.OnboardingComplete
@@ -2367,9 +2351,6 @@ func (h *Handler) checkAndAutoCompleteOnboarding(tenant *storage.Tenant) {
 		} else {
 			h.Logger.Info("auto-completed onboarding for existing tenant",
 				zap.Uint("tenant_id", tenant.ID),
-				zap.Bool("has_business_profile", hasBusinessProfile),
-				zap.Bool("has_persona", hasPersona),
-				zap.Bool("has_business_details", hasBusinessDetails),
 				zap.Bool("has_activity", hasActivity))
 		}
 	}
@@ -2578,6 +2559,9 @@ func (h *Handler) completeOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	tenant.OnboardingStep = "complete"
 	tenant.OnboardingComplete = true
+	if tenant.Status == "" || tenant.Status == "pending" || tenant.Status == "pending_onboarding" {
+		tenant.Status = "active"
+	}
 
 	if err := h.DB.Save(&tenant).Error; err != nil {
 		h.Logger.Error("failed to complete onboarding", zap.Error(err))
