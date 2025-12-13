@@ -6,9 +6,9 @@ import (
 )
 
 type AdminAppStatsResponse struct {
-	Timestamp time.Time     `json:"timestamp"`
-	WindowHours int         `json:"window_hours"`
-	Stats     AnalyticsStats `json:"stats"`
+	Timestamp   time.Time      `json:"timestamp"`
+	WindowHours int            `json:"window_hours"`
+	Stats       AnalyticsStats `json:"stats"`
 }
 
 func AdminAppStatsHandler(ctx *AdminContext) http.HandlerFunc {
@@ -19,9 +19,9 @@ func AdminAppStatsHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		respondJSON(w, AdminAppStatsResponse{
-			Timestamp: time.Now().UTC(),
+			Timestamp:   time.Now().UTC(),
 			WindowHours: 24,
-			Stats:     GetAnalyticsStats(ctx),
+			Stats:       GetAnalyticsStats(ctx),
 		})
 	}
 }

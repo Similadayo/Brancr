@@ -27,8 +27,8 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app", spa)
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app/*", spa)
 
-			r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/stats", AdminAppStatsHandler(ctx))
-			r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/stats", AdminAppStatsHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
 
 		// Main
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/", DashboardHandler(ctx))

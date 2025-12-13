@@ -40,9 +40,9 @@ func AdminAppEventsSSEHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		_ = writeEvent("stats", AdminAppStatsResponse{
-			Timestamp: time.Now().UTC(),
+			Timestamp:   time.Now().UTC(),
 			WindowHours: 24,
-			Stats:     GetAnalyticsStats(ctx),
+			Stats:       GetAnalyticsStats(ctx),
 		})
 
 		ticker := time.NewTicker(10 * time.Second)
@@ -54,9 +54,9 @@ func AdminAppEventsSSEHandler(ctx *AdminContext) http.HandlerFunc {
 				return
 			case <-ticker.C:
 				_ = writeEvent("stats", AdminAppStatsResponse{
-					Timestamp: time.Now().UTC(),
+					Timestamp:   time.Now().UTC(),
 					WindowHours: 24,
-					Stats:     GetAnalyticsStats(ctx),
+					Stats:       GetAnalyticsStats(ctx),
 				})
 			}
 		}
