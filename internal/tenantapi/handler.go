@@ -4557,22 +4557,23 @@ func (h *Handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	search := r.URL.Query().Get("search")
 
-	query := h.DB.Where("tenant_id = ?", claims.TenantID)
+	query := h.DB.Model(&storage.Conversation{}).Where("conversations.tenant_id = ?", claims.TenantID)
 
 	if platform != "" {
-		query = query.Where("platform = ?", platform)
+		query = query.Where("conversations.platform = ?", platform)
 	}
 	if status != "" {
-		query = query.Where("status = ?", status)
+		query = query.Where("conversations.status = ?", status)
 	}
 	if search != "" {
 		// Search in interactions content
 		query = query.Joins("JOIN interactions ON interactions.conversation_id = conversations.id").
-			Where("interactions.content ILIKE ?", "%"+search+"%")
+			Where("interactions.content ILIKE ?", "%"+search+"%").
+			Distinct("conversations.*")
 	}
 
 	var conversations []storage.Conversation
-	if err := query.Order("last_message_at DESC").Limit(100).Find(&conversations).Error; err != nil {
+	if err := query.Order("conversations.last_message_at DESC").Limit(100).Find(&conversations).Error; err != nil {
 		h.Logger.Error("fetch conversations", zap.Error(err))
 		http.Error(w, "could not fetch conversations", http.StatusInternalServerError)
 		return
