@@ -26,8 +26,8 @@ type Tenant struct {
 	OwnerPhone         string
 	OnboardingStep     string `gorm:"default:business_profile"` // business_profile, persona, business_details, social_connect, complete
 	OnboardingComplete bool   `gorm:"default:false"`
-	Timezone           string `gorm:"size:50;default:'UTC'"` // e.g., "America/New_York", "Europe/London"
-	IndustryID         uint   `gorm:"index"`                 // Links to Industry model
+	Timezone           string `gorm:"size:50;default:'UTC'"`   // e.g., "America/New_York", "Europe/London"
+	IndustryID         uint   `gorm:"index"`                   // Links to Industry model
 	IndustrySettings   string `gorm:"type:jsonb;default:'{}'"` // Industry-specific custom settings
 	Metadata           string `gorm:"type:jsonb;default:'{}'"` // Additional tenant settings (webhook URLs, etc.)
 	WebhookSecret      string // Secret key for HMAC signature verification

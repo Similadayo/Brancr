@@ -251,10 +251,10 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		Name:     SessionCookie,
 		Value:    "",
 		Path:     "/",
-		MaxAge:   -1, // Delete immediately
+		MaxAge:   -1,              // Delete immediately
 		Expires:  time.Unix(0, 0), // Also set Expires for older browsers
 		HttpOnly: true,
-		Secure:   true,                   // Must match login cookie settings
+		Secure:   true,                  // Must match login cookie settings
 		SameSite: http.SameSiteNoneMode, // Must match login cookie settings
 		Domain:   h.cookieDomain(),
 	}
@@ -276,9 +276,9 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 
 	// Try to get tenant data from cache first
 	type cachedTenantData struct {
-		Tenant         storage.Tenant
+		Tenant          storage.Tenant
 		BusinessProfile storage.BusinessProfile
-		Persona        storage.Persona
+		Persona         storage.Persona
 	}
 	var cachedData cachedTenantData
 	cacheKey := cache.TenantKey(claims.TenantID)
@@ -336,16 +336,16 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenant": map[string]any{
-			"id":                 tenant.ID,
-			"name":               tenant.Name,
-			"email":              tenant.Email,
-			"owner_name":         tenant.OwnerName,
-			"plan_type":          tenant.PlanType,
-			"status":             tenant.Status,
-			"onboarding_step":    tenant.OnboardingStep,
+			"id":                  tenant.ID,
+			"name":                tenant.Name,
+			"email":               tenant.Email,
+			"owner_name":          tenant.OwnerName,
+			"plan_type":           tenant.PlanType,
+			"status":              tenant.Status,
+			"onboarding_step":     tenant.OnboardingStep,
 			"onboarding_complete": tenant.OnboardingComplete,
-			"timezone":           tenant.Timezone,
-			"industry_id":       tenant.IndustryID,
+			"timezone":            tenant.Timezone,
+			"industry_id":         tenant.IndustryID,
 		},
 		"business_profile": map[string]any{
 			"name":     profile.Name,
@@ -362,4 +362,3 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
-
