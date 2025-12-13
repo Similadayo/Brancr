@@ -73,6 +73,10 @@ func AdminSPAAssetsServe(distDir string) http.HandlerFunc {
 			return
 		}
 
+		// Assets are now stable filenames; avoid stale-cache mismatches.
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+
 		path := strings.TrimPrefix(r.URL.Path, "/app")
 		rel := strings.TrimPrefix(path, "/")
 		rel = filepath.Clean(filepath.FromSlash(rel))
