@@ -22,7 +22,13 @@ func AdminSPAServe(distDir string) http.HandlerFunc {
 			return
 		}
 
-		path := strings.TrimPrefix(r.URL.Path, "/app")
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/admin/") {
+			path = strings.TrimPrefix(path, "/admin")
+		} else if path == "/admin" {
+			path = "/"
+		}
+		path = strings.TrimPrefix(path, "/app")
 		if path == "" || path == "/" {
 			// Avoid serving stale index.html which can reference non-existent hashed assets.
 			w.Header().Set("Cache-Control", "no-store")
@@ -77,7 +83,13 @@ func AdminSPAAssetsServe(distDir string) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
 
-		path := strings.TrimPrefix(r.URL.Path, "/app")
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/admin/") {
+			path = strings.TrimPrefix(path, "/admin")
+		} else if path == "/admin" {
+			path = "/"
+		}
+		path = strings.TrimPrefix(path, "/app")
 		rel := strings.TrimPrefix(path, "/")
 		rel = filepath.Clean(filepath.FromSlash(rel))
 		if rel == "." || strings.HasPrefix(rel, "..") {
