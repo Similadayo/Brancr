@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -27,9 +28,19 @@ type Tenant struct {
 	OnboardingComplete bool   `gorm:"default:false"`
 	Timezone           string `gorm:"size:50;default:'UTC'"` // e.g., "America/New_York", "Europe/London"
 	IndustryID         uint   `gorm:"index"`                 // Links to Industry model
-	IndustrySettings   string `gorm:"type:jsonb"`            // Industry-specific custom settings
-	Metadata           string `gorm:"type:jsonb"`            // Additional tenant settings (webhook URLs, etc.)
+	IndustrySettings   string `gorm:"type:jsonb;default:'{}'"` // Industry-specific custom settings
+	Metadata           string `gorm:"type:jsonb;default:'{}'"` // Additional tenant settings (webhook URLs, etc.)
 	WebhookSecret      string // Secret key for HMAC signature verification
+}
+
+func (t *Tenant) BeforeSave(tx *gorm.DB) error {
+	if strings.TrimSpace(t.IndustrySettings) == "" {
+		t.IndustrySettings = "{}"
+	}
+	if strings.TrimSpace(t.Metadata) == "" {
+		t.Metadata = "{}"
+	}
+	return nil
 }
 
 // BusinessProfile represents the personality and niche of the tenant’s bot

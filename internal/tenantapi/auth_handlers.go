@@ -103,6 +103,7 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		OnboardingComplete: false,
 		IndustryID:         defaultIndustryID, // Set to default industry or 0
 		IndustrySettings:   "{}",
+		Metadata:           "{}",
 	}
 
 	if err := h.DB.Create(&tenant).Error; err != nil {
