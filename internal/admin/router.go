@@ -18,6 +18,11 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(AdminAuthMiddleware(ctx))
 
+		// New admin app (SPA). Kept alongside existing server-rendered templates during migration.
+		spa := AdminSPAServe("adminapp/dist")
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app", spa)
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app/*", spa)
+
 		// Main
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/", DashboardHandler(ctx))
 

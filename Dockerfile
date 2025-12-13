@@ -4,7 +4,7 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /app
 
 # Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
+RUN apk add --no-cache git gcc musl-dev nodejs npm
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -12,6 +12,9 @@ RUN go mod download
 
 # Copy source code
 COPY . .
+
+# Build admin SPA
+RUN cd adminapp && npm install && npm run build
 
 # Build the application
 RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o bin/brancr ./cmd/brancr
@@ -27,6 +30,7 @@ RUN apk add --no-cache ca-certificates tzdata
 # Copy binary from builder
 COPY --from=builder /app/bin/brancr /app/brancr
 COPY --from=builder /app/migrations /app/migrations
+COPY --from=builder /app/adminapp/dist /app/adminapp/dist
 
 # Create non-root user
 RUN addgroup -g 1000 brancr && \
