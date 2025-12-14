@@ -85,6 +85,21 @@ func TenantUpdateStatusHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
+		// Audit before mutation (fail-closed)
+		ae := AdminAuditEntry{
+			AdminEmail: AdminEmailFromRequest(r),
+			AdminRole:  AdminRoleFromRequest(r),
+			Action:     "tenant.status_change",
+			TenantID:   &tenantID,
+			Metadata: map[string]interface{}{
+				"tenant_id": tenantID,
+				"status":    status,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
 		if err := ctx.DB.Model(&storage.Tenant{}).Where("id = ?", tenantID).Update("status", status).Error; err != nil {
 			ctx.Logger.Error("failed to update tenant status", zap.Uint("tenant_id", tenantID), zap.Error(err))
 			http.Error(w, "db error", http.StatusInternalServerError)
@@ -130,6 +145,21 @@ func TenantUpdateQuotaHandler(ctx *AdminContext) http.HandlerFunc {
 
 		planType := strings.TrimSpace(r.FormValue("plan_type"))
 
+		// Audit before mutation (fail-closed)
+		ae := AdminAuditEntry{
+			AdminEmail: AdminEmailFromRequest(r),
+			AdminRole:  AdminRoleFromRequest(r),
+			Action:     "tenant.quota_change",
+			TenantID:   &tenantID,
+			Metadata: map[string]interface{}{
+				"limits":   limits,
+				"planType": planType,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
 		quotaService := quota.NewQuotaService(ctx.DB, ctx.Logger, nil)
 		if err := quotaService.UpdateQuotaLimits(r.Context(), tenantID, limits, planType); err != nil {
 			ctx.Logger.Error("failed to update quota limits", zap.Uint("tenant_id", tenantID), zap.Error(err))

@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -66,11 +67,42 @@ func CreateAdminCaseHandler(ctx *AdminContext) http.HandlerFunc {
 			CreatedBy: adminEmail,
 			CreatedAt: time.Now(),
 		}
+		// Pre-audit intent (fail-closed): do not create the case unless audit succeeds
+		aePre := AdminAuditEntry{
+			AdminEmail: adminEmail,
+			AdminRole:  role,
+			Action:     "case.create.intent",
+			TenantID:   &req.TenantID,
+			Metadata: map[string]interface{}{
+				"tenant_id": req.TenantID,
+				"source":    req.Source,
+				"reason":    req.Reason,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, aePre); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
 		if err := ctx.DB.Create(&caseObj).Error; err != nil {
 			http.Error(w, "failed to create case", http.StatusInternalServerError)
 			return
 		}
-		if err := writeCaseAuditLog(ctx, adminEmail, role, caseObj.ID, caseObj.TenantID, "case.create", req); err != nil {
+		// Post-audit with case id
+		ae := AdminAuditEntry{
+			AdminEmail: adminEmail,
+			AdminRole:  role,
+			Action:     "case.create",
+			TenantID:   &caseObj.TenantID,
+			CaseID:     &caseObj.ID,
+			Metadata: map[string]interface{}{
+				"case_id":   caseObj.ID,
+				"tenant_id": caseObj.TenantID,
+				"source":    req.Source,
+				"reason":    req.Reason,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			// Rollback create if audit fails
 			ctx.DB.Delete(&caseObj)
 			http.Error(w, "audit log failed", http.StatusInternalServerError)
 			return
@@ -105,13 +137,25 @@ func AssignAdminCaseHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 		caseObj.AssignedTo = &req.AssignedTo
-		if err := ctx.DB.Model(&caseObj).Update("assigned_to", req.AssignedTo).Error; err != nil {
-			http.Error(w, "failed to assign case", http.StatusInternalServerError)
+		adminEmail := AdminEmailFromRequest(r)
+		// Audit before mutation (fail-closed)
+		ae := AdminAuditEntry{
+			AdminEmail: adminEmail,
+			AdminRole:  role,
+			Action:     "case.assign",
+			TenantID:   &caseObj.TenantID,
+			CaseID:     &caseObj.ID,
+			Metadata: map[string]interface{}{
+				"case_id":     caseObj.ID,
+				"assigned_to": req.AssignedTo,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
 			return
 		}
-		adminEmail := AdminEmailFromRequest(r)
-		if err := writeCaseAuditLog(ctx, adminEmail, role, caseObj.ID, caseObj.TenantID, "case.assign", req); err != nil {
-			http.Error(w, "audit log failed", http.StatusInternalServerError)
+		if err := ctx.DB.Model(&caseObj).Update("assigned_to", req.AssignedTo).Error; err != nil {
+			http.Error(w, "failed to assign case", http.StatusInternalServerError)
 			return
 		}
 		respondJSON(w, caseObj)
@@ -147,12 +191,24 @@ func ChangeAdminCaseStatusHandler(ctx *AdminContext) http.HandlerFunc {
 		if req.Status == "closed" {
 			updates["closed_at"] = time.Now()
 		}
-		if err := ctx.DB.Model(&caseObj).Updates(updates).Error; err != nil {
-			http.Error(w, "failed to update status", http.StatusInternalServerError)
+		// Audit before mutation (fail-closed)
+		ae := AdminAuditEntry{
+			AdminEmail: adminEmail,
+			AdminRole:  role,
+			Action:     "case.status_change",
+			TenantID:   &caseObj.TenantID,
+			CaseID:     &caseObj.ID,
+			Metadata: map[string]interface{}{
+				"case_id": caseObj.ID,
+				"status":  req.Status,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
 			return
 		}
-		if err := writeCaseAuditLog(ctx, adminEmail, role, caseObj.ID, caseObj.TenantID, "case.status_change", req); err != nil {
-			http.Error(w, "audit log failed", http.StatusInternalServerError)
+		if err := ctx.DB.Model(&caseObj).Updates(updates).Error; err != nil {
+			http.Error(w, "failed to update status", http.StatusInternalServerError)
 			return
 		}
 		respondJSON(w, caseObj)
@@ -180,20 +236,14 @@ func enforceCaseLifecycle(from, to string) error {
 }
 
 func writeCaseAuditLog(ctx *AdminContext, adminEmail, adminRole string, caseID, tenantID uint, action string, meta interface{}) error {
-	metaJSON, _ := json.Marshal(meta)
-	log := storage.AdminAuditLog{
+	metaMap := map[string]interface{}{"meta": meta}
+	ae := AdminAuditEntry{
 		AdminEmail: adminEmail,
 		AdminRole:  adminRole,
 		Action:     action,
 		TenantID:   &tenantID,
-		Resource:   "admin_case",
-		ResourceID: strconv.FormatUint(uint64(caseID), 10),
-		Success:    true,
-		StatusCode: 200,
-		Metadata:   string(metaJSON),
+		CaseID:     &caseID,
+		Metadata:   metaMap,
 	}
-	if err := ctx.DB.Create(&log).Error; err != nil {
-		return err
-	}
-	return nil
+	return auditWriter(context.Background(), ctx, ae)
 }

@@ -36,27 +36,22 @@ func EscalationContentHandler(ctx *AdminContext) http.HandlerFunc {
 		// Audit enforcement: only on first access per case+escalation
 		adminEmail := AdminEmailFromRequest(r)
 		role := AdminRoleFromRequest(r)
-		meta := map[string]interface{}{
-			"case_id":       caseObj.ID,
-			"escalation_id": interaction.ID,
-			"tenant_id":     interaction.TenantID,
-			"admin_email":   adminEmail,
-			"role":          role,
-			"action":        "escalation.content.read",
-		}
-		metaJSON, _ := json.Marshal(meta)
-		log := storage.AdminAuditLog{
+		ae := AdminAuditEntry{
 			AdminEmail: adminEmail,
 			AdminRole:  role,
 			Action:     "escalation.content.read",
 			TenantID:   &interaction.TenantID,
-			Resource:   "escalation",
-			ResourceID: strconv.FormatUint(uint64(interaction.ID), 10),
-			Success:    true,
-			StatusCode: 200,
-			Metadata:   string(metaJSON),
+			CaseID:     &caseObj.ID,
+			Metadata: map[string]interface{}{
+				"case_id":       caseObj.ID,
+				"escalation_id": interaction.ID,
+				"tenant_id":     interaction.TenantID,
+				"admin_email":   adminEmail,
+				"role":          role,
+				"action":        "escalation.content.read",
+			},
 		}
-		if err := ctx.DB.Create(&log).Error; err != nil {
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
 			http.Error(w, "audit log failed", http.StatusInternalServerError)
 			return
 		}

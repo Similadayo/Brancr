@@ -92,6 +92,25 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
+		// Audit: must succeed or abort (fail-closed)
+		ae := AdminAuditEntry{
+			AdminEmail: adminEmail,
+			AdminRole:  AdminRoleFromRequest(r),
+			Action:     "tenant.impersonate.start",
+			TenantID:   &tenantID,
+			CaseID:     &caseObj.ID,
+			Metadata: map[string]interface{}{
+				"case_id":     caseObj.ID,
+				"email":       email,
+				"ttl_seconds": int(ttl.Seconds()),
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
+
+		// Commit action: set cookie and redirect
 		http.SetCookie(w, &http.Cookie{
 			Name:     tenantSessionCookieName,
 			Value:    token,
@@ -101,20 +120,6 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 			MaxAge:   int(ttl.Seconds()),
 			Expires:  time.Now().Add(ttl),
 		})
-
-		// Audit: must succeed or abort
-		audit := storage.AdminAuditLog{
-			Action:     "tenant.impersonate.start",
-			TenantID:   &tenantID,
-			Resource:   "tenant",
-			ResourceID: strconv.FormatUint(uint64(tenantID), 10),
-			Metadata:   mustJSON(map[string]any{"case_id": caseObj.ID, "email": email, "ttl_seconds": int(ttl.Seconds())}),
-			AdminEmail: adminEmail,
-		}
-		if err := ctx.DB.Create(&audit).Error; err != nil {
-			http.Error(w, "audit log failed", http.StatusInternalServerError)
-			return
-		}
 
 		http.Redirect(w, r, "/admin/support/impersonate", http.StatusSeeOther)
 	}
@@ -140,6 +145,22 @@ func ImpersonationStopHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
+		// Audit: must succeed or abort (fail-closed)
+		ae := AdminAuditEntry{
+			AdminEmail: adminEmail,
+			AdminRole:  AdminRoleFromRequest(r),
+			Action:     "tenant.impersonate.stop",
+			CaseID:     &caseObj.ID,
+			Metadata: map[string]interface{}{
+				"case_id": caseObj.ID,
+				"token":   cookie.Value,
+			},
+		}
+		if err := auditWriter(r.Context(), ctx, ae); err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
+
 		// Clear cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:     tenantSessionCookieName,
@@ -149,18 +170,6 @@ func ImpersonationStopHandler(ctx *AdminContext) http.HandlerFunc {
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
 		})
-
-		// Audit: must succeed or abort
-		audit := storage.AdminAuditLog{
-			Action:     "tenant.impersonate.stop",
-			Resource:   "tenant",
-			Metadata:   mustJSON(map[string]any{"case_id": caseObj.ID, "token": cookie.Value}),
-			AdminEmail: adminEmail,
-		}
-		if err := ctx.DB.Create(&audit).Error; err != nil {
-			http.Error(w, "audit log failed", http.StatusInternalServerError)
-			return
-		}
 
 		http.Redirect(w, r, "/admin/support/impersonate", http.StatusSeeOther)
 	}

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -42,30 +41,27 @@ func RequireActiveAdminCase(ctx *AdminContext) func(http.Handler) http.Handler {
 			}
 			// Inject case into context
 			r = r.WithContext(context.WithValue(r.Context(), adminCaseKey, &adminCase))
-			// Audit log: log every access
-			meta := map[string]interface{}{
-				"case_id":     adminCase.ID,
-				"tenant_id":   adminCase.TenantID,
-				"admin_email": adminEmail,
-				"role":        AdminRoleFromRequest(r),
-				"action":      "case.gate.access",
-			}
-			metaJSON, _ := json.Marshal(meta)
-			log := storage.AdminAuditLog{
+
+			// Audit log: log every access (fail closed). Use strict writer so audit errors abort request.
+			ae := AdminAuditEntry{
 				AdminEmail: adminEmail,
 				AdminRole:  AdminRoleFromRequest(r),
 				Action:     "case.gate.access",
 				TenantID:   &adminCase.TenantID,
-				Resource:   "admin_case",
-				ResourceID: strconv.FormatUint(uint64(adminCase.ID), 10),
-				Success:    true,
-				StatusCode: 200,
-				Metadata:   string(metaJSON),
+				CaseID:     &adminCase.ID,
+				Metadata: map[string]interface{}{
+					"case_id":     adminCase.ID,
+					"tenant_id":   adminCase.TenantID,
+					"admin_email": adminEmail,
+					"role":        AdminRoleFromRequest(r),
+					"action":      "case.gate.access",
+				},
 			}
-			if err := ctx.DB.Create(&log).Error; err != nil {
+			if err := auditWriter(r.Context(), ctx, ae); err != nil {
 				http.Error(w, "audit log failed", http.StatusInternalServerError)
 				return
 			}
+
 			next.ServeHTTP(w, r)
 		})
 	}
