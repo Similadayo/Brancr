@@ -20,8 +20,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.25), transparent 40%),
-    radial-gradient(circle at center, rgba(52, 211, 153, 0.2), transparent 45%), #030712;
+  background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.15), transparent 45%), #f2f5f7;
 }
 
 .admin-shell {
@@ -144,6 +143,14 @@ body {
   overflow-y: auto;
 }
 
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.55);
+  margin: 0;
+}
+
 .control-header {
   display: flex;
   justify-content: space-between;
@@ -174,6 +181,7 @@ body {
   border: 1px solid rgba(52, 211, 153, 0.35);
   color: #059669;
   font-weight: 600;
+  background: rgba(52, 211, 153, 0.08);
 }
 
 .hero-clock {
@@ -181,6 +189,7 @@ body {
   padding: 10px 18px;
   border: 1px solid rgba(15, 23, 42, 0.1);
   color: #475569;
+  background: rgba(255, 255, 255, 0.65);
 }
 
 .primary {
@@ -192,6 +201,11 @@ body {
   font-weight: 600;
   cursor: pointer;
   box-shadow: 0 10px 20px rgba(20, 184, 166, 0.25);
+}
+
+.primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .cards-grid {
@@ -208,15 +222,26 @@ body {
   border: 1px solid rgba(15, 23, 42, 0.04);
 }
 
+.label {
+  color: #64748b;
+  margin: 0;
+  font-size: 13px;
+}
+
 .stat-card strong {
   font-size: 28px;
   display: block;
   margin-top: 8px;
+  color: #0f172a;
 }
 
-.stat-card .hint {
+.hint {
   font-size: 12px;
   color: #475569;
+}
+
+.panel {
+  border-radius: 24px;
 }
 
 .white-card {
@@ -234,6 +259,7 @@ body {
 
 .panel-header h3 {
   margin: 0;
+  color: #0f172a;
 }
 
 .panel-header .badge {
@@ -251,27 +277,15 @@ body {
 .bar-chart {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
+  align-items: end;
   gap: 12px;
+  height: 180px;
 }
 
 .bar-chart span {
   display: block;
-  height: 170px;
   background: linear-gradient(180deg, #34d399, #10b981);
   border-radius: 12px;
-  position: relative;
-}
-
-.bar-chart span::after {
-  content: "";
-  position: absolute;
-  bottom: -5px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 40px;
-  height: 3px;
-  background: rgba(15, 23, 42, 0.2);
-  border-radius: 2px;
 }
 
 .split {
@@ -300,6 +314,7 @@ body {
   margin: 12px 0 0;
   max-height: 160px;
   overflow-y: auto;
+  color: #0f172a;
 }
 
 .ratio {
@@ -319,6 +334,7 @@ body {
   align-items: center;
   gap: 10px;
   justify-content: space-between;
+  color: #0f172a;
 }
 
 .usage-bar .meter {
@@ -373,16 +389,6 @@ body {
 
 .tenant-actions button:hover {
   background: #cbd5f5;
-}
-
-.panel split .label {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.hint {
-  font-size: 12px;
-  color: #64748b;
 }
 
 .muted-text {

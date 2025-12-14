@@ -35,8 +35,6 @@
     events: "/admin/api/events",
   };
 
-  let dashboardData = null;
-
   function init() {
     setupSSE();
     loadDashboard();
@@ -53,14 +51,12 @@
 
   async function loadDashboard() {
     try {
-      const response = await fetch(endpoints.dashboard, {
-        headers: { Accept: "application/json" },
-      });
+      const response = await fetch(endpoints.dashboard, { headers: { Accept: "application/json" } });
       if (!response.ok) {
         throw new Error("failed to load dashboard");
       }
-      dashboardData = await response.json();
-      renderDashboard(dashboardData);
+      const data = await response.json();
+      renderDashboard(data);
       if (dom.lastUpdated) {
         dom.lastUpdated.textContent = new Date().toLocaleTimeString();
       }
@@ -71,9 +67,7 @@
 
   async function fetchStats() {
     try {
-      const response = await fetch(endpoints.stats, {
-        headers: { Accept: "application/json" },
-      });
+      const response = await fetch(endpoints.stats, { headers: { Accept: "application/json" } });
       if (!response.ok) {
         throw new Error("stats load failed");
       }
@@ -85,9 +79,7 @@
   }
 
   function setupSSE() {
-    if (!window.EventSource) {
-      return;
-    }
+    if (!window.EventSource) return;
     const source = new EventSource(endpoints.events);
     source.addEventListener("stats", (event) => {
       try {
@@ -98,7 +90,6 @@
       }
     });
     source.onerror = () => {
-      console.warn("SSE connection closed");
       source.close();
     };
   }
@@ -111,9 +102,7 @@
   }
 
   function renderDashboard(payload) {
-    if (!payload) {
-      return;
-    }
+    if (!payload) return;
     renderTenants(payload.Tenants);
     renderIntegrations(payload.Integrations);
     renderMessaging(payload.Messaging);
@@ -126,32 +115,30 @@
   }
 
   function renderTenants(tenants) {
-    if (!dom.tenantGrid) {
-      return;
-    }
+    if (!dom.tenantGrid) return;
     if (!tenants?.length) {
       dom.tenantGrid.innerHTML = "<p class=\"muted-text\">No tenant metadata available.</p>";
       return;
     }
     dom.tenantGrid.innerHTML = tenants
       .map((tenant) => {
-        const statusButton = tenant.Status === "suspended" ? "Reactivate tenant" : "Suspend tenant";
+        const statusButton = tenant.Status === "suspended" ? "Reactivate" : "Suspend";
         const lastSeen = tenant.LastActivity || "No activity recorded";
-        const usageLabel = tenant.UsagePercent ? `${tenant.UsagePercent.toFixed(1)}% usage` : "Usage data pending";
+        const usageLabel = tenant.UsagePercent ? `${tenant.UsagePercent.toFixed(1)}% usage` : "Usage pending";
         return `
           <article class="tenant-card" data-tenant-id="${tenant.ID}" data-tenant-status="${tenant.Status}">
             <div class="tenant-header">
-              <strong>${tenant.Name}</strong>
+              <strong>${escapeHtml(tenant.Name)}</strong>
               <span>#${tenant.ID}</span>
             </div>
-            <div class="tenant-meta">
-              <span>Plan • ${tenant.PlanType || "unknown"}</span>
-              <span>Status • ${capitalize(tenant.Status)}</span>
+            <div class="tenant-meta muted-text">
+              <span>Plan: ${escapeHtml(tenant.PlanType || "unknown")}</span>
+              <span>Status: ${escapeHtml(capitalize(tenant.Status))}</span>
             </div>
-            <p class="muted-text">Onboarding · ${tenant.OnboardingStep || "—"}</p>
-            <p class="muted-text">Platforms · ${tenant.Platforms.join(" • ") || "None connected"}</p>
-            <p class="muted-text">Last activity · ${lastSeen}</p>
-            <p class="muted-text">${usageLabel}</p>
+            <p class="muted-text">Onboarding: ${escapeHtml(tenant.OnboardingStep || "-")}</p>
+            <p class="muted-text">Platforms: ${(tenant.Platforms || []).join(" • ") || "None"}</p>
+            <p class="muted-text">Last activity: ${escapeHtml(lastSeen)}</p>
+            <p class="muted-text">${escapeHtml(usageLabel)}</p>
             <div class="tenant-actions">
               <button data-action="toggle-status">${statusButton}</button>
               <button data-action="reset-onboarding">Reset onboarding</button>
@@ -167,7 +154,7 @@
     dom.integrations.innerHTML = integrations
       .map(
         (integration) =>
-          `<li><strong>${integration.Name}</strong>: ${integration.Status} • ${integration.ErrorRate.toFixed(
+          `<li><strong>${escapeHtml(integration.Name)}</strong>: ${escapeHtml(integration.Status)} • ${integration.ErrorRate.toFixed(
             1
           )}% errors • ${integration.Connected}/${integration.Total} connected</li>`
       )
@@ -184,19 +171,18 @@
 
   function renderBilling(billing) {
     if (!billing) return;
-    dom.usageBars && (dom.usageBars.innerHTML = billing.Usage
-      .map(
+    dom.usageBars &&
+      (dom.usageBars.innerHTML = billing.Usage.map(
         (item) => `
           <div class="usage-bar">
-            <span>${item.Name}</span>
+            <span>${escapeHtml(item.Name)}</span>
             <div class="meter">
               <span style="width:${Math.min(item.Percent, 100)}%"></span>
             </div>
             <span>${item.Percent.toFixed(1)}%</span>
           </div>
         `
-      )
-      .join(""));
+      ).join(""));
     dom.overageSignal && (dom.overageSignal.textContent = billing.OverageWatch);
     dom.failedPayments && (dom.failedPayments.textContent = `${billing.FailedPayments}`);
     dom.creditsApplied && (dom.creditsApplied.textContent = `${billing.CreditsApplied}`);
@@ -206,43 +192,35 @@
   function renderAudit(audit, suspensions) {
     if (dom.auditEntries) {
       dom.auditEntries.innerHTML =
-        audit.length > 0
-          ? audit.map((entry) => `<li>${entry}</li>`).join("")
-          : "<li>No recent admin actions</li>";
+        audit.length > 0 ? audit.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("") : "<li>No recent admin actions</li>";
     }
     if (dom.suspensionEntries) {
       dom.suspensionEntries.innerHTML =
         suspensions.length > 0
-          ? suspensions.map((entry) => `<li>${entry}</li>`).join("")
+          ? suspensions.map((entry) => `<li>${escapeHtml(entry)}</li>`).join("")
           : "<li>No recent suspensions</li>";
     }
   }
 
   function renderEscalations(data) {
     if (!data) return;
-    if (dom.providerEscalations) {
-      dom.providerEscalations.innerHTML = data.Provider.map((entry) => `<li>${entry}</li>`).join("");
-    }
-    if (dom.complianceEscalations) {
-      dom.complianceEscalations.innerHTML = data.Compliance.map((entry) => `<li>${entry}</li>`).join("");
-    }
-    if (dom.billingEscalations) {
-      dom.billingEscalations.innerHTML = data.Billing.map((entry) => `<li>${entry}</li>`).join("");
-    }
+    dom.providerEscalations && (dom.providerEscalations.innerHTML = data.Provider.map((e) => `<li>${escapeHtml(e)}</li>`).join(""));
+    dom.complianceEscalations &&
+      (dom.complianceEscalations.innerHTML = data.Compliance.map((e) => `<li>${escapeHtml(e)}</li>`).join(""));
+    dom.billingEscalations && (dom.billingEscalations.innerHTML = data.Billing.map((e) => `<li>${escapeHtml(e)}</li>`).join(""));
   }
 
   function updateStatusBadge(integrations = []) {
     if (!dom.statusBadge) return;
     const averageError =
-      integrations.reduce((sum, integration) => sum + integration.ErrorRate, 0) /
-      Math.max(integrations.length, 1);
+      integrations.reduce((sum, integration) => sum + integration.ErrorRate, 0) / Math.max(integrations.length, 1);
     if (averageError > 1.5) {
       dom.statusBadge.textContent = "Status: Warning";
       dom.statusBadge.style.color = "#fbbf24";
       dom.statusBadge.style.borderColor = "rgba(251, 191, 36, 0.4)";
     } else {
       dom.statusBadge.textContent = "Status: Stable";
-      dom.statusBadge.style.color = "#34d399";
+      dom.statusBadge.style.color = "#059669";
       dom.statusBadge.style.borderColor = "rgba(52, 211, 153, 0.35)";
     }
     dom.statApiError && (dom.statApiError.textContent = `${averageError.toFixed(1)}%`);
@@ -256,7 +234,7 @@
     chart.innerHTML = platformVolumes
       .map(
         (platform) =>
-          `<span title="${platform.Platform} • ${platform.Count}" style="height:${(platform.Count / maxCount) * 170}px"></span>`
+          `<span title="${escapeHtml(platform.Platform)} • ${platform.Count}" style="height:${(platform.Count / maxCount) * 170}px"></span>`
       )
       .join("");
   }
@@ -268,7 +246,7 @@
       return;
     }
     dom.billing.innerHTML = usage
-      .map((item, index) => `<li><strong>${item.Tenant || `Tenant ${index + 1}`}</strong> – ${item.Percent.toFixed(1)}%</li>`)
+      .map((item, index) => `<li><strong>${escapeHtml(item.Tenant || `Tenant ${index + 1}`)}</strong> – ${item.Percent.toFixed(1)}%</li>`)
       .join("");
   }
 
@@ -279,9 +257,8 @@
     if (!card) return;
     const tenantId = card.dataset.tenantId;
     const action = button.dataset.action;
-    if (!tenantId || !action) {
-      return;
-    }
+    if (!tenantId || !action) return;
+
     button.disabled = true;
     const originalText = button.textContent;
     button.textContent = "Processing…";
@@ -306,7 +283,6 @@
     promise
       .then(() => loadDashboard())
       .catch((error) => {
-        console.error("tenant action failed", error);
         window.alert("Action failed: " + (error.message || "please try again"));
       })
       .finally(() => {
@@ -334,22 +310,20 @@
   }
 
   function formatNumber(value) {
-    if (value === null || value === undefined) {
-      return "0";
-    }
+    if (value === null || value === undefined) return "0";
     return value.toLocaleString();
-  }
-
-  function percentage(part, total) {
-    if (!total) {
-      return 0;
-    }
-    return (part / total) * 100;
   }
 
   function capitalize(value) {
     if (!value) return "";
     return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
+  function escapeHtml(value) {
+    return String(value || "").replace(/[&<>"']/g, (char) => {
+      const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+      return map[char] || char;
+    });
   }
 
   init();
