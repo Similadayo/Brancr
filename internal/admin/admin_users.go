@@ -53,7 +53,7 @@ func AdminUsersCreateHandler(ctx *AdminContext) http.HandlerFunc {
 			http.Error(w, "invalid email", http.StatusBadRequest)
 			return
 		}
-		if !isAllowedRole(role) {
+		if !isAllowedRole(role, adminRoleOptions) {
 			http.Error(w, "invalid role", http.StatusBadRequest)
 			return
 		}
@@ -116,7 +116,7 @@ func AdminUsersUpdateHandler(ctx *AdminContext) http.HandlerFunc {
 		updates := map[string]any{}
 
 		if role := strings.TrimSpace(r.FormValue("role")); role != "" {
-			if !isAllowedRole(role) {
+			if !isAllowedRole(role, adminRoleOptions) {
 				http.Error(w, "invalid role", http.StatusBadRequest)
 				return
 			}
@@ -169,8 +169,8 @@ func AdminUsersUpdateHandler(ctx *AdminContext) http.HandlerFunc {
 	}
 }
 
-func isAllowedRole(role string) bool {
-	for _, r := range adminRoleOptions {
+func isAllowedRole(role string, allowed []string) bool {
+	for _, r := range allowed {
 		if role == r {
 			return true
 		}
