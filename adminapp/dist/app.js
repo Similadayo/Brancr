@@ -7,11 +7,8 @@
     statFailures: document.getElementById("statFailures"),
     statApiError: document.getElementById("statApiError"),
     tenantGrid: document.getElementById("tenantGrid"),
-    integrationList: document.getElementById("integrationList"),
-    onboardingCompletion: document.getElementById("onboardingCompletion"),
-    onboardingTime: document.getElementById("onboardingTime"),
-    onboardingLoss: document.getElementById("onboardingLoss"),
-    manualInterventions: document.getElementById("manualInterventions"),
+    integrations: document.getElementById("integrations"),
+    billing: document.getElementById("billing"),
     platformBars: document.getElementById("platformBars"),
     aiRatio: document.getElementById("aiRatio"),
     humanRatio: document.getElementById("humanRatio"),
@@ -118,13 +115,14 @@
       return;
     }
     renderTenants(payload.Tenants);
-    renderOnboarding(payload.Onboarding);
     renderIntegrations(payload.Integrations);
     renderMessaging(payload.Messaging);
     renderBilling(payload.Billing);
     renderAudit(payload.Audit, payload.Suspensions);
     renderEscalations(payload.Escalations);
     updateStatusBadge(payload.Integrations);
+    renderPlatformChart(payload.Messaging.PlatformVolumes);
+    renderCountryList(payload.Billing.Usage);
   }
 
   function renderTenants(tenants) {
@@ -164,54 +162,20 @@
       .join("");
   }
 
-  function renderOnboarding(onboarding) {
-    if (!onboarding) return;
-    dom.onboardingCompletion && (dom.onboardingCompletion.textContent = `${onboarding.CompletionRate.toFixed(1)}%`);
-    dom.onboardingTime && (dom.onboardingTime.textContent = `${Object.keys(onboarding.StepTotals).length} steps`);
-    dom.manualInterventions && (dom.manualInterventions.textContent = `${onboarding.ManualInterventions}`);
-    if (dom.onboardingLoss) {
-      dom.onboardingLoss.innerHTML =
-        onboarding.DropOffs.length > 0
-          ? onboarding.DropOffs.map((drop) => `<li><strong>${drop.Step}</strong>${drop.Count} tenants (${drop.Percent.toFixed(1)}%)</li>`).join("")
-          : "<li>No drop-offs detected</li>";
-    }
-  }
-
   function renderIntegrations(integrations) {
-    if (!dom.integrationList || !integrations) return;
-    dom.integrationList.innerHTML = integrations
+    if (!dom.integrations || !integrations) return;
+    dom.integrations.innerHTML = integrations
       .map(
-        (integration) => `
-          <div class="status-item ${integration.Status === "Warning" ? "warning" : ""}">
-            <div>
-              <strong>${integration.Name}</strong>
-              <p class="muted-text">${integration.Connected}/${integration.Total} connected</p>
-              <p class="muted-text">${integration.ExpiresSoon} expiring soon</p>
-            </div>
-            <div class="muted-text">
-              <span>${integration.ErrorRate.toFixed(1)}% errors</span>
-            </div>
-          </div>
-        `
+        (integration) =>
+          `<li><strong>${integration.Name}</strong>: ${integration.Status} • ${integration.ErrorRate.toFixed(
+            1
+          )}% errors • ${integration.Connected}/${integration.Total} connected</li>`
       )
       .join("");
   }
 
   function renderMessaging(messaging) {
     if (!messaging) return;
-    dom.platformBars && (dom.platformBars.innerHTML = messaging.PlatformVolumes
-      .map(
-        (platform) => `
-          <div class="bar">
-            <div class="bar-label">${platform.Platform}</div>
-            <div class="bar-meter">
-              <span style="width:${Math.min(platform.Count, 100)}%"></span>
-            </div>
-            <div>${platform.Count}</div>
-          </div>
-        `
-      )
-      .join(""));
     dom.aiRatio && (dom.aiRatio.textContent = `${messaging.AiPercent.toFixed(1)}%`);
     dom.humanRatio && (dom.humanRatio.textContent = `${messaging.HumanPercent.toFixed(1)}%`);
     dom.failedDeliveries && (dom.failedDeliveries.textContent = `${messaging.FailedDeliveries}`);
@@ -282,6 +246,30 @@
       dom.statusBadge.style.borderColor = "rgba(52, 211, 153, 0.35)";
     }
     dom.statApiError && (dom.statApiError.textContent = `${averageError.toFixed(1)}%`);
+  }
+
+  function renderPlatformChart(platformVolumes = []) {
+    if (!dom.platformBars) return;
+    const chart = dom.platformBars.querySelector(".bar-chart");
+    if (!chart) return;
+    const maxCount = Math.max(...platformVolumes.map((volume) => volume.Count), 1);
+    chart.innerHTML = platformVolumes
+      .map(
+        (platform) =>
+          `<span title="${platform.Platform} • ${platform.Count}" style="height:${(platform.Count / maxCount) * 170}px"></span>`
+      )
+      .join("");
+  }
+
+  function renderCountryList(usage = []) {
+    if (!dom.billing) return;
+    if (!usage.length) {
+      dom.billing.innerHTML = "<li>No usage data</li>";
+      return;
+    }
+    dom.billing.innerHTML = usage
+      .map((item, index) => `<li><strong>${item.Tenant || `Tenant ${index + 1}`}</strong> – ${item.Percent.toFixed(1)}%</li>`)
+      .join("");
   }
 
   function handleTenantAction(event) {
