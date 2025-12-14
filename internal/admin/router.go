@@ -24,11 +24,18 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 
 		// New admin app (SPA). Kept alongside existing server-rendered templates during migration.
 		spa := AdminSPAServe("adminapp/dist")
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app", spa)
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/app/*", spa)
 
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/stats", AdminAppStatsHandler(ctx))
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/app", spa)
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/app/*", spa)
+
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/stats", AdminAppStatsHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
+
+		// /admin/api/me endpoint
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/me", AdminMeHandler(ctx))
+
+		// Compliance role: read-only audit logs/system state
+		r.With(requireAnyRole(RoleSuperAdmin, RoleComplianceAdmin)).Get("/api/audit", AuditLogsAPIHandler(ctx))
 
 		// Main
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/", DashboardHandler(ctx))
@@ -43,7 +50,7 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 
 		// Operations
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/escalations", EscalationsHandler(ctx))
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/escalations/{id}/resolve", EscalationResolveHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RolePlatformAdmin)).Post("/escalations/{id}/resolve", EscalationResolveHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleBillingAdmin)).Get("/orders", OrdersHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleBillingAdmin)).Get("/payments", PaymentsHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/scheduled", ScheduledHandler(ctx))
@@ -78,7 +85,7 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		r.With(requireAnyRole(RoleSuperAdmin)).Get("/security/admin-users", AdminUsersPageHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin)).Post("/security/admin-users/create", AdminUsersCreateHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin)).Post("/security/admin-users/update", AdminUsersUpdateHandler(ctx))
-		r.With(requireAnyRole(RoleSuperAdmin)).Get("/security/audit-logs", AuditLogsPageHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleComplianceAdmin)).Get("/security/audit-logs", AuditLogsPageHandler(ctx))
 
 		// Support
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/support/impersonate", ImpersonationPageHandler(ctx))

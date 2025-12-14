@@ -12,7 +12,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var adminRoleOptions = []string{RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin}
+var adminRoleOptions = []string{
+	RoleSuperAdmin,
+	RoleSupportAdmin,
+	RolePlatformAdmin,
+	RoleBillingAdmin,
+	RoleComplianceAdmin,
+}
 
 func AdminUsersPageHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

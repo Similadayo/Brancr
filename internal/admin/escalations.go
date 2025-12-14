@@ -124,6 +124,13 @@ func EscalationsHandler(ctx *AdminContext) http.HandlerFunc {
 
 func EscalationResolveHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Only PlatformAdmin and SuperAdmin can resolve/ignore escalations
+		role := AdminRoleFromRequest(r)
+		if role != RoleSuperAdmin && role != RolePlatformAdmin {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
 		idStr := chi.URLParam(r, "id")
 		id64, err := strconv.ParseUint(idStr, 10, 64)
 		if err != nil || id64 == 0 {
@@ -143,6 +150,12 @@ func EscalationResolveHandler(ctx *AdminContext) http.HandlerFunc {
 			ctx.Logger.Error("failed to update escalation status", zap.Uint("interaction_id", uint(id64)), zap.Error(err))
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
+		}
+
+		// Send SSE notification for escalation resolution
+		if ctx.Events != nil {
+			msg := "Escalation " + idStr + " " + status + " by " + AdminEmailFromRequest(r)
+			ctx.Events.Publish(msg)
 		}
 
 		http.Redirect(w, r, "/admin/escalations", http.StatusSeeOther)

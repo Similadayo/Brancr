@@ -710,3 +710,47 @@
 - Document all bugs found and fixes applied
 - Keep test results for future reference
 
+---
+
+# Brancr Admin Dashboard: Phased Delivery Checklist
+
+## Phase 1: Foundation & Access Control
+- [x] Align backend RBAC to new roles (SupportAdmin, PlatformAdmin, BillingAdmin, ComplianceAdmin, SuperAdmin)
+- [x] Add `/admin/api/me` endpoint (returns admin email and role)
+- [x] Show admin identity in SPA shell
+- [x] Robust static asset serving for SPA
+- [x] Audit logging for all privileged actions
+
+## Phase 2: Core Dashboard Sections
+- [ ] Overview: System KPIs, live stats, event feed
+- [ ] Tenants: Metadata-first tenant list, search, quota, status, escalation
+- [ ] Onboarding: Onboarding state, errors, escalations, audit trail
+- [ ] Integrations: Health/status of all integrations, error surfacing
+- [ ] Automation: Scheduled jobs, workflow state, error handling
+- [ ] Billing: Usage, quota, payment status, escalation triggers
+- [ ] Audit Logs: Full audit log browser, filter by action/admin
+- [ ] Settings: Admin user management, role assignment, password reset
+
+## Phase 3: Escalation & Compliance Logic
+- [ ] Escalation flows: Support → Platform → Super, with audit trail
+- [ ] Compliance role: Read-only access to audit logs, system state
+- [ ] Action-level RBAC: Restrict sensitive actions to correct roles
+- [ ] Real-time escalation notifications (SSE or WebSocket)
+
+## Phase 4: Polish & Productionization
+- [ ] End-to-end tests (backend + SPA)
+- [ ] Accessibility & responsive design
+- [ ] Documentation: Admin guide, escalation SOPs
+- [ ] Production readiness: Monitoring, error reporting, backup/restore
+
+---
+
+**Legend:**
+- [x] = Complete
+- [ ] = Pending
+
+**Notes:**
+- Every privileged action must be audit-logged.
+- All dashboard sections must be metadata/system-state-first, not tenant-content-first.
+- Escalation and compliance logic must be strictly enforced and visible in the UI.
+

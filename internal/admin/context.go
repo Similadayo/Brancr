@@ -16,4 +16,5 @@ type AdminContext struct {
 
 	AdminEmail    string
 	AdminPassword string
+	Events        *EventBroker
 }

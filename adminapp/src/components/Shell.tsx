@@ -1,4 +1,5 @@
 import { PropsWithChildren, useMemo, useState } from 'react';
+import { useAdminMe } from './useAdminMe';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useTheme } from './useTheme';
 
@@ -17,12 +18,14 @@ const navItems: NavItem[] = [
   { label: 'Billing', to: '/billing' },
   { label: 'Audit Logs', to: '/audit' },
   { label: 'Settings', to: '/settings' },
+  { label: 'Escalations', to: '/escalations' },
 ];
 
 export default function Shell({ children }: PropsWithChildren) {
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
   const [search, setSearch] = useState('');
+  const { me, loading, error } = useAdminMe();
 
   const pageTitle = useMemo(() => {
     const hit = navItems.find((i) => i.to === location.pathname);
@@ -55,8 +58,27 @@ export default function Shell({ children }: PropsWithChildren) {
 
         <div className="sidebarFooter">
           <div className="footerMeta">
-            <div className="footerName">Admin</div>
-            <div className="footerRole">Signed in</div>
+            {loading ? (
+              <>
+                <div className="footerName">Loading…</div>
+                <div className="footerRole" />
+              </>
+            ) : error ? (
+              <>
+                <div className="footerName">Error</div>
+                <div className="footerRole">{error}</div>
+              </>
+            ) : me ? (
+              <>
+                <div className="footerName">{me.email}</div>
+                <div className="footerRole">{me.role}</div>
+              </>
+            ) : (
+              <>
+                <div className="footerName">Unknown</div>
+                <div className="footerRole" />
+              </>
+            )}
           </div>
           <form method="post" action="/admin/logout">
             <button className="ghostBtn" type="submit">Log out</button>

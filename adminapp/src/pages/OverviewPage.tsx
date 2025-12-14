@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 
 type AnalyticsStats = {
   TotalTenants: number;
@@ -20,6 +20,9 @@ type AdminAppStatsResponse = {
 export default function OverviewPage() {
   const nf = useMemo(() => new Intl.NumberFormat(), []);
   const [stats, setStats] = useState<AnalyticsStats | null>(null);
+  const [events, setEvents] = useState<Array<{ time: string; message: string }>>([]);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +50,19 @@ export default function OverviewPage() {
       }
     };
     es.addEventListener('stats', onStats as EventListener);
+
+    // Listen for generic 'event' messages (operational events)
+    const onEvent = (evt: MessageEvent) => {
+      try {
+        const data = JSON.parse(evt.data);
+        const msg = typeof data === 'string' ? data : data.message || JSON.stringify(data);
+        const time = data.time || new Date().toLocaleTimeString();
+        setEvents((evts) => [{ time, message: msg }, ...evts].slice(0, 20));
+      } catch {
+        // ignore
+      }
+    };
+    es.addEventListener('event', onEvent as EventListener);
 
     return () => {
       cancelled = true;
@@ -109,7 +125,18 @@ export default function OverviewPage() {
             <div className="cardHeader">
               <div className="cardTitle">Recent events</div>
             </div>
-            <div className="muted">Live operational events will appear here (no tenant content).</div>
+            {events.length === 0 ? (
+              <div className="muted">Live operational events will appear here (no tenant content).</div>
+            ) : (
+              <ul className="eventFeed">
+                {events.map((e, i) => (
+                  <li key={i} className="eventFeedItem">
+                    <span className="eventTime">{e.time}</span>
+                    <span className="eventMsg">{e.message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         </aside>
       </div>

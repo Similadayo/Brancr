@@ -2,11 +2,27 @@ package admin
 
 import "net/http"
 
+const adminEmailKey = "admin_email"
+
+func AdminEmailFromRequest(r *http.Request) string {
+	if v, ok := r.Context().Value(adminEmailKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 const (
-	RoleSuperAdmin        = "SuperAdmin"
-	RoleSupportAgent      = "SupportAgent"
+	RoleSuperAdmin      = "SuperAdmin"
+	RoleSupportAdmin    = "SupportAdmin"
+	RolePlatformAdmin   = "PlatformAdmin"
+	RoleBillingAdmin    = "BillingAdmin"
+	RoleComplianceAdmin = "ComplianceAdmin"
+)
+
+// Add missing roles for legacy compatibility
+const (
 	RoleTechnicalOperator = "TechnicalOperator"
-	RoleBillingAdmin      = "BillingAdmin"
+	RoleSupportAgent      = "SupportAgent"
 )
 
 type adminContextKey string
