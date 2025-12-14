@@ -2,6 +2,12 @@ package admin
 
 import (
 	"net/http"
+	"strconv"
+
+	"encoding/json"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/similadayo/brancr/internal/receipt"
 
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
@@ -132,5 +138,40 @@ func PaymentsHandler(ctx *AdminContext) http.HandlerFunc {
 			"Total":    len(rows),
 		}
 		renderTemplate(w, r, "payments.html", data, ctx.Logger)
+	}
+}
+
+// AdminGeneratePortalTokenHandler allows admins to generate a portal token for a tenant order
+func AdminGeneratePortalTokenHandler(ctx *AdminContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantIDStr := chi.URLParam(r, "id")
+		orderIDStr := chi.URLParam(r, "orderId")
+
+		tenantID, err := strconv.ParseUint(tenantIDStr, 10, 32)
+		if err != nil {
+			http.Error(w, "invalid tenant id", http.StatusBadRequest)
+			return
+		}
+		orderID, err := strconv.ParseUint(orderIDStr, 10, 32)
+		if err != nil {
+			http.Error(w, "invalid order id", http.StatusBadRequest)
+			return
+		}
+
+		publicURL := ctx.Config.PublicURL
+		if publicURL == "" {
+			publicURL = "https://api.brancr.com"
+		}
+		receiptService := receipt.NewReceiptService(ctx.DB, ctx.Logger, "", publicURL, nil)
+		token, url, err := receiptService.GeneratePortalTokenAndURL(r.Context(), uint(orderID), uint(tenantID), publicURL)
+		if err != nil {
+			ctx.Logger.Error("failed to generate portal token (admin)", zap.Error(err), zap.Uint64("tenant_id", tenantID), zap.Uint64("order_id", orderID))
+			http.Error(w, "failed to generate portal token", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"portal_token": token, "portal_url": url})
 	}
 }

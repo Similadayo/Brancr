@@ -170,7 +170,7 @@ func (h *Handler) getOrder(w http.ResponseWriter, r *http.Request) {
 		completedAt = &completed
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"order": map[string]any{
 			"id":                   order.ID,
 			"order_number":         order.OrderNumber,
@@ -189,7 +189,20 @@ func (h *Handler) getOrder(w http.ResponseWriter, r *http.Request) {
 			"confirmed_at":         confirmedAt,
 			"completed_at":         completedAt,
 		},
-	})
+	}
+
+	// Backwards-compat: include top-level shortcut fields so older frontend code
+	// that expects direct fields (e.g., response.status) will work without change.
+	payload["id"] = order.ID
+	payload["status"] = order.Status
+	payload["platform"] = order.Platform
+	payload["created_at"] = order.CreatedAt.Format("2006-01-02T15:04:05Z")
+	payload["payment_reference"] = order.PaymentReference
+	payload["customer_name"] = order.CustomerName
+	payload["items"] = items
+	payload["total_amount"] = order.TotalAmount
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
 // updateOrder updates an order
