@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"unicode/utf8"
 
@@ -56,17 +57,11 @@ func EscalationsHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 
 		tenantIDs := make([]uint, 0, len(interactions))
-		customerIDs := make([]uint, 0, len(interactions))
 		seenTenants := map[uint]struct{}{}
-		seenCustomers := map[uint]struct{}{}
 		for _, it := range interactions {
 			if _, ok := seenTenants[it.TenantID]; !ok {
 				seenTenants[it.TenantID] = struct{}{}
 				tenantIDs = append(tenantIDs, it.TenantID)
-			}
-			if _, ok := seenCustomers[it.CustomerID]; !ok {
-				seenCustomers[it.CustomerID] = struct{}{}
-				customerIDs = append(customerIDs, it.CustomerID)
 			}
 		}
 
@@ -79,37 +74,18 @@ func EscalationsHandler(ctx *AdminContext) http.HandlerFunc {
 			}
 		}
 
-		customerNames := map[uint]string{}
-		if len(customerIDs) > 0 {
-			var customers []storage.Customer
-			_ = ctx.DB.Where("id IN ?", customerIDs).Find(&customers).Error
-			for _, c := range customers {
-				name := c.DisplayName
-				if name == "" {
-					name = c.Username
-				}
-				if name == "" {
-					name = c.PlatformID
-				}
-				customerNames[c.ID] = name
-			}
-		}
-
+		// Only show allowed fields and redacted preview (30-50 chars, mask PII)
 		rows := make([]escalationRow, 0, len(interactions))
 		for _, it := range interactions {
+			preview := maskPII(previewText(it.Content, 40))
 			rows = append(rows, escalationRow{
 				InteractionID:  it.ID,
 				TenantID:       it.TenantID,
 				TenantName:     tenantNames[it.TenantID],
-				CustomerID:     it.CustomerID,
-				CustomerName:   customerNames[it.CustomerID],
 				Platform:       it.Platform,
-				Intent:         it.DetectedIntent,
-				Tone:           it.DetectedTone,
-				Content:        it.Content,
-				ContentPreview: previewText(it.Content, 180),
 				CreatedAt:      it.CreatedAt.Format("Jan 2, 2006 15:04"),
 				Status:         it.ResponseStatus,
+				ContentPreview: preview,
 			})
 		}
 
@@ -120,6 +96,17 @@ func EscalationsHandler(ctx *AdminContext) http.HandlerFunc {
 		}
 		renderTemplate(w, r, "escalations.html", data, ctx.Logger)
 	}
+}
+
+// maskPII masks phone numbers and emails in a string
+func maskPII(s string) string {
+	// Simple regex-based masking for phone numbers and emails
+	// (For brevity, not full RFC compliance)
+	emailRe := regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	phoneRe := regexp.MustCompile(`\+?\d[\d\s\-]{7,}\d`)
+	s = emailRe.ReplaceAllString(s, "[redacted email]")
+	s = phoneRe.ReplaceAllString(s, "[redacted phone]")
+	return s
 }
 
 func EscalationResolveHandler(ctx *AdminContext) http.HandlerFunc {

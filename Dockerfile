@@ -13,8 +13,12 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build admin SPA
-RUN cd adminapp && npm install && npm run build
+# Build admin SPA if present; otherwise create empty dist to keep final COPY happy
+RUN if [ -f adminapp/package.json ]; then \
+      cd adminapp && npm ci --prefer-offline --no-audit --progress=false && npm run build; \
+    else \
+      mkdir -p adminapp/dist; \
+    fi
 
 # Build the application
 RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o bin/brancr ./cmd/brancr

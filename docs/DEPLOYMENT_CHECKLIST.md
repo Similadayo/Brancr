@@ -56,6 +56,8 @@ go build -o bin/brancr ./cmd/brancr
 docker build -t brancr:latest .
 ```
 
+Note: The Docker build will attempt to build the admin SPA located in `adminapp/` if a `package.json` is present. If you do not have the SPA sources in the repo (e.g., building from a backend-only checkout), the Dockerfile creates an empty `adminapp/dist` to allow the image build to succeed. To include the SPA in builds, ensure `adminapp/` is present and contains the build scripts (typically `npm run build`).
+
 ### 2. Database Migrations
 ```bash
 # Run migrations

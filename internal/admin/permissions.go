@@ -2,8 +2,8 @@ package admin
 
 var RolePermissions = map[string]map[string]bool{
 	RoleSupportAdmin: {
-		"tenant.read":  true,
-		"case.create":  true,
+		"tenant.read": true,
+		"case.create": true,
 	},
 	RolePlatformAdmin: {
 		"tenant.read":        true,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+
 	"github.com/similadayo/brancr/internal/storage"
 )
 
@@ -43,11 +44,11 @@ func RequireActiveAdminCase(ctx *AdminContext) func(http.Handler) http.Handler {
 			r = r.WithContext(context.WithValue(r.Context(), adminCaseKey, &adminCase))
 			// Audit log: log every access
 			meta := map[string]interface{}{
-				"case_id":   adminCase.ID,
-				"tenant_id": adminCase.TenantID,
+				"case_id":     adminCase.ID,
+				"tenant_id":   adminCase.TenantID,
 				"admin_email": adminEmail,
-				"role":      AdminRoleFromRequest(r),
-				"action":    "case.gate.access",
+				"role":        AdminRoleFromRequest(r),
+				"action":      "case.gate.access",
 			}
 			metaJSON, _ := json.Marshal(meta)
 			log := storage.AdminAuditLog{

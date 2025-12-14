@@ -1,15 +1,14 @@
 package admin
 
-
 import (
 	"net/http"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/storage"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
-
 
 // AdminContext carries only the dependencies the admin layer needs.
 type AdminContext struct {

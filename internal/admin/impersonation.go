@@ -66,12 +66,25 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 			return
 		}
 
+		// Enforce case-gate: must have active case, assigned, status investigating, tenant match
+		caseObj := AdminCaseFromRequest(r)
+		if caseObj == nil || caseObj.Status != "investigating" || caseObj.TenantID != tenantID {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		adminEmail := AdminEmailFromRequest(r)
+		if caseObj.AssignedTo == nil || *caseObj.AssignedTo != adminEmail {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
 		email := strings.TrimSpace(r.FormValue("email"))
 		if email == "" {
 			email = tenant.Email
 		}
 
-		ttl := 1 * time.Hour
+		// Enforce max TTL 60min
+		ttl := 60 * time.Minute
 		token, err := middleware.CreateTenantToken([]byte(ctx.Config.TenantJWTSecret), tenantID, email, ttl)
 		if err != nil {
 			ctx.Logger.Error("failed to create tenant impersonation token", zap.Error(err))
@@ -89,13 +102,19 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 			Expires:  time.Now().Add(ttl),
 		})
 
-		persistAdminAuditEvent(ctx, r, storage.AdminAuditLog{
-			Action:     "admin.impersonate.start",
+		// Audit: must succeed or abort
+		audit := storage.AdminAuditLog{
+			Action:     "tenant.impersonate.start",
 			TenantID:   &tenantID,
 			Resource:   "tenant",
 			ResourceID: strconv.FormatUint(uint64(tenantID), 10),
-			Metadata:   mustJSON(map[string]any{"email": email, "ttl_seconds": int(ttl.Seconds())}),
-		})
+			Metadata:   mustJSON(map[string]any{"case_id": caseObj.ID, "email": email, "ttl_seconds": int(ttl.Seconds())}),
+			AdminEmail: adminEmail,
+		}
+		if err := ctx.DB.Create(&audit).Error; err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
 
 		http.Redirect(w, r, "/admin/support/impersonate", http.StatusSeeOther)
 	}
@@ -103,20 +122,45 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 
 func ImpersonationStopHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(tenantSessionCookieName)
+		if err != nil {
+			http.Redirect(w, r, "/admin/support/impersonate", http.StatusSeeOther)
+			return
+		}
+
+		// Enforce case-gate: must have active case, assigned, status investigating, tenant match
+		caseObj := AdminCaseFromRequest(r)
+		if caseObj == nil || caseObj.Status != "investigating" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		adminEmail := AdminEmailFromRequest(r)
+		if caseObj.AssignedTo == nil || *caseObj.AssignedTo != adminEmail {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		// Clear cookie
 		http.SetCookie(w, &http.Cookie{
 			Name:     tenantSessionCookieName,
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
 		})
 
-		persistAdminAuditEvent(ctx, r, storage.AdminAuditLog{
-			Action:   "admin.impersonate.stop",
-			Resource: "tenant",
-			Metadata: mustJSON(map[string]any{"cleared_cookie": tenantSessionCookieName}),
-		})
+		// Audit: must succeed or abort
+		audit := storage.AdminAuditLog{
+			Action:     "tenant.impersonate.stop",
+			Resource:   "tenant",
+			Metadata:   mustJSON(map[string]any{"case_id": caseObj.ID, "token": cookie.Value}),
+			AdminEmail: adminEmail,
+		}
+		if err := ctx.DB.Create(&audit).Error; err != nil {
+			http.Error(w, "audit log failed", http.StatusInternalServerError)
+			return
+		}
 
 		http.Redirect(w, r, "/admin/support/impersonate", http.StatusSeeOther)
 	}

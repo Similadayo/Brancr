@@ -50,6 +50,11 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 
 		// Operations
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/escalations", EscalationsHandler(ctx))
+		// Escalation full content (case-gated, permissioned)
+		r.With(
+			RequirePermission("content.read"),
+			RequireActiveAdminCase(ctx),
+		).Get("/escalations/{id}/content", EscalationContentHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RolePlatformAdmin)).Post("/escalations/{id}/resolve", EscalationResolveHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleBillingAdmin)).Get("/orders", OrdersHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleBillingAdmin)).Get("/payments", PaymentsHandler(ctx))
