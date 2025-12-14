@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -516,8 +517,9 @@ func (s *ReceiptService) GeneratePortalTokenAndURL(ctx context.Context, orderID 
 		}
 	}
 
-	// Generate portal URL
-	portalURL := fmt.Sprintf("%s/portal/order?token=%s", publicURL, payment.PortalToken)
+	// Generate portal URL (ensure no double slash and include API prefix)
+	base := strings.TrimRight(publicURL, "/")
+	portalURL := fmt.Sprintf("%s/api/portal/order?token=%s", base, payment.PortalToken)
 	payment.PortalURL = portalURL
 
 	if err := s.DB.Save(&payment).Error; err != nil {

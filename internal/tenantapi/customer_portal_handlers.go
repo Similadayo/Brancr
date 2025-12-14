@@ -2,6 +2,7 @@ package tenantapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -299,7 +300,18 @@ func (h *Handler) generatePortalToken(w http.ResponseWriter, r *http.Request) {
 	// Generate portal token and URL
 	publicURL := h.Config.PublicURL
 	if publicURL == "" {
-		publicURL = "https://api.brancr.com" // Default fallback
+		// Derive public URL from request (helps local/dev environments)
+		scheme := "https"
+		if hdr := r.Header.Get("X-Forwarded-Proto"); hdr != "" {
+			scheme = hdr
+		} else if r.TLS == nil {
+			scheme = "http"
+		}
+		host := r.Host
+		if host == "" {
+			host = "api.brancr.com"
+		}
+		publicURL = fmt.Sprintf("%s://%s", scheme, host)
 	}
 	// ReceiptService for portal token generation doesn't need Cloudinary or EmailService
 	receiptService := receipt.NewReceiptService(h.DB, h.Logger, "", publicURL, nil)

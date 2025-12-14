@@ -3,6 +3,7 @@ package receipt
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/similadayo/brancr/internal/storage"
@@ -49,12 +50,12 @@ func (s *ReceiptService) GeneratePortalTokenAndURLEnhanced(ctx context.Context, 
 	} else if payment.PortalToken == "" {
 		// Generate portal token if not exists
 		portalToken := utils.GeneratePortalToken()
-		
+
 		if expiryDays == 0 {
 			expiryDays = 90
 		}
 		expiresAt := time.Now().AddDate(0, 0, expiryDays)
-		
+
 		payment.PortalToken = portalToken
 		payment.TokenExpiresAt = &expiresAt
 		if err := s.DB.Save(&payment).Error; err != nil {
@@ -63,12 +64,12 @@ func (s *ReceiptService) GeneratePortalTokenAndURLEnhanced(ctx context.Context, 
 	} else if payment.TokenExpiresAt != nil && time.Now().After(*payment.TokenExpiresAt) {
 		// Token expired, generate new one
 		portalToken := utils.GeneratePortalToken()
-		
+
 		if expiryDays == 0 {
 			expiryDays = 90
 		}
 		expiresAt := time.Now().AddDate(0, 0, expiryDays)
-		
+
 		payment.PortalToken = portalToken
 		payment.TokenExpiresAt = &expiresAt
 		if err := s.DB.Save(&payment).Error; err != nil {
@@ -76,8 +77,9 @@ func (s *ReceiptService) GeneratePortalTokenAndURLEnhanced(ctx context.Context, 
 		}
 	}
 
-	// Generate portal URL
-	portalURL := fmt.Sprintf("%s/portal/order?token=%s", publicURL, payment.PortalToken)
+	// Generate portal URL (ensure no double slash and include API prefix)
+	base := strings.TrimRight(publicURL, "/")
+	portalURL := fmt.Sprintf("%s/api/portal/order?token=%s", base, payment.PortalToken)
 	payment.PortalURL = portalURL
 
 	if err := s.DB.Save(&payment).Error; err != nil {
@@ -86,4 +88,3 @@ func (s *ReceiptService) GeneratePortalTokenAndURLEnhanced(ctx context.Context, 
 
 	return payment.PortalToken, portalURL, nil
 }
-

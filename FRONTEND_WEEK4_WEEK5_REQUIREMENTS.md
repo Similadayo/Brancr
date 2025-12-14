@@ -1114,7 +1114,7 @@ if (error === 'email_send_failed') {
 ```json
 {
   "portal_token": "ABC123XYZ789...",
-  "portal_url": "https://api.brancr.com/portal/order?token=ABC123XYZ789...",
+  "portal_url": "https://api.brancr.com/api/portal/order?token=ABC123XYZ789...",
   "message": "Portal token generated successfully"
 }
 ```
