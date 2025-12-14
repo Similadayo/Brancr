@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Brancr Admin Control Tower</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div class="admin-shell">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">Brancr<span>Admin</span></div>
+        <p class="eyebrow">Control Tower</p>
+      </div>
+      <nav>
+        <a class="active" href="#overview">Platform overview</a>
+        <a href="#tenant-management">Tenant management</a>
+        <a href="#onboarding">Onboarding</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#messaging">Messaging</a>
+        <a href="#billing">Billing</a>
+        <a href="#compliance">Compliance</a>
+        <a href="#roles">Roles</a>
+        <a href="#escalations">Escalations</a>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="refreshLive" class="ghost-btn">Refresh live data</button>
+        <p class="subtle">Live data last updated <span id="lastUpdated">--:--</span></p>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="hero" id="overview">
+        <div>
+          <p class="eyebrow">Realtime</p>
+          <h1>Brancr admin dashboard</h1>
+          <p class="subtext">
+            Platform metadata, compliance controls, and escalation telemetry – surfaced without
+            exposing private tenant conversations.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <div class="badge" id="statusBadge">Status: Stable</div>
+          <div class="hero-clock" id="heroClock"></div>
+        </div>
+      </header>
+
+      <section class="panel overview-grid">
+        <h2>Platform overview</h2>
+        <div class="stat-grid">
+          <article class="stat-card">
+            <p class="label">Total tenants</p>
+            <p class="value" id="statTotalTenants">0</p>
+            <p class="hint">Growth vs yesterday</p>
+          </article>
+          <article class="stat-card">
+            <p class="label">Active tenants (24h)</p>
+            <p class="value" id="statActive24">0</p>
+            <p class="hint">Rolling 24h activity</p>
+          </article>
+          <article class="stat-card">
+            <p class="label">Messages processed today</p>
+            <p class="value" id="statMessages">0</p>
+            <p class="hint">Aggregated across platforms</p>
+          </article>
+          <article class="stat-card">
+            <p class="label">AI requests today</p>
+            <p class="value" id="statAIRequests">0</p>
+            <p class="hint">Automatic + manual</p>
+          </article>
+          <article class="stat-card">
+            <p class="label">Failed jobs/webhooks</p>
+            <p class="value" id="statFailures">0</p>
+            <p class="hint">Errors requiring attention</p>
+          </article>
+          <article class="stat-card">
+            <p class="label">API error rate (Meta, TikTok, WhatsApp)</p>
+            <p class="value" id="statApiError">0.0%</p>
+            <p class="hint">Provider error rate</p>
+          </article>
+        </div>
+        <div class="overview-actions">
+          <button class="primary" id="declareIncident">Declare incident</button>
+          <button class="ghost">View health logs</button>
+        </div>
+      </section>
+
+      <section class="panel" id="tenant-management">
+        <header>
+          <div>
+            <p class="eyebrow">Tenant management</p>
+            <h3>Snapshot</h3>
+          </div>
+          <button class="ghost">Open audit trail</button>
+        </header>
+        <div class="tenant-grid" id="tenantGrid"></div>
+      </section>
+
+      <section class="panel split" id="onboarding">
+        <div>
+          <p class="eyebrow">Onboarding and activation</p>
+          <h3>Funnels & friction</h3>
+          <div class="mini-grid">
+            <article>
+              <p class="label">Completion rate</p>
+              <p class="value" id="onboardingCompletion">0%</p>
+              <p class="hint">Signups → verified</p>
+            </article>
+            <article>
+              <p class="label">Avg. time per step</p>
+              <p class="value" id="onboardingTime">-- min</p>
+              <p class="hint">Rolling 7d</p>
+            </article>
+          </div>
+        </div>
+        <div>
+          <p class="label">Top drop-off steps</p>
+          <ul class="loss-list" id="onboardingLoss"></ul>
+          <div class="overhead">Manual interventions: <strong id="manualInterventions">0</strong></div>
+        </div>
+      </section>
+
+      <section class="panel split" id="integrations">
+        <div>
+          <p class="eyebrow">Integrations & platform health</p>
+          <h3>Provider statuses</h3>
+          <div class="status-list" id="integrationList"></div>
+        </div>
+        <div>
+          <p class="label">Token expirations</p>
+          <div class="progress-track">
+            <div class="progress" id="tokenProgress"></div>
+          </div>
+          <p class="hint" id="tokenHint">Refreshing OAuth tokens</p>
+        </div>
+      </section>
+
+      <section class="panel" id="messaging">
+        <header>
+          <div>
+            <p class="eyebrow">Messaging & automation</p>
+            <h3>Control room</h3>
+          </div>
+          <button class="ghost">Open automation logs</button>
+        </header>
+        <div class="messaging-grid">
+          <article>
+            <p class="label">Messages / platform</p>
+            <div class="bar-stack" id="platformBars"></div>
+          </article>
+          <article>
+            <p class="label">AI vs human handoff ratio</p>
+            <div class="ratio">
+              <span id="aiRatio">0%</span>
+              <small>AI automated</small>
+            </div>
+            <div class="ratio">
+              <span id="humanRatio">0%</span>
+              <small>Human support</small>
+            </div>
+          </article>
+          <article>
+            <p class="label">Failed deliveries</p>
+            <p class="value" id="failedDeliveries">0</p>
+            <p class="hint">Drill into incidents if rising</p>
+          </article>
+          <article>
+            <p class="label">Latency</p>
+            <p class="value" id="messageLatency">0s</p>
+            <p class="hint">95th percentile</p>
+          </article>
+        </div>
+        <p class="muted-text">Tenant content is hidden by default. Enable content view only within a gated escalation case.</p>
+      </section>
+
+      <section class="panel" id="billing">
+        <header>
+          <div>
+            <p class="eyebrow">Billing & usage control</p>
+            <h3>Protect margins</h3>
+          </div>
+          <button class="ghost">Review disputes</button>
+        </header>
+        <div class="billing-grid">
+          <article>
+            <p class="label">Usage vs limits</p>
+            <div class="usage-bars" id="usageBars"></div>
+          </article>
+          <article>
+            <p class="label">Overages + abuse signals</p>
+            <p class="value danger" id="overageSignal">None</p>
+          </article>
+          <article>
+            <p class="label">Failed payments</p>
+            <p class="value" id="failedPayments">0</p>
+          </article>
+          <article>
+            <p class="label">Credits applied</p>
+            <p class="value" id="creditsApplied">0</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" id="compliance">
+        <header>
+          <div>
+            <p class="eyebrow">Compliance, security, audit</p>
+            <h3>Immutable logs</h3>
+          </div>
+          <button class="ghost">Export logs</button>
+        </header>
+        <div class="audit-grid">
+          <article>
+            <p class="label">Recent admin actions</p>
+            <ul id="auditEntries"></ul>
+          </article>
+          <article>
+            <p class="label">Suspensions / reactivations</p>
+            <ul id="suspensionEntries"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel roles" id="roles">
+        <header>
+          <div>
+            <p class="eyebrow">Roles & access</p>
+            <h3>Least privilege first</h3>
+          </div>
+          <button class="ghost">View enforcement</button>
+        </header>
+        <div class="role-table">
+          <div class="role-row header">
+            <span>Role</span>
+            <span>Controls</span>
+            <span>Prohibited</span>
+          </div>
+          <div class="role-row">
+            <span>Support Admin</span>
+            <span>Onboarding, metadata, support notes</span>
+            <span>Messages, billing, tokens</span>
+          </div>
+          <div class="role-row">
+            <span>Platform Admin</span>
+            <span>Integrations, health dashboards</span>
+            <span>Billing, deleting data</span>
+          </div>
+          <div class="role-row">
+            <span>Billing Admin</span>
+            <span>Plans, credits, quotas</span>
+            <span>Messages, integrations</span>
+          </div>
+          <div class="role-row">
+            <span>Compliance Admin</span>
+            <span>Audit logs, security alerts</span>
+            <span>Tenant workflows, pricing</span>
+          </div>
+          <div class="role-row">
+            <span>Super Admin</span>
+            <span>All actions (logged)</span>
+            <span>Protected by MFA & confirmation</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="escalations">
+        <header>
+          <div>
+            <p class="eyebrow">Escalations framework</p>
+            <h3>Severity-aware response</h3>
+          </div>
+          <div class="severity-pill">Critical incident</div>
+        </header>
+        <div class="escalation-grid">
+          <article>
+            <h4>Provider issues</h4>
+            <p class="muted-text">Watch WhatsApp deliverability, Meta token refreshes, TikTok publishing.</p>
+            <ul id="providerEscalations"></ul>
+          </article>
+          <article>
+            <h4>Security & compliance</h4>
+            <p class="muted-text">Account compromises, policy violations, admin abuse.</p>
+            <ul id="complianceEscalations"></ul>
+          </article>
+          <article>
+            <h4>Billing & abuse</h4>
+            <p class="muted-text">Spike detection, non-payment, cost anomalies.</p>
+            <ul id="billingEscalations"></ul>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

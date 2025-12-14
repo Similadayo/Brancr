@@ -30,6 +30,10 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/stats", AdminAppStatsHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/dashboard", AdminDashboardDataHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin)).Post("/api/tenants/{id}/status", AdminTenantStatusAPIHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin)).Post("/api/tenants/{id}/onboarding/reset", AdminTenantOnboardingResetHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RolePlatformAdmin)).Post("/api/tenants/{id}/tokens/refresh", AdminTenantTokenRefreshHandler(ctx))
 
 		// /admin/api/me endpoint
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/me", AdminMeHandler(ctx))
