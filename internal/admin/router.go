@@ -89,8 +89,14 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 
 		// Support
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/support/impersonate", ImpersonationPageHandler(ctx))
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/support/impersonate", ImpersonationStartHandler(ctx))
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/support/stop-impersonation", ImpersonationStopHandler(ctx))
+		r.With(
+			RequirePermission("tenant.impersonate"),
+			RequireActiveAdminCase(ctx),
+		).Post("/support/impersonate", ImpersonationStartHandler(ctx))
+		r.With(
+			RequirePermission("tenant.impersonate"),
+			RequireActiveAdminCase(ctx),
+		).Post("/support/stop-impersonation", ImpersonationStopHandler(ctx))
 
 		r.Post("/logout", LogoutHandler(ctx))
 

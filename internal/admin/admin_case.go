@@ -1,4 +1,3 @@
-
 package admin
 
 import (
@@ -161,7 +160,6 @@ func ChangeAdminCaseStatusHandler(ctx *AdminContext) http.HandlerFunc {
 }
 
 // --- Helper Functions ---
-
 
 func enforceCaseLifecycle(from, to string) error {
 	allowed := map[string][]string{
