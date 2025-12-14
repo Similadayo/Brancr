@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Brancr | Customer Receipt Portal</title>
+    <link rel="stylesheet" href="/static/portal/styles.css">
+</head>
+<body>
+    <main class="portal-shell">
+        <section class="card hero">
+            <div>
+                <p class="eyebrow">Customer Portal</p>
+                <h1 id="heroTitle">Track your order and download your receipt</h1>
+                <p class="subtext">
+                    Use the secure link shared with you to view payment details, order status, and save an official receipt for your records.
+                </p>
+            </div>
+            <div class="token-pill" id="tokenPreview" aria-live="polite"></div>
+        </section>
+
+        <section id="loadingCard" class="card centered">
+            <div class="spinner" aria-hidden="true"></div>
+            <p class="subtext">Loading your information…</p>
+        </section>
+
+        <section id="errorCard" class="card error hidden" role="alert">
+            <h2>We could not load your receipt</h2>
+            <p id="errorMessage">Please check that you opened the correct link or request a fresh portal link from the business.</p>
+            <button class="ghost-btn" data-action="retry" type="button">Try again</button>
+        </section>
+
+        <section id="receiptContent" class="hidden">
+            <section class="card status-card">
+                <div>
+                    <p class="eyebrow">Order status</p>
+                    <h2 id="orderStatus">—</h2>
+                    <p class="subtext" id="statusHint"></p>
+                </div>
+                <div>
+                    <p class="eyebrow">Payment reference</p>
+                    <p id="paymentReference" class="mono"></p>
+                </div>
+            </section>
+
+            <section class="card grid-two">
+                <div>
+                    <p class="eyebrow">Customer</p>
+                    <h3 id="customerName">—</h3>
+                    <p class="subtext" id="customerContact"></p>
+                </div>
+                <div>
+                    <p class="eyebrow">Business</p>
+                    <h3 id="businessName">—</h3>
+                    <p class="subtext" id="businessContact"></p>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-heading">
+                    <div>
+                        <p class="eyebrow">Order summary</p>
+                        <h3 id="orderNumber">—</h3>
+                    </div>
+                    <div class="amount-block">
+                        <p class="eyebrow">Total</p>
+                        <p class="amount" id="orderTotal">—</p>
+                    </div>
+                </div>
+                <div id="itemsList" class="items-list"></div>
+            </section>
+
+            <section class="card actions">
+                <div>
+                    <h3>Need a copy?</h3>
+                    <p class="subtext">
+                        Click download to open your official receipt in a new tab. You can print it or save it as a PDF for your records.
+                    </p>
+                </div>
+                <div class="action-buttons">
+                    <button class="primary" data-action="download" type="button">Download receipt</button>
+                    <button class="ghost" data-action="copy-link" type="button">Copy receipt link</button>
+                </div>
+                <p class="footnote">Tip: In most browsers you can press <span class="mono">Ctrl + S</span> (or <span class="mono">⌘ + S</span>) to save the receipt.</p>
+            </section>
+        </section>
+    </main>
+
+    <script src="/static/portal/app.js" defer></script>
+</body>
+</html>

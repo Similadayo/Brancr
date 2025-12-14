@@ -41,6 +41,13 @@ func SetupRouter(app *App) http.Handler {
 	fileServer := http.FileServer(http.Dir("static"))
 	r.Handle("/static/*", http.StripPrefix("/static/", fileServer))
 
+	portalPageHandler := func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "static/portal/index.html")
+	}
+	r.Get("/portal", portalPageHandler)
+	r.Get("/portal/order", portalPageHandler)
+	r.Get("/portal/receipt", portalPageHandler)
+
 	// Health check endpoints
 	r.Get("/health", app.HealthHandler)
 	r.Get("/health/ready", app.ReadinessHandler)
