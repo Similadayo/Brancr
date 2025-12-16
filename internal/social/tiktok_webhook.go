@@ -34,14 +34,14 @@ func NewTikTokWebhookHandler(db *gorm.DB, logger *zap.Logger, webhookSecret stri
 
 // WebhookEvent represents a TikTok webhook event
 type WebhookEvent struct {
-	Event      string                 `json:"event"`      // video.status_update, comment.created, etc.
-	Timestamp  int64                  `json:"timestamp"`  // Unix timestamp
-	Data       map[string]interface{} `json:"data"`       // Event-specific data
-	VideoID    string                 `json:"video_id,omitempty"`
-	PublishID  string                 `json:"publish_id,omitempty"`
-	CommentID  string                 `json:"comment_id,omitempty"`
-	TenantID   uint                   `json:"-"`          // Extracted from account lookup
-	AccountID  uint                   `json:"-"`          // Social account ID
+	Event     string                 `json:"event"`     // video.status_update, comment.created, etc.
+	Timestamp int64                  `json:"timestamp"` // Unix timestamp
+	Data      map[string]interface{} `json:"data"`      // Event-specific data
+	VideoID   string                 `json:"video_id,omitempty"`
+	PublishID string                 `json:"publish_id,omitempty"`
+	CommentID string                 `json:"comment_id,omitempty"`
+	TenantID  uint                   `json:"-"` // Extracted from account lookup
+	AccountID uint                   `json:"-"` // Social account ID
 }
 
 // HandleWebhook processes incoming TikTok webhook events
@@ -306,4 +306,3 @@ func (h *TikTokWebhookHandler) handleVideoPublished(ctx context.Context, event *
 		},
 	})
 }
-

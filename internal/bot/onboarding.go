@@ -60,10 +60,10 @@ func (h *OnboardingHandler) HandleOnboarding(bot *tgbotapi.BotAPI, update *tgbot
 	var existing storage.Tenant
 	if err := h.DB.Where("owner_telegram_id = ?", chatID).First(&existing).Error; err == nil {
 		if existing.TelegramBotToken != "" {
-		msg := tgbotapi.NewMessage(chatID,
+			msg := tgbotapi.NewMessage(chatID,
 				fmt.Sprintf("Hey %s! Your bot is already set up. Type 'menu' to your assistant to get started.", existing.Name))
-		bot.Send(msg)
-		return
+			bot.Send(msg)
+			return
 		}
 	}
 
@@ -150,7 +150,7 @@ Already have a token? Just paste it now.`
 		if token == "" {
 			msg := tgbotapi.NewMessage(chatID, "Please paste your bot token from @BotFather.")
 			bot.Send(msg)
-		return
+			return
 		}
 
 		email := state["email"]
@@ -211,15 +211,15 @@ Already have a token? Just paste it now.`
 		}
 
 		ownerID := tenant.OwnerTelegramID
-		
+
 		// Check if onboarding is complete (tenant signed up via dashboard)
 		var persona storage.Persona
 		var businessProfile storage.BusinessProfile
 		_ = h.DB.Where("tenant_id = ?", tenant.ID).First(&persona).Error
 		_ = h.DB.Where("tenant_id = ?", tenant.ID).First(&businessProfile).Error
-		
+
 		onboardingComplete := tenant.OnboardingComplete && persona.BotName != "" && businessProfile.Niche != ""
-		
+
 		if botUsername != "" {
 			startLink := fmt.Sprintf("https://t.me/%s?start=hello", botUsername)
 			bot.Send(tgbotapi.NewMessage(chatID,
@@ -232,12 +232,12 @@ Already have a token? Just paste it now.`
 			if personaName == "" {
 				personaName = "Assistant"
 			}
-			
+
 			tone := persona.Tone
 			if tone == "" {
 				tone = "friendly"
 			}
-			
+
 			businessName := businessProfile.Name
 			if businessName == "" {
 				businessName = tenant.Name
@@ -245,20 +245,20 @@ Already have a token? Just paste it now.`
 
 			welcomeMsg := fmt.Sprintf(
 				"Welcome back, *%s*! 🎉\n\n"+
-				"Your AI assistant is configured as *%s* with a *%s* tone.\n\n"+
-				"🎛️ *Brancr Control Center*\n"+
-				"Your assistant is ready to help customers. You can:\n\n"+
-				"• Manage social connections\n"+
-				"• View analytics\n"+
-				"• Configure alerts\n"+
-				"• Update settings\n\n"+
-				"Type *menu* to see all available commands.",
+					"Your AI assistant is configured as *%s* with a *%s* tone.\n\n"+
+					"🎛️ *Brancr Control Center*\n"+
+					"Your assistant is ready to help customers. You can:\n\n"+
+					"• Manage social connections\n"+
+					"• View analytics\n"+
+					"• Configure alerts\n"+
+					"• Update settings\n\n"+
+					"Type *menu* to see all available commands.",
 				businessName, personaName, tone)
-			
+
 			msg := tgbotapi.NewMessage(ownerID, welcomeMsg)
 			msg.ParseMode = "Markdown"
 			tenantBot.Send(msg)
-			
+
 			// Show connection status if available
 			var accounts []storage.SocialAccount
 			h.DB.Where("tenant_id = ? AND connected = ?", tenant.ID, true).Find(&accounts)

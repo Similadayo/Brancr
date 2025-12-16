@@ -14,9 +14,9 @@ import (
 
 // RateLimitInfo contains rate limit information from TikTok API responses
 type RateLimitInfo struct {
-	Limit     int           // Total requests allowed
-	Remaining int           // Requests remaining
-	ResetAt   time.Time     // When the rate limit resets
+	Limit      int           // Total requests allowed
+	Remaining  int           // Requests remaining
+	ResetAt    time.Time     // When the rate limit resets
 	RetryAfter time.Duration // How long to wait before retrying (from Retry-After header)
 }
 
@@ -137,7 +137,7 @@ func (t *TikTokConnector) executeWithRateLimitRetry(ctx context.Context, req *ht
 		if attempt > 0 {
 			// Calculate backoff delay
 			backoff := time.Duration(attempt) * time.Minute
-			
+
 			// If we have rate limit info, use the Retry-After value
 			if rateLimitErr, ok := lastErr.(*TikTokRateLimitError); ok {
 				backoff = rateLimitErr.RetryAfter
@@ -174,12 +174,12 @@ func (t *TikTokConnector) executeWithRateLimitRetry(ctx context.Context, req *ht
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == 429 {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			
+
 			rateLimitErr := checkRateLimitResponse(resp, body)
 			if rateLimitErr != nil {
 				lastErr = rateLimitErr
 				lastResp = resp
-				
+
 				// Log rate limit info
 				if rlErr, ok := rateLimitErr.(*TikTokRateLimitError); ok {
 					t.Logger.Warn("🚫 TikTok rate limit exceeded",
@@ -206,4 +206,3 @@ func (t *TikTokConnector) executeWithRateLimitRetry(ctx context.Context, req *ht
 	}
 	return nil, fmt.Errorf("tiktok rate limit retries exhausted: %w", lastErr)
 }
-

@@ -700,7 +700,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 
 	// Extract message type - can be at payload.type or payload.message.type
 	messageType, _ := payload["type"].(string)
-	
+
 	// Try to get message data - can be at payload.message or payload.payload
 	var messageData map[string]interface{}
 	if msg, ok := payload["message"].(map[string]interface{}); ok {
@@ -738,24 +738,24 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	}
 
 	// Check if this is a media message (audio, image, video, document, sticker)
-	isMediaMessage := messageType == "audio" || messageType == "image" || 
+	isMediaMessage := messageType == "audio" || messageType == "image" ||
 		messageType == "video" || messageType == "document" || messageType == "sticker"
-	
+
 	// Extract media URL and metadata for media messages
 	var mediaURL string
 	var mediaMetadata map[string]interface{}
-	
+
 	if isMediaMessage {
 		// Try to extract media URL from various possible locations
 		// Gupshup sends media URL in different places depending on message type
-		
+
 		// Method 1: payload.url or payload.payload.url
 		if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
 			if url, ok := nestedPayload["url"].(string); ok && url != "" {
 				mediaURL = url
 			}
 		}
-		
+
 		// Method 2: message.audio.url, message.image.url, etc.
 		if mediaURL == "" && messageData != nil {
 			if mediaObj, ok := messageData[messageType].(map[string]interface{}); ok {
@@ -766,14 +766,14 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 				mediaMetadata = mediaObj
 			}
 		}
-		
+
 		// Method 3: payload.url directly
 		if mediaURL == "" {
 			if url, ok := payload["url"].(string); ok && url != "" {
 				mediaURL = url
 			}
 		}
-		
+
 		// Extract caption if available (for images/videos)
 		var caption string
 		if messageData != nil {
@@ -786,7 +786,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 				caption = cap
 			}
 		}
-		
+
 		// Extract filename for documents
 		var filename string
 		if messageType == "document" && messageData != nil {
@@ -796,7 +796,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 				}
 			}
 		}
-		
+
 		// Log media message details
 		h.Logger.Info("📎 Media message received",
 			zap.Uint("tenant_id", tenantID),
@@ -805,7 +805,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			zap.String("media_url", mediaURL),
 			zap.String("caption", caption),
 			zap.String("filename", filename))
-		
+
 		// Store media metadata
 		mediaMetadata = map[string]interface{}{
 			"media_url":  mediaURL,
@@ -815,7 +815,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		if filename != "" {
 			mediaMetadata["filename"] = filename
 		}
-		
+
 		// For media messages, use caption as content if available, otherwise use a placeholder
 		// This allows AI to process the message context even for media
 		if caption != "" {
@@ -841,23 +841,23 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 
 	// Extract text content - try multiple formats based on actual Gupshup payload structure
 	var content string
-	
+
 	// For media messages, try to get caption first
 	if isMediaMessage {
 		if caption, ok := mediaMetadata["caption"].(string); ok && caption != "" {
 			content = caption
 		}
 	}
-	
+
 	// Method 1: payload.payload.text (nested payload structure - from logs)
 	if content == "" {
-	if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
-		if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
-			content = textStr
+		if nestedPayload, ok := payload["payload"].(map[string]interface{}); ok {
+			if textStr, ok := nestedPayload["text"].(string); ok && textStr != "" {
+				content = textStr
 			}
 		}
 	}
-	
+
 	// Method 2: message.text.body (nested object in message)
 	if content == "" && messageData != nil {
 		if textData, ok := messageData["text"].(map[string]interface{}); ok {
@@ -866,35 +866,35 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			}
 		}
 	}
-	
+
 	// Method 3: message.text as direct string
 	if content == "" && messageData != nil {
 		if textStr, ok := messageData["text"].(string); ok && textStr != "" {
 			content = textStr
 		}
 	}
-	
+
 	// Method 4: Check for "body" directly in messageData
 	if content == "" && messageData != nil {
 		if body, ok := messageData["body"].(string); ok && body != "" {
 			content = body
 		}
 	}
-	
+
 	// Method 5: Check for "content" field in messageData
 	if content == "" && messageData != nil {
 		if contentStr, ok := messageData["content"].(string); ok && contentStr != "" {
 			content = contentStr
 		}
 	}
-	
+
 	// Method 6: Check payload.text directly (fallback)
 	if content == "" {
 		if textStr, ok := payload["text"].(string); ok && textStr != "" {
 			content = textStr
 		}
 	}
-	
+
 	// For media messages without text/caption, use a descriptive placeholder
 	if content == "" && isMediaMessage {
 		switch messageType {
@@ -916,7 +916,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			content = fmt.Sprintf("[%s received]", messageType)
 		}
 	}
-	
+
 	// CRITICAL: Log if content is still empty (should not happen for media messages now)
 	if content == "" {
 		h.Logger.Error("❌ CRITICAL: Failed to extract message content from Gupshup webhook",
@@ -937,7 +937,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		// Don't process empty messages - they'll cause random AI responses
 		return
 	}
-	
+
 	h.Logger.Info("✅ Successfully extracted message content",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("source", source),
@@ -966,7 +966,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 		"gupshup_app_id": envelope["appId"],
 		"raw_payload":    payload,
 	}
-	
+
 	// Add customer information to metadata for frontend display
 	if countryCode != "" {
 		metadata["customer_country_code"] = countryCode
@@ -977,7 +977,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	if customerPhone != "" {
 		metadata["customer_phone"] = customerPhone
 	}
-	
+
 	// Process media if this is a media message and MediaProcessor is available
 	// CRITICAL: For audio and images, we need transcription/analysis BEFORE AI reply generation
 	// So we process them synchronously (with timeout) for these types
@@ -995,13 +995,13 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 				zap.String("media_url", mediaURL),
 				zap.Uint("tenant_id", tenantID),
 				zap.String("message_id", waID))
-			
+
 			// For audio and images, process synchronously so AI can use transcription/analysis
 			// For other media types (video, document), process in background
 			if messageType == "audio" || messageType == "image" || messageType == "sticker" {
 				processCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 				defer cancel()
-				
+
 				result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaURL, messageType)
 				if err != nil {
 					h.Logger.Warn("failed to process media (non-critical, will continue without it)",
@@ -1012,7 +1012,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 						zap.Error(err))
 				} else {
 					mediaProcessingResult = result
-					
+
 					// Update content with transcription/analysis for AI to process
 					if messageType == "audio" && result.Transcription != "" {
 						content = result.Transcription
@@ -1033,7 +1033,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 								return result.ImageAnalysis
 							}()))
 					}
-					
+
 					// Store processing results in metadata for later database update
 					if result.StoredURL != "" {
 						metadata["media_stored_url"] = result.StoredURL
@@ -1051,120 +1051,120 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			} else {
 				// For video/document, process in background (don't block)
 				go func() {
-				processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-				
-				result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaURL, messageType)
-				if err != nil {
-					h.Logger.Warn("failed to process media (non-critical)",
-						zap.String("media_type", messageType),
-						zap.String("media_url", mediaURL),
-						zap.Uint("tenant_id", tenantID),
-						zap.String("message_id", waID),
-						zap.Error(err))
-					return
-				}
-				
-				// Wait a bit for the interaction to be created by MessageHandler
-				// The interaction is created synchronously, but we give it a moment
-				time.Sleep(2 * time.Second)
-				
-				// Find the interaction in the database and update it with processing results
-				// Use waID (message ID) to find the interaction
-				// Try multiple times with increasing delays in case the interaction hasn't been created yet
-				var interaction storage.Interaction
-				var findErr error
-				maxRetries := 5
-				for i := 0; i < maxRetries; i++ {
-					findErr = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ?",
-						tenantID, "whatsapp", waID, "incoming").First(&interaction).Error
-					if findErr == nil {
-						break
+					processCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer cancel()
+
+					result, err := h.MediaProcessor.ProcessMedia(processCtx, tenantID, mediaURL, messageType)
+					if err != nil {
+						h.Logger.Warn("failed to process media (non-critical)",
+							zap.String("media_type", messageType),
+							zap.String("media_url", mediaURL),
+							zap.Uint("tenant_id", tenantID),
+							zap.String("message_id", waID),
+							zap.Error(err))
+						return
 					}
-					if i < maxRetries-1 {
-						time.Sleep(time.Duration(i+1) * time.Second)
+
+					// Wait a bit for the interaction to be created by MessageHandler
+					// The interaction is created synchronously, but we give it a moment
+					time.Sleep(2 * time.Second)
+
+					// Find the interaction in the database and update it with processing results
+					// Use waID (message ID) to find the interaction
+					// Try multiple times with increasing delays in case the interaction hasn't been created yet
+					var interaction storage.Interaction
+					var findErr error
+					maxRetries := 5
+					for i := 0; i < maxRetries; i++ {
+						findErr = h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ?",
+							tenantID, "whatsapp", waID, "incoming").First(&interaction).Error
+						if findErr == nil {
+							break
+						}
+						if i < maxRetries-1 {
+							time.Sleep(time.Duration(i+1) * time.Second)
+						}
 					}
-				}
-				
-				if findErr != nil {
-					h.Logger.Warn("failed to find interaction to update with media processing results",
-						zap.String("message_id", waID),
-						zap.Uint("tenant_id", tenantID),
-						zap.Int("retries", maxRetries),
-						zap.Error(findErr),
-						zap.String("note", "Interaction may not have been created yet or message ID mismatch"))
-					return
-				}
-			
-			// Parse existing metadata
-			var existingMetadata map[string]interface{}
-			if interaction.Metadata != "" && interaction.Metadata != "{}" {
-				if err := json.Unmarshal([]byte(interaction.Metadata), &existingMetadata); err != nil {
-					existingMetadata = make(map[string]interface{})
-				}
-			} else {
-				existingMetadata = make(map[string]interface{})
-			}
-			
-			// Update metadata with processing results
-			if result.StoredURL != "" {
-				existingMetadata["media_stored_url"] = result.StoredURL
-			}
-			if result.Transcription != "" {
-				existingMetadata["audio_transcription"] = result.Transcription
-				// Update content with transcription for audio messages
-				if messageType == "audio" {
-					interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
-				}
-			}
-			if result.ImageAnalysis != "" {
-				existingMetadata["image_analysis"] = result.ImageAnalysis
-				// Update content with analysis for image messages
-				if messageType == "image" || messageType == "sticker" {
-					interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
-				}
-			}
-			if result.DocumentText != "" {
-				existingMetadata["document_text"] = result.DocumentText
-				// Update content with extracted text for document messages
-				if messageType == "document" {
-					interaction.Content = fmt.Sprintf("[Document]: %s", result.DocumentText)
-				}
-			}
-			
-			// Add processing metadata
-			for k, v := range result.Metadata {
-				existingMetadata["media_"+k] = v
-			}
-			
-			// Save updated metadata and content to database
-			metadataJSON, err := json.Marshal(existingMetadata)
-			if err == nil {
-				interaction.Metadata = string(metadataJSON)
-				if err := h.DB.Save(&interaction).Error; err != nil {
-					h.Logger.Warn("failed to save media processing results to interaction",
-						zap.Uint("interaction_id", interaction.ID),
-						zap.Uint("tenant_id", tenantID),
-						zap.Error(err))
-				} else {
-					h.Logger.Info("✅ Media processing completed and saved to database",
-						zap.String("media_type", messageType),
-						zap.Bool("has_stored_url", result.StoredURL != ""),
-						zap.Bool("has_transcription", result.Transcription != ""),
-						zap.String("transcription_preview", func() string {
-							if len(result.Transcription) > 50 {
-								return result.Transcription[:50] + "..."
-							}
-							return result.Transcription
-						}()),
-						zap.Bool("has_analysis", result.ImageAnalysis != ""),
-						zap.Bool("has_document_text", result.DocumentText != ""),
-						zap.Uint("tenant_id", tenantID),
-						zap.Uint("interaction_id", interaction.ID),
-						zap.String("message_id", waID))
-				}
-			}
-		}()
+
+					if findErr != nil {
+						h.Logger.Warn("failed to find interaction to update with media processing results",
+							zap.String("message_id", waID),
+							zap.Uint("tenant_id", tenantID),
+							zap.Int("retries", maxRetries),
+							zap.Error(findErr),
+							zap.String("note", "Interaction may not have been created yet or message ID mismatch"))
+						return
+					}
+
+					// Parse existing metadata
+					var existingMetadata map[string]interface{}
+					if interaction.Metadata != "" && interaction.Metadata != "{}" {
+						if err := json.Unmarshal([]byte(interaction.Metadata), &existingMetadata); err != nil {
+							existingMetadata = make(map[string]interface{})
+						}
+					} else {
+						existingMetadata = make(map[string]interface{})
+					}
+
+					// Update metadata with processing results
+					if result.StoredURL != "" {
+						existingMetadata["media_stored_url"] = result.StoredURL
+					}
+					if result.Transcription != "" {
+						existingMetadata["audio_transcription"] = result.Transcription
+						// Update content with transcription for audio messages
+						if messageType == "audio" {
+							interaction.Content = fmt.Sprintf("[Voice note]: %s", result.Transcription)
+						}
+					}
+					if result.ImageAnalysis != "" {
+						existingMetadata["image_analysis"] = result.ImageAnalysis
+						// Update content with analysis for image messages
+						if messageType == "image" || messageType == "sticker" {
+							interaction.Content = fmt.Sprintf("[Image]: %s", result.ImageAnalysis)
+						}
+					}
+					if result.DocumentText != "" {
+						existingMetadata["document_text"] = result.DocumentText
+						// Update content with extracted text for document messages
+						if messageType == "document" {
+							interaction.Content = fmt.Sprintf("[Document]: %s", result.DocumentText)
+						}
+					}
+
+					// Add processing metadata
+					for k, v := range result.Metadata {
+						existingMetadata["media_"+k] = v
+					}
+
+					// Save updated metadata and content to database
+					metadataJSON, err := json.Marshal(existingMetadata)
+					if err == nil {
+						interaction.Metadata = string(metadataJSON)
+						if err := h.DB.Save(&interaction).Error; err != nil {
+							h.Logger.Warn("failed to save media processing results to interaction",
+								zap.Uint("interaction_id", interaction.ID),
+								zap.Uint("tenant_id", tenantID),
+								zap.Error(err))
+						} else {
+							h.Logger.Info("✅ Media processing completed and saved to database",
+								zap.String("media_type", messageType),
+								zap.Bool("has_stored_url", result.StoredURL != ""),
+								zap.Bool("has_transcription", result.Transcription != ""),
+								zap.String("transcription_preview", func() string {
+									if len(result.Transcription) > 50 {
+										return result.Transcription[:50] + "..."
+									}
+									return result.Transcription
+								}()),
+								zap.Bool("has_analysis", result.ImageAnalysis != ""),
+								zap.Bool("has_document_text", result.DocumentText != ""),
+								zap.Uint("tenant_id", tenantID),
+								zap.Uint("interaction_id", interaction.ID),
+								zap.String("message_id", waID))
+						}
+					}
+				}()
 			}
 		}
 	} else if isMediaMessage && mediaURL == "" {
@@ -1174,7 +1174,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			zap.String("message_id", waID),
 			zap.Any("payload", payload))
 	}
-	
+
 	// Add media metadata if this is a media message
 	if isMediaMessage && mediaMetadata != nil {
 		metadata["media"] = mediaMetadata
@@ -1196,18 +1196,18 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 	// 4. Send to AI for intent detection
 	// 5. Generate and send reply
 	msg := IncomingMessage{
-		Platform:          "whatsapp",
-		TenantID:          tenantID,
-		CustomerID:        source, // Phone number in E.164 format
-		CustomerName:      customerName,
-		CustomerUsername: "",
+		Platform:           "whatsapp",
+		TenantID:           tenantID,
+		CustomerID:         source, // Phone number in E.164 format
+		CustomerName:       customerName,
+		CustomerUsername:   "",
 		CustomerProfilePic: "",
-		MessageID:         waID,
-		Content:           content,
-		MessageType:       messageType, // Will be "audio", "image", "video", "document", "sticker", or "text"
-		ThreadID:          source, // Use phone number as thread ID
-		Timestamp:         timestamp,
-		Metadata:          metadata,
+		MessageID:          waID,
+		Content:            content,
+		MessageType:        messageType, // Will be "audio", "image", "video", "document", "sticker", or "text"
+		ThreadID:           source,      // Use phone number as thread ID
+		Timestamp:          timestamp,
+		Metadata:           metadata,
 	}
 
 	// Process through existing message handler (handles AI, intent detection, etc.)
@@ -1217,21 +1217,21 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 			zap.String("source", source),
 			zap.Error(err))
 	}
-	
+
 	// Update interaction with media processing results if we processed synchronously
 	// This ensures stored_url and other metadata are saved even if processing happened before interaction creation
 	if mediaProcessingResult != nil && (messageType == "audio" || messageType == "image" || messageType == "sticker") {
 		go func() {
 			// Wait a bit for interaction to be created
 			time.Sleep(2 * time.Second)
-			
+
 			// Find and update interaction with stored URL and other metadata
 			var interaction storage.Interaction
 			maxRetries := 3
 			for i := 0; i < maxRetries; i++ {
 				if err := h.DB.Where("tenant_id = ? AND platform = ? AND platform_message_id = ? AND direction = ?",
 					tenantID, "whatsapp", waID, "incoming").First(&interaction).Error; err == nil {
-					
+
 					// Parse existing metadata
 					var existingMetadata map[string]interface{}
 					if interaction.Metadata != "" && interaction.Metadata != "{}" {
@@ -1240,12 +1240,12 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 					if existingMetadata == nil {
 						existingMetadata = make(map[string]interface{})
 					}
-					
+
 					// Update with stored URL (Cloudinary permanent URL)
 					if mediaProcessingResult.StoredURL != "" {
 						existingMetadata["media_stored_url"] = mediaProcessingResult.StoredURL
 					}
-					
+
 					// Ensure transcription/analysis are in metadata (they should already be from ProcessMessage)
 					if mediaProcessingResult.Transcription != "" {
 						existingMetadata["audio_transcription"] = mediaProcessingResult.Transcription
@@ -1253,7 +1253,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 					if mediaProcessingResult.ImageAnalysis != "" {
 						existingMetadata["image_analysis"] = mediaProcessingResult.ImageAnalysis
 					}
-					
+
 					// Update content to include transcription/analysis if not already updated
 					// This ensures the content field shows the transcription/analysis even if ProcessMessage used placeholder
 					if messageType == "audio" && mediaProcessingResult.Transcription != "" {
@@ -1265,7 +1265,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 							interaction.Content = fmt.Sprintf("[Image]: %s", mediaProcessingResult.ImageAnalysis)
 						}
 					}
-					
+
 					// Save updated metadata and content
 					metadataJSON, err := json.Marshal(existingMetadata)
 					if err != nil {
@@ -1278,7 +1278,7 @@ func (h *GupshupWebhookHandler) handleIncomingMessage(ctx context.Context, tenan
 					}
 					interaction.Metadata = string(metadataJSON)
 					h.DB.Save(&interaction)
-					
+
 					h.Logger.Info("✅ Updated interaction with media processing results",
 						zap.Uint("interaction_id", interaction.ID),
 						zap.Bool("has_stored_url", mediaProcessingResult.StoredURL != ""),

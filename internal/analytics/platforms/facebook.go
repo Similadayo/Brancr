@@ -32,7 +32,7 @@ func (c *FacebookAnalyticsClient) Platform() string {
 func (c *FacebookAnalyticsClient) FetchPostMetrics(ctx context.Context, account *storage.SocialAccount, postID string, periodStart, periodEnd time.Time) (*interfaces.PostMetrics, error) {
 	// Facebook Graph API endpoint for post insights
 	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/insights", postID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -82,7 +82,7 @@ func (c *FacebookAnalyticsClient) FetchPostMetrics(ctx context.Context, account 
 			continue
 		}
 		value := metric.Values[0].Value
-		
+
 		switch metric.Name {
 		case "post_impressions":
 			if v, ok := value["value"].(float64); ok {
@@ -122,7 +122,7 @@ func (c *FacebookAnalyticsClient) FetchPostMetrics(ctx context.Context, account 
 // FetchAccountMetrics retrieves overall Facebook page metrics
 func (c *FacebookAnalyticsClient) FetchAccountMetrics(ctx context.Context, account *storage.SocialAccount, periodStart, periodEnd time.Time) (*interfaces.AccountMetrics, error) {
 	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/insights", account.PageID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -167,7 +167,7 @@ func (c *FacebookAnalyticsClient) FetchAccountMetrics(ctx context.Context, accou
 			continue
 		}
 		value := metric.Values[0].Value
-		
+
 		switch metric.Name {
 		case "page_fans":
 			if v, ok := value["value"].(float64); ok {
@@ -190,7 +190,7 @@ func (c *FacebookAnalyticsClient) FetchAccountMetrics(ctx context.Context, accou
 // FetchAudienceDemographics retrieves audience demographic data
 func (c *FacebookAnalyticsClient) FetchAudienceDemographics(ctx context.Context, account *storage.SocialAccount) (*interfaces.AudienceDemographics, error) {
 	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/insights", account.PageID)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -221,7 +221,6 @@ func (c *FacebookAnalyticsClient) FetchAudienceDemographics(ctx context.Context,
 
 	// Parse demographics from response
 	// Implementation would parse the actual API response structure
-	
+
 	return demographics, nil
 }
-

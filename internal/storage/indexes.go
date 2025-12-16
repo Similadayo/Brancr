@@ -8,9 +8,9 @@ import (
 // CreateIndexes creates all necessary database indexes for production performance
 func CreateIndexes(db *gorm.DB) error {
 	indexes := []struct {
-		name  string
-		table string
-		cols  string
+		name   string
+		table  string
+		cols   string
 		unique bool
 	}{
 		// Tenant indexes
@@ -133,4 +133,3 @@ func CreateIndexes(db *gorm.DB) error {
 
 	return nil
 }
-

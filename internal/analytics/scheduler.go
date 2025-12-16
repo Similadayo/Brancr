@@ -10,16 +10,16 @@ import (
 
 // AnalyticsScheduler handles periodic analytics aggregation jobs
 type AnalyticsScheduler struct {
-	DB              *gorm.DB
-	Logger          *zap.Logger
+	DB               *gorm.DB
+	Logger           *zap.Logger
 	AnalyticsService *Service
 }
 
 // NewAnalyticsScheduler creates a new analytics scheduler
 func NewAnalyticsScheduler(db *gorm.DB, logger *zap.Logger, service *Service) *AnalyticsScheduler {
 	return &AnalyticsScheduler{
-		DB:              db,
-		Logger:          logger,
+		DB:               db,
+		Logger:           logger,
 		AnalyticsService: service,
 	}
 }
@@ -28,13 +28,13 @@ func NewAnalyticsScheduler(db *gorm.DB, logger *zap.Logger, service *Service) *A
 func (s *AnalyticsScheduler) Run(ctx context.Context) {
 	// Daily snapshot job - runs at midnight UTC
 	go s.runDailySnapshotJob(ctx)
-	
+
 	// Weekly campaign aggregation - runs every Sunday at 2 AM UTC
 	go s.runWeeklyCampaignJob(ctx)
-	
+
 	// Weekly audience segments - runs every Sunday at 3 AM UTC
 	go s.runWeeklyAudienceJob(ctx)
-	
+
 	s.Logger.Info("analytics scheduler started")
 }
 
@@ -44,7 +44,7 @@ func (s *AnalyticsScheduler) runDailySnapshotJob(ctx context.Context) {
 	now := time.Now().UTC()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
 	initialDelay := midnight.Sub(now)
-	
+
 	// Wait until first midnight
 	timer := time.NewTimer(initialDelay)
 	select {
@@ -55,11 +55,11 @@ func (s *AnalyticsScheduler) runDailySnapshotJob(ctx context.Context) {
 		// Run immediately on first tick
 		s.generateDailySnapshots(ctx)
 	}
-	
+
 	// Then run every 24 hours
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -82,10 +82,10 @@ func (s *AnalyticsScheduler) runWeeklyCampaignJob(ctx context.Context) {
 		// If it's Sunday but past 2 AM, schedule for next Sunday
 		daysUntilSunday = 7
 	}
-	
+
 	nextSunday := time.Date(now.Year(), now.Month(), now.Day()+daysUntilSunday, 2, 0, 0, 0, time.UTC)
 	initialDelay := nextSunday.Sub(now)
-	
+
 	// Wait until first Sunday 2 AM
 	timer := time.NewTimer(initialDelay)
 	select {
@@ -96,11 +96,11 @@ func (s *AnalyticsScheduler) runWeeklyCampaignJob(ctx context.Context) {
 		// Run immediately on first tick
 		s.aggregateCampaignsWeekly(ctx)
 	}
-	
+
 	// Then run every week
 	ticker := time.NewTicker(7 * 24 * time.Hour)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -123,10 +123,10 @@ func (s *AnalyticsScheduler) runWeeklyAudienceJob(ctx context.Context) {
 		// If it's Sunday but past 3 AM, schedule for next Sunday
 		daysUntilSunday = 7
 	}
-	
+
 	nextSunday := time.Date(now.Year(), now.Month(), now.Day()+daysUntilSunday, 3, 0, 0, 0, time.UTC)
 	initialDelay := nextSunday.Sub(now)
-	
+
 	// Wait until first Sunday 3 AM
 	timer := time.NewTimer(initialDelay)
 	select {
@@ -137,11 +137,11 @@ func (s *AnalyticsScheduler) runWeeklyAudienceJob(ctx context.Context) {
 		// Run immediately on first tick
 		s.populateAudienceSegmentsWeekly(ctx)
 	}
-	
+
 	// Then run every week
 	ticker := time.NewTicker(7 * 24 * time.Hour)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -155,7 +155,7 @@ func (s *AnalyticsScheduler) runWeeklyAudienceJob(ctx context.Context) {
 // generateDailySnapshots generates platform metrics snapshots for all active tenants
 func (s *AnalyticsScheduler) generateDailySnapshots(ctx context.Context) {
 	snapshotDate := time.Now().UTC().AddDate(0, 0, -1) // Yesterday's snapshot
-	
+
 	// Get all active tenants
 	var tenantIDs []uint
 	if err := s.DB.Model(&struct {
@@ -165,7 +165,7 @@ func (s *AnalyticsScheduler) generateDailySnapshots(ctx context.Context) {
 		s.Logger.Error("failed to fetch active tenants for daily snapshot", zap.Error(err))
 		return
 	}
-	
+
 	for _, tenantID := range tenantIDs {
 		if err := s.AnalyticsService.GeneratePlatformMetricsSnapshot(ctx, tenantID, snapshotDate, "daily"); err != nil {
 			s.Logger.Warn("failed to generate daily snapshot",
@@ -173,7 +173,7 @@ func (s *AnalyticsScheduler) generateDailySnapshots(ctx context.Context) {
 				zap.Error(err))
 		}
 	}
-	
+
 	s.Logger.Info("daily snapshots generated", zap.Int("tenant_count", len(tenantIDs)))
 }
 
@@ -181,7 +181,7 @@ func (s *AnalyticsScheduler) generateDailySnapshots(ctx context.Context) {
 func (s *AnalyticsScheduler) aggregateCampaignsWeekly(ctx context.Context) {
 	endDate := time.Now().UTC()
 	startDate := endDate.AddDate(0, 0, -7) // Last 7 days
-	
+
 	// Get all active tenants
 	var tenantIDs []uint
 	if err := s.DB.Model(&struct {
@@ -191,7 +191,7 @@ func (s *AnalyticsScheduler) aggregateCampaignsWeekly(ctx context.Context) {
 		s.Logger.Error("failed to fetch active tenants for campaign aggregation", zap.Error(err))
 		return
 	}
-	
+
 	for _, tenantID := range tenantIDs {
 		if err := s.AnalyticsService.AggregateCampaignAnalytics(ctx, tenantID, startDate, endDate); err != nil {
 			s.Logger.Warn("failed to aggregate campaign analytics",
@@ -199,7 +199,7 @@ func (s *AnalyticsScheduler) aggregateCampaignsWeekly(ctx context.Context) {
 				zap.Error(err))
 		}
 	}
-	
+
 	s.Logger.Info("weekly campaign aggregation completed", zap.Int("tenant_count", len(tenantIDs)))
 }
 
@@ -207,7 +207,7 @@ func (s *AnalyticsScheduler) aggregateCampaignsWeekly(ctx context.Context) {
 func (s *AnalyticsScheduler) populateAudienceSegmentsWeekly(ctx context.Context) {
 	endDate := time.Now().UTC()
 	startDate := endDate.AddDate(0, 0, -7) // Last 7 days
-	
+
 	// Get all active tenants
 	var tenantIDs []uint
 	if err := s.DB.Model(&struct {
@@ -217,7 +217,7 @@ func (s *AnalyticsScheduler) populateAudienceSegmentsWeekly(ctx context.Context)
 		s.Logger.Error("failed to fetch active tenants for audience segments", zap.Error(err))
 		return
 	}
-	
+
 	for _, tenantID := range tenantIDs {
 		if err := s.AnalyticsService.PopulateAudienceSegments(ctx, tenantID, startDate, endDate); err != nil {
 			s.Logger.Warn("failed to populate audience segments",
@@ -225,7 +225,6 @@ func (s *AnalyticsScheduler) populateAudienceSegmentsWeekly(ctx context.Context)
 				zap.Error(err))
 		}
 	}
-	
+
 	s.Logger.Info("weekly audience segments populated", zap.Int("tenant_count", len(tenantIDs)))
 }
-

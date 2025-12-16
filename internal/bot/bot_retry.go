@@ -31,9 +31,9 @@ func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errStr := err.Error()
-	
+
 	// Permanent errors (don't retry)
 	permanentErrors := []string{
 		"invalid bot token",
@@ -42,13 +42,13 @@ func isRetryableError(err error) bool {
 		"bot token revoked",
 		"decrypt",
 	}
-	
+
 	for _, permanent := range permanentErrors {
 		if strings.Contains(strings.ToLower(errStr), permanent) {
 			return false // Permanent error, don't retry
 		}
 	}
-	
+
 	// Retryable errors (network issues, rate limits, temporary failures)
 	retryableErrors := []string{
 		"timeout",
@@ -62,13 +62,13 @@ func isRetryableError(err error) bool {
 		"503",
 		"504",
 	}
-	
+
 	for _, retryable := range retryableErrors {
 		if strings.Contains(strings.ToLower(errStr), retryable) {
 			return true
 		}
 	}
-	
+
 	// Default: retry unknown errors (might be temporary)
 	return true
 }
@@ -76,14 +76,14 @@ func isRetryableError(err error) bool {
 // retryBotStartup attempts to start a bot with exponential backoff
 func (m *TenantBotManager) retryBotStartup(ctx context.Context, tenant *storage.Tenant, maxRetries int) error {
 	var lastErr error
-	
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Calculate exponential backoff: 2^attempt seconds (max 5 minutes)
 		backoff := time.Duration(1<<uint(attempt)) * time.Second
 		if backoff > 5*time.Minute {
 			backoff = 5 * time.Minute
 		}
-		
+
 		if attempt > 0 {
 			if m.Logger != nil {
 				m.Logger.Info("🔄 Retrying bot startup",
@@ -93,7 +93,7 @@ func (m *TenantBotManager) retryBotStartup(ctx context.Context, tenant *storage.
 					zap.Int("max_retries", maxRetries),
 					zap.Duration("backoff", backoff))
 			}
-			
+
 			// Wait before retry (with context cancellation support)
 			select {
 			case <-ctx.Done():
@@ -102,7 +102,7 @@ func (m *TenantBotManager) retryBotStartup(ctx context.Context, tenant *storage.
 				// Continue with retry
 			}
 		}
-		
+
 		// Attempt to start the bot
 		err := m.startTenantBot(tenant)
 		if err == nil {
@@ -110,19 +110,19 @@ func (m *TenantBotManager) retryBotStartup(ctx context.Context, tenant *storage.
 			failedBotsLock.Lock()
 			delete(failedBots, tenant.ID)
 			failedBotsLock.Unlock()
-			
+
 			if m.Logger != nil {
 				m.Logger.Info("✅ Bot startup succeeded after retry",
 					zap.Uint("tenant_id", tenant.ID),
 					zap.String("tenant_name", tenant.Name),
 					zap.Int("attempts", attempt+1))
 			}
-			
+
 			return nil
 		}
-		
+
 		lastErr = err
-		
+
 		// Check if error is retryable
 		if !isRetryableError(err) {
 			if m.Logger != nil {
@@ -133,7 +133,7 @@ func (m *TenantBotManager) retryBotStartup(ctx context.Context, tenant *storage.
 			}
 			return err
 		}
-		
+
 		// Update failed bot tracking
 		failedBotsLock.Lock()
 		failedBots[tenant.ID] = &FailedBot{
@@ -146,7 +146,7 @@ func (m *TenantBotManager) retryBotStartup(ctx context.Context, tenant *storage.
 		}
 		failedBotsLock.Unlock()
 	}
-	
+
 	return fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
@@ -155,14 +155,14 @@ func (m *TenantBotManager) StartRetryWorker(ctx context.Context) {
 	if m.Logger != nil {
 		m.Logger.Info("🔄 Starting bot retry worker")
 	}
-	
+
 	ticker := time.NewTicker(15 * time.Minute) // Check every 15 minutes
 	defer ticker.Stop()
-	
+
 	// Initial check after 5 minutes
 	time.Sleep(5 * time.Minute)
 	m.retryFailedBots(ctx)
-	
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -187,16 +187,16 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 		}
 	}
 	failedBotsLock.RUnlock()
-	
+
 	if len(failedList) == 0 {
 		return
 	}
-	
+
 	if m.Logger != nil {
 		m.Logger.Info("🔄 Retrying failed bots",
 			zap.Int("count", len(failedList)))
 	}
-	
+
 	for _, fb := range failedList {
 		// Load tenant from database
 		var tenant storage.Tenant
@@ -207,7 +207,7 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 			failedBotsLock.Unlock()
 			continue
 		}
-		
+
 		// Skip if tenant is not active
 		if strings.ToLower(tenant.Status) != "active" {
 			failedBotsLock.Lock()
@@ -215,7 +215,7 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 			failedBotsLock.Unlock()
 			continue
 		}
-		
+
 		// Check if bot already started (maybe started by another process)
 		if bot, ok := m.GetBot(fb.TenantID); ok && bot != nil {
 			// Bot is already running, remove from failed list
@@ -224,7 +224,7 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 			failedBotsLock.Unlock()
 			continue
 		}
-		
+
 		// Retry with 3 attempts
 		err := m.retryBotStartup(ctx, &tenant, 3)
 		if err != nil {
@@ -236,7 +236,7 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 				existing.RetryCount++
 			}
 			failedBotsLock.Unlock()
-			
+
 			if m.Logger != nil {
 				m.Logger.Warn("❌ Bot retry failed",
 					zap.Uint("tenant_id", fb.TenantID),
@@ -244,7 +244,7 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 					zap.Error(err))
 			}
 		}
-		
+
 		// Small delay between retries to avoid hammering the API
 		time.Sleep(2 * time.Second)
 	}
@@ -254,12 +254,11 @@ func (m *TenantBotManager) retryFailedBots(ctx context.Context) {
 func (m *TenantBotManager) GetFailedBots() []FailedBot {
 	failedBotsLock.RLock()
 	defer failedBotsLock.RUnlock()
-	
+
 	result := make([]FailedBot, 0, len(failedBots))
 	for _, fb := range failedBots {
 		result = append(result, *fb)
 	}
-	
+
 	return result
 }
-

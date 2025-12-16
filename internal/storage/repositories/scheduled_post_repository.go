@@ -74,4 +74,3 @@ func (r *ScheduledPostRepository) MarkAsPosted(ctx context.Context, id uint) err
 			"posted_at": &now,
 		}).Error
 }
-

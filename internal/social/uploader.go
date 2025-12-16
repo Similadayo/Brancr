@@ -91,14 +91,14 @@ func UploadTelegramMedia(
 	randomBytes := make([]byte, 4)
 	rand.Read(randomBytes)
 	randomStr := base64.URLEncoding.EncodeToString(randomBytes)[:6] // Use first 6 chars
-	timestamp := time.Now().UnixNano() // Use nanoseconds instead of seconds
-	
+	timestamp := time.Now().UnixNano()                              // Use nanoseconds instead of seconds
+
 	// Use fileID for uniqueness, but handle if it's too short
 	fileIDHash := fileID
 	if len(fileID) > 12 {
 		fileIDHash = fileID[:12] // Use first 12 chars of fileID
 	}
-	
+
 	publicID := fmt.Sprintf("%s_%d_%s_%s", resourceType, timestamp, randomStr, fileIDHash)
 
 	logger.Info("📤 Uploading to Cloudinary",

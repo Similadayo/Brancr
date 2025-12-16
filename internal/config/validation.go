@@ -278,4 +278,3 @@ func (c *Config) ValidateRequired() error {
 
 	return nil
 }
-

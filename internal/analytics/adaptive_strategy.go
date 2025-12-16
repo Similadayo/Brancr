@@ -31,28 +31,28 @@ func (a *AdaptiveStrategyService) OptimalPostingTime(ctx context.Context, tenant
 	// Fetch recent analytics for this platform
 	var analytics []storage.PostAnalytics
 	periodStart := time.Now().AddDate(0, 0, -30) // Last 30 days
-	
+
 	err := a.DB.Where("tenant_id = ? AND platform = ? AND posted_at >= ?",
 		tenantID, platform, periodStart).
 		Order("engagement_rate DESC").
 		Limit(50).
 		Find(&analytics).Error
-	
+
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to fetch analytics: %w", err)
 	}
-	
+
 	if len(analytics) == 0 {
 		// Default to current time + 1 hour if no data
 		return time.Now().Add(1 * time.Hour), nil
 	}
-	
+
 	// Find the hour with best average engagement
 	hourPerformance := make(map[int]struct {
 		count int
 		total float64
 	})
-	
+
 	for _, a := range analytics {
 		hour := a.PostedAt.Hour()
 		perf := hourPerformance[hour]
@@ -60,10 +60,10 @@ func (a *AdaptiveStrategyService) OptimalPostingTime(ctx context.Context, tenant
 		perf.total += a.EngagementRate
 		hourPerformance[hour] = perf
 	}
-	
+
 	bestHour := -1
 	bestAvg := 0.0
-	
+
 	for hour, perf := range hourPerformance {
 		if perf.count >= 2 {
 			avg := perf.total / float64(perf.count)
@@ -73,19 +73,19 @@ func (a *AdaptiveStrategyService) OptimalPostingTime(ctx context.Context, tenant
 			}
 		}
 	}
-	
+
 	if bestHour == -1 {
 		// Default to 2 PM if no clear pattern
 		bestHour = 14
 	}
-	
+
 	// Calculate next occurrence of this hour
 	now := time.Now()
 	optimalTime := time.Date(now.Year(), now.Month(), now.Day(), bestHour, 0, 0, 0, now.Location())
 	if optimalTime.Before(now) {
 		optimalTime = optimalTime.Add(24 * time.Hour)
 	}
-	
+
 	return optimalTime, nil
 }
 
@@ -93,7 +93,7 @@ func (a *AdaptiveStrategyService) OptimalPostingTime(ctx context.Context, tenant
 func (a *AdaptiveStrategyService) RecommendContentType(ctx context.Context, tenantID uint, platform string) (string, error) {
 	// Fetch analytics grouped by content type (would need MediaAsset data)
 	// For now, return platform-specific recommendations
-	
+
 	switch platform {
 	case "instagram":
 		return "reel", nil // Reels perform best on Instagram
@@ -115,24 +115,24 @@ func (a *AdaptiveStrategyService) OptimizeCaptionStrategy(ctx context.Context, t
 		Order("created_at DESC").
 		Limit(1).
 		Find(&insights).Error
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch insights: %w", err)
 	}
-	
+
 	strategy := map[string]interface{}{
 		"recommended_tone": "friendly",
-		"hashtag_count":   5,
-		"call_to_action":  true,
+		"hashtag_count":    5,
+		"call_to_action":   true,
 	}
-	
+
 	if len(insights) > 0 {
 		// Extract recommendations from insights
 		insight := insights[0]
 		strategy["recommendation"] = insight.Recommendation
 		strategy["confidence"] = insight.Confidence
 	}
-	
+
 	return strategy, nil
 }
 
@@ -141,33 +141,33 @@ func (a *AdaptiveStrategyService) GetPlatformPriority(ctx context.Context, tenan
 	// Fetch analytics grouped by platform
 	var analytics []storage.PostAnalytics
 	periodStart := time.Now().AddDate(0, 0, -30)
-	
+
 	err := a.DB.Where("tenant_id = ? AND posted_at >= ?",
 		tenantID, periodStart).
 		Find(&analytics).Error
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch analytics: %w", err)
 	}
-	
+
 	platformScores := make(map[string]struct {
 		count int
 		total float64
 	})
-	
+
 	for _, a := range analytics {
 		score := platformScores[a.Platform]
 		score.count++
 		score.total += a.EngagementRate
 		platformScores[a.Platform] = score
 	}
-	
+
 	// Sort platforms by average engagement
 	type platformScore struct {
 		platform string
 		avg      float64
 	}
-	
+
 	scores := []platformScore{}
 	for platform, data := range platformScores {
 		if data.count > 0 {
@@ -175,7 +175,7 @@ func (a *AdaptiveStrategyService) GetPlatformPriority(ctx context.Context, tenan
 			scores = append(scores, platformScore{platform: platform, avg: avg})
 		}
 	}
-	
+
 	// Sort by average (descending)
 	for i := 0; i < len(scores); i++ {
 		for j := i + 1; j < len(scores); j++ {
@@ -184,12 +184,12 @@ func (a *AdaptiveStrategyService) GetPlatformPriority(ctx context.Context, tenan
 			}
 		}
 	}
-	
+
 	priority := make([]string, len(scores))
 	for i, s := range scores {
 		priority[i] = s.platform
 	}
-	
+
 	return priority, nil
 }
 
@@ -199,17 +199,16 @@ func (a *AdaptiveStrategyService) ShouldPostNow(ctx context.Context, tenantID ui
 	if err != nil {
 		return false, 0.0, err
 	}
-	
+
 	now := time.Now()
 	timeDiff := optimalTime.Sub(now).Hours()
-	
+
 	// Consider it a good time if within 2 hours of optimal time
 	if timeDiff >= 0 && timeDiff <= 2 {
 		// Calculate confidence (higher if closer to optimal time)
 		confidence := 1.0 - (timeDiff / 2.0)
 		return true, confidence, nil
 	}
-	
+
 	return false, 0.0, nil
 }
-

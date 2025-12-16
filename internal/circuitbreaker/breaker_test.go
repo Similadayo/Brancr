@@ -115,4 +115,3 @@ func TestCircuitBreaker_HalfOpen_Recovery(t *testing.T) {
 		t.Errorf("Expected state Closed after success, got: %v", cb.State())
 	}
 }
-

@@ -45,7 +45,7 @@ func (m *BulkUploadManager) DetectBulkUpload(tenantID uint, sessionID string) (b
 		zap.Uint("tenant_id", tenantID),
 		zap.String("session_id", sessionID),
 		zap.Int("item_count", count))
-	
+
 	// Consider 10+ items as bulk upload
 	return count >= 10, count, nil
 }
@@ -62,7 +62,7 @@ func (m *BulkUploadManager) ProcessBulkUpload(
 	var items []storage.MediaItem
 	maxRetries := 3
 	var err error
-	
+
 	for i := 0; i < maxRetries; i++ {
 		if err = m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).
 			Find(&items).Error; err == nil {
@@ -70,7 +70,7 @@ func (m *BulkUploadManager) ProcessBulkUpload(
 		}
 		time.Sleep(1 * time.Second)
 	}
-	
+
 	if err != nil {
 		m.Logger.Error("failed to fetch items after retries",
 			zap.Uint("tenant_id", tenantID),
@@ -92,7 +92,7 @@ func (m *BulkUploadManager) ProcessBulkUpload(
 		zap.Uint("tenant_id", tenantID),
 		zap.String("session_id", sessionID),
 		zap.Int("item_count", count))
-	
+
 	// Ensure bot is available
 	if bot == nil {
 		return fmt.Errorf("bot instance not available for tenant %d", tenantID)
@@ -360,14 +360,14 @@ func (m *BulkUploadManager) AutoScheduleCarousels(
 
 		assetIDsJSON, _ := json.Marshal([]uint{asset.ID})
 		sp := storage.ScheduledPost{
-			TenantID:      tenantID,
-			Name:          asset.Name,
-			Caption:       asset.Caption,
-			MediaAssetIDs: string(assetIDsJSON),
-			Platforms:     string(platformsJSON),
-			ScheduledAt:   &scheduledTimes[i],
-			Status:        "scheduled",
-			Timezone:      timezone,
+			TenantID:       tenantID,
+			Name:           asset.Name,
+			Caption:        asset.Caption,
+			MediaAssetIDs:  string(assetIDsJSON),
+			Platforms:      string(platformsJSON),
+			ScheduledAt:    &scheduledTimes[i],
+			Status:         "scheduled",
+			Timezone:       timezone,
 			EnhanceCaption: false, // Bulk uploads use captions as-is by default
 		}
 
@@ -386,4 +386,3 @@ func (m *BulkUploadManager) AutoScheduleCarousels(
 
 	return nil
 }
-

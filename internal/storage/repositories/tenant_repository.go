@@ -58,4 +58,3 @@ func (r *TenantRepository) GetActiveTenants(ctx context.Context) ([]storage.Tena
 func (r *TenantRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&storage.Tenant{}, id).Error
 }
-

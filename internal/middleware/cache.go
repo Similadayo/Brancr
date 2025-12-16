@@ -13,10 +13,10 @@ import (
 
 // CacheConfig defines caching configuration
 type CacheConfig struct {
-	TTL           time.Duration
-	KeyPrefix     string
-	VaryHeaders   []string // Headers that affect cache key
-	SkipCache     func(r *http.Request) bool // Skip caching for specific requests
+	TTL         time.Duration
+	KeyPrefix   string
+	VaryHeaders []string                   // Headers that affect cache key
+	SkipCache   func(r *http.Request) bool // Skip caching for specific requests
 }
 
 // DefaultCacheConfig returns default cache configuration
@@ -140,4 +140,3 @@ func NoCache() func(http.Handler) http.Handler {
 		})
 	}
 }
-

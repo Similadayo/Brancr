@@ -38,8 +38,8 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 		m.showSchedulingErrorWithSuggestions(bot, chatID, err)
 		return
 	}
-	
-	m.Logger.Info("showing post preview", 
+
+	m.Logger.Info("showing post preview",
 		zap.Uint("tenant_id", tenantID),
 		zap.Uint("asset_id", sess.MediaAssetID),
 		zap.String("schedule_input", sess.ScheduleInput),
@@ -50,7 +50,7 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 	var previewParts []string
 	previewParts = append(previewParts, "📋 *Post Preview*")
 	previewParts = append(previewParts, "")
-	
+
 	// Media info
 	name := sess.Name
 	if name == "" {
@@ -59,7 +59,7 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 	if name == "" {
 		name = ma.Type
 	}
-	
+
 	if ma.Type == "carousel" {
 		var urls []string
 		_ = json.Unmarshal([]byte(ma.URLs), &urls)
@@ -67,30 +67,30 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 	} else {
 		previewParts = append(previewParts, fmt.Sprintf("📸 *Media:* %s", strings.Title(ma.Type)))
 	}
-	
+
 	if name != "" {
 		previewParts = append(previewParts, fmt.Sprintf("📝 *Name:* %s", name))
 	}
-	
+
 	// Caption with platform-specific length warnings
 	caption := sess.Caption
 	if sess.UseAICaption {
 		caption = "✨ AI-generated caption (will be optimized for each platform)"
 	}
-	
+
 	// Get platforms first for caption length validation
 	platforms := sess.Platforms
 	if len(platforms) == 0 {
 		platforms = []string{"instagram"} // Default
 	}
-	
+
 	if caption != "" {
 		captionPreview := caption
 		if len(captionPreview) > 100 {
 			captionPreview = captionPreview[:100] + "..."
 		}
 		previewParts = append(previewParts, fmt.Sprintf("💬 *Caption:* %s", captionPreview))
-		
+
 		// Check platform-specific caption length limits
 		for _, platform := range platforms {
 			length := len(caption)
@@ -122,7 +122,7 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 	} else {
 		previewParts = append(previewParts, "💬 *Caption:* None")
 	}
-	
+
 	// Platforms (already defined above)
 	platformStr := ""
 	for i, p := range platforms {
@@ -132,7 +132,7 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 		platformStr += strings.Title(p)
 	}
 	previewParts = append(previewParts, fmt.Sprintf("📱 *Platforms:* %s", platformStr))
-	
+
 	// Schedule
 	now := time.Now()
 	timeUntil := scheduledAt.Sub(now)
@@ -147,12 +147,12 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 		scheduleStr = fmt.Sprintf("⏰ *Schedule:* %s", scheduledAt.Format("Jan 2 at 3:04 PM"))
 	}
 	previewParts = append(previewParts, scheduleStr)
-	
+
 	previewParts = append(previewParts, "")
 	previewParts = append(previewParts, "Does this look good?")
-	
+
 	previewText := strings.Join(previewParts, "\n")
-	
+
 	// Create keyboard with action buttons
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -172,12 +172,12 @@ func (m *TenantBotManager) showPostPreview(bot *tgbotapi.BotAPI, tenantID uint, 
 			tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", "postflow:cancel"),
 		),
 	)
-	
+
 	msg := tgbotapi.NewMessage(chatID, previewText)
 	msg.ParseMode = "Markdown"
 	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
-	
+
 	// Store schedule info for later use
 	sess.Step = 6 // Preview step
 }
@@ -193,16 +193,15 @@ func (m *TenantBotManager) showSchedulingErrorWithSuggestions(bot *tgbotapi.BotA
 	errorMsg += "• `next week at 10am` - Next week at 10 AM\n"
 	errorMsg += "• `in 2 hours` - Relative time\n"
 	errorMsg += "\nOr use exact format: `Jan 15 at 3:30 PM`"
-	
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🚀 Post Now", "postflow:post_now"),
 		),
 	)
-	
+
 	msg := tgbotapi.NewMessage(chatID, errorMsg)
 	msg.ParseMode = "Markdown"
 	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
 }
-

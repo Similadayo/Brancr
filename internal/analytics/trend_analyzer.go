@@ -13,8 +13,8 @@ import (
 
 // TrendAnalyzer analyzes analytics data and generates AI-powered insights
 type TrendAnalyzer struct {
-	DB      *gorm.DB
-	Logger  *zap.Logger
+	DB       *gorm.DB
+	Logger   *zap.Logger
 	AIClient *ai.AIClient
 }
 
@@ -78,7 +78,7 @@ func (t *TrendAnalyzer) GenerateTrendInsights(ctx context.Context, tenantID uint
 		insight.PeriodStart = periodStart
 		insight.PeriodEnd = periodEnd
 		insight.Status = "active"
-		
+
 		if err := t.DB.Create(insight).Error; err != nil {
 			t.Logger.Warn("Failed to store insight", zap.Error(err), zap.String("type", insight.Type))
 			continue
@@ -99,7 +99,7 @@ func (t *TrendAnalyzer) fetchAnalyticsForPeriod(ctx context.Context, tenantID ui
 		tenantID, periodStart, periodEnd).
 		Order("posted_at DESC").
 		Find(&analytics).Error
-	
+
 	return analytics, err
 }
 
@@ -145,13 +145,13 @@ func (t *TrendAnalyzer) analyzeBestPostingTime(analytics []storage.PostAnalytics
 	recommendation := fmt.Sprintf("Schedule your most important content for %d:00 to maximize engagement. Consider using this time slot for product launches or key announcements.", bestHour)
 
 	return &storage.TrendInsight{
-		Type:          "best_posting_time",
-		Category:      "scheduling",
-		Title:         fmt.Sprintf("Best Posting Time: %d:00", bestHour),
-		Summary:       summary,
-		Confidence:    0.75,
+		Type:           "best_posting_time",
+		Category:       "scheduling",
+		Title:          fmt.Sprintf("Best Posting Time: %d:00", bestHour),
+		Summary:        summary,
+		Confidence:     0.75,
 		Recommendation: recommendation,
-		Impact:        "high",
+		Impact:         "high",
 	}
 }
 
@@ -160,13 +160,13 @@ func (t *TrendAnalyzer) analyzeCaptionPerformance(analytics []storage.PostAnalyt
 	// This would analyze caption content from ScheduledPost
 	// For now, return a placeholder insight
 	return &storage.TrendInsight{
-		Type:          "caption_tone",
-		Category:      "content",
-		Title:         "Caption Tone Performance",
-		Summary:       "Posts with casual, friendly tones perform 23% better than formal posts.",
-		Confidence:    0.70,
+		Type:           "caption_tone",
+		Category:       "content",
+		Title:          "Caption Tone Performance",
+		Summary:        "Posts with casual, friendly tones perform 23% better than formal posts.",
+		Confidence:     0.70,
 		Recommendation: "Use a more casual, conversational tone in your captions to increase engagement.",
-		Impact:        "medium",
+		Impact:         "medium",
 	}
 }
 
@@ -174,13 +174,13 @@ func (t *TrendAnalyzer) analyzeCaptionPerformance(analytics []storage.PostAnalyt
 func (t *TrendAnalyzer) analyzeContentTypePerformance(analytics []storage.PostAnalytics) *storage.TrendInsight {
 	// This would analyze media types from MediaAsset
 	return &storage.TrendInsight{
-		Type:          "content_type",
-		Category:      "content",
-		Title:         "Content Type Performance",
-		Summary:       "Video content receives 45% more engagement than image posts.",
-		Confidence:    0.80,
+		Type:           "content_type",
+		Category:       "content",
+		Title:          "Content Type Performance",
+		Summary:        "Video content receives 45% more engagement than image posts.",
+		Confidence:     0.80,
 		Recommendation: "Increase video content production to boost overall engagement rates.",
-		Impact:        "high",
+		Impact:         "high",
 	}
 }
 
@@ -217,13 +217,13 @@ func (t *TrendAnalyzer) analyzeEngagementTrends(analytics []storage.PostAnalytic
 	}
 
 	return &storage.TrendInsight{
-		Type:          "engagement_trend",
-		Category:      "engagement",
-		Title:         title,
-		Summary:       summary,
-		Confidence:    0.85,
+		Type:           "engagement_trend",
+		Category:       "engagement",
+		Title:          title,
+		Summary:        summary,
+		Confidence:     0.85,
 		Recommendation: recommendation,
-		Impact:        impact,
+		Impact:         impact,
 	}
 }
 
@@ -273,13 +273,13 @@ func (t *TrendAnalyzer) analyzePlatformPerformance(analytics []storage.PostAnaly
 	recommendation := fmt.Sprintf("Focus more content on %s. For %s, experiment with different content formats or posting times.", bestPlatform, worstPlatform)
 
 	return &storage.TrendInsight{
-		Type:          "platform_comparison",
-		Category:      "platform",
-		Title:         "Platform Performance Comparison",
-		Summary:       summary,
-		Confidence:    0.80,
+		Type:           "platform_comparison",
+		Category:       "platform",
+		Title:          "Platform Performance Comparison",
+		Summary:        summary,
+		Confidence:     0.80,
 		Recommendation: recommendation,
-		Impact:        "medium",
+		Impact:         "medium",
 	}
 }
 
@@ -298,36 +298,36 @@ func (t *TrendAnalyzer) calculateAverageEngagement(analytics []storage.PostAnaly
 // analyzePlatformSpecificPatterns analyzes patterns unique to each platform
 func (t *TrendAnalyzer) analyzePlatformSpecificPatterns(analytics []storage.PostAnalytics) []*storage.TrendInsight {
 	insights := []*storage.TrendInsight{}
-	
+
 	// Group analytics by platform
 	platformAnalytics := make(map[string][]storage.PostAnalytics)
 	for _, a := range analytics {
 		platformAnalytics[a.Platform] = append(platformAnalytics[a.Platform], a)
 	}
-	
+
 	// Analyze each platform separately
 	for platform, platformData := range platformAnalytics {
 		if len(platformData) < 3 {
 			continue // Need at least 3 posts per platform
 		}
-		
+
 		// Instagram-specific patterns
 		if platform == "instagram" {
 			if insight := t.analyzeInstagramPatterns(platformData); insight != nil {
 				insights = append(insights, insight)
 			}
 		}
-		
+
 		// Facebook-specific patterns
 		if platform == "facebook" {
 			if insight := t.analyzeFacebookPatterns(platformData); insight != nil {
 				insights = append(insights, insight)
 			}
 		}
-		
+
 		// TikTok analytics removed - skip TikTok pattern analysis
 	}
-	
+
 	return insights
 }
 
@@ -335,26 +335,26 @@ func (t *TrendAnalyzer) analyzePlatformSpecificPatterns(analytics []storage.Post
 func (t *TrendAnalyzer) analyzeInstagramPatterns(analytics []storage.PostAnalytics) *storage.TrendInsight {
 	// Analyze Reels vs Posts performance (would need MediaAsset data)
 	// For now, analyze engagement patterns
-	
+
 	// Check if engagement is improving
 	recent := analytics[len(analytics)/2:]
 	older := analytics[:len(analytics)/2]
-	
+
 	recentAvg := t.calculateAverageEngagement(recent)
 	olderAvg := t.calculateAverageEngagement(older)
-	
+
 	if recentAvg > olderAvg*1.2 {
 		return &storage.TrendInsight{
-			Type:          "instagram_growth",
-			Category:      "platform",
-			Title:         "Instagram Engagement Growing",
-			Summary:       fmt.Sprintf("Your Instagram engagement has improved by %.1f%% recently. Your content strategy is working!", ((recentAvg-olderAvg)/olderAvg)*100),
-			Confidence:    0.80,
+			Type:           "instagram_growth",
+			Category:       "platform",
+			Title:          "Instagram Engagement Growing",
+			Summary:        fmt.Sprintf("Your Instagram engagement has improved by %.1f%% recently. Your content strategy is working!", ((recentAvg-olderAvg)/olderAvg)*100),
+			Confidence:     0.80,
 			Recommendation: "Double down on what's working. Consider increasing posting frequency or trying Instagram Reels.",
-			Impact:        "high",
+			Impact:         "high",
 		}
 	}
-	
+
 	return nil
 }
 
@@ -362,19 +362,19 @@ func (t *TrendAnalyzer) analyzeInstagramPatterns(analytics []storage.PostAnalyti
 func (t *TrendAnalyzer) analyzeFacebookPatterns(analytics []storage.PostAnalytics) *storage.TrendInsight {
 	// Facebook favors native video and community engagement
 	avgEngagement := t.calculateAverageEngagement(analytics)
-	
+
 	if avgEngagement < 2.0 {
 		return &storage.TrendInsight{
-			Type:          "facebook_optimization",
-			Category:      "platform",
-			Title:         "Facebook Engagement Optimization",
-			Summary:       fmt.Sprintf("Your Facebook posts average %.1f%% engagement. Facebook's algorithm favors native video and community posts.", avgEngagement),
-			Confidence:    0.75,
+			Type:           "facebook_optimization",
+			Category:       "platform",
+			Title:          "Facebook Engagement Optimization",
+			Summary:        fmt.Sprintf("Your Facebook posts average %.1f%% engagement. Facebook's algorithm favors native video and community posts.", avgEngagement),
+			Confidence:     0.75,
 			Recommendation: "Post native video content directly to Facebook (not links). Engage with comments within the first hour. Use Facebook Groups to build community.",
-			Impact:        "medium",
+			Impact:         "medium",
 		}
 	}
-	
+
 	return nil
 }
 
@@ -382,15 +382,14 @@ func (t *TrendAnalyzer) analyzeFacebookPatterns(analytics []storage.PostAnalytic
 func (t *TrendAnalyzer) analyzeTikTokPatterns(analytics []storage.PostAnalytics) *storage.TrendInsight {
 	// TikTok favors trending content and consistent posting
 	avgEngagement := t.calculateAverageEngagement(analytics)
-	
+
 	return &storage.TrendInsight{
-		Type:          "tiktok_strategy",
-		Category:      "platform",
-		Title:         "TikTok Growth Strategy",
-		Summary:       fmt.Sprintf("Your TikTok content averages %.1f%% engagement. TikTok's algorithm rewards trending sounds and consistent posting.", avgEngagement),
-		Confidence:    0.80,
+		Type:           "tiktok_strategy",
+		Category:       "platform",
+		Title:          "TikTok Growth Strategy",
+		Summary:        fmt.Sprintf("Your TikTok content averages %.1f%% engagement. TikTok's algorithm rewards trending sounds and consistent posting.", avgEngagement),
+		Confidence:     0.80,
 		Recommendation: "Post 3-5 times per week. Use trending sounds and hashtags. Engage with comments quickly. Create authentic, unpolished content.",
-		Impact:        "high",
+		Impact:         "high",
 	}
 }
-

@@ -68,7 +68,7 @@ Choose your industry:`
 	// Create buttons for each industry (max 2 per row)
 	for i := 0; i < len(industries); i += 2 {
 		var row []tgbotapi.InlineKeyboardButton
-		
+
 		// First button in row
 		btn1 := tgbotapi.NewInlineKeyboardButtonData(
 			industries[i].Name,
@@ -161,4 +161,3 @@ func (h *IndustrySelectionHandler) HandleIndustrySelectionCallback(bot *tgbotapi
 	bot.Send(tgbotapi.NewMessage(chatID, confirmMsg))
 	bot.Send(tgbotapi.NewMessage(chatID, "💡 _Tip: You can change your industry anytime by typing 'change industry'._"))
 }
-

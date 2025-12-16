@@ -32,4 +32,3 @@ type SocialAccountRepository interface {
 	GetConnected(ctx context.Context, tenantID uint) ([]storage.SocialAccount, error)
 	CreateOrUpdate(ctx context.Context, account *storage.SocialAccount) error
 }
-

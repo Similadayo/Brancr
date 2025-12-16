@@ -175,25 +175,25 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 	var items []storage.MediaItem
 	var lastCount int
 	var progressMsgID int // Track progress message for editing
-	
+
 	// Wait for items to arrive, checking periodically
 	for time.Since(startTime) < maxWaitTime {
 		time.Sleep(checkInterval)
-		
+
 		if err := m.DB.Where("tenant_id = ? AND session_id = ? AND status = ?", tenantID, sessionID, "pending").Find(&items).Error; err != nil {
 			m.Logger.Error("failed to fetch session items", zap.Error(err))
 			continue
 		}
-		
+
 		currentCount := len(items)
-		
+
 		// Send progress updates for batch uploads (2+ items)
 		if bot != nil && currentCount > 1 && currentCount != lastCount {
 			// Check total expected count (if we can determine it from processed items)
 			var totalItems []storage.MediaItem
 			m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).Find(&totalItems)
 			totalCount := len(totalItems)
-			
+
 			if totalCount > 1 {
 				progressText := fmt.Sprintf("📤 Uploading... %d/%d images uploaded", currentCount, totalCount)
 				if progressMsgID == 0 {
@@ -209,29 +209,29 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 				}
 			}
 		}
-		
+
 		// If count hasn't changed in 2 checks, assume all items arrived
 		if currentCount == lastCount && currentCount > 0 {
 			// Wait a bit more for any stragglers
 			time.Sleep(2 * time.Second)
 			break
 		}
-		
+
 		// For large uploads (20+), wait longer
 		if currentCount >= 20 {
 			// Wait additional time for bulk uploads
 			time.Sleep(5 * time.Second)
 		}
-		
+
 		lastCount = currentCount
 	}
-	
+
 	// Delete progress message if it exists
 	if bot != nil && progressMsgID > 0 {
 		deleteMsg := tgbotapi.NewDeleteMessage(chatID, progressMsgID)
 		bot.Send(deleteMsg)
 	}
-	
+
 	// Final fetch of all items (including processed)
 	if err := m.DB.Where("tenant_id = ? AND session_id = ?", tenantID, sessionID).Find(&items).Error; err != nil {
 		m.Logger.Error("failed to fetch session items", zap.Error(err))
@@ -244,7 +244,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 			zap.String("session_id", sessionID))
 		return
 	}
-	
+
 	m.Logger.Info("📦 Finalizing media session",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("session_id", sessionID),
@@ -295,20 +295,20 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 	// ✅ Check if this is a bulk upload (10+ items)
 	bulkManager := NewBulkUploadManager(m.DB, m.Logger)
 	isBulk, itemCount, err := bulkManager.DetectBulkUpload(tenantID, sessionID)
-	
+
 	m.Logger.Info("🔍 Bulk upload check",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("session_id", sessionID),
 		zap.Bool("is_bulk", isBulk),
 		zap.Int("item_count", itemCount),
 		zap.Error(err))
-	
+
 	if err == nil && isBulk {
 		// Handle as bulk upload
 		m.Logger.Info("📦 Processing bulk upload",
 			zap.Uint("tenant_id", tenantID),
 			zap.Int("item_count", itemCount))
-		
+
 		// Send acknowledgment message
 		ackMsg := fmt.Sprintf("📦 *Bulk Upload Detected!*\n\nI found %d images. Processing them now...", itemCount)
 		ack := tgbotapi.NewMessage(chatID, ackMsg)
@@ -316,7 +316,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 		if bot != nil {
 			bot.Send(ack)
 		}
-		
+
 		if err := bulkManager.ProcessBulkUpload(ctx, bot, tenantID, chatID, sessionID); err != nil {
 			m.Logger.Error("failed to process bulk upload", zap.Error(err))
 			// Fallback to normal flow
@@ -330,7 +330,7 @@ func (m *TenantBotManager) FinalizeCarouselSession(ctx context.Context, tenantID
 
 	// ✅ Normal flow: Trigger interactive post creation flow
 	if bot != nil {
-	m.StartPostFlowWithWorkflow(bot, chatID, asset.ID)
+		m.StartPostFlowWithWorkflow(bot, chatID, asset.ID)
 	} else {
 		m.Logger.Error("bot instance is nil, cannot start post flow",
 			zap.Uint("tenant_id", tenantID),

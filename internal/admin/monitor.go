@@ -187,7 +187,7 @@ func HealthJSONHandler(ctx *AdminContext) http.HandlerFunc {
 func HealthPartialHandler(ctx *AdminContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		data := buildHealthReport(ctx)
-		
+
 		// Load the health partial template
 		tpl, err := template.ParseFiles("internal/admin/templates/health_partial.html")
 		if err != nil {
@@ -195,7 +195,7 @@ func HealthPartialHandler(ctx *AdminContext) http.HandlerFunc {
 			http.Error(w, "template error", http.StatusInternalServerError)
 			return
 		}
-		
+
 		if err := tpl.Execute(w, data); err != nil {
 			ctx.Logger.Error("health partial execute error", zap.Error(err))
 			http.Error(w, "render error", http.StatusInternalServerError)

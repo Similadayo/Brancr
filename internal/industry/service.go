@@ -13,28 +13,28 @@ import (
 
 // Service provides industry-related business logic
 type Service struct {
-	db              *gorm.DB
-	industryRepo    *repositories.IndustryRepository
-	productRepo     *repositories.ProductRepository
-	menuItemRepo    *repositories.MenuItemRepository
-	serviceRepo     *repositories.ServiceRepository
-	tenantRepo      *repositories.TenantRepository
-	logger          *zap.Logger
-	Retrieval       *RetrievalService // Industry-aware product/menu/service retrieval
+	db           *gorm.DB
+	industryRepo *repositories.IndustryRepository
+	productRepo  *repositories.ProductRepository
+	menuItemRepo *repositories.MenuItemRepository
+	serviceRepo  *repositories.ServiceRepository
+	tenantRepo   *repositories.TenantRepository
+	logger       *zap.Logger
+	Retrieval    *RetrievalService // Industry-aware product/menu/service retrieval
 }
 
 // NewService creates a new industry service
 func NewService(db *gorm.DB, logger *zap.Logger) *Service {
 	service := &Service{
-		db:              db,
-		industryRepo:    repositories.NewIndustryRepository(db),
-		productRepo:     repositories.NewProductRepository(db),
-		menuItemRepo:    repositories.NewMenuItemRepository(db),
-		serviceRepo:     repositories.NewServiceRepository(db),
-		tenantRepo:      repositories.NewTenantRepository(db),
-		logger:          logger,
+		db:           db,
+		industryRepo: repositories.NewIndustryRepository(db),
+		productRepo:  repositories.NewProductRepository(db),
+		menuItemRepo: repositories.NewMenuItemRepository(db),
+		serviceRepo:  repositories.NewServiceRepository(db),
+		tenantRepo:   repositories.NewTenantRepository(db),
+		logger:       logger,
 	}
-	
+
 	// Initialize retrieval service
 	service.Retrieval = NewRetrievalService(
 		service,
@@ -43,7 +43,7 @@ func NewService(db *gorm.DB, logger *zap.Logger) *Service {
 		service.serviceRepo,
 		logger,
 	)
-	
+
 	return service
 }
 
@@ -85,11 +85,11 @@ func (s *Service) SetTenantIndustry(ctx context.Context, tenantID uint, industry
 	result := s.db.WithContext(ctx).Model(&storage.Tenant{}).
 		Where("id = ?", tenantID).
 		Update("industry_id", industryID)
-	
+
 	if result.Error != nil {
 		return fmt.Errorf("failed to update tenant industry: %w", result.Error)
 	}
-	
+
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("tenant not found")
 	}
@@ -162,10 +162,10 @@ func (s *Service) GetIndustryCapabilities(ctx context.Context, tenantID uint) (*
 	}
 
 	return &IndustryCapabilities{
-		HasProducts: industry.HasProducts,
-		HasMenu:     industry.HasMenu,
-		HasServices: industry.HasServices,
-		IndustryID:  industry.ID,
+		HasProducts:  industry.HasProducts,
+		HasMenu:      industry.HasMenu,
+		HasServices:  industry.HasServices,
+		IndustryID:   industry.ID,
 		IndustryName: industry.Name,
 	}, nil
 }
@@ -178,4 +178,3 @@ type IndustryCapabilities struct {
 	IndustryID   uint
 	IndustryName string
 }
-

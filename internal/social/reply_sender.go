@@ -13,14 +13,13 @@ type ReplySender interface {
 func (h *MessageHandler) SendReply(ctx context.Context, tenantID uint, platform, threadID, customerID, reply string) error {
 	// Create IncomingMessage-like structure for sending
 	msg := IncomingMessage{
-		TenantID:          tenantID,
-		Platform:          platform,
-		CustomerID:        customerID,
+		TenantID:           tenantID,
+		Platform:           platform,
+		CustomerID:         customerID,
 		CustomerProfilePic: "",
-		ThreadID:          threadID,
+		ThreadID:           threadID,
 	}
-	
+
 	// Use existing sendReply method
 	return h.sendReply(ctx, msg, reply)
 }
-

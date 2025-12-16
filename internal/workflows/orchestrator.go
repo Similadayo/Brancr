@@ -14,12 +14,12 @@ import (
 
 // WorkflowOrchestrator coordinates all workflow services and provides unified interface
 type WorkflowOrchestrator struct {
-	DB                  *gorm.DB
-	Logger              *zap.Logger
-	PostingWorkflow     *PostingWorkflow
+	DB                   *gorm.DB
+	Logger               *zap.Logger
+	PostingWorkflow      *PostingWorkflow
 	ConversationWorkflow *ConversationWorkflow
-	EscalationWorkflow  *EscalationWorkflow
-	DashboardWorkflow   *DashboardWorkflow
+	EscalationWorkflow   *EscalationWorkflow
+	DashboardWorkflow    *DashboardWorkflow
 }
 
 // NewWorkflowOrchestrator creates a new workflow orchestrator with all services initialized
@@ -39,11 +39,11 @@ func NewWorkflowOrchestrator(db *gorm.DB, logger *zap.Logger, aiClient *ai.AICli
 
 	// Initialize conversation workflow
 	orchestrator.ConversationWorkflow = &ConversationWorkflow{
-		DB:                db,
-		Logger:            logger,
-		BotManager:        botManager,
-		AIClient:          aiClient,
-		Memory:            memory,
+		DB:         db,
+		Logger:     logger,
+		BotManager: botManager,
+		AIClient:   aiClient,
+		Memory:     memory,
 	}
 
 	// Initialize escalation workflow
@@ -267,4 +267,3 @@ func (o *WorkflowOrchestrator) GetWorkflowSummary(ctx context.Context, tenantID 
 
 	return summary, nil
 }
-

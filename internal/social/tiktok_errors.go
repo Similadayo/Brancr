@@ -11,13 +11,13 @@ import (
 type TikTokErrorType string
 
 const (
-	ErrorTypeRateLimit     TikTokErrorType = "rate_limit"
-	ErrorTypeAuth          TikTokErrorType = "authentication"
-	ErrorTypeValidation    TikTokErrorType = "validation"
-	ErrorTypeNotFound      TikTokErrorType = "not_found"
-	ErrorTypeServer        TikTokErrorType = "server_error"
-	ErrorTypeNetwork       TikTokErrorType = "network"
-	ErrorTypeUnknown       TikTokErrorType = "unknown"
+	ErrorTypeRateLimit  TikTokErrorType = "rate_limit"
+	ErrorTypeAuth       TikTokErrorType = "authentication"
+	ErrorTypeValidation TikTokErrorType = "validation"
+	ErrorTypeNotFound   TikTokErrorType = "not_found"
+	ErrorTypeServer     TikTokErrorType = "server_error"
+	ErrorTypeNetwork    TikTokErrorType = "network"
+	ErrorTypeUnknown    TikTokErrorType = "unknown"
 )
 
 // EnhancedTikTokError provides structured error information
@@ -79,7 +79,7 @@ func EnhanceError(err error, statusCode int) *EnhancedTikTokError {
 		enhanced.Type = classifyErrorType(apiErr.Code, apiErr.Status)
 		enhanced.Retryable = isRetryableError(apiErr.Code, apiErr.Status)
 		enhanced.UserMessage = getUserFriendlyMessage(apiErr.Code, apiErr.Message)
-		
+
 		if enhanced.Type == ErrorTypeRateLimit {
 			enhanced.RetryAfter = 1 * time.Minute // Default retry after 1 minute
 		}
@@ -241,4 +241,3 @@ func getUserFriendlyMessage(code, message string) string {
 
 	return "An error occurred while communicating with TikTok. Please try again later."
 }
-

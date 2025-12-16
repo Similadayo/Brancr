@@ -6,7 +6,7 @@ import "strings"
 // Looks for patterns like "Account name is X", "Name: X", "I am X", etc.
 func extractNameFromMessageContent(message string) string {
 	lower := strings.ToLower(message)
-	
+
 	// Patterns to look for:
 	patterns := []struct {
 		prefix string
@@ -21,12 +21,12 @@ func extractNameFromMessageContent(message string) string {
 		{"from"},
 		{"signed"},
 	}
-	
+
 	for _, pattern := range patterns {
 		if idx := strings.Index(lower, pattern.prefix); idx >= 0 {
 			start := idx + len(pattern.prefix)
 			remaining := strings.TrimSpace(message[start:])
-			
+
 			// Extract name (up to next comma, period, or newline, or next 50 chars)
 			nameEnd := len(remaining)
 			for i, char := range remaining {
@@ -35,7 +35,7 @@ func extractNameFromMessageContent(message string) string {
 					break
 				}
 			}
-			
+
 			name := strings.TrimSpace(remaining[:nameEnd])
 			// Basic validation - should be at least 2 chars and not too long
 			if len(name) > 2 && len(name) < 50 {
@@ -43,7 +43,6 @@ func extractNameFromMessageContent(message string) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
-

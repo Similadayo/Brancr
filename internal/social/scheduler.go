@@ -52,8 +52,10 @@ type Scheduler struct {
 		CheckPostQuota(ctx context.Context, tenantID uint) error
 		IncrementPostUsage(ctx context.Context, tenantID uint) error
 	}
-	WorkerPool       interface {
-		Submit(job interface{ Execute(ctx context.Context) error }) error
+	WorkerPool interface {
+		Submit(job interface {
+			Execute(ctx context.Context) error
+		}) error
 	}
 	// Platform adapters will be injected here as needed
 }
@@ -112,12 +114,12 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 	// Optimized: Process in batches with higher limit for high-volume scenarios
 	// Use FindInBatches to process large volumes efficiently
 	batchSize := 50 // Increased from 10 for high-volume processing
-	
+
 	var processedCount int64
 	err := s.DB.Model(&storage.ScheduledPost{}).
 		Where("status = ? AND scheduled_at <= ?", "scheduled", now).
 		Count(&processedCount).Error
-	
+
 	if err != nil {
 		s.Logger.Warn("scheduler: count due posts failed", zap.Error(err))
 		return
@@ -129,7 +131,7 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 	// Process in batches to avoid memory issues
 	var posts []storage.ScheduledPost
 	offset := 0
-	
+
 	for {
 		// Fetch batch
 		if err := s.DB.Where("status = ? AND scheduled_at <= ?", "scheduled", now).
@@ -137,9 +139,9 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 			Limit(batchSize).
 			Offset(offset).
 			Find(&posts).Error; err != nil {
-		s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))
-		return
-	}
+			s.Logger.Warn("scheduler: fetch due posts failed", zap.Error(err))
+			return
+		}
 
 		if len(posts) == 0 {
 			break // No more posts to process
@@ -155,7 +157,7 @@ func (s *Scheduler) processDuePosts(maxAttempts int) {
 			rowsAffected := tx.Model(&storage.ScheduledPost{}).
 				Where("id = ? AND status = ?", p.ID, "scheduled").
 				Update("status", "posting").RowsAffected
-			
+
 			if rowsAffected == 0 {
 				tx.Rollback()
 				continue // Post already claimed by another worker
@@ -352,13 +354,13 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	// 1. AI-generated: If caption is empty, generate from tenant preferences/images
 	// 2. Tenant-customized: If caption exists and tenant doesn't want AI enhancement, use as-is
 	// 3. AI-enhanced: If caption exists and tenant wants AI enhancement, optimize it
-	
+
 	// Use first platform for caption processing (result will be used for all platforms)
 	platformForCaption := "instagram"
 	if len(platforms) > 0 {
 		platformForCaption = platforms[0]
 	}
-	
+
 	if s.CaptionOptimizer != nil {
 		if originalCaption == "" {
 			// Mode 1: AI-generated - Generate caption from scratch based on tenant preferences
@@ -400,7 +402,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 				} else if result.OptimizedCaption == "" {
 					errorMsg = "caption generation returned empty caption"
 				}
-				
+
 				s.Logger.Warn("AI caption generation failed, will use empty caption",
 					zap.String("error", errorMsg),
 					zap.Uint("tenant_id", p.TenantID))
@@ -411,53 +413,53 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 		} else {
 			// Caption exists - check if tenant wants AI enhancement
 			if p.EnhanceCaption {
-			// Mode 3: AI-enhanced - Optimize tenant's caption based on their preferences
-			s.Logger.Info("🤖 Enhancing tenant caption with AI",
-				zap.String("platform", platformForCaption),
-				zap.Uint("tenant_id", p.TenantID))
-
-			s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, "", "in_progress", "")
-
-			req := OptimizeCaptionRequest{
-				OriginalCaption: originalCaption,
-				Platform:        platformForCaption,
-				MediaType:       mediaTypeForAI,
-				TenantID:        p.TenantID,
-				ImageURLs:       urls, // Pass image URLs for analysis
-			}
-
-			result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
-			if err == nil && result != nil && result.OptimizedCaption != "" {
-				optimizedCaption = result.OptimizedCaption
-				improvements = result.Improvements
-				s.Logger.Info("✨ Caption enhanced",
-					zap.String("original_length", fmt.Sprintf("%d chars", len(originalCaption))),
-					zap.String("enhanced_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
-					zap.Strings("hashtags", result.Hashtags))
-
-				// Log enhancement success
-				hashtagsJSON, _ := json.Marshal(result.Hashtags)
-				metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_enhanced"}`, hashtagsJSON, result.SuggestedTime)
-				s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
-			} else {
-				// Handle both error cases and nil/empty result cases
-				var errorMsg string
-				if err != nil {
-					errorMsg = err.Error()
-				} else if result == nil {
-					errorMsg = "caption optimization returned nil result"
-				} else if result.OptimizedCaption == "" {
-					errorMsg = "caption optimization returned empty caption"
-				}
-				
-				s.Logger.Warn("caption enhancement failed, using tenant's original",
-					zap.String("error", errorMsg),
+				// Mode 3: AI-enhanced - Optimize tenant's caption based on their preferences
+				s.Logger.Info("🤖 Enhancing tenant caption with AI",
+					zap.String("platform", platformForCaption),
 					zap.Uint("tenant_id", p.TenantID))
-				// Mode 2: Fallback to tenant-customized (use original as-is)
-				optimizedCaption = originalCaption
-				// Log enhancement failure to complete the audit trail
-				s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, originalCaption, "failed", errorMsg)
-			}
+
+				s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, "", "in_progress", "")
+
+				req := OptimizeCaptionRequest{
+					OriginalCaption: originalCaption,
+					Platform:        platformForCaption,
+					MediaType:       mediaTypeForAI,
+					TenantID:        p.TenantID,
+					ImageURLs:       urls, // Pass image URLs for analysis
+				}
+
+				result, err := s.CaptionOptimizer.OptimizeCaption(ctx, req)
+				if err == nil && result != nil && result.OptimizedCaption != "" {
+					optimizedCaption = result.OptimizedCaption
+					improvements = result.Improvements
+					s.Logger.Info("✨ Caption enhanced",
+						zap.String("original_length", fmt.Sprintf("%d chars", len(originalCaption))),
+						zap.String("enhanced_length", fmt.Sprintf("%d chars", len(optimizedCaption))),
+						zap.Strings("hashtags", result.Hashtags))
+
+					// Log enhancement success
+					hashtagsJSON, _ := json.Marshal(result.Hashtags)
+					metadata := fmt.Sprintf(`{"hashtags":%s,"suggested_time":"%s","source":"ai_enhanced"}`, hashtagsJSON, result.SuggestedTime)
+					s.logPostActivityWithMeta(p.TenantID, p.ID, platformForCaption, "optimized", originalCaption, optimizedCaption, "success", improvements, metadata, "")
+				} else {
+					// Handle both error cases and nil/empty result cases
+					var errorMsg string
+					if err != nil {
+						errorMsg = err.Error()
+					} else if result == nil {
+						errorMsg = "caption optimization returned nil result"
+					} else if result.OptimizedCaption == "" {
+						errorMsg = "caption optimization returned empty caption"
+					}
+
+					s.Logger.Warn("caption enhancement failed, using tenant's original",
+						zap.String("error", errorMsg),
+						zap.Uint("tenant_id", p.TenantID))
+					// Mode 2: Fallback to tenant-customized (use original as-is)
+					optimizedCaption = originalCaption
+					// Log enhancement failure to complete the audit trail
+					s.logPostActivity(p.TenantID, p.ID, platformForCaption, "optimizing", originalCaption, originalCaption, "failed", errorMsg)
+				}
 			} else {
 				// Mode 2: Tenant-customized - Use caption as-is (no AI enhancement)
 				optimizedCaption = originalCaption
@@ -476,23 +478,23 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 	var lastError error
 	succeeded := make([]string, 0, len(platforms))
 	failed := make([]string, 0, len(platforms))
-	
+
 	// Use mutex to protect shared state
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	
+
 	// Pass first asset ID so PostMedia can update it with platform-specific metadata
 	assetID := uint(0)
 	if len(assets) > 0 {
 		assetID = assets[0].ID
 	}
-	
+
 	// Post to all platforms concurrently
 	for _, platform := range platforms {
 		wg.Add(1)
 		go func(plat string) {
 			defer wg.Done()
-			
+
 			// Use defer/recover to ensure activity log is completed even on panic
 			defer func() {
 				if r := recover(); r != nil {
@@ -503,14 +505,14 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 						zap.Any("panic", r))
 					// Log failure to complete the audit trail
 					s.logPostActivity(p.TenantID, p.ID, plat, "posting", originalCaption, optimizedCaption, "failed", panicErr.Error())
-					
+
 					mu.Lock()
 					lastError = panicErr
 					failed = append(failed, plat)
 					mu.Unlock()
 				}
 			}()
-			
+
 			s.Logger.Info("📱 Posting to platform",
 				zap.String("platform", plat),
 				zap.Int("media_count", len(urls)))
@@ -523,7 +525,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 				s.Logger.Error("post failed",
 					zap.String("platform", plat),
 					zap.Error(err))
-				
+
 				mu.Lock()
 				lastError = err
 				failed = append(failed, plat)
@@ -545,7 +547,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 				successCount++
 				succeeded = append(succeeded, plat)
 				mu.Unlock()
-				
+
 				s.Logger.Info("✅ Posted successfully", zap.String("platform", plat))
 
 				// Log success with platform post ID in metadata
@@ -607,7 +609,7 @@ func (s *Scheduler) executePost(p storage.ScheduledPost) {
 			}
 		}(platform)
 	}
-	
+
 	// Wait for all platform posts to complete
 	wg.Wait()
 
@@ -744,7 +746,7 @@ func (s *Scheduler) postToPlatform(ctx context.Context, tenantID, scheduledPostI
 	if assetType == "" {
 		assetType = inferMediaType("", urls)
 	}
-	
+
 	var asset *storage.MediaAsset
 	if assetID > 0 {
 		// Load existing asset so we can update it with platform-specific metadata

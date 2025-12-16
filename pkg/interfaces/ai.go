@@ -63,4 +63,3 @@ type Responder interface {
 type PersonaService interface {
 	GetPersona(tenantID uint) (storage.Persona, error)
 }
-

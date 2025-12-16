@@ -17,7 +17,7 @@ type PostingTimeAnalyzer struct {
 func (p *PostingTimeAnalyzer) AnalyzeOptimalTime(ctx context.Context, tenantID uint, platform, contentType string) (time.Time, string) {
 	// Base optimal times per platform (industry research-backed)
 	now := time.Now()
-	
+
 	var optimalHour int
 	var reasoning string
 
@@ -89,7 +89,7 @@ func (p *PostingTimeAnalyzer) AnalyzeOptimalTime(ctx context.Context, tenantID u
 
 	// Build optimal time
 	optimalTime := time.Date(now.Year(), now.Month(), now.Day(), optimalHour, 0, 0, 0, now.Location())
-	
+
 	// If optimal time is in the past, move to next day
 	if optimalTime.Before(now) {
 		optimalTime = optimalTime.Add(24 * time.Hour)
@@ -116,17 +116,17 @@ func (p *PostingTimeAnalyzer) GetNextOptimalSlot(ctx context.Context, tenantID u
 	var recentPosts []struct {
 		ScheduledAt time.Time
 	}
-	
+
 	cutoff := time.Now().Add(-2 * time.Hour)
 	future := time.Now().Add(24 * time.Hour)
-	
+
 	p.DB.WithContext(ctx).
 		Model(&struct {
 			ScheduledAt time.Time `gorm:"column:scheduled_at"`
 		}{}).
 		Table("scheduled_posts").
 		Select("scheduled_at").
-		Where("tenant_id = ? AND scheduled_at BETWEEN ? AND ? AND platforms LIKE ?", 
+		Where("tenant_id = ? AND scheduled_at BETWEEN ? AND ? AND platforms LIKE ?",
 			tenantID, cutoff, future, "%"+platform+"%").
 		Find(&recentPosts)
 
@@ -142,4 +142,3 @@ func (p *PostingTimeAnalyzer) GetNextOptimalSlot(ctx context.Context, tenantID u
 
 	return optimalTime, nil
 }
-

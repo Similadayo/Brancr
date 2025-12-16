@@ -42,4 +42,3 @@ func SanitizeStrings(strs []string) []string {
 	}
 	return result
 }
-

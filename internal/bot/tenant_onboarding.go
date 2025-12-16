@@ -67,9 +67,9 @@ func (m *TenantBotManager) showOnboardingWizard(bot *tgbotapi.BotAPI, tenantID u
 	}
 
 	welcomeMsg := fmt.Sprintf(
-		"👋 *Welcome to Brancr!*\n\n" +
-		"Let's get you set up in 3 quick steps:\n\n" +
-		"%s Progress: %d/%d\n\n",
+		"👋 *Welcome to Brancr!*\n\n"+
+			"Let's get you set up in 3 quick steps:\n\n"+
+			"%s Progress: %d/%d\n\n",
 		progressBar, completed, total)
 
 	var keyboardRows [][]tgbotapi.InlineKeyboardButton
@@ -218,4 +218,3 @@ Ready to create your first post? Upload a photo or video!`
 	msg.ReplyMarkup = keyboard
 	bot.Send(msg)
 }
-

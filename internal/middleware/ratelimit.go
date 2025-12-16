@@ -138,7 +138,7 @@ func (rl *RateLimiter) GlobalRateLimit(requestsPerMinute int) func(http.Handler)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			key := "ratelimit:global:minute"
-			
+
 			if rl.rdb != nil {
 				// Use Redis if available
 				current, err := rl.rdb.Incr(ctx, key).Result()
@@ -165,33 +165,33 @@ func (rl *RateLimiter) GlobalRateLimit(requestsPerMinute int) func(http.Handler)
 // checkMemoryLimit checks and increments in-memory rate limit
 func (rl *RateLimiter) checkMemoryLimit(key string, limit int, window time.Duration) bool {
 	now := time.Now()
-	
+
 	// Clean up expired entries periodically
 	if now.Unix()%60 == 0 { // Every minute
 		rl.cleanupMemoryStore()
 	}
-	
+
 	entryInterface, _ := rl.memoryStore.LoadOrStore(key, &memoryEntry{
 		count:     0,
 		expiresAt: now.Add(window),
 	})
-	
+
 	entry := entryInterface.(*memoryEntry)
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	// Check if expired
 	if now.After(entry.expiresAt) {
 		entry.count = 1
 		entry.expiresAt = now.Add(window)
 		return true
 	}
-	
+
 	// Check limit
 	if entry.count >= int64(limit) {
 		return false
 	}
-	
+
 	entry.count++
 	return true
 }
@@ -243,4 +243,3 @@ func (rl *RateLimiter) PlatformRateLimit(platform string, requestsPerMinute int)
 		})
 	}
 }
-

@@ -371,4 +371,3 @@ func (h *OAuthSuccessHandler) HandleSuccess(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 	t.Execute(w, data)
 }
-

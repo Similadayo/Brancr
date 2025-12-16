@@ -124,4 +124,3 @@ func (h *TenantWebhookHandler) handleCalendarCommand(bot *tgbotapi.BotAPI, tenan
 		calendarManager.SendCalendarView(ctx, bot, tenantID, chatID, now.Year(), now.Month())
 	}
 }
-

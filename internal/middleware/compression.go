@@ -52,4 +52,3 @@ type gzipResponseWriter struct {
 func (gzw *gzipResponseWriter) Write(b []byte) (int, error) {
 	return gzw.Writer.Write(b)
 }
-

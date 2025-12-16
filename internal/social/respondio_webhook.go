@@ -93,13 +93,13 @@ func (h *RespondIOWebhookHandler) HandleRespondIOWebhook(w http.ResponseWriter, 
 // handleIncomingMessage processes incoming WhatsApp messages from Respond.io
 func (h *RespondIOWebhookHandler) handleIncomingMessage(ctx context.Context, data json.RawMessage) {
 	var msg struct {
-		ContactID  string `json:"contactId"`  // Contact identifier (phone number or contact ID)
-		ChannelID  string `json:"channelId"`  // WhatsApp channel ID
-		MessageID  string `json:"messageId"`  // Unique message ID
-		Text       string `json:"text"`       // Message text content
-		From       string `json:"from"`       // Sender phone number
-		Timestamp  int64  `json:"timestamp"`  // Unix timestamp
-		Contact    *struct {
+		ContactID string `json:"contactId"` // Contact identifier (phone number or contact ID)
+		ChannelID string `json:"channelId"` // WhatsApp channel ID
+		MessageID string `json:"messageId"` // Unique message ID
+		Text      string `json:"text"`      // Message text content
+		From      string `json:"from"`      // Sender phone number
+		Timestamp int64  `json:"timestamp"` // Unix timestamp
+		Contact   *struct {
 			Name string `json:"name"`
 		} `json:"contact"`
 		Channel *struct {
@@ -141,17 +141,17 @@ func (h *RespondIOWebhookHandler) handleIncomingMessage(ctx context.Context, dat
 	}
 
 	incomingMsg := IncomingMessage{
-		Platform:          "whatsapp",
-		TenantID:          tenantID,
-		CustomerID:        msg.ContactID, // Use contact ID as customer ID
-		CustomerName:      customerName,
-		CustomerUsername:  msg.From, // Phone number
+		Platform:           "whatsapp",
+		TenantID:           tenantID,
+		CustomerID:         msg.ContactID, // Use contact ID as customer ID
+		CustomerName:       customerName,
+		CustomerUsername:   msg.From, // Phone number
 		CustomerProfilePic: "",
-		MessageID:         msg.MessageID,
-		Content:           msg.Text,
-		MessageType:       "text",
-		ThreadID:          msg.ContactID,
-		Timestamp:         time.Unix(msg.Timestamp/1000, 0), // Convert milliseconds to seconds
+		MessageID:          msg.MessageID,
+		Content:            msg.Text,
+		MessageType:        "text",
+		ThreadID:           msg.ContactID,
+		Timestamp:          time.Unix(msg.Timestamp/1000, 0), // Convert milliseconds to seconds
 		Metadata: map[string]interface{}{
 			"channel_id": msg.ChannelID,
 			"from":       msg.From,
@@ -187,7 +187,7 @@ func (h *RespondIOWebhookHandler) handleDeliveryStatus(ctx context.Context, data
 		h.Logger.Warn("⚠️ Delivery status update missing message ID")
 		return
 	}
-	
+
 	// Find interaction by platform message ID and update metadata
 	var interaction storage.Interaction
 	if err := h.DB.Where("platform = ? AND platform_message_id = ?", "whatsapp", status.MessageID).First(&interaction).Error; err != nil {
@@ -197,7 +197,7 @@ func (h *RespondIOWebhookHandler) handleDeliveryStatus(ctx context.Context, data
 			zap.Error(err))
 		return
 	}
-	
+
 	// Update metadata with delivery status
 	var metadata map[string]interface{}
 	if interaction.Metadata != "" {
@@ -207,19 +207,19 @@ func (h *RespondIOWebhookHandler) handleDeliveryStatus(ctx context.Context, data
 	} else {
 		metadata = make(map[string]interface{})
 	}
-	
+
 	metadata["delivery_status"] = strings.ToLower(status.Status)
 	metadata["delivery_status_updated_at"] = time.Now().UTC().Format(time.RFC3339)
 	if status.Error != "" {
 		metadata["delivery_error"] = status.Error
 	}
-	
+
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		h.Logger.Error("Failed to marshal metadata for Respond.io status update", zap.Error(err))
 		return
 	}
-	
+
 	interaction.Metadata = string(metadataJSON)
 	if err := h.DB.Save(&interaction).Error; err != nil {
 		h.Logger.Error("Failed to update interaction delivery status for Respond.io",
@@ -228,7 +228,7 @@ func (h *RespondIOWebhookHandler) handleDeliveryStatus(ctx context.Context, data
 			zap.Error(err))
 		return
 	}
-	
+
 	h.Logger.Info("✅ Updated Respond.io message delivery status",
 		zap.String("message_id", status.MessageID),
 		zap.String("status", status.Status),
@@ -264,7 +264,7 @@ func (h *RespondIOWebhookHandler) resolveTenantFromRespondIOChannel(channelID, c
 		// Normalize phone number - try with and without +
 		phoneNumberWithPlus := contactID
 		phoneNumberWithoutPlus := strings.TrimPrefix(contactID, "+")
-		
+
 		// Try exact match with +
 		if err := h.DB.Where("platform = ? AND connected = ? AND page_id = ?", "whatsapp", true, phoneNumberWithPlus).First(&account).Error; err == nil {
 			h.Logger.Info("✅ Tenant resolved by phone number (with +)",
@@ -272,7 +272,7 @@ func (h *RespondIOWebhookHandler) resolveTenantFromRespondIOChannel(channelID, c
 				zap.String("phone_number", phoneNumberWithPlus))
 			return account.TenantID, nil
 		}
-		
+
 		// Try exact match without +
 		if err := h.DB.Where("platform = ? AND connected = ? AND page_id = ?", "whatsapp", true, phoneNumberWithoutPlus).First(&account).Error; err == nil {
 			h.Logger.Info("✅ Tenant resolved by phone number (without +)",
@@ -292,4 +292,3 @@ func (h *RespondIOWebhookHandler) resolveTenantFromRespondIOChannel(channelID, c
 
 	return 0, fmt.Errorf("could not resolve tenant for Respond.io channel %s / contact %s - message rejected for security", channelID, contactID)
 }
-

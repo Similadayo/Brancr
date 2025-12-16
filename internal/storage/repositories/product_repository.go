@@ -90,4 +90,3 @@ func (r *ProductRepository) Update(ctx context.Context, product *storage.Product
 func (r *ProductRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&storage.Product{}, id).Error
 }
-

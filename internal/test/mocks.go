@@ -42,12 +42,12 @@ func (m *MockMemoryService) Recall(ctx context.Context, tenantID, customerID uin
 
 // MockBotManager is a mock implementation of BotManager
 type MockBotManager struct {
-	GetBotFunc              func(tenantID uint) (interface{}, bool)
-	GetOwnerIDFunc          func(tenantID uint) int64
-	StartBotForTenantFunc   func(tenant *storage.Tenant) error
-	StopBotFunc             func(tenantID uint)
-	InitBotsFunc            func() error
-	GenerateAIResponseFunc  func(ctx context.Context, tenantID uint, userMsg string) (string, error)
+	GetBotFunc                func(tenantID uint) (interface{}, bool)
+	GetOwnerIDFunc            func(tenantID uint) int64
+	StartBotForTenantFunc     func(tenant *storage.Tenant) error
+	StopBotFunc               func(tenantID uint)
+	InitBotsFunc              func() error
+	GenerateAIResponseFunc    func(ctx context.Context, tenantID uint, userMsg string) (string, error)
 	TrackOrCreateCustomerFunc func(ctx context.Context, tenantID uint, channel, platformID, displayName, username, profilePic string) (*storage.Customer, error)
 }
 
@@ -110,4 +110,3 @@ func (m *MockRepository) DB() *gorm.DB {
 	}
 	return nil
 }
-

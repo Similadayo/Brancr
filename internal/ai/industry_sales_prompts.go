@@ -23,7 +23,7 @@ func BuildIndustrySalesPrompt(industryName string, salesStage string, commitment
 		guidance.WriteString("- Emphasize fast shipping and delivery options\n")
 		guidance.WriteString("- Be ready to negotiate on quantity or bundle deals\n")
 		guidance.WriteString("- Show product images/details when relevant\n")
-		
+
 		if salesStage == "negotiation" {
 			guidance.WriteString("\nNEGOTIATION TIPS:\n")
 			guidance.WriteString("- Be flexible on quantity discounts\n")
@@ -48,7 +48,7 @@ func BuildIndustrySalesPrompt(industryName string, salesStage string, commitment
 		guidance.WriteString("- Be warm and welcoming, like a server would be\n")
 		guidance.WriteString("- Mention preparation time if relevant\n")
 		guidance.WriteString("- Ask about dietary preferences or restrictions\n")
-		
+
 		if salesStage == "negotiation" {
 			guidance.WriteString("\nNEGOTIATION TIPS:\n")
 			guidance.WriteString("- Offer combo deals or meal packages\n")
@@ -74,7 +74,7 @@ func BuildIndustrySalesPrompt(industryName string, salesStage string, commitment
 		guidance.WriteString("- Address concerns professionally\n")
 		guidance.WriteString("- Show how you solve their specific problem - but only when relevant\n")
 		guidance.WriteString("- Only ask questions if you genuinely need more info to help them (e.g., budget questions only if they ask about pricing)\n")
-		
+
 		if salesStage == "negotiation" {
 			guidance.WriteString("\nNEGOTIATION TIPS:\n")
 			guidance.WriteString("- Focus on value delivered, not just price\n")
@@ -138,4 +138,3 @@ func BuildSalesStageGuidance(stage string, industryName string) string {
 		return "Continue the conversation naturally. Be helpful and guide them toward their goal."
 	}
 }
-

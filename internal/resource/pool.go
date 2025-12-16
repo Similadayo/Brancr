@@ -49,4 +49,3 @@ func (p *Pool) Size() int {
 func (p *Pool) Capacity() int {
 	return cap(p.semaphore)
 }
-

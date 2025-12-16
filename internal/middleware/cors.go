@@ -10,7 +10,7 @@ import (
 // allowedOrigins is a comma-separated list of origins. Whitespace is trimmed.
 func CORSMiddleware(allowedOrigins string) func(next http.Handler) http.Handler {
 	origins := parseOrigins(allowedOrigins)
-	
+
 	// Log allowed origins at startup for debugging
 	log.Printf("🌐 CORS Middleware initialized with allowed origins: %v", origins)
 
@@ -18,7 +18,7 @@ func CORSMiddleware(allowedOrigins string) func(next http.Handler) http.Handler 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 			allowed := origin != "" && originAllowed(origin, origins)
-			
+
 			// Log CORS preflight requests for debugging
 			if r.Method == http.MethodOptions {
 				if origin == "" {
@@ -27,7 +27,7 @@ func CORSMiddleware(allowedOrigins string) func(next http.Handler) http.Handler 
 					log.Printf("⚠️ CORS: OPTIONS request from disallowed origin: %s (allowed: %v)", origin, origins)
 				} else {
 					log.Printf("✅ CORS: OPTIONS request from allowed origin: %s", origin)
-			}
+				}
 			}
 
 			// Handle preflight OPTIONS requests

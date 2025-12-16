@@ -52,4 +52,3 @@ func (r *CustomerRepository) UpdateLastMessage(ctx context.Context, customerID u
 		Where("id = ?", customerID).
 		Update("last_message_at", "NOW()").Error
 }
-

@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 	"github.com/cloudinary/cloudinary-go/v2"
 	"github.com/cloudinary/cloudinary-go/v2/api/uploader"
 	"go.uber.org/zap"
@@ -127,4 +127,3 @@ func UploadPDFToCloudinary(ctx context.Context, pdfData []byte, cloudinaryURL st
 
 	return res.SecureURL, nil
 }
-

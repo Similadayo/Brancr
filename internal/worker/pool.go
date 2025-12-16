@@ -22,15 +22,15 @@ func (f JobFunc) Execute(ctx context.Context) error {
 
 // Pool manages a pool of workers
 type Pool struct {
-	size        int
-	queue       chan Job
-	wg          sync.WaitGroup
-	ctx         context.Context
-	cancel      context.CancelFunc
-	logger      *zap.Logger
-	activeJobs  int64
-	mu          sync.RWMutex
-	queueDepth  int64
+	size       int
+	queue      chan Job
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	logger     *zap.Logger
+	activeJobs int64
+	mu         sync.RWMutex
+	queueDepth int64
 }
 
 // NewPool creates a new worker pool
@@ -181,4 +181,3 @@ type PoolError struct {
 func (e *PoolError) Error() string {
 	return e.Message
 }
-

@@ -131,7 +131,7 @@ func (h *AnalyticsHandler) sendTrendInsights(ctx context.Context, bot *tgbotapi.
 			msg := "💡 *Trend Insights*\n\n"
 			msg += "No insights available yet. Post more content to start seeing trends!\n\n"
 			msg += "_Insights are generated automatically from your post performance. Post at least 3-5 pieces of content to see meaningful patterns._"
-			
+
 			response := tgbotapi.NewMessage(chatID, msg)
 			response.ParseMode = "Markdown"
 			bot.Send(response)
@@ -142,7 +142,7 @@ func (h *AnalyticsHandler) sendTrendInsights(ctx context.Context, bot *tgbotapi.
 		msg += "📊 *Status:* Analytics are still being collected for your recent posts.\n\n"
 		msg += fmt.Sprintf("You've published %d posts in the last 30 days. Insights will appear once analytics are fully collected.\n\n", len(postedPosts))
 		msg += "_Check back in 10-15 minutes after posting to see detailed insights!_"
-		
+
 		response := tgbotapi.NewMessage(chatID, msg)
 		response.ParseMode = "Markdown"
 		bot.Send(response)
@@ -184,7 +184,7 @@ func (h *AnalyticsHandler) sendTrendInsights(ctx context.Context, bot *tgbotapi.
 		msg := "💡 *Trend Insights*\n\n"
 		msg += "Generating insights from your analytics data...\n\n"
 		msg += "_Check back in a moment or ask again for 'insights'!_"
-		
+
 		response := tgbotapi.NewMessage(chatID, msg)
 		response.ParseMode = "Markdown"
 		bot.Send(response)
@@ -274,7 +274,7 @@ func (h *AnalyticsHandler) sendTrendInsights(ctx context.Context, bot *tgbotapi.
 
 	response := tgbotapi.NewMessage(chatID, msg)
 	response.ParseMode = "Markdown"
-	
+
 	// Handle long messages (Telegram limit is 4096 chars)
 	if len(msg) > 4000 {
 		// Split into multiple messages
@@ -350,7 +350,7 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 		msg := "🚀 *Growth Suggestions*\n\n"
 		msg += "No suggestions available yet. Keep posting to get personalized growth recommendations!\n\n"
 		msg += "_We analyze your performance and suggest improvements based on your business profile and post analytics._"
-		
+
 		response := tgbotapi.NewMessage(chatID, msg)
 		response.ParseMode = "Markdown"
 		bot.Send(response)
@@ -380,7 +380,7 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 		effortEmoji := getEffortEmoji(effort)
 
 		msg += fmt.Sprintf("%s *%s*\n", impactEmoji, title)
-		
+
 		if description != "" {
 			msg += fmt.Sprintf("%s\n\n", description)
 		}
@@ -406,7 +406,7 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 		if impact != "" && effort != "" {
 			msg += fmt.Sprintf("%s Impact: %s | %s Effort: %s\n", impactEmoji, strings.Title(impact), effortEmoji, strings.Title(effort))
 		}
-		
+
 		if confidence > 0 {
 			msg += fmt.Sprintf("📊 Confidence: %.0f%%\n", confidence*100)
 		}
@@ -421,7 +421,7 @@ func (h *AnalyticsHandler) sendGrowthSuggestions(ctx context.Context, bot *tgbot
 
 	response := tgbotapi.NewMessage(chatID, msg)
 	response.ParseMode = "Markdown"
-	
+
 	// Handle long messages
 	if len(msg) > 4000 {
 		parts := splitMessage(msg, 3500)
@@ -456,12 +456,12 @@ func (h *AnalyticsHandler) generateDefaultGrowthSuggestions(ctx context.Context,
 
 	if len(postedPosts) < 5 {
 		suggestions = append(suggestions, map[string]interface{}{
-			"Title":          "Increase Posting Frequency",
-			"Description":    fmt.Sprintf("You've posted %d times in the last 30 days. Consistent posting improves engagement and reach.", len(postedPosts)),
-			"Impact":         "high",
-			"Effort":         "medium",
-			"Confidence":     0.85,
-			"ActionItems":    []string{
+			"Title":       "Increase Posting Frequency",
+			"Description": fmt.Sprintf("You've posted %d times in the last 30 days. Consistent posting improves engagement and reach.", len(postedPosts)),
+			"Impact":      "high",
+			"Effort":      "medium",
+			"Confidence":  0.85,
+			"ActionItems": []string{
 				"Aim for 3-5 posts per week for steady growth",
 				"Use scheduling to maintain consistency",
 				"Create a content calendar to plan ahead",
@@ -483,12 +483,12 @@ func (h *AnalyticsHandler) generateDefaultGrowthSuggestions(ctx context.Context,
 
 	if avgEngagement < 3.0 && len(analytics) >= 5 {
 		suggestions = append(suggestions, map[string]interface{}{
-			"Title":          "Improve Engagement Rate",
-			"Description":    fmt.Sprintf("Your current engagement rate is %.2f%%. Let's boost it with strategic improvements.", avgEngagement),
-			"Impact":         "high",
-			"Effort":         "medium",
-			"Confidence":     0.80,
-			"ActionItems":    []string{
+			"Title":       "Improve Engagement Rate",
+			"Description": fmt.Sprintf("Your current engagement rate is %.2f%%. Let's boost it with strategic improvements.", avgEngagement),
+			"Impact":      "high",
+			"Effort":      "medium",
+			"Confidence":  0.80,
+			"ActionItems": []string{
 				"Post at optimal times (use insights to find best posting times)",
 				"Increase engagement with questions in captions",
 				"Respond to comments within the first hour",
@@ -506,12 +506,12 @@ func (h *AnalyticsHandler) generateDefaultGrowthSuggestions(ctx context.Context,
 
 	if len(platforms) == 1 && platforms["instagram"] > 0 {
 		suggestions = append(suggestions, map[string]interface{}{
-			"Title":          "Expand to Multiple Platforms",
-			"Description":    "You're currently only posting to Instagram. Expanding to Facebook or TikTok can help you reach new audiences.",
-			"Impact":         "high",
-			"Effort":         "medium",
-			"Confidence":     0.75,
-			"ActionItems":    []string{
+			"Title":       "Expand to Multiple Platforms",
+			"Description": "You're currently only posting to Instagram. Expanding to Facebook or TikTok can help you reach new audiences.",
+			"Impact":      "high",
+			"Effort":      "medium",
+			"Confidence":  0.75,
+			"ActionItems": []string{
 				"Connect your Facebook Page to cross-post content",
 				"Create a TikTok account for short-form video content",
 				"Repurpose your best Instagram content for other platforms",
@@ -653,7 +653,7 @@ func (h *AnalyticsHandler) sendAnalyticsFromDB(ctx context.Context, bot *tgbotap
 				}
 			}()
 		}
-		
+
 		msg += fmt.Sprintf("📈 *Posts Published:* %d\n\n", len(postedPosts))
 		msg += "📊 *Analytics Status:*\n"
 		msg += "Analytics are being collected. Check back in a few minutes for detailed insights!\n\n"

@@ -150,4 +150,3 @@ func GetMigrationStatus(db *gorm.DB) (map[string]interface{}, error) {
 		"status":  status,
 	}, nil
 }
-

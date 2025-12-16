@@ -49,12 +49,12 @@ func ValidateMetricsAgainstCurrentAPI(metrics []string, loginMethod string) erro
 	if err != nil {
 		return err
 	}
-	
+
 	allowedMap := make(map[string]bool)
 	for _, m := range allowedMetrics {
 		allowedMap[m] = true
 	}
-	
+
 	for _, metric := range metrics {
 		if IsMetricInvalidForAccount(metric) {
 			return fmt.Errorf("metric '%s' is not valid for account insights (only valid for media insights)", metric)
@@ -63,7 +63,6 @@ func ValidateMetricsAgainstCurrentAPI(metrics []string, loginMethod string) erro
 			return fmt.Errorf("metric '%s' is not valid for %s accounts", metric, loginMethod)
 		}
 	}
-	
+
 	return nil
 }
-

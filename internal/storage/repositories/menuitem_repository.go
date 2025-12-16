@@ -90,4 +90,3 @@ func (r *MenuItemRepository) Update(ctx context.Context, item *storage.MenuItem)
 func (r *MenuItemRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&storage.MenuItem{}, id).Error
 }
-

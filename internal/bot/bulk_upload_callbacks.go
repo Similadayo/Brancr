@@ -308,7 +308,7 @@ func (h *TenantWebhookHandler) promptCustomGrouping(bot *tgbotapi.BotAPI, tenant
 	// Build numbered list of images
 	var imageList []string
 	imageList = append(imageList, fmt.Sprintf("📸 *I have %d images:*\n", len(items)))
-	
+
 	maxShow := 30 // Show first 30 for brevity
 	for i, item := range items {
 		if i >= maxShow {
@@ -322,7 +322,7 @@ func (h *TenantWebhookHandler) promptCustomGrouping(bot *tgbotapi.BotAPI, tenant
 		imageList = append(imageList, fmt.Sprintf("%d. %s Image %d", i+1, itemType, i+1))
 	}
 
-	msg := strings.Join(imageList, "\n") + 
+	msg := strings.Join(imageList, "\n") +
 		"\n\n*How would you like to group them?*\n\n" +
 		"Format examples:\n" +
 		"• `Group 1: 1-3, 5, 7`\n" +
@@ -378,7 +378,7 @@ func (h *TenantWebhookHandler) handleCustomGroupingInput(bot *tgbotapi.BotAPI, t
 
 	// Create carousels from groups
 	bulkManager := NewBulkUploadManager(h.Manager.DB, h.Manager.Logger)
-	
+
 	var assets []storage.MediaAsset
 	for groupIdx, group := range groups {
 		if len(group) == 0 {
@@ -458,12 +458,12 @@ func (h *TenantWebhookHandler) handleCustomGroupingInput(bot *tgbotapi.BotAPI, t
 // parseGroupingInstructions parses text like "Group 1: 1-3, 5; Group 2: 4, 6-10" into item indices
 func parseGroupingInstructions(text string, totalItems int) ([][]int, error) {
 	text = strings.TrimSpace(text)
-	
+
 	// Split by semicolon or newline to get groups
 	groupTexts := regexp.MustCompile(`[;\n]`).Split(text, -1)
-	
+
 	var groups [][]int
-	
+
 	for _, groupText := range groupTexts {
 		groupText = strings.TrimSpace(groupText)
 		if groupText == "" {
@@ -476,10 +476,10 @@ func parseGroupingInstructions(text string, totalItems int) ([][]int, error) {
 
 		// Parse individual items and ranges (e.g., "1-3, 5, 7-9")
 		var itemIndices []int
-		
+
 		// Split by comma
 		parts := regexp.MustCompile(`\s*,\s*`).Split(groupText, -1)
-		
+
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
 			if part == "" {
@@ -492,10 +492,10 @@ func parseGroupingInstructions(text string, totalItems int) ([][]int, error) {
 				if len(rangeParts) != 2 {
 					return nil, fmt.Errorf("invalid range format: %s", part)
 				}
-				
+
 				start, err1 := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
 				end, err2 := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
-				
+
 				if err1 != nil || err2 != nil {
 					return nil, fmt.Errorf("invalid range numbers: %s", part)
 				}
@@ -633,7 +633,7 @@ func (h *TenantWebhookHandler) handleAIGrouping(bot *tgbotapi.BotAPI, tenantID u
 	// Build summary message
 	var summaryParts []string
 	summaryParts = append(summaryParts, fmt.Sprintf("✅ AI organized %d images into %d groups:\n", len(items), len(assets)))
-	
+
 	for i, group := range groups {
 		if i < len(assets) {
 			summaryParts = append(summaryParts, fmt.Sprintf("%d. %s (%d images)", i+1, group.Theme, len(group.Indices)))
@@ -771,4 +771,3 @@ func (h *TenantWebhookHandler) startCustomGroupingSession(bot *tgbotapi.BotAPI, 
 	CustomGroupingSessions.Store(chatID, bulkSessionID)
 	h.promptCustomGrouping(bot, tenantID, chatID, bulkSessionID)
 }
-

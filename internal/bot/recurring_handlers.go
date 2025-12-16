@@ -80,4 +80,3 @@ func (h *TenantWebhookHandler) handleRecurringTemplateCommand(bot *tgbotapi.BotA
 		templateManager.SendTemplatesList(ctx, bot, tenantID, chatID)
 	}
 }
-

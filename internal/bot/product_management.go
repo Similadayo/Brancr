@@ -444,4 +444,3 @@ func (h *TenantWebhookHandler) deleteProduct(bot *tgbotapi.BotAPI, chatID int64,
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("🗑️ Deleted: %s", name)))
 	h.listProducts(bot, chatID, tenantID, itemType)
 }
-

@@ -448,10 +448,10 @@ func (r *IntentRouter) fallbackIntentDetection(text string) *TenantIntent {
 
 	// TikTok commands
 	if strings.Contains(lower, "tiktok") {
-		if strings.Contains(lower, "video") || strings.Contains(lower, "analytics") || 
-		   strings.Contains(lower, "comment") || strings.Contains(lower, "status") ||
-		   strings.Contains(lower, "delete") || strings.Contains(lower, "reply") ||
-		   strings.Contains(lower, "list") {
+		if strings.Contains(lower, "video") || strings.Contains(lower, "analytics") ||
+			strings.Contains(lower, "comment") || strings.Contains(lower, "status") ||
+			strings.Contains(lower, "delete") || strings.Contains(lower, "reply") ||
+			strings.Contains(lower, "list") {
 			intent.Action = "tiktok_command"
 			intent.Confidence = 0.85
 			// Extract parameters

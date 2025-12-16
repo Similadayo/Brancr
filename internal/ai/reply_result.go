@@ -5,4 +5,3 @@ type ReplyResult struct {
 	Text      string   // The text reply
 	ImageURLs []string // Image URLs to send with the reply (if any)
 }
-

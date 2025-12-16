@@ -12,8 +12,8 @@ import (
 
 // OptimalTimeAnalyzer analyzes historical data to suggest optimal posting times
 type OptimalTimeAnalyzer struct {
-	DB      *gorm.DB
-	Logger  *zap.Logger
+	DB       *gorm.DB
+	Logger   *zap.Logger
 	AIClient *AIClient
 }
 
@@ -192,4 +192,3 @@ func (a *OptimalTimeAnalyzer) getOptimalHoursForPlatform(platform string) []int 
 		return []int{10, 14} // Default: 10am, 2pm
 	}
 }
-

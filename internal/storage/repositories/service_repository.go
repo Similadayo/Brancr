@@ -90,4 +90,3 @@ func (r *ServiceRepository) Update(ctx context.Context, service *storage.Service
 func (r *ServiceRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&storage.Service{}, id).Error
 }
-

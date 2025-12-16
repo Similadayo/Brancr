@@ -27,7 +27,7 @@ func (m *MemoryService) SaveConversation(ctx context.Context, tenantID uint, use
 	}
 
 	combined := fmt.Sprintf("User: %s\nAI: %s", userMsg, aiReply)
-	
+
 	// Skip embedding generation for conversations (we use recency, not semantic search)
 	// This saves API costs and avoids credit errors
 	vec := []float32{}
@@ -52,7 +52,7 @@ func (m *MemoryService) SaveConversation(ctx context.Context, tenantID uint, use
 		fmt.Printf("❌ Failed to save conversation for tenant %d: %v\n", tenantID, err)
 		return fmt.Errorf("failed to store memory: %w", err)
 	}
-	
+
 	fmt.Printf("💾 Saved conversation for tenant %d (user: %.50s...)\n", tenantID, userMsg)
 	return nil
 }
@@ -166,7 +166,7 @@ func (m *MemoryService) SaveCustomerConversation(ctx context.Context, tenantID, 
 		return
 	}
 	text := fmt.Sprintf("User: %s\nAssistant: %s", userMsg, aiReply)
-	
+
 	// Skip embedding generation for conversations (we use recency/time, not semantic search)
 	// This saves API costs and avoids credit errors
 	vec := []float32{}
@@ -185,7 +185,7 @@ func (m *MemoryService) SaveCustomerConversation(ctx context.Context, tenantID, 
 		ContextHash: hash,
 		CreatedAt:   now,
 	}
-	
+
 	if err := m.DB.Create(&item).Error; err != nil {
 		fmt.Printf("❌ Failed to save customer conversation: %v\n", err)
 	} else {
@@ -289,25 +289,25 @@ func (m *MemoryService) GetRecentCustomerConversationWithTimeLimit(ctx context.C
 // GetRecentCustomerConversationWithTimeLimitAndConversation retrieves customer conversations with optional conversation filter
 func (m *MemoryService) GetRecentCustomerConversationWithTimeLimitAndConversation(ctx context.Context, tenantID, customerID, conversationID uint, days int) []Message {
 	cutoffDate := time.Now().AddDate(0, 0, -days)
-	
+
 	// PRIMARY SOURCE: Use Interaction records (created immediately, more reliable)
 	var interactions []storage.Interaction
 	query := m.DB.WithContext(ctx).
-		Where("tenant_id = ? AND customer_id = ? AND created_at >= ?", 
+		Where("tenant_id = ? AND customer_id = ? AND created_at >= ?",
 			tenantID, customerID, cutoffDate)
-	
+
 	// If conversationID is provided, filter by it for more precise history
 	if conversationID > 0 {
 		query = query.Where("conversation_id = ?", conversationID)
 	}
-	
+
 	result := query.
 		Order("created_at ASC"). // Chronological order (oldest first)
-		Limit(400). // Max 400 messages (200 pairs) to avoid token overflow
+		Limit(400).              // Max 400 messages (200 pairs) to avoid token overflow
 		Find(&interactions)
 
 	var messages []Message
-	
+
 	if result.Error == nil && len(interactions) > 0 {
 		// Build messages from interactions
 		for _, interaction := range interactions {
@@ -327,10 +327,10 @@ func (m *MemoryService) GetRecentCustomerConversationWithTimeLimitAndConversatio
 				}
 			}
 		}
-		
-		fmt.Printf("📚 Retrieved %d interactions for customer %d (last %d days), converted to %d messages\n", 
+
+		fmt.Printf("📚 Retrieved %d interactions for customer %d (last %d days), converted to %d messages\n",
 			len(interactions), customerID, days, len(messages))
-		
+
 		// If we got messages from interactions, return them
 		if len(messages) > 0 {
 			return messages
@@ -340,7 +340,7 @@ func (m *MemoryService) GetRecentCustomerConversationWithTimeLimitAndConversatio
 	// FALLBACK: Use MemoryItem records (for backward compatibility)
 	var items []storage.MemoryItem
 	result = m.DB.WithContext(ctx).
-		Where("tenant_id = ? AND customer_id = ? AND category = ? AND created_at >= ?", 
+		Where("tenant_id = ? AND customer_id = ? AND category = ? AND created_at >= ?",
 			tenantID, customerID, "conversation", cutoffDate).
 		Order("created_at DESC").
 		Limit(200). // Max 200 conversation pairs (400 messages) to avoid token overflow
@@ -365,7 +365,7 @@ func (m *MemoryService) GetRecentCustomerConversationWithTimeLimitAndConversatio
 			messages = append(messages, Message{Role: "assistant", Content: aiMsg})
 		}
 	}
-	
+
 	fmt.Printf("📝 Converted to %d total messages for customer context (from last %d days)\n", len(messages), days)
 	return messages
 }
@@ -402,7 +402,7 @@ func (m *MemoryService) GetAllTenantConversationHistory(ctx context.Context, ten
 			messages = append(messages, Message{Role: "assistant", Content: aiMsg})
 		}
 	}
-	
+
 	fmt.Printf("📝 Converted to %d messages for tenant context (ALL conversations)\n", len(messages))
 	return messages
 }

@@ -324,4 +324,3 @@ func (m *ContentCalendarManager) AutoUpdateCalendarFromPosts(
 
 	return m.AddPostToCalendar(ctx, tenantID, postID, *scheduledAt)
 }
-

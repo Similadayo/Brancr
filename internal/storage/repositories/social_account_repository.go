@@ -48,4 +48,3 @@ func (r *SocialAccountRepository) CreateOrUpdate(ctx context.Context, account *s
 func (r *SocialAccountRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&storage.SocialAccount{}, id).Error
 }
-

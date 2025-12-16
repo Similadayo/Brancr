@@ -30,7 +30,7 @@ func NewRecurringTemplateManager(db *gorm.DB, logger *zap.Logger) *RecurringTemp
 // ScheduleConfig represents the schedule configuration for a recurring template
 type ScheduleConfig struct {
 	Days     []int  `json:"days"`     // 0=Sunday, 1=Monday, ..., 6=Saturday
-	Time     string `json:"time"`      // "10:00", "14:30", etc.
+	Time     string `json:"time"`     // "10:00", "14:30", etc.
 	Timezone string `json:"timezone"` // "America/New_York"
 }
 
@@ -312,4 +312,3 @@ func (m *RecurringTemplateManager) SendTemplatesList(
 
 	return nil
 }
-

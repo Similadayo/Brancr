@@ -62,4 +62,3 @@ func (r *IndustryRepository) Create(ctx context.Context, industry *storage.Indus
 func (r *IndustryRepository) Update(ctx context.Context, industry *storage.Industry) error {
 	return r.db.WithContext(ctx).Save(industry).Error
 }
-

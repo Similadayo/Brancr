@@ -53,10 +53,10 @@ func NewInstagramLoginOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.
 }
 
 type instagramLoginOAuthState struct {
-	TenantID        uint     `json:"tenant_id"`
-	SuccessRedirect string   `json:"success_redirect,omitempty"`
-	Nonce           string   `json:"nonce"`
-	IssuedAt        int64    `json:"iat"`
+	TenantID        uint   `json:"tenant_id"`
+	SuccessRedirect string `json:"success_redirect,omitempty"`
+	Nonce           string `json:"nonce"`
+	IssuedAt        int64  `json:"iat"`
 }
 
 // StartOAuth initiates the Instagram Login OAuth authorization flow
@@ -134,16 +134,16 @@ func (h *InstagramLoginOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.R
 	params.Set("client_id", h.AppID)
 	params.Set("redirect_uri", h.RedirectURI)
 	params.Set("response_type", "code")
-	
+
 	// New scope values for Instagram Login (as per documentation)
 	// https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login
 	// These replace the deprecated business_* scopes (deprecated Jan 27, 2025)
 	scopes := []string{
-		"instagram_business_basic",              // Required - replaces business_basic
-		"instagram_business_content_publish",    // For publishing - replaces business_content_publish
-		"instagram_business_manage_messages",   // For messaging - replaces business_manage_messages
-		"instagram_business_manage_comments",   // For comment moderation - replaces business_manage_comments
-		"instagram_business_manage_insights",   // For insights/analytics - REQUIRED for insights API
+		"instagram_business_basic",           // Required - replaces business_basic
+		"instagram_business_content_publish", // For publishing - replaces business_content_publish
+		"instagram_business_manage_messages", // For messaging - replaces business_manage_messages
+		"instagram_business_manage_comments", // For comment moderation - replaces business_manage_comments
+		"instagram_business_manage_insights", // For insights/analytics - REQUIRED for insights API
 	}
 	params.Set("scope", strings.Join(scopes, ","))
 	params.Set("state", stateToken)
@@ -165,7 +165,7 @@ func (h *InstagramLoginOAuthHandler) HandleCallback(w http.ResponseWriter, r *ht
 	}
 
 	query := r.URL.Query()
-	
+
 	// Check for errors
 	if errorParam := query.Get("error"); errorParam != "" {
 		errorReason := query.Get("error_reason")
@@ -174,7 +174,7 @@ func (h *InstagramLoginOAuthHandler) HandleCallback(w http.ResponseWriter, r *ht
 			zap.String("error", errorParam),
 			zap.String("error_reason", errorReason),
 			zap.String("error_description", errorDesc))
-		
+
 		// Redirect to frontend with error
 		redirectURL := fmt.Sprintf("%s?error=%s&error_description=%s", h.SuccessRedirect, errorParam, url.QueryEscape(errorDesc))
 		http.Redirect(w, r, redirectURL, http.StatusFound)
@@ -316,7 +316,7 @@ func (h *InstagramLoginOAuthHandler) HandleCallback(w http.ResponseWriter, r *ht
 // Endpoint: https://api.instagram.com/oauth/access_token
 func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessToken, userID string, permissions []string, err error) {
 	endpoint := "https://api.instagram.com/oauth/access_token"
-	
+
 	formData := url.Values{}
 	formData.Set("client_id", h.AppID)
 	formData.Set("client_secret", h.AppSecret)
@@ -464,7 +464,7 @@ func (h *InstagramLoginOAuthHandler) exchangeCodeForToken(code string) (accessTo
 // Endpoint: https://graph.instagram.com/access_token
 func (h *InstagramLoginOAuthHandler) exchangeForLongLivedToken(shortLivedToken string) (accessToken string, expiresIn int, err error) {
 	endpoint := "https://graph.instagram.com/access_token"
-	
+
 	params := url.Values{}
 	params.Set("grant_type", "ig_exchange_token")
 	params.Set("client_secret", h.AppSecret)
@@ -535,8 +535,8 @@ func (h *InstagramLoginOAuthHandler) getInstagramAccount(ctx context.Context, ac
 	// Handle response format - Instagram API may return direct object or wrapped in data array
 	// Try direct object first (most common)
 	var account struct {
-		UserID   string `json:"user_id"`   // Instagram professional account ID
-		ID       string `json:"id"`        // App-scoped ID (fallback)
+		UserID   string `json:"user_id"` // Instagram professional account ID
+		ID       string `json:"id"`      // App-scoped ID (fallback)
 		Username string `json:"username"`
 	}
 
@@ -586,7 +586,7 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 	err := h.DB.WithContext(ctx).
 		Where("tenant_id = ? AND platform = ? AND external_id = ?", tenantID, "instagram", account.ID).
 		First(&existing).Error
-	
+
 	// If not found by external_id, try finding by tenant_id + platform (for reconnection scenarios)
 	if err != nil {
 		err = h.DB.WithContext(ctx).
@@ -595,10 +595,10 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 	}
 
 	metadata := map[string]interface{}{
-		"login_method":    "instagram_login",
-		"permissions":     permissions,
-		"token_type":      "instagram_user",
-		"authorized_at":   time.Now().Format(time.RFC3339),
+		"login_method":  "instagram_login",
+		"permissions":   permissions,
+		"token_type":    "instagram_user",
+		"authorized_at": time.Now().Format(time.RFC3339),
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 
@@ -622,12 +622,12 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 		existing.LoginMethod = "instagram_login"
 		existing.Metadata = string(metadataJSON)
 		existing.AccessToken = encryptedToken // Save encrypted token directly
-		
+
 		// Save the updated account
 		if saveErr := h.DB.WithContext(ctx).Save(&existing).Error; saveErr != nil {
 			return fmt.Errorf("failed to update instagram account: %w", saveErr)
 		}
-		
+
 		// Verify the save was successful by reloading
 		var verifyAccount storage.SocialAccount
 		if verifyErr := h.DB.WithContext(ctx).First(&verifyAccount, existing.ID).Error; verifyErr == nil {
@@ -701,7 +701,7 @@ func (h *InstagramLoginOAuthHandler) saveInstagramAccount(ctx context.Context, t
 // Endpoint: https://graph.instagram.com/refresh_access_token
 func (h *InstagramLoginOAuthHandler) RefreshAccessToken(ctx context.Context, accessToken string) (newToken string, expiresIn int, err error) {
 	endpoint := "https://graph.instagram.com/refresh_access_token"
-	
+
 	params := url.Values{}
 	params.Set("grant_type", "ig_refresh_token")
 	params.Set("client_secret", h.AppSecret) // Required for token refresh
@@ -772,4 +772,3 @@ func (h *InstagramLoginOAuthHandler) randomNonce() string {
 	rand.Read(b)
 	return base64.URLEncoding.EncodeToString(b)
 }
-

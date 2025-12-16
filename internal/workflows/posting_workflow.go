@@ -573,7 +573,7 @@ func (w *PostingWorkflow) handleScheduleStep(ctx context.Context, state *Posting
 	}
 
 	state.ScheduledAt = scheduledTime
-	
+
 	// Generate AI caption if requested before showing review
 	if val, ok := state.Context["use_ai_caption"].(bool); ok && val && state.Caption == "" {
 		if err := w.generateAICaption(ctx, state); err != nil {
@@ -585,7 +585,7 @@ func (w *PostingWorkflow) handleScheduleStep(ctx context.Context, state *Posting
 			}
 		}
 	}
-	
+
 	state.Step = PostingStepCaptionReview
 	state.LastUpdated = time.Now()
 	if err := w.saveState(ctx, state); err != nil {
@@ -601,7 +601,7 @@ func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingF
 	if w.AIClient == nil {
 		return fmt.Errorf("AI client not available")
 	}
-	
+
 	var aiClient *ai.AIClient
 	switch client := w.AIClient.(type) {
 	case *ai.AIClient:
@@ -609,18 +609,18 @@ func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingF
 	default:
 		return fmt.Errorf("invalid AI client type")
 	}
-	
+
 	optimizer := &ai.CaptionOptimizer{
 		Client: aiClient,
 		DB:     w.DB,
 	}
-	
+
 	// Load media asset to determine media type and get image URLs
 	var asset storage.MediaAsset
 	if err := w.DB.First(&asset, state.MediaAssetID).Error; err != nil {
 		return fmt.Errorf("failed to load media asset: %w", err)
 	}
-	
+
 	// Extract image URLs from media asset
 	var imageURLs []string
 	if asset.URLs != "" {
@@ -629,13 +629,13 @@ func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingF
 			imageURLs = urls
 		}
 	}
-	
+
 	// Use first platform or default to instagram for caption generation
 	platform := "instagram"
 	if len(state.Platforms) > 0 {
 		platform = state.Platforms[0]
 	}
-	
+
 	// Generate caption with empty original (full AI generation) + image analysis
 	req := ai.OptimizeCaptionRequest{
 		OriginalCaption: "", // Empty means full AI generation
@@ -644,22 +644,22 @@ func (w *PostingWorkflow) generateAICaption(ctx context.Context, state *PostingF
 		TenantID:        state.TenantID,
 		ImageURLs:       imageURLs, // Pass image URLs for analysis
 	}
-	
+
 	result, err := optimizer.OptimizeCaption(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to optimize caption: %w", err)
 	}
-	
+
 	// Store generated caption
 	state.Caption = result.OptimizedCaption
 	state.Context["ai_generated"] = true
 	state.Context["caption_hashtags"] = result.Hashtags
-	
+
 	w.Logger.Info("AI caption generated",
 		zap.Uint("tenant_id", state.TenantID),
 		zap.String("platform", platform),
 		zap.String("media_type", asset.Type))
-	
+
 	return nil
 }
 
@@ -733,7 +733,7 @@ func (w *PostingWorkflow) sendCaptionReviewPrompt(ctx context.Context, state *Po
 	if val, ok := state.Context["ai_generated"].(bool); ok {
 		aiGenerated = val
 	}
-	
+
 	if captionText == "" || captionText == "[AI Caption - To be generated]" || strings.HasPrefix(captionText, "[AI Caption") {
 		captionDisplay.WriteString("⚠️ *No Caption*\n\n")
 		captionDisplay.WriteString("This post will be published WITHOUT a caption.\n\n")

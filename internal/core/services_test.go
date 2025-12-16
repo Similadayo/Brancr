@@ -75,4 +75,3 @@ func TestNewServices(t *testing.T) {
 		t.Error("Services.Scheduler is nil")
 	}
 }
-

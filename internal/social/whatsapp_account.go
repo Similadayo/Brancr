@@ -497,7 +497,7 @@ func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, te
 		account.Username = phoneNumber
 	}
 	account.Mode = "oauth2"
-	
+
 	// Mark as connected - Embedded Signup creates active accounts
 	// Status might be "APPROVED", "CONNECTED", "LIVE", or empty - all mean account is ready
 	account.Connected = true // Embedded Signup accounts are connected by default
@@ -525,7 +525,7 @@ func SaveWhatsAppAccount(db *gorm.DB, logger *zap.Logger, cfg *config.Config, te
 		// Step 4: Subscribe to webhooks SYNCHRONOUSLY (required for receiving messages)
 		// Subscribe to WABA webhooks
 		subscribeAppToWABASync(logger, cfg, tenantID, wabaID)
-		
+
 		// Subscribe to phone number webhooks (use system token, not tenant token)
 		if sysToken := strings.TrimSpace(cfg.MetaSystemUserToken); sysToken != "" {
 			subscribePhoneNumberSync(logger, phoneID, sysToken)
@@ -981,7 +981,7 @@ func subscribeAppToWABASync(logger *zap.Logger, cfg *config.Config, tenantID uin
 	if resp.StatusCode >= 400 {
 		// Check if already subscribed
 		if strings.Contains(string(body), "already") || strings.Contains(string(body), "duplicate") {
-		if logger != nil {
+			if logger != nil {
 				logger.Info("WhatsApp WABA already subscribed", zap.Uint("tenant_id", tenantID), zap.String("waba_id", wabaID))
 			}
 			return
@@ -1510,7 +1510,7 @@ func GetExtendedCreditID(logger *zap.Logger, businessID, systemUserToken string)
 
 	var response struct {
 		Data []struct {
-			ID             string `json:"id"`
+			ID              string `json:"id"`
 			LegalEntityName string `json:"legal_entity_name"`
 		} `json:"data"`
 		Error *struct {

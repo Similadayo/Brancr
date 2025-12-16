@@ -504,8 +504,8 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 
 		// Handle different response formats
 		var payload struct {
-			UserID   string `json:"user_id"`   // Instagram Login format
-			ID       string `json:"id"`        // Facebook Login format
+			UserID   string `json:"user_id"` // Instagram Login format
+			ID       string `json:"id"`      // Facebook Login format
 			Username string `json:"username"`
 			Name     string `json:"name"`
 		}
@@ -561,7 +561,7 @@ func verifyMetaOAuthConnection(ctx context.Context, acc *storage.SocialAccount, 
 		if label == "" {
 			label = payload.Name
 		}
-		
+
 		loginMethod := "Facebook Login"
 		if acc.LoginMethod == "instagram_login" {
 			loginMethod = "Instagram Login"
@@ -654,13 +654,13 @@ func SubscribeInstagramLoginAccount(ctx context.Context, client *http.Client, in
 		// Default fields for Instagram messaging
 		fields = []string{"messages", "comments"}
 	}
-	
+
 	// Use query parameters as per Meta documentation
 	endpoint := fmt.Sprintf("https://graph.instagram.com/v24.0/%s/subscribed_apps", instagramAccountID)
 	params := url.Values{}
 	params.Set("subscribed_fields", strings.Join(fields, ","))
 	params.Set("access_token", token)
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"?"+params.Encode(), nil)
 	if err != nil {
 		return fmt.Errorf("failed to create subscription request: %w", err)
@@ -874,12 +874,12 @@ func FindAndSubscribeInstagramPage(ctx context.Context, client *http.Client, igB
 	// Fallback: Try to query pages (only works with User Access Token, not Page Access Token)
 	// If accessToken is a Page Access Token, this will fail with "accounts field doesn't exist on Page"
 	pageURL := fmt.Sprintf("https://graph.facebook.com/v18.0/me/accounts?fields=id,instagram_business_account{id}&access_token=%s", accessToken)
-	
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	pageResp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch pages: %w", err)

@@ -166,7 +166,7 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 
 	prompt.WriteString(intro)
 	prompt.WriteString("\n\n")
-	
+
 	// Handle 3 modes:
 	// 1. AI-generated: OriginalCaption is empty - generate from scratch
 	// 2. Tenant-customized: OriginalCaption exists but we're not optimizing (handled by caller)
@@ -218,7 +218,7 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString(platformGuide)
 
 	prompt.WriteString("\n\n")
-	
+
 	prompt.WriteString("CRITICAL - Write like a REAL HUMAN would write this caption:\n")
 	prompt.WriteString("- Vary your sentence length naturally (mix short punchy lines with longer descriptive ones)\n")
 	prompt.WriteString("- Use conversational language - write like you're talking to friends, not crafting marketing copy\n")
@@ -229,7 +229,7 @@ func buildCaptionPrompt(intro string, req OptimizeCaptionRequest, platformGuide 
 	prompt.WriteString("- Make the caption concise, clear, and appealing for the target audience\n")
 	prompt.WriteString("- Follow brand voice but keep the style lively and informal as appropriate\n")
 	prompt.WriteString("- Do NOT use em-dashes in captions. Use commas, periods, or regular hyphens instead.\n\n")
-	
+
 	prompt.WriteString("Rules:\n")
 	prompt.WriteString("1. Reflect the brand tone and vibe described above.\n")
 	prompt.WriteString("2. Keep the caption to one or two natural sentences - vary the length.\n")
@@ -379,9 +379,9 @@ func (o *CaptionOptimizer) GenerateCaptionFromKeywords(ctx context.Context, tena
 	prompt.WriteString(intro)
 	prompt.WriteString("\n\n")
 	prompt.WriteString(fmt.Sprintf("Task: Generate a social media caption for %s based on keywords provided by the business owner.\n\n", strings.ToUpper(platform)))
-	
+
 	prompt.WriteString(fmt.Sprintf("Keywords provided: %s\n\n", keywords))
-	
+
 	if imageAnalysis != "" {
 		prompt.WriteString("Image Analysis:\n")
 		prompt.WriteString(imageAnalysis)
@@ -411,14 +411,14 @@ func (o *CaptionOptimizer) GenerateCaptionFromKeywords(ctx context.Context, tena
 	prompt.WriteString("3. References the image content when relevant\n")
 	prompt.WriteString("4. Is engaging and platform-appropriate\n")
 	prompt.WriteString("5. Sounds like a real human wrote it (not robotic or template-like)\n\n")
-	
+
 	prompt.WriteString("CRITICAL - Write like a REAL HUMAN would write this caption:\n")
 	prompt.WriteString("- Vary your sentence length naturally\n")
 	prompt.WriteString("- Use conversational language\n")
 	prompt.WriteString("- Avoid overly formal or corporate phrasing\n")
 	prompt.WriteString("- Use contractions naturally\n")
 	prompt.WriteString("- Do NOT use em-dashes. Use commas, periods, or regular hyphens instead.\n\n")
-	
+
 	prompt.WriteString("Return only the finished caption with hashtags at the end.")
 
 	// Use vision API if images available, otherwise text generation
@@ -465,9 +465,9 @@ func (o *CaptionOptimizer) RephraseCaption(ctx context.Context, tenantID uint, o
 	prompt.WriteString(intro)
 	prompt.WriteString("\n\n")
 	prompt.WriteString(fmt.Sprintf("Task: Rephrase this social media caption for %s while keeping the same meaning and message.\n\n", strings.ToUpper(platform)))
-	
+
 	prompt.WriteString(fmt.Sprintf("Original caption: \"%s\"\n\n", originalCaption))
-	
+
 	prompt.WriteString("Context:\n")
 	prompt.WriteString(fmt.Sprintf("- Platform: %s\n", strings.ToUpper(platform)))
 	prompt.WriteString(fmt.Sprintf("- Media type: %s\n", strings.ToLower(mediaType)))
@@ -484,7 +484,7 @@ func (o *CaptionOptimizer) RephraseCaption(ctx context.Context, tenantID uint, o
 	prompt.WriteString("4. Maintain the brand voice\n")
 	prompt.WriteString("5. Sound natural and human (not robotic)\n")
 	prompt.WriteString("6. Do NOT use em-dashes. Use commas, periods, or regular hyphens instead.\n\n")
-	
+
 	prompt.WriteString("Return only the rephrased caption with hashtags at the end.")
 
 	messages := append(base, Message{Role: "user", Content: prompt.String()})
@@ -530,9 +530,9 @@ func (o *CaptionOptimizer) FineTuneCaption(ctx context.Context, tenantID uint, o
 	prompt.WriteString(intro)
 	prompt.WriteString("\n\n")
 	prompt.WriteString(fmt.Sprintf("Task: Fine-tune and improve this social media caption for %s.\n\n", strings.ToUpper(platform)))
-	
+
 	prompt.WriteString(fmt.Sprintf("Current caption: \"%s\"\n\n", originalCaption))
-	
+
 	if imageAnalysis != "" {
 		prompt.WriteString("Image Analysis:\n")
 		prompt.WriteString(imageAnalysis)
@@ -557,7 +557,7 @@ func (o *CaptionOptimizer) FineTuneCaption(ctx context.Context, tenantID uint, o
 	prompt.WriteString("6. Reference image content when relevant\n")
 	prompt.WriteString("7. Sound natural and human (not robotic)\n")
 	prompt.WriteString("8. Do NOT use em-dashes. Use commas, periods, or regular hyphens instead.\n\n")
-	
+
 	prompt.WriteString("Return only the fine-tuned caption with hashtags at the end.")
 
 	// Use vision API if images available, otherwise text generation

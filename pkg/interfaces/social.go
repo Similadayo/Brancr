@@ -27,4 +27,3 @@ type WebhookHandler interface {
 	HandleWebhook(ctx context.Context, payload []byte) error
 	VerifyWebhook(token, challenge string) string
 }
-

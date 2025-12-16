@@ -17,4 +17,3 @@ type BotManager interface {
 	GenerateAIResponse(ctx context.Context, tenantID uint, userMsg string) (string, error)
 	TrackOrCreateCustomer(ctx context.Context, tenantID uint, channel, platformID, displayName, username, profilePic string) (*storage.Customer, error)
 }
-

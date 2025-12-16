@@ -23,4 +23,3 @@ func DecryptTokenWithNotification(encoded string, logger *zap.Logger, tenantID u
 	}
 	return decrypted, nil
 }
-

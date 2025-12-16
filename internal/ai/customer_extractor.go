@@ -96,7 +96,7 @@ func (e *CustomerInfoExtractor) extractPhoneNumber(text string) string {
 	for _, word := range words {
 		// Remove common punctuation
 		word = strings.Trim(word, ".,!?;:")
-		
+
 		// Check if it looks like a phone number
 		if strings.HasPrefix(word, "+") && len(word) >= 10 {
 			return word
@@ -128,7 +128,7 @@ func (e *CustomerInfoExtractor) extractEmail(text string) string {
 func (e *CustomerInfoExtractor) extractName(text, fallback string) string {
 	// Look for patterns like "my name is...", "I am...", "call me..."
 	lowerText := strings.ToLower(text)
-	
+
 	patterns := []string{
 		"my name is",
 		"i am",
@@ -136,7 +136,7 @@ func (e *CustomerInfoExtractor) extractName(text, fallback string) string {
 		"call me",
 		"this is",
 	}
-	
+
 	for _, pattern := range patterns {
 		if idx := strings.Index(lowerText, pattern); idx != -1 {
 			// Extract text after pattern
@@ -153,7 +153,7 @@ func (e *CustomerInfoExtractor) extractName(text, fallback string) string {
 			}
 		}
 	}
-	
+
 	return fallback
 }
 
@@ -163,4 +163,3 @@ func min(a, b int) int {
 	}
 	return b
 }
-

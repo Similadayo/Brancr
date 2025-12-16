@@ -2234,8 +2234,6 @@ func (h *Handler) getOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get business menu items
-	var menuItems []storage.BusinessMenuItem
-	h.DB.Where("tenant_id = ?", tenant.ID).Find(&menuItems)
 
 	// Get business FAQs
 	var faqs []storage.BusinessFAQ
@@ -2243,18 +2241,6 @@ func (h *Handler) getOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-complete onboarding if tenant has sufficient data
 	h.checkAndAutoCompleteOnboarding(&tenant)
-
-	// Format menu items for response
-	menuItemsResp := make([]map[string]any, len(menuItems))
-	for i, item := range menuItems {
-		menuItemsResp[i] = map[string]any{
-			"id":          item.ID,
-			"name":        item.Name,
-			"category":    item.Category,
-			"price":       item.Price,
-			"description": item.Description,
-		}
-	}
 
 	// Format FAQs for response
 	faqsResp := make([]map[string]any, len(faqs))
@@ -2287,7 +2273,6 @@ func (h *Handler) getOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 			"style_notes": getStringOrEmpty(persona.StyleNotes),
 		},
 		"business_details": map[string]any{
-			"menu_items":     menuItemsResp,
 			"faqs":           faqsResp,
 			"keywords":       getStringOrEmpty(profile.Keywords),
 			"knowledge_base": getStringOrEmpty(profile.KnowledgeBase),
@@ -2494,12 +2479,6 @@ func (h *Handler) updateBusinessDetails(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		MenuItems []struct {
-			Name        string `json:"name"`
-			Category    string `json:"category"`
-			Price       string `json:"price"`
-			Description string `json:"description"`
-		} `json:"menu_items"`
 		FAQs []struct {
 			Question string `json:"question"`
 			Answer   string `json:"answer"`
@@ -2524,18 +2503,6 @@ func (h *Handler) updateBusinessDetails(w http.ResponseWriter, r *http.Request) 
 	// Delete existing menu items and FAQs (optional - can keep or replace)
 	// h.DB.Where("tenant_id = ?", claims.TenantID).Delete(&storage.BusinessMenuItem{})
 	// h.DB.Where("tenant_id = ?", claims.TenantID).Delete(&storage.BusinessFAQ{})
-
-	// Create menu items
-	for _, item := range req.MenuItems {
-		menuItem := storage.BusinessMenuItem{
-			TenantID:    claims.TenantID,
-			Name:        item.Name,
-			Category:    item.Category,
-			Price:       item.Price,
-			Description: item.Description,
-		}
-		h.DB.Create(&menuItem)
-	}
 
 	// Create FAQs
 	for _, faq := range req.FAQs {
@@ -2791,13 +2758,6 @@ func (h *Handler) updateBusinessDetailsSettings(w http.ResponseWriter, r *http.R
 	}
 
 	var req struct {
-		MenuItems []struct {
-			ID          *uint  `json:"id,omitempty"` // nil = new item, provided = update existing
-			Name        string `json:"name"`
-			Category    string `json:"category"`
-			Price       string `json:"price"`
-			Description string `json:"description"`
-		} `json:"menu_items"`
 		FAQs []struct {
 			ID       *uint  `json:"id,omitempty"` // nil = new FAQ, provided = update existing
 			Question string `json:"question"`
@@ -2830,31 +2790,6 @@ func (h *Handler) updateBusinessDetailsSettings(w http.ResponseWriter, r *http.R
 	if req.Keywords != nil || req.KnowledgeBase != nil {
 		if err := h.DB.Save(&profile).Error; err != nil {
 			h.Logger.Error("failed to update business profile", zap.Error(err))
-		}
-	}
-
-	// Handle menu items: update existing, create new
-	for _, item := range req.MenuItems {
-		if item.ID != nil {
-			// Update existing menu item
-			var menuItem storage.BusinessMenuItem
-			if err := h.DB.Where("id = ? AND tenant_id = ?", *item.ID, claims.TenantID).First(&menuItem).Error; err == nil {
-				menuItem.Name = item.Name
-				menuItem.Category = item.Category
-				menuItem.Price = item.Price
-				menuItem.Description = item.Description
-				h.DB.Save(&menuItem)
-			}
-		} else {
-			// Create new menu item
-			menuItem := storage.BusinessMenuItem{
-				TenantID:    claims.TenantID,
-				Name:        item.Name,
-				Category:    item.Category,
-				Price:       item.Price,
-				Description: item.Description,
-			}
-			h.DB.Create(&menuItem)
 		}
 	}
 

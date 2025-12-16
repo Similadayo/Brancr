@@ -58,4 +58,3 @@ func (h *Handler) generateReceipt(w http.ResponseWriter, r *http.Request) {
 		"message":     "Receipt generated successfully",
 	})
 }
-

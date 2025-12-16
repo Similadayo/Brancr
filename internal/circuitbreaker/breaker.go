@@ -138,4 +138,3 @@ func (cb *CircuitBreaker) IsOpen() bool {
 }
 
 var ErrCircuitOpen = errors.New("circuit breaker is open")
-

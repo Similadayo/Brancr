@@ -63,4 +63,3 @@ func (h *TenantWebhookHandler) handlePostCancelCallback(bot *tgbotapi.BotAPI, te
 
 	bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Cancelled: *%s*", post.Name)))
 }
-

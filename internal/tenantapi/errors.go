@@ -76,4 +76,3 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 func (h *Handler) writeInternalError(w http.ResponseWriter, r *http.Request, err error) {
 	h.writeError(w, r, errors.NewInternalError("internal server error", err), http.StatusInternalServerError)
 }
-

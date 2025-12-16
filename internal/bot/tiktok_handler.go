@@ -356,4 +356,3 @@ func (r *IntentRouter) handleTikTokDelete(bot *tgbotapi.BotAPI, tenantID uint, c
 	bot.Send(tgbotapi.NewMessage(chatID, "✅ Video deleted successfully!"))
 	return true, nil
 }
-

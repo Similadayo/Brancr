@@ -14,10 +14,10 @@ type loggerAdapter struct {
 	logger        *zap.Logger
 	slowThreshold time.Duration
 	// Metrics
-	queryCount    *int64
+	queryCount     *int64
 	slowQueryCount *int64
-	errorCount    *int64
-	totalDuration *int64
+	errorCount     *int64
+	totalDuration  *int64
 }
 
 // LogMode implements gorm.Logger interface
@@ -99,9 +99,8 @@ func (l loggerAdapter) Stats() QueryStats {
 
 // QueryStats contains database query statistics
 type QueryStats struct {
-	QueryCount    int64
+	QueryCount     int64
 	SlowQueryCount int64
-	ErrorCount    int64
-	AvgDuration   time.Duration
+	ErrorCount     int64
+	AvgDuration    time.Duration
 }
-

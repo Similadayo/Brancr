@@ -43,10 +43,10 @@ type ContentPart struct {
 }
 
 type AIClient struct {
-	APIKey      string
-	BaseURL     string
-	Model       string
-	IsOpenRouter bool // Track if using OpenRouter vs OpenAI direct
+	APIKey         string
+	BaseURL        string
+	Model          string
+	IsOpenRouter   bool // Track if using OpenRouter vs OpenAI direct
 	CircuitBreaker interface {
 		Execute(ctx context.Context, fn func() error) error
 		IsOpen() bool
@@ -76,9 +76,9 @@ func NewAIClient() *AIClient {
 	}
 
 	return &AIClient{
-		APIKey:      key,
-		BaseURL:     base,
-		Model:       model,
+		APIKey:       key,
+		BaseURL:      base,
+		Model:        model,
 		IsOpenRouter: false, // Always false now - OpenAI only
 	}
 }

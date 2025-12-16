@@ -31,10 +31,10 @@ func RequestSizeLimit(maxSize int64, logger *zap.Logger) func(http.Handler) http
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusRequestEntityTooLarge)
 					json.NewEncoder(w).Encode(map[string]interface{}{
-						"error":   "request_too_large",
-						"message": "Request body exceeds maximum size",
+						"error":    "request_too_large",
+						"message":  "Request body exceeds maximum size",
 						"max_size": maxSize,
-						"code":    http.StatusRequestEntityTooLarge,
+						"code":     http.StatusRequestEntityTooLarge,
 					})
 					return
 				}
@@ -52,4 +52,3 @@ func RequestSizeLimit(maxSize int64, logger *zap.Logger) func(http.Handler) http
 func DefaultRequestSizeLimit(logger *zap.Logger) func(http.Handler) http.Handler {
 	return RequestSizeLimit(10*1024*1024, logger) // 10MB
 }
-

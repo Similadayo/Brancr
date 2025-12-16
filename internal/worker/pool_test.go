@@ -118,4 +118,3 @@ func TestPool_Shutdown(t *testing.T) {
 		t.Errorf("Shutdown failed: %v", err)
 	}
 }
-

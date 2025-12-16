@@ -88,7 +88,7 @@ func storeMediaIDForTenant(tenantID uint, platform, mediaID string) {
 func GetLatestMediaID(tenantID uint, platform string) (string, bool) {
 	prefix := fmt.Sprintf("%d:%s:", tenantID, platform)
 	var latestKey string
-	
+
 	mediaIDStore.Range(func(key, value interface{}) bool {
 		keyStr, ok := key.(string)
 		if !ok {
@@ -105,7 +105,7 @@ func GetLatestMediaID(tenantID uint, platform string) (string, bool) {
 		}
 		return true
 	})
-	
+
 	if latestKey != "" {
 		if val, ok := mediaIDStore.Load(latestKey); ok {
 			if mediaID, ok := val.(string); ok {
@@ -114,7 +114,7 @@ func GetLatestMediaID(tenantID uint, platform string) (string, bool) {
 			}
 		}
 	}
-	
+
 	return "", false
 }
 
@@ -233,7 +233,7 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 	// Read response body once - check for success ID regardless of status code
 	// Instagram sometimes returns success data even with error status codes
 	body, _ := io.ReadAll(publishResp.Body)
-	
+
 	var successResponse struct {
 		ID string `json:"id"`
 	}
@@ -260,7 +260,7 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 				ErrorUserMsg string `json:"error_user_msg"`
 			} `json:"error"`
 		}
-		
+
 		if err := json.Unmarshal(body, &apiError); err == nil {
 			// Handle specific error codes
 			if apiError.Error.Code == 4 && apiError.Error.ErrorSubcode == 2207051 {
@@ -277,10 +277,10 @@ func (i *InstagramConnector) PostMediaWithResult(ctx context.Context, acc *stora
 			if apiError.Error.Code == 190 {
 				return fmt.Errorf("Instagram authentication error (403): Invalid access token. Please reconnect your Instagram account. Error: %s", apiError.Error.Message)
 			}
-			return fmt.Errorf("Instagram publish error %d: %s (Code: %d, Subcode: %d)", 
+			return fmt.Errorf("Instagram publish error %d: %s (Code: %d, Subcode: %d)",
 				publishResp.StatusCode, apiError.Error.Message, apiError.Error.Code, apiError.Error.ErrorSubcode)
 		}
-		
+
 		return fmt.Errorf("Instagram publish error %d: %s", publishResp.StatusCode, string(body))
 	}
 
@@ -494,8 +494,8 @@ func (i *InstagramConnector) createVideoMedia(ctx context.Context, igAccountID, 
 // waitForMediaReady polls Instagram to check if the media container is ready for publishing
 // Instagram requires media to be processed before publishing (status must be "FINISHED")
 func (i *InstagramConnector) waitForMediaReady(ctx context.Context, creationID, accessToken string, acc *storage.SocialAccount) error {
-		apiBase := i.getInstagramAPIBase(acc)
-		statusURL := fmt.Sprintf("%s/%s?fields=status_code&access_token=%s", apiBase, creationID, accessToken)
+	apiBase := i.getInstagramAPIBase(acc)
+	statusURL := fmt.Sprintf("%s/%s?fields=status_code&access_token=%s", apiBase, creationID, accessToken)
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	maxAttempts := 15 // 15 attempts * 2 seconds = 30 seconds max wait (reduced to avoid rate limits)
@@ -655,7 +655,7 @@ func (i *InstagramConnector) getInstagramAccountID(ctx context.Context, acc *sto
 func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountID, accessToken, creationID string, acc *storage.SocialAccount) (bool, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	apiBase := i.getInstagramAPIBase(acc)
-	
+
 	// Try to query the creation_id as if it were published media
 	// Once published, Instagram converts creation_id to media_id which can be queried
 	mediaURL := fmt.Sprintf("%s/%s?fields=id,timestamp&access_token=%s", apiBase, creationID, accessToken)
@@ -664,7 +664,7 @@ func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountI
 		return false, err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode == 200 {
 		var result struct {
 			ID        string `json:"id"`
@@ -675,7 +675,7 @@ func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountI
 			return true, nil
 		}
 	}
-	
+
 	// Alternative: Check account's recent media (limit to most recent 5 to avoid rate limits)
 	// Look for a post created in the last few minutes
 	recentMediaURL := fmt.Sprintf("%s/%s/media?fields=id,timestamp&limit=5&access_token=%s", apiBase, igAccountID, accessToken)
@@ -684,7 +684,7 @@ func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountI
 		return false, nil // Don't treat verification failure as error
 	}
 	defer resp2.Body.Close()
-	
+
 	if resp2.StatusCode == 200 {
 		var mediaList struct {
 			Data []struct {
@@ -701,7 +701,7 @@ func (i *InstagramConnector) verifyPostPublished(ctx context.Context, igAccountI
 			}
 		}
 	}
-	
+
 	return false, nil // Couldn't verify - assume it failed
 }
 

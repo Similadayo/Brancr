@@ -18,24 +18,24 @@ type JobType string
 const (
 	// Post execution jobs
 	JobTypePostExecution JobType = "post:execute"
-	
+
 	// Webhook processing jobs
-	JobTypeWebhookMeta        JobType = "webhook:meta"
-	JobTypeWebhookGupshup     JobType = "webhook:gupshup"
-	JobTypeWebhookRespondIO   JobType = "webhook:respondio"
-	
+	JobTypeWebhookMeta      JobType = "webhook:meta"
+	JobTypeWebhookGupshup   JobType = "webhook:gupshup"
+	JobTypeWebhookRespondIO JobType = "webhook:respondio"
+
 	// Media processing jobs
-	JobTypeMediaUpload        JobType = "media:upload"
-	JobTypeMediaConvert       JobType = "media:convert"
-	
+	JobTypeMediaUpload  JobType = "media:upload"
+	JobTypeMediaConvert JobType = "media:convert"
+
 	// AI processing jobs
-	JobTypeAIGenerateReply    JobType = "ai:generate_reply"
-	JobTypeAIOptimizeCaption  JobType = "ai:optimize_caption"
-	
+	JobTypeAIGenerateReply   JobType = "ai:generate_reply"
+	JobTypeAIOptimizeCaption JobType = "ai:optimize_caption"
+
 	// Analytics jobs
 	JobTypeAnalyticsCollect   JobType = "analytics:collect"
 	JobTypeAnalyticsAggregate JobType = "analytics:aggregate"
-	
+
 	// Cleanup jobs
 	JobTypeCleanupOldLogs      JobType = "cleanup:old_logs"
 	JobTypeCleanupExpiredCache JobType = "cleanup:expired_cache"
@@ -81,7 +81,7 @@ func NewJobQueue(redisAddr string, logger *zap.Logger) (*JobQueue, error) {
 	}
 
 	client := asynq.NewClient(redisOpt)
-	
+
 	// Configure server with concurrency limits
 	server := asynq.NewServer(
 		redisOpt,
@@ -143,7 +143,7 @@ func (q *JobQueue) Enqueue(jobType JobType, payload interface{}, opts ...asynq.O
 	}
 
 	task := asynq.NewTask(string(jobType), payloadBytes, opts...)
-	
+
 	info, err := q.client.Enqueue(task)
 	if err != nil {
 		return nil, fmt.Errorf("enqueue task: %w", err)
@@ -212,4 +212,3 @@ func (q *JobQueue) Client() *asynq.Client {
 func (q *JobQueue) Server() *asynq.Server {
 	return q.server
 }
-

@@ -25,4 +25,3 @@ func TestDBPostgres(t *testing.T) *gorm.DB {
 	}
 	return db
 }
-

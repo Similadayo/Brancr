@@ -20,20 +20,20 @@ import (
 // Returns customer name/username, platform, message content, and whether it's a username (starts with @)
 func parseCustomerMessageInstruction(text string) (customerName, platform, message string, isUsername bool, valid bool) {
 	text = strings.TrimSpace(text)
-	
+
 	// Remove bot name prefix (e.g., "Fred, ", "Fred, please", etc.)
 	// This handles patterns like "Fred, please greet @zoovie_boy on instagram"
 	botNamePattern := regexp.MustCompile(`(?i)^([a-z0-9_]+)[,\s]+(?:please\s+)?(.+)$`)
 	if matches := botNamePattern.FindStringSubmatch(text); len(matches) == 3 {
 		text = strings.TrimSpace(matches[2]) // Use the part after bot name
 	}
-	
+
 	// Check if customer name starts with @ (username/handle)
 	isUsername = false
 	if strings.HasPrefix(text, "@") || strings.Contains(text, " @") {
 		isUsername = true
 	}
-	
+
 	// Pattern 1: "Tell [name/@username] on [platform] that [message]"
 	pattern1 := regexp.MustCompile(`(?i)^tell\s+(.+?)\s+on\s+(facebook|instagram|whatsapp|messenger)\s+that\s+(.+)$`)
 	matches := pattern1.FindStringSubmatch(text)
@@ -49,7 +49,7 @@ func parseCustomerMessageInstruction(text string) (customerName, platform, messa
 		}
 		return customerName, platform, strings.TrimSpace(matches[3]), isUser, true
 	}
-	
+
 	// Pattern 2: "Send message to [name/@username] on [platform] saying [message]"
 	pattern2 := regexp.MustCompile(`(?i)^send\s+(?:message\s+)?to\s+(.+?)\s+on\s+(facebook|instagram|whatsapp|messenger)\s+(?:saying|that|message|msg)\s+(.+)$`)
 	matches = pattern2.FindStringSubmatch(text)
@@ -65,7 +65,7 @@ func parseCustomerMessageInstruction(text string) (customerName, platform, messa
 		}
 		return customerName, platform, strings.TrimSpace(matches[3]), isUser, true
 	}
-	
+
 	// Pattern 3: "[name/@username] on [platform]: [message]" (simpler format)
 	pattern3 := regexp.MustCompile(`(?i)^(.+?)\s+on\s+(facebook|instagram|whatsapp|messenger):\s+(.+)$`)
 	matches = pattern3.FindStringSubmatch(text)
@@ -81,7 +81,7 @@ func parseCustomerMessageInstruction(text string) (customerName, platform, messa
 		}
 		return customerName, platform, strings.TrimSpace(matches[3]), isUser, true
 	}
-	
+
 	// Pattern 4: "[BotName], [action] [name/@username] on [platform] [message]"
 	// Example: "Fred, please greet @zoovie_boy on instagram"
 	pattern4 := regexp.MustCompile(`(?i)^(?:please\s+)?(?:greet|message|tell|contact)\s+(.+?)\s+on\s+(facebook|instagram|whatsapp|messenger)(?:\s+(?:saying|that|message|msg|with)\s+(.+))?$`)
@@ -92,12 +92,12 @@ func parseCustomerMessageInstruction(text string) (customerName, platform, messa
 		if platform == "messenger" {
 			platform = "facebook"
 		}
-		
+
 		isUser := strings.HasPrefix(customerName, "@")
 		if isUser {
 			customerName = strings.TrimPrefix(customerName, "@")
 		}
-		
+
 		// If message not provided, use default greeting
 		message := ""
 		if len(matches) >= 4 && strings.TrimSpace(matches[3]) != "" {
@@ -106,10 +106,10 @@ func parseCustomerMessageInstruction(text string) (customerName, platform, messa
 			// Default greeting message
 			message = "Hello! How can I help you today?"
 		}
-		
+
 		return customerName, platform, message, isUser, true
 	}
-	
+
 	return "", "", "", false, false
 }
 
@@ -125,14 +125,14 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 	if !valid {
 		return false // Not a customer message instruction
 	}
-	
+
 	// Send processing message
 	processingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "Got it—give me a sec to handle that..."))
-	
+
 	go func() {
 		var customer *storage.Customer
 		var err error
-		
+
 		// Find or create customer
 		if isUsername {
 			// Searching by username/handle
@@ -141,17 +141,17 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 			// Searching by name
 			customer, err = h.findCustomerByName(tenantID, platform, customerName, bot, chatID, processingMsg.MessageID)
 		}
-		
+
 		if err != nil || customer == nil {
 			// Error already sent to user in helper functions
 			return
 		}
-		
+
 		// Get or create conversation
 		var conversation storage.Conversation
 		threadID := customer.PlatformID // Default fallback (PSID)
-		
-		if err := h.Manager.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?", 
+
+		if err := h.Manager.DB.Where("tenant_id = ? AND customer_id = ? AND platform = ?",
 			tenantID, customer.ID, platform).Order("last_message_at DESC").First(&conversation).Error; err == nil {
 			if conversation.PlatformThreadID != "" {
 				threadID = conversation.PlatformThreadID
@@ -170,28 +170,28 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 				h.Manager.Logger.Warn("failed to create conversation", zap.Error(err))
 			}
 		}
-		
+
 		// Send message using MessageHandler
 		if h.Manager.EscalationHandler != nil && h.Manager.EscalationHandler.MessageHandler != nil {
 			err := h.Manager.EscalationHandler.MessageHandler.SendReply(ctx, tenantID, platform, threadID, customer.PlatformID, messageContent)
-			
+
 			// Delete processing message
 			if processingMsg.MessageID > 0 {
 				bot.Request(tgbotapi.NewDeleteMessage(chatID, processingMsg.MessageID))
 			}
-			
+
 			if err != nil {
 				h.Manager.Logger.Error("failed to send message to customer",
 					zap.Uint("tenant_id", tenantID),
 					zap.Uint("customer_id", customer.ID),
 					zap.String("platform", platform),
 					zap.Error(err))
-				
+
 				errorMsg := fmt.Sprintf("❌ Couldn't send message to %s on %s: %v", customerName, strings.Title(platform), err)
 				bot.Send(tgbotapi.NewMessage(chatID, errorMsg))
 				return
 			}
-			
+
 			// Success message
 			displayName := customer.DisplayName
 			if displayName == "" {
@@ -203,10 +203,10 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 			if isUsername {
 				displayName = "@" + displayName
 			}
-			
+
 			successMsg := fmt.Sprintf("✅ Done! Messaged %s on %s:\n\n\"%s\"", displayName, strings.Title(platform), messageContent)
 			bot.Send(tgbotapi.NewMessage(chatID, successMsg))
-			
+
 			// Log as manual interaction
 			interaction := storage.Interaction{
 				TenantID:       tenantID,
@@ -221,7 +221,7 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 				FinalReply:     messageContent,
 			}
 			h.Manager.DB.Create(&interaction)
-			
+
 			h.Manager.Logger.Info("✅ Sent manual message to customer",
 				zap.Uint("tenant_id", tenantID),
 				zap.Uint("customer_id", customer.ID),
@@ -234,7 +234,7 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ Message handler not available. Please try again later."))
 		}
 	}()
-	
+
 	return true // Instruction handled
 }
 
@@ -242,18 +242,18 @@ func (h *TenantWebhookHandler) handleCustomerMessageInstruction(
 func (h *TenantWebhookHandler) findCustomerByName(tenantID uint, platform, customerName string, bot *tgbotapi.BotAPI, chatID int64, processingMsgID int) (*storage.Customer, error) {
 	var customers []storage.Customer
 	searchPattern := "%" + customerName + "%"
-	
+
 	// Try exact match on DisplayName or Username first
 	var exactCustomer storage.Customer
-	if err := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND (LOWER(display_name) = LOWER(?) OR LOWER(username) = LOWER(?))", 
+	if err := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND (LOWER(display_name) = LOWER(?) OR LOWER(username) = LOWER(?))",
 		tenantID, platform, customerName, customerName).First(&exactCustomer).Error; err == nil {
 		return &exactCustomer, nil
 	}
-	
+
 	// Try partial match
-	query := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND (LOWER(display_name) LIKE ? OR LOWER(username) LIKE ?)", 
+	query := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND (LOWER(display_name) LIKE ? OR LOWER(username) LIKE ?)",
 		tenantID, platform, searchPattern, searchPattern)
-	
+
 	if err := query.Limit(10).Find(&customers).Error; err != nil || len(customers) == 0 {
 		if processingMsgID > 0 {
 			bot.Request(tgbotapi.NewDeleteMessage(chatID, processingMsgID))
@@ -261,7 +261,7 @@ func (h *TenantWebhookHandler) findCustomerByName(tenantID uint, platform, custo
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Couldn't find customer '%s' on %s.\n\nThey need to message you first before you can send them a message.", customerName, strings.Title(platform))))
 		return nil, fmt.Errorf("customer not found")
 	}
-	
+
 	// If multiple matches, use the most recent one
 	if len(customers) > 1 {
 		for i := 0; i < len(customers)-1; i++ {
@@ -274,7 +274,7 @@ func (h *TenantWebhookHandler) findCustomerByName(tenantID uint, platform, custo
 			zap.String("customer_name", customerName),
 			zap.Int("matches", len(customers)))
 	}
-	
+
 	return &customers[0], nil
 }
 
@@ -283,18 +283,18 @@ func (h *TenantWebhookHandler) findCustomerByName(tenantID uint, platform, custo
 func (h *TenantWebhookHandler) findOrCreateCustomerByUsername(ctx context.Context, tenantID uint, platform, username string, bot *tgbotapi.BotAPI, chatID int64, processingMsgID int) (*storage.Customer, error) {
 	// Clean username (remove @ if present)
 	username = strings.TrimPrefix(strings.ToLower(username), "@")
-	
+
 	// Try to find existing customer by username (exact match)
 	var customer storage.Customer
-	if err := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND LOWER(username) = ?", 
+	if err := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND LOWER(username) = ?",
 		tenantID, platform, username).First(&customer).Error; err == nil {
 		// Found existing customer - they've messaged before, we have their PSID
 		return &customer, nil
 	}
-	
+
 	// Try partial match on username
 	var customers []storage.Customer
-	if err := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND LOWER(username) LIKE ?", 
+	if err := h.Manager.DB.Where("tenant_id = ? AND channel = ? AND LOWER(username) LIKE ?",
 		tenantID, platform, "%"+username+"%").Limit(5).Find(&customers).Error; err == nil && len(customers) > 0 {
 		// Found similar usernames
 		if len(customers) == 1 {
@@ -316,12 +316,12 @@ func (h *TenantWebhookHandler) findOrCreateCustomerByUsername(ctx context.Contex
 		bot.Send(tgbotapi.NewMessage(chatID, msg))
 		return nil, fmt.Errorf("multiple matches found")
 	}
-	
+
 	// Customer not found - explain limitation
 	if processingMsgID > 0 {
 		bot.Request(tgbotapi.NewDeleteMessage(chatID, processingMsgID))
 	}
-	
+
 	msg := fmt.Sprintf("❌ Couldn't find user @%s on %s.\n\n", username, strings.Title(platform))
 	msg += "📝 *How it works:*\n"
 	msg += "To message someone on Instagram or Facebook, they need to message you first. Once they message you:\n\n"
@@ -329,8 +329,7 @@ func (h *TenantWebhookHandler) findOrCreateCustomerByUsername(ctx context.Contex
 	msg += "✅ You can then message them anytime by name or username\n"
 	msg += "✅ I'll automatically continue the conversation\n\n"
 	msg += "💡 *Tip:* Check your existing conversations to see who you can message."
-	
+
 	bot.Send(tgbotapi.NewMessage(chatID, msg))
 	return nil, fmt.Errorf("user not found - requires prior message")
 }
-

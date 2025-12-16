@@ -70,7 +70,7 @@ func NewTikTokOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config) 
 		scopes = []string{"user.info.basic", "video.publish", "video.upload"}
 		scopeSet = map[string]struct{}{
 			"user.info.basic": {},
-			"video.publish":  {},
+			"video.publish":   {},
 			"video.upload":    {},
 		}
 	}

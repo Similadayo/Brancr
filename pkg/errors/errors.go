@@ -83,4 +83,3 @@ func NewExternalError(message string, err error) *AppError {
 		Code:    502,
 	}
 }
-

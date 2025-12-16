@@ -35,12 +35,12 @@ type MediaUploadPayload struct {
 
 // AIGenerateReplyPayload represents an AI reply generation job payload
 type AIGenerateReplyPayload struct {
-	TenantID    uint   `json:"tenant_id"`
-	Platform    string `json:"platform"`
-	ThreadID    string `json:"thread_id"`
-	CustomerID  string `json:"customer_id"`
-	Message     string `json:"message"`
-	InteractionID uint `json:"interaction_id,omitempty"`
+	TenantID      uint   `json:"tenant_id"`
+	Platform      string `json:"platform"`
+	ThreadID      string `json:"thread_id"`
+	CustomerID    string `json:"customer_id"`
+	Message       string `json:"message"`
+	InteractionID uint   `json:"interaction_id,omitempty"`
 }
 
 // RegisterWebhookHandlers registers webhook processing handlers
@@ -108,4 +108,3 @@ func RegisterAIGenerateReplyHandler(queue *JobQueue, db *gorm.DB, logger *zap.Lo
 		return handler(ctx, &payload)
 	}))
 }
-

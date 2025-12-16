@@ -9,4 +9,3 @@ import (
 type WhatsAppProvider interface {
 	SendText(ctx context.Context, tenantID uint, to, text string) error
 }
-

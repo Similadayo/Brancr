@@ -276,9 +276,9 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 
 	// Try parsing as standard response structure
 	var response struct {
-		Data []map[string]interface{} `json:"data"`
+		Data     []map[string]interface{} `json:"data"`
 		Channels []map[string]interface{} `json:"channels"` // Alternative field name
-		Results []map[string]interface{} `json:"results"`   // Another possible field name
+		Results  []map[string]interface{} `json:"results"`  // Another possible field name
 	}
 
 	if err := json.Unmarshal(body, &response); err != nil {
@@ -292,7 +292,7 @@ func (c *RespondIOClient) ListChannels(ctx context.Context) ([]map[string]interf
 			}
 			return directArray, nil
 		}
-		
+
 		// Log raw response for debugging
 		if c.Logger != nil {
 			c.Logger.Warn("Failed to parse Respond.io channels response",
@@ -336,4 +336,3 @@ func truncateStringForRespondIO(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
-

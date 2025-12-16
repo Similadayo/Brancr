@@ -296,9 +296,9 @@ func (h *TenantWebhookHandler) ServeHTTPWithID(w http.ResponseWriter, r *http.Re
 		// Fallback to explicit commands (for backward compatibility)
 		switch {
 		// Analytics commands - handle directly before intent router
-		case strings.Contains(textLower, "analytics") || strings.Contains(textLower, "weekly summary") || 
-			 strings.Contains(textLower, "insights") || strings.Contains(textLower, "growth suggestions") ||
-			 strings.Contains(textLower, "stats") || strings.Contains(textLower, "performance"):
+		case strings.Contains(textLower, "analytics") || strings.Contains(textLower, "weekly summary") ||
+			strings.Contains(textLower, "insights") || strings.Contains(textLower, "growth suggestions") ||
+			strings.Contains(textLower, "stats") || strings.Contains(textLower, "performance"):
 			if h.Manager.AnalyticsHandler != nil {
 				ctx := context.Background()
 				if err := h.Manager.AnalyticsHandler.HandleAnalyticsRequest(ctx, uint(tenantID), chatID, text); err != nil {
@@ -1903,7 +1903,7 @@ func (h *TenantWebhookHandler) handleTikTokPostingOptionCallback(bot *tgbotapi.B
 		if len(parts) >= 3 {
 			option := parts[1]
 			enabled := parts[2] == "true"
-			
+
 			switch option {
 			case "duet":
 				sess.TikTokDisableDuet = !enabled
@@ -1912,7 +1912,7 @@ func (h *TenantWebhookHandler) handleTikTokPostingOptionCallback(bot *tgbotapi.B
 			case "comment":
 				sess.TikTokDisableComment = !enabled
 			}
-			
+
 			// Show updated options
 			h.Manager.showTikTokPostingOptions(bot, chatID, sess)
 		}

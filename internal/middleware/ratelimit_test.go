@@ -77,4 +77,3 @@ func TestRateLimiter_MemoryCleanup(t *testing.T) {
 		t.Error("Expected expired entry to be cleaned up")
 	}
 }
-

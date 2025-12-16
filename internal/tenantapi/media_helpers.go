@@ -31,7 +31,7 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 	mediaURL, _ := metadata["media_url"].(string)
 	mediaType, _ := metadata["media_type"].(string)
 	storedURL, _ := metadata["media_stored_url"].(string)
-	
+
 	// Also check for nested media object
 	if mediaURL == "" {
 		if mediaObj, ok := metadata["media"].(map[string]interface{}); ok {
@@ -49,7 +49,7 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 	hasTranscription, _ := metadata["audio_transcription"].(string)
 	hasImageAnalysis, _ := metadata["image_analysis"].(string)
 	hasDocumentText, _ := metadata["document_text"].(string)
-	
+
 	// If no media indicators at all, return nil
 	if mediaURL == "" && storedURL == "" && mediaType == "" && hasTranscription == "" && hasImageAnalysis == "" && hasDocumentText == "" {
 		return nil
@@ -59,7 +59,7 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 		URL:  mediaURL,
 		Type: mediaType,
 	}
-	
+
 	// If mediaType is empty but we have content indicators, infer type
 	// Priority: Check actual content indicators first (transcription, analysis, document text)
 	// before falling back to storedURL (which can represent any media type)
@@ -118,4 +118,3 @@ func parseMediaFromMetadata(metadataJSON string) *InteractionMedia {
 
 	return media
 }
-

@@ -45,11 +45,11 @@ func NewMediaProcessor(logger *zap.Logger, aiClient *ai.AIClient, cloudURL strin
 
 // ProcessMediaResult contains the results of media processing
 type ProcessMediaResult struct {
-	StoredURL      string            // URL where media is stored (Cloudinary)
-	Transcription  string            // For audio: transcribed text
-	ImageAnalysis  string            // For images: AI analysis/description
-	DocumentText   string            // For documents: extracted text
-	Metadata       map[string]string // Additional metadata (filename, content-type, etc.)
+	StoredURL     string            // URL where media is stored (Cloudinary)
+	Transcription string            // For audio: transcribed text
+	ImageAnalysis string            // For images: AI analysis/description
+	DocumentText  string            // For documents: extracted text
+	Metadata      map[string]string // Additional metadata (filename, content-type, etc.)
 }
 
 // ProcessMedia downloads media from Gupshup URL, stores it, and processes it
@@ -363,7 +363,7 @@ func (p *MediaProcessor) analyzeImage(ctx context.Context, imageURL string) (str
 	p.AIClient.Model = "gpt-4o-mini" // Use vision-capable model
 
 	analysis, err := p.AIClient.Generate(ctx, messages)
-	
+
 	// Restore original model
 	p.AIClient.Model = originalModel
 
@@ -405,4 +405,3 @@ func (p *MediaProcessor) extractDocumentText(ctx context.Context, documentData i
 	// For other document types, return error (would need specialized libraries)
 	return "", fmt.Errorf("document type %s not supported for text extraction", contentType)
 }
-

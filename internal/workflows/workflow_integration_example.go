@@ -67,7 +67,7 @@ Example 2: Handling Incoming Customer Message
 	// When a message comes from Instagram/Facebook/WhatsApp
 	func handleIncomingMessage(tenantID uint, platform string, message string, customerID uint) {
 		ctx := context.Background()
-		
+
 		// Process through unified workflow
 		err := orchestrator.ProcessIncomingMessage(
 			ctx,
@@ -78,7 +78,7 @@ Example 2: Handling Incoming Customer Message
 			threadID,
 			customerID,
 		)
-		
+
 		// The workflow will:
 		// 1. Create/get conversation
 		// 2. Analyze intent and emotion
@@ -92,10 +92,10 @@ Example 3: Starting Post Creation Flow
 	// In Telegram bot handler when user uploads media
 	func handleMediaUpload(bot *tgbotapi.BotAPI, tenantID uint, chatID int64, mediaAssetID uint) {
 		ctx := context.Background()
-		
+
 		// Start posting workflow
 		err := orchestrator.StartPostingFlow(ctx, tenantID, chatID, mediaAssetID)
-		
+
 		// User will see guided prompts:
 		// 1. "Would you like to create a post?"
 		// 2. "Select platforms..."
@@ -110,11 +110,11 @@ Example 4: Handling Tenant Reply to Escalation
 	// In Telegram bot callback handler
 	func handleEscalationApprove(tenantID uint, interactionID uint) {
 		ctx := context.Background()
-		
+
 		params := map[string]interface{}{
 			"reply": suggestedReply,
 		}
-		
+
 		err := orchestrator.HandleEscalationAction(
 			ctx,
 			tenantID,
@@ -122,7 +122,7 @@ Example 4: Handling Tenant Reply to Escalation
 			workflows.EscalationActionApprove,
 			params,
 		)
-		
+
 		// This will:
 		// 1. Update interaction status
 		// 2. Send reply to customer
@@ -137,16 +137,16 @@ Example 5: Dashboard Conversation List
 	func getConversationsHandler(w http.ResponseWriter, r *http.Request) {
 		tenantID := getTenantIDFromContext(r)
 		ctx := r.Context()
-		
+
 		page := parseInt(r.URL.Query().Get("page"), 1)
 		perPage := parseInt(r.URL.Query().Get("per_page"), 20)
-		
+
 		filters := workflows.ConversationFilters{
 			Status:   r.URL.Query().Get("status"),
 			Platform: r.URL.Query().Get("platform"),
 			Priority: r.URL.Query().Get("priority"),
 		}
-		
+
 		data, err := orchestrator.GetConversationDashboard(
 			ctx,
 			tenantID,
@@ -154,7 +154,7 @@ Example 5: Dashboard Conversation List
 			page,
 			perPage,
 		)
-		
+
 		// Returns:
 		// - List of conversations with preview
 		// - Unread counts
@@ -168,13 +168,13 @@ Example 6: Dashboard Conversation Detail
 	// Load full conversation for dashboard view
 	func getConversationDetail(tenantID uint, conversationID uint) {
 		ctx := context.Background()
-		
+
 		detail, err := orchestrator.GetConversationDetail(
 			ctx,
 			tenantID,
 			conversationID,
 		)
-		
+
 		// Returns:
 		// - Full conversation object
 		// - Customer info
@@ -189,7 +189,7 @@ Example 7: Sending Reply from Dashboard
 	// When tenant sends reply from dashboard UI
 	func sendReplyFromDashboard(tenantID uint, conversationID uint, reply string) {
 		ctx := context.Background()
-		
+
 		err := orchestrator.SendReplyFromDashboard(
 			ctx,
 			tenantID,
@@ -197,7 +197,7 @@ Example 7: Sending Reply from Dashboard
 			reply,
 			0, // interactionID - 0 means respond to latest
 		)
-		
+
 		// This will:
 		// 1. Create outgoing interaction
 		// 2. Update conversation status
@@ -211,9 +211,9 @@ Example 8: Getting Workflow Summary
 	// For dashboard overview widget
 	func getWorkflowSummary(tenantID uint) {
 		ctx := context.Background()
-		
+
 		summary, err := orchestrator.GetWorkflowSummary(ctx, tenantID)
-		
+
 		// Returns:
 		// - Active conversations count
 		// - Pending escalations count
@@ -274,4 +274,3 @@ BEST PRACTICES
 
 // This file serves as documentation - actual integration happens in your handlers
 // See the individual workflow files for implementation details
-

@@ -12,7 +12,7 @@ import (
 // Template: #21 GenerateFallbackResponse (safe fallback response)
 func GenerateFallbackResponse(ctx context.Context, tenantID uint, userMsg string, isOwner bool) string {
 	lower := strings.ToLower(strings.TrimSpace(userMsg))
-	
+
 	// Simple keyword-based fallback responses - human-like and casual
 	if isOwner {
 		// Owner-specific fallbacks
@@ -28,7 +28,7 @@ func GenerateFallbackResponse(ctx context.Context, tenantID uint, userMsg string
 		if strings.Contains(lower, "hello") || strings.Contains(lower, "hi") || strings.Contains(lower, "hey") {
 			return "Hey! What's up? How can I help you today?"
 		}
-		
+
 		// Generic owner response
 		return "I'm here to help! Feel free to ask me about scheduling posts, connecting accounts, or anything else you need."
 	} else {
@@ -42,7 +42,7 @@ func GenerateFallbackResponse(ctx context.Context, tenantID uint, userMsg string
 		if strings.Contains(lower, "bye") || strings.Contains(lower, "goodbye") {
 			return "Thanks for reaching out! Have a great day!"
 		}
-		
+
 		// Generic customer response
 		return "Thanks for messaging! I'm here to help. What can I do for you?"
 	}
@@ -52,14 +52,14 @@ func GenerateFallbackResponse(ctx context.Context, tenantID uint, userMsg string
 func SanitizePrompt(prompt string) string {
 	// Remove any content that might trigger false positives
 	// This is a simple sanitization - can be enhanced
-	
+
 	// Remove excessive special characters
 	prompt = strings.ReplaceAll(prompt, "!!!", "!")
 	prompt = strings.ReplaceAll(prompt, "???", "?")
-	
+
 	// Normalize whitespace
 	prompt = strings.TrimSpace(prompt)
-	
+
 	return prompt
 }
 
@@ -86,4 +86,3 @@ Tone: %s
 Talk to customers like a real person. Be genuine, friendly, and helpful. Use natural language, contractions, and sound human.`, persona.BotName, biz.Name, biz.Name, biz.Niche, persona.Tone)
 	}
 }
-

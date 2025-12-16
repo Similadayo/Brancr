@@ -352,4 +352,3 @@ func (s *BulkScheduler) CreateBulkSchedule(
 
 	return nil
 }
-

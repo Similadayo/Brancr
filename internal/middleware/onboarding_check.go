@@ -40,10 +40,10 @@ func OnboardingCheck(db *gorm.DB, logger *zap.Logger) func(http.Handler) http.Ha
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
 				json.NewEncoder(w).Encode(map[string]interface{}{
-					"error":             "onboarding_required",
-					"message":           "Please complete onboarding before accessing this resource",
+					"error":               "onboarding_required",
+					"message":             "Please complete onboarding before accessing this resource",
 					"onboarding_complete": false,
-					"redirect_to":        "/app/onboarding",
+					"redirect_to":         "/app/onboarding",
 				})
 				return
 			}
@@ -53,4 +53,3 @@ func OnboardingCheck(db *gorm.DB, logger *zap.Logger) func(http.Handler) http.Ha
 		})
 	}
 }
-

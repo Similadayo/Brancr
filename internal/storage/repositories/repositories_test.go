@@ -67,9 +67,9 @@ func TestCustomerRepository(t *testing.T) {
 
 	t.Run("CreateOrUpdate", func(t *testing.T) {
 		customer := &storage.Customer{
-			TenantID:   1,
-			Channel:    "telegram",
-			PlatformID: "123",
+			TenantID:    1,
+			Channel:     "telegram",
+			PlatformID:  "123",
 			DisplayName: "Test User",
 		}
 
@@ -84,4 +84,3 @@ func TestCustomerRepository(t *testing.T) {
 		}
 	})
 }
-

@@ -17,9 +17,9 @@ import (
 
 // CollectorService handles collection of analytics data from all platforms
 type CollectorService struct {
-	DB          *gorm.DB
-	Logger      *zap.Logger
-	Clients     map[string]interfaces.PlatformAnalyticsClient // platform -> client
+	DB      *gorm.DB
+	Logger  *zap.Logger
+	Clients map[string]interfaces.PlatformAnalyticsClient // platform -> client
 }
 
 // NewCollectorService creates a new analytics collector
@@ -54,7 +54,7 @@ func (c *CollectorService) CollectPostMetrics(ctx context.Context, tenantID uint
 	// Fetch metrics from platform API
 	periodEnd := time.Now()
 	periodStart := periodEnd.AddDate(0, 0, -30) // Last 30 days
-	
+
 	metrics, err := client.FetchPostMetrics(ctx, &account, platformPostID, periodStart, periodEnd)
 	if err != nil {
 		return fmt.Errorf("failed to fetch metrics from %s: %w", platform, err)
@@ -107,7 +107,7 @@ func (c *CollectorService) CollectPostMetrics(ctx context.Context, tenantID uint
 	var existing storage.PostAnalytics
 	err = c.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ? AND platform_post_id = ?",
 		tenantID, scheduledPostID, platform, platformPostID).First(&existing).Error
-	
+
 	if err == gorm.ErrRecordNotFound {
 		// Create new
 		if err := c.DB.Create(&analytics).Error; err != nil {
@@ -145,7 +145,7 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 	// Get all posted scheduled posts for this tenant
 	var posts []storage.ScheduledPost
 	cutoffDate := time.Now().AddDate(0, 0, -daysBack)
-	
+
 	if err := c.DB.Where("tenant_id = ? AND status = ? AND posted_at >= ?", tenantID, "posted", cutoffDate).
 		Find(&posts).Error; err != nil {
 		return fmt.Errorf("failed to fetch posts: %w", err)
@@ -159,7 +159,7 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 	for _, post := range posts {
 		// Parse platforms from JSON string
 		platforms := c.parsePlatforms(post.Platforms)
-		
+
 		for _, platform := range platforms {
 			// Skip TikTok analytics collection
 			if platform == "tiktok" {
@@ -180,7 +180,7 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 						c.storePlatformPostIDInPostLog(tenantID, post.ID, platform, platformPostID)
 					}
 				}
-				
+
 				if platformPostID == "" {
 					c.Logger.Warn("No platform post ID found, skipping",
 						zap.Uint("post_id", post.ID),
@@ -198,7 +198,7 @@ func (c *CollectorService) CollectAllPostMetrics(ctx context.Context, tenantID u
 					zap.String("platform_post_id", platformPostID),
 					zap.Error(err),
 					zap.String("error_type", fmt.Sprintf("%T", err)))
-				
+
 				// If it's a 400 error, it might be due to invalid post ID or permissions
 				if strings.Contains(err.Error(), "status 400") {
 					c.Logger.Warn("Instagram API returned 400 - possible causes: invalid post ID, missing permissions, or post too old",
@@ -300,7 +300,7 @@ func (c *CollectorService) getPlatformPostID(tenantID, scheduledPostID uint, pla
 		zap.Uint("tenant_id", tenantID),
 		zap.Uint("scheduled_post_id", scheduledPostID),
 		zap.String("platform", platform))
-	
+
 	return ""
 }
 
@@ -328,7 +328,7 @@ func (c *CollectorService) tryRetrieveInstagramPostIDFromAPI(tenantID, scheduled
 	if accessToken == "" {
 		return ""
 	}
-	
+
 	// Try to decrypt token (might be encrypted)
 	if decrypted, err := utils.DecryptToken(accessToken); err == nil {
 		accessToken = decrypted
@@ -352,11 +352,11 @@ func (c *CollectorService) tryRetrieveInstagramPostIDFromAPI(tenantID, scheduled
 	// Get posts from the last 7 days, match by timestamp (within 5 minute window)
 	ctx := context.Background()
 	client := &http.Client{Timeout: 10 * time.Second}
-	
+
 	// Fetch recent media from Instagram
 	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/media?fields=id,timestamp,caption&limit=25&access_token=%s",
 		instagramAccountID, accessToken)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return ""
@@ -396,7 +396,7 @@ func (c *CollectorService) tryRetrieveInstagramPostIDFromAPI(tenantID, scheduled
 		if media.Timestamp == "" {
 			continue
 		}
-		
+
 		// Parse Instagram timestamp (ISO 8601 format)
 		postTime, err := time.Parse(time.RFC3339, media.Timestamp)
 		if err != nil {
@@ -406,7 +406,7 @@ func (c *CollectorService) tryRetrieveInstagramPostIDFromAPI(tenantID, scheduled
 				continue
 			}
 		}
-		
+
 		// Check if timestamp matches (within 5 minutes)
 		timeDiff := abs(postTime.Unix() - targetTime)
 		if timeDiff <= 300 { // 5 minutes = 300 seconds
@@ -421,7 +421,7 @@ func (c *CollectorService) tryRetrieveInstagramPostIDFromAPI(tenantID, scheduled
 	c.Logger.Debug("No matching Instagram post found for scheduled post",
 		zap.Uint("scheduled_post_id", scheduledPostID),
 		zap.Time("posted_at", *postedAt))
-	
+
 	return ""
 }
 
@@ -450,7 +450,7 @@ func (c *CollectorService) storePlatformPostIDInPostLog(tenantID, scheduledPostI
 		json.Unmarshal([]byte(postLog.Metadata), &metadata)
 	}
 	metadata["platform_post_id"] = platformPostID
-	
+
 	if metadataJSON, err := json.Marshal(metadata); err == nil {
 		c.DB.Model(&postLog).Update("metadata", string(metadataJSON))
 		c.Logger.Info("Stored platform post ID in PostLog metadata",
@@ -459,4 +459,3 @@ func (c *CollectorService) storePlatformPostIDInPostLog(tenantID, scheduledPostI
 			zap.String("platform_post_id", platformPostID))
 	}
 }
-

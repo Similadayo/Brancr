@@ -38,4 +38,3 @@ func (o *OptimizeQueries) PreloadRelations(relations []string) *gorm.DB {
 	}
 	return query
 }
-

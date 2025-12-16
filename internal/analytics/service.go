@@ -12,7 +12,6 @@ import (
 	"gorm.io/gorm"
 )
 
-
 // Service provides analytics operations
 type Service struct {
 	DB            *gorm.DB
@@ -43,14 +42,14 @@ func (s *Service) GetPostAnalytics(ctx context.Context, tenantID uint, scheduled
 	var analytics storage.PostAnalytics
 	err := s.DB.Where("tenant_id = ? AND scheduled_post_id = ? AND platform = ?",
 		tenantID, scheduledPostID, platform).First(&analytics).Error
-	
+
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch analytics: %w", err)
 	}
-	
+
 	return &analytics, nil
 }
 
@@ -64,17 +63,17 @@ func (s *Service) GetTenantAnalytics(ctx context.Context, tenantID uint, periodS
 	}
 
 	summary := &interfaces.TenantAnalyticsSummary{
-		TenantID:      tenantID,
-		PeriodStart:   periodStart,
-		PeriodEnd:     periodEnd,
-		TotalPosts:    len(analytics),
+		TenantID:          tenantID,
+		PeriodStart:       periodStart,
+		PeriodEnd:         periodEnd,
+		TotalPosts:        len(analytics),
 		PlatformBreakdown: make(map[string]*interfaces.PlatformSummary),
-		TopPosts:      []*interfaces.PostSummary{},
+		TopPosts:          []*interfaces.PostSummary{},
 	}
 
 	// Aggregate metrics
 	platformStats := make(map[string]*interfaces.PlatformSummary)
-	
+
 	for _, a := range analytics {
 		// Update totals
 		summary.TotalImpressions += a.Impressions
@@ -194,7 +193,7 @@ func (s *Service) AggregateCampaignAnalytics(ctx context.Context, tenantID uint,
 			// Parse JSON array format "[1,2,3]" - extract IDs
 			idsStr := strings.Trim(post.MediaAssetIDs, "[]")
 			idsParts := strings.Split(idsStr, ",")
-			
+
 			for _, idPart := range idsParts {
 				idPart = strings.TrimSpace(idPart)
 				var assetID uint
@@ -458,4 +457,3 @@ func (s *Service) PopulateAudienceSegments(ctx context.Context, tenantID uint, p
 
 	return nil
 }
-

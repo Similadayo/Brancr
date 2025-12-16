@@ -150,6 +150,13 @@ handler.go (8,311 lines)
 
 ---
 
+### 6. ⚠️ API cleanup — business details menu items removed
+
+- **Change:** The `business_details` section of the tenant settings no longer includes `menu_items` (menu items are now managed solely via the canonical `/tenant/menu-items` endpoints).
+- **Reason:** Avoid duplication and maintain a single source of truth for menu items.
+- **Impact:** Frontend clients should stop sending or expecting `menu_items` in `/tenant/onboarding/business-details` and `/tenant/settings/business-details`. Use `GET/POST/PUT/DELETE /tenant/menu-items` instead.
+
+
 ## Recommendations for Next Steps
 
 ### Immediate (Next Sprint)

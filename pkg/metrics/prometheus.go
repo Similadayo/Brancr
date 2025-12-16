@@ -10,45 +10,45 @@ import (
 // PrometheusMetrics provides Prometheus-compatible metrics
 type PrometheusMetrics struct {
 	// HTTP metrics
-	HTTPRequestsTotal       *prometheus.CounterVec
-	HTTPRequestDuration     *prometheus.HistogramVec
-	HTTPRequestSize         *prometheus.HistogramVec
-	HTTPResponseSize        *prometheus.HistogramVec
+	HTTPRequestsTotal   *prometheus.CounterVec
+	HTTPRequestDuration *prometheus.HistogramVec
+	HTTPRequestSize     *prometheus.HistogramVec
+	HTTPResponseSize    *prometheus.HistogramVec
 
 	// AI metrics
-	AIRequestsTotal         *prometheus.CounterVec
-	AIResponseDuration      *prometheus.HistogramVec
-	AITokenUsage            *prometheus.CounterVec
+	AIRequestsTotal    *prometheus.CounterVec
+	AIResponseDuration *prometheus.HistogramVec
+	AITokenUsage       *prometheus.CounterVec
 
 	// Bot metrics
-	BotMessagesTotal        *prometheus.CounterVec
-	BotCommandsTotal        *prometheus.CounterVec
+	BotMessagesTotal *prometheus.CounterVec
+	BotCommandsTotal *prometheus.CounterVec
 
 	// Social media metrics
-	SocialPostsTotal        *prometheus.CounterVec
-	SocialPostDuration      *prometheus.HistogramVec
-	SocialPostErrors        *prometheus.CounterVec
+	SocialPostsTotal   *prometheus.CounterVec
+	SocialPostDuration *prometheus.HistogramVec
+	SocialPostErrors   *prometheus.CounterVec
 
 	// Job queue metrics
-	JobQueueSize            *prometheus.GaugeVec
-	JobProcessedTotal       *prometheus.CounterVec
-	JobDuration             *prometheus.HistogramVec
-	JobErrors               *prometheus.CounterVec
+	JobQueueSize      *prometheus.GaugeVec
+	JobProcessedTotal *prometheus.CounterVec
+	JobDuration       *prometheus.HistogramVec
+	JobErrors         *prometheus.CounterVec
 
 	// Database metrics
-	DBQueriesTotal          *prometheus.CounterVec
-	DBQueryDuration         *prometheus.HistogramVec
-	DBActiveConnections     prometheus.Gauge
+	DBQueriesTotal      *prometheus.CounterVec
+	DBQueryDuration     *prometheus.HistogramVec
+	DBActiveConnections prometheus.Gauge
 
 	// Cache metrics
-	CacheHits               *prometheus.CounterVec
-	CacheMisses             *prometheus.CounterVec
-	CacheSize                *prometheus.GaugeVec
+	CacheHits   *prometheus.CounterVec
+	CacheMisses *prometheus.CounterVec
+	CacheSize   *prometheus.GaugeVec
 
 	// Webhook metrics
-	WebhookReceivedTotal    *prometheus.CounterVec
-	WebhookProcessedTotal   *prometheus.CounterVec
-	WebhookErrors           *prometheus.CounterVec
+	WebhookReceivedTotal  *prometheus.CounterVec
+	WebhookProcessedTotal *prometheus.CounterVec
+	WebhookErrors         *prometheus.CounterVec
 
 	// Scheduler metrics
 	SchedulerPostsProcessed *prometheus.CounterVec
@@ -56,7 +56,7 @@ type PrometheusMetrics struct {
 	SchedulerQueueSize      prometheus.Gauge
 
 	// Error metrics
-	ErrorsTotal             *prometheus.CounterVec
+	ErrorsTotal *prometheus.CounterVec
 }
 
 // NewPrometheusMetrics creates a new Prometheus metrics instance
@@ -339,4 +339,3 @@ func (m *PrometheusMetrics) RecordWebhookReceived(platform, eventType string) {
 func (m *PrometheusMetrics) RecordSchedulerPost(platform, status string) {
 	m.SchedulerPostsProcessed.WithLabelValues(platform, status).Inc()
 }
-

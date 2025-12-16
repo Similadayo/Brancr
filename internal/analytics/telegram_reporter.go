@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/pkg/interfaces"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // TelegramReporter generates conversational analytics summaries for Telegram
@@ -111,7 +111,7 @@ func (r *TelegramReporter) GenerateWeeklySummary(ctx context.Context, tenantID u
 
 	msg := tgbotapi.NewMessage(chatID, message)
 	msg.ParseMode = "Markdown"
-	
+
 	if _, err := bot.Send(msg); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
@@ -126,7 +126,7 @@ func (r *TelegramReporter) buildWeeklySummaryFromPosts(bot *tgbotapi.BotAPI, cha
 		msg += "📅 *Period:* Last 7 days\n\n"
 		msg += "No posts this week. Start posting to see analytics! 📝\n\n"
 		msg += "_Post content through your Telegram bot to start tracking performance._"
-		
+
 		response := tgbotapi.NewMessage(chatID, msg)
 		response.ParseMode = "Markdown"
 		bot.Send(response)
@@ -351,11 +351,10 @@ func (r *TelegramReporter) SendInsightAlert(ctx context.Context, tenantID uint, 
 
 	msg := tgbotapi.NewMessage(chatID, message)
 	msg.ParseMode = "Markdown"
-	
+
 	if _, err := bot.Send(msg); err != nil {
 		return fmt.Errorf("failed to send insight: %w", err)
 	}
 
 	return nil
 }
-
