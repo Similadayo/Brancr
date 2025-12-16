@@ -3,18 +3,33 @@ package storage
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
+var PgVectorAvailable bool = false
+
 func AutoMigrate(db *gorm.DB) error {
-	// 🧩 Ensure pgvector extension is available
+	// 🧩 Ensure pgvector extension is available when Postgres supports it
 	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector;`).Error; err != nil {
-		log.Printf("⚠️ Could not enable pgvector extension: %v", err)
+		// Normalize known 'extension not available' failure so it isn't treated like a fatal error
+		errStr := err.Error()
+		if strings.Contains(errStr, "extension \"vector\" is not available") || strings.Contains(errStr, "SQLSTATE 0A000") {
+			// Informational: the database doesn't provide the vector extension in this environment
+			log.Printf("ℹ️ pgvector is not available on this database; semantic-memory features will be disabled until you install the 'vector' extension: %v", err)
+			PgVectorAvailable = false
+		} else {
+			// Unexpected error - log with warning but continue
+			log.Printf("⚠️ Could not enable pgvector extension (unexpected error): %v", err)
+			PgVectorAvailable = false
+		}
 	} else {
 		log.Println("✅ pgvector extension ready")
+		PgVectorAvailable = true
 	}
+
 	fmt.Println("📦 Running migrations...")
 
 	// 🚀 Run all migrations

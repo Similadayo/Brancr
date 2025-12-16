@@ -165,8 +165,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Post("/tenant/settings/notifications/test", h.testNotificationSettings)
 			// AI mode toggle for tenant (ai | human)
 			r.Put("/tenant/settings/ai-mode", h.updateAIModeSettings)
-		// Per-inbox AI mode (inboxes/{id}/ai-mode)
-		r.Put("/tenant/settings/inboxes/{id}/ai-mode", h.updateInboxAIMode)
+			// Per-inbox AI mode (inboxes/{id}/ai-mode)
+			r.Put("/tenant/settings/inboxes/{id}/ai-mode", h.updateInboxAIMode)
 
 			// Integration CRUD
 			r.Get("/tenant/integrations", h.listIntegrations)
@@ -2760,7 +2760,7 @@ func (h *Handler) updateInboxAIMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload struct{
+	var payload struct {
 		Mode string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
