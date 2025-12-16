@@ -165,8 +165,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Post("/tenant/settings/notifications/test", h.testNotificationSettings)
 			// AI mode toggle for tenant (ai | human)
 			r.Put("/tenant/settings/ai-mode", h.updateAIModeSettings)
-
-			r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
+		// Per-inbox AI mode (inboxes/{id}/ai-mode)
+		r.Put("/tenant/settings/inboxes/{id}/ai-mode", h.updateInboxAIMode)
 
 			// Integration CRUD
 			r.Get("/tenant/integrations", h.listIntegrations)
@@ -2728,6 +2728,59 @@ func (h *Handler) updateAIModeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "mode": mode})
+}
+
+// updateInboxAIMode allows a tenant to set AI/human mode for a specific inbox (social account)
+func (h *Handler) updateInboxAIMode(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	if idStr == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var acct storage.SocialAccount
+	if err := h.DB.Where("id = ? AND tenant_id = ?", id, claims.TenantID).First(&acct).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		h.Logger.Error("failed to query social account", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint64("id", id))
+		http.Error(w, "failed", http.StatusInternalServerError)
+		return
+	}
+
+	var payload struct{
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	mode := strings.TrimSpace(payload.Mode)
+	if mode != "ai" && mode != "human" {
+		http.Error(w, "invalid mode", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.DB.Model(&acct).Update("ai_mode", mode).Error; err != nil {
+		h.Logger.Error("failed to update inbox ai mode", zap.Error(err), zap.Uint("tenant_id", claims.TenantID), zap.Uint64("id", id))
+		http.Error(w, "failed to update mode", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "id": acct.ID, "mode": mode})
 }
 
 func (h *Handler) updateBusinessDetailsSettings(w http.ResponseWriter, r *http.Request) {

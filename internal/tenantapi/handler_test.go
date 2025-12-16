@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+	"fmt"
 
 	"github.com/similadayo/brancr/internal/middleware"
 	"github.com/similadayo/brancr/internal/quota"
@@ -36,6 +37,7 @@ func setupTestHandler(t *testing.T) (*Handler, *gorm.DB) {
 		&storage.Tenant{},
 		&storage.MediaAsset{},
 		&storage.ScheduledPost{},
+		&storage.SocialAccount{},
 	); err != nil {
 		t.Fatalf("Failed to migrate test database: %v", err)
 	}
@@ -387,6 +389,34 @@ func TestHandler_UpdateAIModeAndBlockAI(t *testing.T) {
 	genRR.BodyJSON(t, &resp)
 	if resp["error"] != "ai_disabled" {
 		t.Fatalf("expected ai_disabled error, got %v", resp)
+	}
+}
+
+func TestHandler_UpdateInboxAIMode(t *testing.T) {
+	handler, db := setupTestHandler(t)
+	defer testutil.CleanupDB(t, db)
+
+	tenant := testutil.CreateTestTenant(t, db, "inboxai@example.com", "password123", "Inbox AI Tenant")
+
+	// Create a social account (inbox)
+	acct := storage.SocialAccount{TenantID: tenant.ID, Platform: "whatsapp", Username: "inbox1", Connected: true}
+	if err := db.Create(&acct).Error; err != nil {
+		t.Fatalf("failed to create social account: %v", err)
+	}
+
+	// Update per-inbox AI mode to 'human'
+	path := fmt.Sprintf("/api/tenant/settings/inboxes/%d/ai-mode", acct.ID)
+	req := testutil.TestRequestWithTenant(t, "PUT", path, map[string]interface{}{"mode": "human"}, tenant.ID, tenant.Email)
+	rr := testutil.NewTestResponseRecorder()
+	handler.updateInboxAIMode(rr, req)
+	rr.AssertStatus(t, http.StatusOK)
+
+	var updated storage.SocialAccount
+	if err := db.First(&updated, acct.ID).Error; err != nil {
+		t.Fatalf("failed to fetch social account: %v", err)
+	}
+	if updated.AiMode != "human" {
+		t.Fatalf("expected AiMode 'human', got '%s'", updated.AiMode)
 	}
 }
 

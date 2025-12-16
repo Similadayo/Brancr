@@ -440,6 +440,7 @@ type SocialAccount struct {
 	ExternalID         string `gorm:"index"` // Platform-specific external ID used for webhook routing (page_id, instagram_business_account.id, phone_number_id)
 	Connected          bool
 	Mode               string // manual, sandbox, oauth2, provider_owned
+	AiMode             string `gorm:"size:20" json:"ai_mode"` // per-inbox AI mode: "ai" or "human"; if empty => inherit tenant
 	LoginMethod        string `gorm:"size:50"`    // facebook_login, instagram_login (for Instagram: determines which OAuth flow was used)
 	WebhookVerifyToken string `gorm:"size:100"`   // Verification token for webhook setup (Meta requires this)
 	Metadata           string `gorm:"type:jsonb"` // Platform-specific metadata (e.g., TikTok authorized scopes, posting options, login method)
