@@ -127,6 +127,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/logout", h.logout)
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.TenantAuth([]byte(h.Config.TenantJWTSecret), SessionCookie))
+			r.Use(middleware.APIQuota(quota.NewQuotaService(h.DB, h.Logger, nil), h.Metrics))
 			r.Get("/me", h.me)
 		})
 	})
@@ -1380,7 +1381,7 @@ func (h *Handler) assignPhoneNumber(w http.ResponseWriter, r *http.Request) {
 			// Undo created account to respect quota
 			_ = h.DB.Delete(&account).Error
 			if h.Metrics != nil {
-				h.Metrics.QuotaRejections.Inc()
+				h.Metrics.IncQuotaRejection("platforms")
 			}
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "platforms_limit_exceeded", "message": err.Error()})
 			return
@@ -4033,7 +4034,7 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		quotaSvc := quota.NewQuotaService(h.DB, h.Logger, nil)
 		if err := quotaSvc.CheckCanSchedulePost(r.Context(), claims.TenantID); err != nil {
 			if h.Metrics != nil {
-				h.Metrics.QuotaRejections.Inc()
+				h.Metrics.IncQuotaRejection("posts")
 			}
 			h.writeValidationError(w, r, "post quota exceeded", map[string]string{"error": err.Error()})
 			return

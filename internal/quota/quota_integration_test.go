@@ -1,7 +1,7 @@
 //go:build cgo
 // +build cgo
 
-package quota
+package quota_test
 
 import (
 	"context"

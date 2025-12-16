@@ -408,6 +408,74 @@ func (s *QuotaService) GetQuotaUsage(ctx context.Context, tenantID uint) (*stora
 	return s.GetOrCreateQuota(ctx, tenantID)
 }
 
+// CheckAndIncrementAPICallQuota checks tenant API call quota and increments the counter.
+// Note: This charges on request entry (counts API requests regardless of outcome). This
+// behavior is intentional for Brancr; document and monitor accordingly.
+func (s *QuotaService) CheckAndIncrementAPICallQuota(ctx context.Context, tenantID uint) error {
+	quota, err := s.GetOrCreateQuota(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	// 0 means unlimited
+	if quota.APICallsLimit > 0 && quota.APICallsUsed+1 > quota.APICallsLimit {
+		return fmt.Errorf("%w: API calls limit (%d) exceeded", ErrQuotaExceeded, quota.APICallsLimit)
+	}
+
+	// Fail-open on increment: we prefer to allow API to proceed if accounting increment fails.
+	updates := map[string]interface{}{
+		"api_calls_used": gorm.Expr("api_calls_used + ?", 1),
+	}
+	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
+		s.Logger.Warn("failed to increment api_calls_used (fail-open)", zap.Uint("tenant_id", tenantID), zap.Error(err))
+		// Invalidate cache to avoid stale reads
+		if s.Cache != nil {
+			s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
+		}
+		return nil
+	}
+
+	// Invalidate cache after update
+	if s.Cache != nil {
+		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
+	}
+
+	return nil
+}
+
+// CheckAndIncrementStorageUsage checks storage quota for a tenant and increments used storage (in MB).
+// This operation is fail-closed: if accounting cannot be performed, the operation should be blocked.
+func (s *QuotaService) CheckAndIncrementStorageUsage(ctx context.Context, tenantID uint, bytes int64) error {
+	quota, err := s.GetOrCreateQuota(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	// Convert bytes to MB (ceil)
+	const mb = 1024 * 1024
+	usedMB := int((bytes + int64(mb) - 1) / int64(mb))
+
+	// Check before incrementing
+	if quota.StorageLimitMB > 0 && (quota.StorageUsedMB+usedMB) > quota.StorageLimitMB {
+		return fmt.Errorf("%w: storage limit (%d MB) would be exceeded", ErrQuotaExceeded, quota.StorageLimitMB)
+	}
+
+	// Increment and fail if accounting fails (fail-closed)
+	updates := map[string]interface{}{
+		"storage_used_mb": gorm.Expr("storage_used_mb + ?", usedMB),
+	}
+	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
+		return fmt.Errorf("failed to increment storage usage: %w", err)
+	}
+
+	// Invalidate cache after update
+	if s.Cache != nil {
+		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
+	}
+
+	return nil
+}
+
 // UpdateQuotaLimits updates quota limits for a tenant (admin function)
 // limits can contain: ai_calls_limit, posts_limit, storage_limit_mb, api_calls_limit (all int)
 // planType is a separate string parameter

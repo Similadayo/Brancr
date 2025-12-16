@@ -1,10 +1,16 @@
 package tenantapi
 
 import (
+	"bytes"
+	"context"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/testutil"
 	"gorm.io/gorm"
@@ -381,5 +387,55 @@ func TestHandler_UpdateAIModeAndBlockAI(t *testing.T) {
 	genRR.BodyJSON(t, &resp)
 	if resp["error"] != "ai_disabled" {
 		t.Fatalf("expected ai_disabled error, got %v", resp)
+	}
+}
+
+func TestStorageQuota_EnforcedOnUpload_NoSideEffects(t *testing.T) {
+	handler, db := setupTestHandler(t)
+	defer testutil.CleanupDB(t, db)
+
+	tenant := testutil.CreateTestTenant(t, db, "storage@example.com", "password123", "Storage Tenant")
+
+	// Set storage limit to 1 MB
+	qs := quota.NewQuotaService(db, testutil.TestLogger(t), nil)
+	if err := qs.UpdateQuotaLimits(context.Background(), tenant.ID, map[string]int{"storage_limit_mb": 1}, ""); err != nil {
+		t.Fatalf("failed to set storage limit: %v", err)
+	}
+
+	// Build 2MB multipart upload
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", "video.mp4")
+	if err != nil {
+		t.Fatalf("create form file failed: %v", err)
+	}
+	// 2MB of zeros
+	payload := bytes.Repeat([]byte{0}, 2*1024*1024)
+	if _, err := fw.Write(payload); err != nil {
+		t.Fatalf("write payload failed: %v", err)
+	}
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/api/tenant/media", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	// Attach tenant claims
+	req = req.WithContext(middleware.WithTenantContext(req.Context(), &middleware.TenantClaims{TenantID: tenant.ID, Email: tenant.Email}))
+
+	rr := testutil.NewTestResponseRecorder()
+	handler.createMedia(rr, req)
+	rr.AssertStatus(t, http.StatusTooManyRequests)
+
+	// Ensure no media asset was created
+	var assets []storage.MediaAsset
+	if err := db.Where("tenant_id = ?", tenant.ID).Find(&assets).Error; err != nil {
+		t.Fatalf("db query failed: %v", err)
+	}
+	if len(assets) != 0 {
+		t.Fatalf("expected no media assets created, found %d", len(assets))
+	}
+
+	// Metric increment check
+	if handler.Metrics != nil && handler.Metrics.QuotaRejections.Value() == 0 {
+		t.Fatalf("expected quota rejections to be incremented on storage rejection")
 	}
 }

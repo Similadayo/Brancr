@@ -961,7 +961,7 @@ func (h *MetaOAuthHandler) upsertSocialAccount(ctx context.Context, tenantID uin
 		qs := quota.NewQuotaService(h.DB, h.Logger, nil)
 		if err := qs.CheckPlatformLimit(ctx, tenantID); err != nil {
 			if h.Metrics != nil {
-				h.Metrics.QuotaRejections.Inc()
+				h.Metrics.IncQuotaRejection("platforms")
 			}
 			return err
 		}

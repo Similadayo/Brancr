@@ -1124,7 +1124,7 @@ func (m *TenantBotManager) generateCaptionFromKeywords(bot *tgbotapi.BotAPI, ten
 	qs := quota.NewQuotaService(m.DB, m.Logger, nil)
 	if err := qs.CheckAICallQuota(ctx, tenantID); err != nil {
 		if m.Metrics != nil {
-			m.Metrics.QuotaRejections.Inc()
+			m.Metrics.IncQuotaRejection("ai_calls")
 		}
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ AI quota exceeded for your plan. Please upgrade or wait until your quota resets."))
 		sess.Step = 3

@@ -50,6 +50,15 @@ func NewMetrics() *Metrics {
 	}
 }
 
+// IncQuotaRejection increments the quota rejections counter. "reason" is reserved for future use
+// when implementing labelled metrics (Prometheus). For now we simply increment a single counter.
+func (m *Metrics) IncQuotaRejection(reason string) {
+	if m == nil || m.QuotaRejections == nil {
+		return
+	}
+	m.QuotaRejections.Inc()
+}
+
 // NewCounter creates a new counter
 func NewCounter(name string) *Counter {
 	return &Counter{name: name, value: 0}

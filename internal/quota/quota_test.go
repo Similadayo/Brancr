@@ -1,10 +1,11 @@
-package quota
+package quota_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	qsvc "github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/testutil"
 )
@@ -12,7 +13,7 @@ import (
 func TestQuotaService_GetOrCreateQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -59,7 +60,7 @@ func TestQuotaService_GetOrCreateQuota(t *testing.T) {
 func TestQuotaService_CheckAICallQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -92,7 +93,7 @@ func TestQuotaService_CheckAICallQuota(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when quota exceeded, got nil")
 	}
-	if err != nil && err != ErrQuotaExceeded && err.Error()[:13] != "quota exceeded" {
+	if err != nil && err != qsvc.ErrQuotaExceeded && err.Error()[:13] != "quota exceeded" {
 		t.Errorf("Expected quota exceeded error, got: %v", err)
 	}
 }
@@ -100,7 +101,7 @@ func TestQuotaService_CheckAICallQuota(t *testing.T) {
 func TestQuotaService_IncrementAICallUsage(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -131,7 +132,7 @@ func TestQuotaService_IncrementAICallUsage(t *testing.T) {
 func TestQuotaService_CheckPostQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -168,7 +169,7 @@ func TestQuotaService_CheckPostQuota(t *testing.T) {
 func TestQuotaService_CheckStorageQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -202,7 +203,7 @@ func TestQuotaService_CheckStorageQuota(t *testing.T) {
 func TestQuotaService_ResetQuota(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -244,7 +245,7 @@ func TestQuotaService_ResetQuota(t *testing.T) {
 func TestQuotaService_CheckCanSchedulePost(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 
@@ -272,7 +273,7 @@ func TestQuotaService_CheckCanSchedulePost(t *testing.T) {
 func TestQuotaService_CheckPlatformLimit(t *testing.T) {
 	db := testutil.TestDB(t)
 	logger := testutil.TestLogger(t)
-	service := NewQuotaService(db, logger, nil)
+	service := qsvc.NewQuotaService(db, logger, nil)
 
 	ctx := context.Background()
 

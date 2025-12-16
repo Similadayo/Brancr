@@ -14,7 +14,7 @@ This document outlines the phased approach to making Brancr production-ready for
 - Add quota checks before AI API calls
 - Add quota checks before post scheduling
 - Add quota checks for storage/media uploads
-- Implement quota enforcement middleware
+- Implement quota enforcement middleware (Note: API calls are charged on request entry; expensive operations like uploads and AI are charged on success)
 - Add quota reset logic (daily/monthly)
 
 **Files to Create/Modify**:

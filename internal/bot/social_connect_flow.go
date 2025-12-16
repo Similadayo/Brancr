@@ -384,7 +384,7 @@ func (m *TenantBotManager) ContinueSocialConnect(bot *tgbotapi.BotAPI, tenantID 
 	quotaSvc := quota.NewQuotaService(m.DB, m.Logger, nil)
 	if err := quotaSvc.CheckPlatformLimit(ctx, tenantID); err != nil {
 		if m.Metrics != nil {
-			m.Metrics.QuotaRejections.Inc()
+			m.Metrics.IncQuotaRejection("platforms")
 		}
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Cannot connect account: platform limit exceeded. Please contact support or upgrade your plan."))
 		delete(tenantSessions, chatID)
