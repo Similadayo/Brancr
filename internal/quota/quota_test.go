@@ -143,7 +143,7 @@ func TestQuotaService_CheckPostQuota(t *testing.T) {
 	db.Create(tenant)
 
 	quota := &storage.TenantQuota{
-		TenantID:  tenant.ID,
+		TenantID:   tenant.ID,
 		PostsLimit: 5,
 		PostsUsed:  0,
 	}
@@ -180,9 +180,9 @@ func TestQuotaService_CheckStorageQuota(t *testing.T) {
 	db.Create(tenant)
 
 	quota := &storage.TenantQuota{
-		TenantID:      tenant.ID,
+		TenantID:       tenant.ID,
 		StorageLimitMB: 1000,
-		StorageUsedMB: 500,
+		StorageUsedMB:  500,
 	}
 	db.Create(quota)
 
@@ -216,11 +216,11 @@ func TestQuotaService_ResetQuota(t *testing.T) {
 	// Create quota with old reset time
 	oldTime := time.Now().Add(-25 * time.Hour)
 	quota := &storage.TenantQuota{
-		TenantID:     tenant.ID,
-		AICallsLimit: 100,
-		AICallsUsed:  50,
-		PostsUsed:    20,
-		LastResetAt:  oldTime,
+		TenantID:       tenant.ID,
+		AICallsLimit:   100,
+		AICallsUsed:    50,
+		PostsUsed:      20,
+		LastResetAt:    oldTime,
 		ResetFrequency: "daily",
 	}
 	db.Create(quota)
@@ -241,3 +241,58 @@ func TestQuotaService_ResetQuota(t *testing.T) {
 	}
 }
 
+func TestQuotaService_CheckCanSchedulePost(t *testing.T) {
+	db := testutil.TestDB(t)
+	logger := testutil.TestLogger(t)
+	service := NewQuotaService(db, logger, nil)
+
+	ctx := context.Background()
+
+	tenant := &storage.Tenant{Name: "Sched Tenant", Email: "sched@example.com"}
+	db.Create(tenant)
+
+	quota := &storage.TenantQuota{TenantID: tenant.ID, PostsLimit: 2, PostsUsed: 1}
+	db.Create(quota)
+
+	// No scheduled posts yet - should allow one more
+	if err := service.CheckCanSchedulePost(ctx, tenant.ID); err != nil {
+		t.Errorf("expected no error scheduling post, got %v", err)
+	}
+
+	// Create a scheduled post (status scheduled)
+	p := &storage.ScheduledPost{TenantID: tenant.ID, Status: "scheduled", Caption: "hi", MediaAssetIDs: "[]", Platforms: "[\"instagram\"]"}
+	db.Create(p)
+
+	// Now used=1 + scheduled=1 -> limit 2, should not allow another
+	if err := service.CheckCanSchedulePost(ctx, tenant.ID); err == nil {
+		t.Errorf("expected error when scheduling would exceed limit, got nil")
+	}
+}
+
+func TestQuotaService_CheckPlatformLimit(t *testing.T) {
+	db := testutil.TestDB(t)
+	logger := testutil.TestLogger(t)
+	service := NewQuotaService(db, logger, nil)
+
+	ctx := context.Background()
+
+	tenant := &storage.Tenant{Name: "Platform Tenant", Email: "plat@example.com"}
+	db.Create(tenant)
+
+	quota := &storage.TenantQuota{TenantID: tenant.ID, PlatformsLimit: 1}
+	db.Create(quota)
+
+	// No connected accounts yet - should allow
+	if err := service.CheckPlatformLimit(ctx, tenant.ID); err != nil {
+		t.Errorf("expected no error when under platform limit, got %v", err)
+	}
+
+	// Create a connected social account
+	acc := &storage.SocialAccount{TenantID: tenant.ID, Platform: "instagram", Connected: true}
+	db.Create(acc)
+
+	// Now should be at limit and not allow another
+	if err := service.CheckPlatformLimit(ctx, tenant.ID); err == nil {
+		t.Errorf("expected error when platform limit reached, got nil")
+	}
+}

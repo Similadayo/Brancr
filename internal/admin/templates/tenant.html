@@ -5,6 +5,10 @@
   <p>Tenant #{{.Tenant.ID}} • {{.Tenant.Email}}</p>
 </div>
 
+{{if .WarningMessage}}
+<div style="margin-top:12px; padding:12px; border-radius:6px; background:#fff7ed; border-left:4px solid #f97316; color:#92400e;">{{.WarningMessage}}</div>
+{{end}}
+
 <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
   <div class="card stat-card">
     <div class="stat-card-header">
@@ -24,6 +28,26 @@
       </div>
       <div class="stat-card-icon blue">🏷️</div>
     </div>
+    {{if .Quota}}
+    <div style="padding:12px; border-top:1px solid var(--border-color);">
+      <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">Quota usage</div>
+      <div style="display:grid; gap:8px;">
+        <div style="display:flex; justify-content:space-between; font-size:12px;"><div>AI Calls</div><div>{{.Quota.AICallsUsed}} / {{if gt .Quota.AICallsLimit 0}}{{.Quota.AICallsLimit}}{{else}}unlimited{{end}}</div></div>
+        <div style="height:8px; background:var(--bg-muted); border-radius:4px; overflow:hidden;"><div style="height:8px; background:#4f46e5; width:{{printf "%.0f%%" .AIUsagePercent}};"></div></div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px;"><div>Posts</div><div>{{.Quota.PostsUsed}} / {{if gt .Quota.PostsLimit 0}}{{.Quota.PostsLimit}}{{else}}unlimited{{end}}</div></div>
+        <div style="height:8px; background:var(--bg-muted); border-radius:4px; overflow:hidden;"><div style="height:8px; background:#059669; width:{{printf "%.0f%%" .PostsUsagePercent}};"></div></div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px;"><div>Storage (MB)</div><div>{{.Quota.StorageUsedMB}} / {{if gt .Quota.StorageLimitMB 0}}{{.Quota.StorageLimitMB}}{{else}}unlimited{{end}}</div></div>
+        <div style="height:8px; background:var(--bg-muted); border-radius:4px; overflow:hidden;"><div style="height:8px; background:#eab308; width:{{printf "%.0f%%" .StorageUsagePercent}};"></div></div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px;"><div>API Calls</div><div>{{.Quota.APICallsUsed}} / {{if gt .Quota.APICallsLimit 0}}{{.Quota.APICallsLimit}}{{else}}unlimited{{end}}</div></div>
+        <div style="height:8px; background:var(--bg-muted); border-radius:4px; overflow:hidden;"><div style="height:8px; background:#ef4444; width:{{printf "%.0f%%" .APIUsagePercent}};"></div></div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px;"><div>Platforms connected</div><div>{{.PlatformsCount}} / {{if gt .PlatformsLimit 0}}{{.PlatformsLimit}}{{else}}unlimited{{end}}</div></div>
+      </div>
+    </div>
+    {{end}}
   </div>
 
   <div class="card stat-card">
@@ -80,11 +104,26 @@
         <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">API calls limit</label>
         <input name="api_calls_limit" value="{{if .Quota}}{{.Quota.APICallsLimit}}{{end}}" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
       </div>
+      <div>
+        <label style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Platforms limit <span style="font-size:11px; color:var(--text-secondary);">(connected: {{.PlatformsCount}})</span></label>
+        <input name="platforms_limit" value="{{if .Quota}}{{.Quota.PlatformsLimit}}{{end}}" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);" />
+      </div>
 
       <div style="grid-column: 1 / -1; display:flex; gap: 10px; justify-content: space-between; align-items:center;">
         <div style="font-size: 12px; color: var(--text-secondary);">Leave a field unchanged to keep existing value.</div>
         <button type="submit" class="btn-primary" style="padding: 10px 14px;">Update plan & limits</button>
       </div>
+    </form>
+
+    <form method="POST" action="/admin/tenants/{{.Tenant.ID}}/mode" style="margin-top: 12px; display:flex; gap: 10px; align-items: end; flex-wrap: wrap;">
+      <div style="min-width: 220px;">
+        <label for="ai_human_mode" style="display:block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">AI / Human Mode</label>
+        <select id="ai_human_mode" name="ai_human_mode" aria-label="AI / Human Mode" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary);">
+          <option value="ai" {{if eq .Tenant.AIHumanMode "ai"}}selected{{end}}>AI</option>
+          <option value="human" {{if eq .Tenant.AIHumanMode "human"}}selected{{end}}>Human</option>
+        </select>
+      </div>
+      <button type="submit" class="btn-primary" style="padding: 10px 14px;">Update AI mode</button>
     </form>
 
     <div style="margin-top: 16px; display:flex; gap: 10px; flex-wrap: wrap;">
@@ -156,5 +195,7 @@
     </div>
   </div>
 </div>
+<style>/* Editor CSS parsing workaround: balanced braces */:root{}</style>
 {{end}}
 {{template "layout.html" .}}
+

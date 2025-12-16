@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
@@ -75,9 +76,9 @@ func (m *TenantBotManager) StartSocialConnectFlow(bot *tgbotapi.BotAPI, tenantID
 			baseURL = "https://www.brancr.com"
 		}
 		baseURL = strings.TrimRight(baseURL, "/")
-		
+
 		connectURL := fmt.Sprintf("%s/app/integrations/whatsapp", baseURL)
-		
+
 		info := "📱 *Connect WhatsApp*\n\n" +
 			"Brancr now uses *Respond.io* and *Gupshup* for WhatsApp integration.\n\n" +
 			"To connect your WhatsApp number:\n" +
@@ -377,6 +378,17 @@ func (m *TenantBotManager) ContinueSocialConnect(bot *tgbotapi.BotAPI, tenantID 
 				zap.String("page_id", pageID),
 				zap.Uint("tenant_id", tenantID))
 		}
+	}
+
+	// Check platform quota before creating the account
+	quotaSvc := quota.NewQuotaService(m.DB, m.Logger, nil)
+	if err := quotaSvc.CheckPlatformLimit(ctx, tenantID); err != nil {
+		if m.Metrics != nil {
+			m.Metrics.QuotaRejections.Inc()
+		}
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Cannot connect account: platform limit exceeded. Please contact support or upgrade your plan."))
+		delete(tenantSessions, chatID)
+		return
 	}
 
 	if err := m.DB.Create(&acc).Error; err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
+	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -43,9 +44,10 @@ type TenantBotManager struct {
 	Scheduler interface { // Interface to avoid circular dependency
 		ExecutePostImmediately(postID uint) error
 	}
-	Config               *config.Config
-	sessionFinalizers    sync.Map
-	WorkflowOrchestrator interface{} // Workflow orchestrator for managing workflows
+	Config                   *config.Config
+	Metrics                  *metrics.Metrics
+	sessionFinalizers        sync.Map
+	WorkflowOrchestrator     interface{}               // Workflow orchestrator for managing workflows
 	IndustrySelectionHandler *IndustrySelectionHandler // Industry selection handler
 }
 
@@ -85,7 +87,7 @@ func (m *TenantBotManager) StartPostFlowWithWorkflow(bot *tgbotapi.BotAPI, chatI
 }
 
 // ✅ Constructor — now initializes AI components too
-func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *TenantBotManager {
+func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger, metricsSvc *metrics.Metrics) *TenantBotManager {
 	var rdb *redis.Client
 	addr := strings.TrimSpace(cfg.RedisAddr)
 	if addr != "" {
@@ -149,6 +151,7 @@ func NewTenantBotManager(db *gorm.DB, cfg *config.Config, logger *zap.Logger) *T
 		Policy:     policy,
 		Responder:  responder,
 		Config:     cfg,
+		Metrics:    metricsSvc,
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/similadayo/brancr/internal/ai"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
 	"go.uber.org/zap"
@@ -23,7 +24,7 @@ type PostSession struct {
 	Name           string
 	Caption        string
 	UseAICaption   bool
-	CaptionMode    string // "write", "keywords", "ai", "" (empty for backward compat)
+	CaptionMode    string   // "write", "keywords", "ai", "" (empty for backward compat)
 	Platforms      []string // Selected platforms
 	ScheduleInput  string
 	BatchSchedule  bool     // Batch scheduling multiple posts
@@ -236,7 +237,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 					break
 				}
 			}
-			
+
 			if hasTikTok {
 				// Handle TikTok options via text input
 				lower := strings.ToLower(strings.TrimSpace(text))
@@ -272,7 +273,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 				return
 			}
 		}
-		
+
 		// Try to parse platforms from text first (for backward compatibility)
 		platforms := m.parsePlatforms(text)
 		if len(platforms) == 0 {
@@ -281,7 +282,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			return
 		}
 		sess.Platforms = platforms
-		
+
 		// Check if TikTok is selected - if so, ask for TikTok posting options
 		hasTikTok := false
 		for _, p := range platforms {
@@ -290,20 +291,20 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 				break
 			}
 		}
-		
+
 		if hasTikTok && !sess.TikTokOptionsAsked {
 			// Show TikTok options UI
 			m.showTikTokPostingOptions(bot, chatID, sess)
 			return
 		}
-		
+
 		sess.Step = 5
 		bot.Send(tgbotapi.NewMessage(chatID, "When should I publish it? Try \"now\", \"tomorrow at 9am\", or \"next week at 10am\"."))
 
 	case 5:
 		sess.ScheduleInput = text
 		m.Logger.Info("user provided schedule input", zap.Uint("tenant_id", tenantID), zap.String("input", text))
-		
+
 		// Check if scheduling for "now" - auto-confirm and post immediately
 		lower := strings.ToLower(strings.TrimSpace(text))
 		if lower == "now" || strings.Contains(lower, "now") {
@@ -313,7 +314,7 @@ func (m *TenantBotManager) ContinuePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			delete(tenantSessions, chatID)
 			return
 		}
-		
+
 		// For future scheduling, show preview
 		m.showPostPreview(bot, tenantID, chatID, sess)
 		return
@@ -439,7 +440,7 @@ You can toggle these options using the buttons below, or type:
 	if sess.TikTokDisableComment {
 		commentStatus = "❌ Disabled"
 	}
-	
+
 	text = fmt.Sprintf(text, duetStatus, stitchStatus, commentStatus)
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -492,64 +493,64 @@ func (m *TenantBotManager) showPlatformSelection(bot *tgbotapi.BotAPI, chatID in
 		bot.Send(tgbotapi.NewMessage(chatID, "❌ Error: Could not determine your account. Please try again."))
 		return
 	}
-	
+
 	// Check which platforms are connected
 	var accounts []storage.SocialAccount
 	m.DB.Where("tenant_id = ? AND connected = ?", sess.TenantID, true).Find(&accounts)
-	
+
 	connectedPlatforms := make(map[string]bool)
 	for _, acc := range accounts {
 		connectedPlatforms[acc.Platform] = true
 	}
-	
+
 	selectedPlatforms := make(map[string]bool)
 	for _, p := range sess.Platforms {
 		selectedPlatforms[p] = true
 	}
-	
+
 	// Build keyboard with checkboxes
 	availablePlatforms := []string{"instagram", "facebook", "whatsapp", "tiktok", "youtube"}
-	
+
 	var rows [][]tgbotapi.InlineKeyboardButton
 	var row []tgbotapi.InlineKeyboardButton
-	
+
 	for i, platform := range availablePlatforms {
 		isConnected := connectedPlatforms[platform]
 		isSelected := selectedPlatforms[platform]
-		
+
 		icon := "☐"
 		if isSelected {
 			icon = "☑️"
 		}
-		
+
 		label := fmt.Sprintf("%s %s", icon, strings.Title(platform))
 		if !isConnected {
 			label += " (not connected)"
 		}
-		
+
 		// Toggle selection state in callback data
 		newSelected := !isSelected
 		callbackData := fmt.Sprintf("platforms:toggle:%s:%v", platform, newSelected)
-		
+
 		button := tgbotapi.NewInlineKeyboardButtonData(label, callbackData)
 		row = append(row, button)
-		
+
 		// Add 2 buttons per row
 		if len(row) == 2 || i == len(availablePlatforms)-1 {
 			rows = append(rows, row)
 			row = []tgbotapi.InlineKeyboardButton{}
 		}
 	}
-	
+
 	// Add action buttons
 	actionRow := tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("✅ Continue", "platforms:confirm"),
 		tgbotapi.NewInlineKeyboardButtonData("All Platforms", "platforms:all"),
 	)
 	rows = append(rows, actionRow)
-	
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	
+
 	msgText := "📱 *Select Platforms*\n\nChoose where to post. Tap platforms to select/deselect."
 	if len(selectedPlatforms) > 0 {
 		platformList := make([]string, 0, len(selectedPlatforms))
@@ -558,7 +559,7 @@ func (m *TenantBotManager) showPlatformSelection(bot *tgbotapi.BotAPI, chatID in
 		}
 		msgText += fmt.Sprintf("\n\n✅ Selected: %s", strings.Join(platformList, ", "))
 	}
-	
+
 	msg := tgbotapi.NewMessage(chatID, msgText)
 	msg.ParseMode = "Markdown"
 	msg.ReplyMarkup = keyboard
@@ -599,14 +600,14 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			break
 		}
 	}
-	
+
 	if hasTikTok {
 		metadata := make(map[string]interface{})
 		// Try to parse existing metadata
 		if ma.Metadata != "" {
 			_ = json.Unmarshal([]byte(ma.Metadata), &metadata)
 		}
-		
+
 		// Add TikTok posting options
 		metadata["tiktok_disable_duet"] = sess.TikTokDisableDuet
 		metadata["tiktok_disable_stitch"] = sess.TikTokDisableStitch
@@ -614,7 +615,7 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		if sess.TikTokScheduleTime != nil {
 			metadata["tiktok_schedule_time"] = sess.TikTokScheduleTime.Format(time.RFC3339)
 		}
-		
+
 		metadataJSON, _ := json.Marshal(metadata)
 		m.DB.Model(&ma).Update("metadata", string(metadataJSON))
 		ma.Metadata = string(metadataJSON)
@@ -623,12 +624,12 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	// Validate platform connections before proceeding
 	var connectedAccounts []storage.SocialAccount
 	m.DB.Where("tenant_id = ? AND connected = ?", tenantID, true).Find(&connectedAccounts)
-	
+
 	connectedPlatforms := make(map[string]bool)
 	for _, acc := range connectedAccounts {
 		connectedPlatforms[acc.Platform] = true
 	}
-	
+
 	// Check which platforms are not connected
 	var missingPlatforms []string
 	var validPlatforms []string
@@ -639,7 +640,7 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			validPlatforms = append(validPlatforms, platform)
 		}
 	}
-	
+
 	// If some platforms are missing, warn user but continue with connected ones
 	if len(missingPlatforms) > 0 {
 		warningMsg := fmt.Sprintf("⚠️ *Platform Not Connected*\n\n")
@@ -647,15 +648,15 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 			warningMsg += fmt.Sprintf("• *%s* is not connected yet\n", strings.Title(p))
 		}
 		warningMsg += "\nI'll only post to connected platforms. Connect missing platforms in the menu:\n`/menu` → Connect"
-		
+
 		bot.Send(tgbotapi.NewMessage(chatID, warningMsg))
-		
+
 		// If no platforms are connected, stop here
 		if len(validPlatforms) == 0 {
 			bot.Send(tgbotapi.NewMessage(chatID, "❌ None of the selected platforms are connected. Please connect at least one platform before posting."))
 			return
 		}
-		
+
 		// Update platforms to only include connected ones
 		platforms = validPlatforms
 		logger.Info("filtered out unconnected platforms",
@@ -701,19 +702,19 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 	scheduledAtUTC := scheduledAt.UTC()
 
 	sp := storage.ScheduledPost{
-		TenantID:      tenantID,
-		Name:          ma.Name,
-		Caption:       caption,
-		MediaAssetIDs: string(idsJSON),
-		Platforms:     string(platformsJSON),
-		ScheduledAt:   &scheduledAtUTC,
-		Status:        "scheduled",
-		Timezone:      tenant.Timezone,
+		TenantID:       tenantID,
+		Name:           ma.Name,
+		Caption:        caption,
+		MediaAssetIDs:  string(idsJSON),
+		Platforms:      string(platformsJSON),
+		ScheduledAt:    &scheduledAtUTC,
+		Status:         "scheduled",
+		Timezone:       tenant.Timezone,
 		EnhanceCaption: sess.UseAICaption, // Store AI enhancement preference
 	}
 
 	if err := m.DB.Create(&sp).Error; err != nil {
-		logger.Error("failed to create scheduled post", 
+		logger.Error("failed to create scheduled post",
 			zap.Error(err),
 			zap.Uint("tenant_id", tenantID),
 			zap.Uint("asset_id", sess.MediaAssetID),
@@ -721,7 +722,7 @@ func (m *TenantBotManager) finalizePostFlow(bot *tgbotapi.BotAPI, tenantID uint,
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Couldn't schedule the post: %v. Please try again or contact support.", err)))
 		return
 	}
-	
+
 	logger.Info("✅ scheduled post created successfully",
 		zap.Uint("post_id", sp.ID),
 		zap.Uint("tenant_id", tenantID),
@@ -919,14 +920,14 @@ func (m *TenantBotManager) createBatchPosts(bot *tgbotapi.BotAPI, tenantID uint,
 		scheduledAtUTC := scheduledAt.UTC()
 
 		sp := storage.ScheduledPost{
-			TenantID:      tenantID,
-			Name:          ma.Name,
-			Caption:       caption,
-			MediaAssetIDs: string(idsJSON),
-			Platforms:     string(platformsJSON),
-			ScheduledAt:   &scheduledAtUTC,
-			Status:        "scheduled",
-			Timezone:      timezone,
+			TenantID:       tenantID,
+			Name:           ma.Name,
+			Caption:        caption,
+			MediaAssetIDs:  string(idsJSON),
+			Platforms:      string(platformsJSON),
+			ScheduledAt:    &scheduledAtUTC,
+			Status:         "scheduled",
+			Timezone:       timezone,
 			EnhanceCaption: sess.UseAICaption, // Store AI enhancement preference
 		}
 
@@ -1044,12 +1045,12 @@ func (m *TenantBotManager) generateConfirmationMessageWithTimezone(ma storage.Me
 	// Natural time description with timezone
 	now := time.Now().In(loc)
 	timeUntil := scheduledAtLocal.Sub(now)
-	
+
 	timezoneAbbr := timezone
 	if timezoneAbbr == "" {
 		timezoneAbbr = "UTC"
 	}
-	
+
 	var scheduleStr string
 	if timeUntil < 5*time.Minute {
 		scheduleStr = fmt.Sprintf("⏰ *Posting now* (%s)", timezoneAbbr)
@@ -1119,12 +1120,28 @@ func (m *TenantBotManager) generateCaptionFromKeywords(bot *tgbotapi.BotAPI, ten
 	}
 
 	ctx := context.Background()
+	// Check AI quota before making request
+	qs := quota.NewQuotaService(m.DB, m.Logger, nil)
+	if err := qs.CheckAICallQuota(ctx, tenantID); err != nil {
+		if m.Metrics != nil {
+			m.Metrics.QuotaRejections.Inc()
+		}
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ AI quota exceeded for your plan. Please upgrade or wait until your quota resets."))
+		sess.Step = 3
+		return
+	}
+
 	caption, err := optimizer.GenerateCaptionFromKeywords(ctx, tenantID, keywords, platform, sess.MediaType, imageURLs)
 	if err != nil {
 		m.Logger.Error("failed to generate caption from keywords", zap.Error(err))
 		bot.Send(tgbotapi.NewMessage(chatID, "Sorry, I couldn't generate a caption right now. Try typing your own or say 'skip'."))
 		sess.Step = 3
 		return
+	}
+
+	// Increment AI usage (best-effort)
+	if incErr := qs.IncrementAICallUsage(ctx, tenantID); incErr != nil {
+		m.Logger.Warn("failed to increment AI call usage", zap.Error(incErr), zap.Uint("tenant_id", tenantID))
 	}
 
 	sess.Caption = caption

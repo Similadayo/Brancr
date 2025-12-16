@@ -6,17 +6,18 @@ import (
 
 // Metrics collects application metrics
 type Metrics struct {
-	HTTPRequests      *Counter
+	HTTPRequests        *Counter
 	HTTPRequestDuration *Histogram
-	AIRequests        *Counter
-	AIReponseDuration *Histogram
-	BotMessages       *Counter
-	SocialPosts       *Counter
-	Errors            *Counter
-	DBQueries         *Counter
-	DBSlowQueries     *Counter
-	DBQueryDuration   *Histogram
-	DBErrors          *Counter
+	AIRequests          *Counter
+	AIReponseDuration   *Histogram
+	BotMessages         *Counter
+	SocialPosts         *Counter
+	Errors              *Counter
+	QuotaRejections     *Counter
+	DBQueries           *Counter
+	DBSlowQueries       *Counter
+	DBQueryDuration     *Histogram
+	DBErrors            *Counter
 }
 
 // Counter represents a simple counter metric
@@ -34,17 +35,18 @@ type Histogram struct {
 // NewMetrics creates a new metrics instance
 func NewMetrics() *Metrics {
 	return &Metrics{
-		HTTPRequests:       NewCounter("http_requests_total"),
+		HTTPRequests:        NewCounter("http_requests_total"),
 		HTTPRequestDuration: NewHistogram("http_request_duration_seconds"),
-		AIRequests:         NewCounter("ai_requests_total"),
-		AIReponseDuration:  NewHistogram("ai_response_duration_seconds"),
-		BotMessages:        NewCounter("bot_messages_total"),
-		SocialPosts:        NewCounter("social_posts_total"),
-		Errors:             NewCounter("errors_total"),
-		DBQueries:          NewCounter("db_queries_total"),
-		DBSlowQueries:      NewCounter("db_slow_queries_total"),
-		DBQueryDuration:    NewHistogram("db_query_duration_seconds"),
-		DBErrors:           NewCounter("db_errors_total"),
+		AIRequests:          NewCounter("ai_requests_total"),
+		AIReponseDuration:   NewHistogram("ai_response_duration_seconds"),
+		BotMessages:         NewCounter("bot_messages_total"),
+		SocialPosts:         NewCounter("social_posts_total"),
+		Errors:              NewCounter("errors_total"),
+		QuotaRejections:     NewCounter("quota_rejections_total"),
+		DBQueries:           NewCounter("db_queries_total"),
+		DBSlowQueries:       NewCounter("db_slow_queries_total"),
+		DBQueryDuration:     NewHistogram("db_query_duration_seconds"),
+		DBErrors:            NewCounter("db_errors_total"),
 	}
 }
 
@@ -86,4 +88,3 @@ func (h *Histogram) Observe(value float64) {
 func (h *Histogram) RecordDuration(duration time.Duration) {
 	h.Observe(duration.Seconds())
 }
-

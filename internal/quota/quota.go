@@ -43,7 +43,7 @@ func (s *QuotaService) GetOrCreateQuota(ctx context.Context, tenantID uint) (*st
 			// Cache hit - check if reset is needed (this may modify quota)
 			originalLastReset := cachedQuota.LastResetAt
 			resetErr := s.checkAndResetQuota(ctx, &cachedQuota)
-			
+
 			// If reset occurred successfully, invalidate cache and reload from DB to get fresh state
 			if !originalLastReset.Equal(cachedQuota.LastResetAt) {
 				s.Cache.Delete(ctx, cacheKey)
@@ -67,43 +67,43 @@ func (s *QuotaService) GetOrCreateQuota(ctx context.Context, tenantID uint) (*st
 	// Cache miss or reset occurred - fetch from database
 	var quota storage.TenantQuota
 	err := s.DB.WithContext(ctx).Where("tenant_id = ?", tenantID).First(&quota).Error
-	
+
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Create default quota based on plan type
 		quota = storage.TenantQuota{
-			TenantID:        tenantID,
-			AICallsLimit:    100,  // Default: 100 AI calls/day
-			PostsLimit:      50,   // Default: 50 posts/day
-			StorageLimitMB:  1000, // Default: 1GB
-			APICallsLimit:   1000, // Default: 1000 API calls/day
-			ResetFrequency:  "daily",
-			PlanType:        "free",
-			LastResetAt:     time.Now(),
+			TenantID:       tenantID,
+			AICallsLimit:   100,  // Default: 100 AI calls/day
+			PostsLimit:     50,   // Default: 50 posts/day
+			StorageLimitMB: 1000, // Default: 1GB
+			APICallsLimit:  1000, // Default: 1000 API calls/day
+			ResetFrequency: "daily",
+			PlanType:       "free",
+			LastResetAt:    time.Now(),
 		}
-		
+
 		if err := s.DB.WithContext(ctx).Create(&quota).Error; err != nil {
 			return nil, fmt.Errorf("failed to create quota: %w", err)
 		}
-		
+
 		s.Logger.Info("created default quota for tenant",
 			zap.Uint("tenant_id", tenantID),
 			zap.String("plan", quota.PlanType))
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to get quota: %w", err)
 	}
-	
+
 	// Reset quota if needed
 	if err := s.checkAndResetQuota(ctx, &quota); err != nil {
 		s.Logger.Warn("failed to reset quota", zap.Error(err))
 	}
-	
+
 	// Cache the quota for 5 minutes (usage changes frequently, so shorter TTL)
 	if s.Cache != nil {
 		if err := s.Cache.SetWithTTL(ctx, cacheKey, quota, 5*time.Minute); err != nil {
 			s.Logger.Warn("failed to cache quota", zap.Error(err), zap.Uint("tenant_id", tenantID))
 		}
 	}
-	
+
 	return &quota, nil
 }
 
@@ -111,7 +111,7 @@ func (s *QuotaService) GetOrCreateQuota(ctx context.Context, tenantID uint) (*st
 func (s *QuotaService) checkAndResetQuota(ctx context.Context, quota *storage.TenantQuota) error {
 	now := time.Now()
 	var shouldReset bool
-	
+
 	switch quota.ResetFrequency {
 	case "daily":
 		shouldReset = now.Sub(quota.LastResetAt) >= 24*time.Hour
@@ -122,35 +122,35 @@ func (s *QuotaService) checkAndResetQuota(ctx context.Context, quota *storage.Te
 	default:
 		shouldReset = now.Sub(quota.LastResetAt) >= 24*time.Hour
 	}
-	
+
 	if shouldReset {
 		updates := map[string]interface{}{
-			"ai_calls_used":   0,
-			"posts_used":      0,
-			"api_calls_used":  0,
-			"last_reset_at":   now,
+			"ai_calls_used":  0,
+			"posts_used":     0,
+			"api_calls_used": 0,
+			"last_reset_at":  now,
 		}
 		// Note: Storage is not reset (cumulative)
-		
+
 		if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 			return fmt.Errorf("failed to reset quota: %w", err)
 		}
-		
+
 		quota.AICallsUsed = 0
 		quota.PostsUsed = 0
 		quota.APICallsUsed = 0
 		quota.LastResetAt = now
-		
+
 		// Invalidate cache after reset
 		if s.Cache != nil {
 			s.Cache.Delete(ctx, cache.QuotaKey(quota.TenantID))
 		}
-		
+
 		s.Logger.Info("reset quota for tenant",
 			zap.Uint("tenant_id", quota.TenantID),
 			zap.String("frequency", quota.ResetFrequency))
 	}
-	
+
 	return nil
 }
 
@@ -160,12 +160,12 @@ func (s *QuotaService) CheckAICallQuota(ctx context.Context, tenantID uint) erro
 	if err != nil {
 		return err
 	}
-	
+
 	// 0 means unlimited
 	if quota.AICallsLimit > 0 && quota.AICallsUsed >= quota.AICallsLimit {
 		return fmt.Errorf("%w: AI calls limit (%d) exceeded", ErrQuotaExceeded, quota.AICallsLimit)
 	}
-	
+
 	return nil
 }
 
@@ -175,25 +175,25 @@ func (s *QuotaService) IncrementAICallUsage(ctx context.Context, tenantID uint) 
 	if err != nil {
 		return err
 	}
-	
+
 	// Check quota before incrementing
 	if quota.AICallsLimit > 0 && quota.AICallsUsed >= quota.AICallsLimit {
 		return fmt.Errorf("%w: AI calls limit (%d) exceeded", ErrQuotaExceeded, quota.AICallsLimit)
 	}
-	
+
 	updates := map[string]interface{}{
 		"ai_calls_used": gorm.Expr("ai_calls_used + ?", 1),
 	}
-	
+
 	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to increment AI call usage: %w", err)
 	}
-	
+
 	// Invalidate cache after update
 	if s.Cache != nil {
 		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
 	}
-	
+
 	return nil
 }
 
@@ -203,12 +203,66 @@ func (s *QuotaService) CheckPostQuota(ctx context.Context, tenantID uint) error 
 	if err != nil {
 		return err
 	}
-	
+
 	// 0 means unlimited
 	if quota.PostsLimit > 0 && quota.PostsUsed >= quota.PostsLimit {
 		return fmt.Errorf("%w: posts limit (%d) exceeded", ErrQuotaExceeded, quota.PostsLimit)
 	}
-	
+
+	return nil
+}
+
+// CheckCanSchedulePost checks if tenant can schedule another post.
+// It considers both already executed posts and posts currently scheduled (not cancelled/posted).
+func (s *QuotaService) CheckCanSchedulePost(ctx context.Context, tenantID uint) error {
+	quota, err := s.GetOrCreateQuota(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	// 0 means unlimited
+	if quota.PostsLimit == 0 {
+		return nil
+	}
+
+	// Count scheduled posts that are not yet posted or cancelled
+	var scheduledCount int64
+	if err := s.DB.WithContext(ctx).
+		Model(&storage.ScheduledPost{}).
+		Where("tenant_id = ? AND status = ?", tenantID, "scheduled").
+		Count(&scheduledCount).Error; err != nil {
+		return fmt.Errorf("failed to count scheduled posts: %w", err)
+	}
+
+	if quota.PostsUsed+int(scheduledCount) >= quota.PostsLimit {
+		return fmt.Errorf("%w: posts limit (%d) exceeded (used=%d, scheduled=%d)", ErrQuotaExceeded, quota.PostsLimit, quota.PostsUsed, scheduledCount)
+	}
+	return nil
+}
+
+// CheckPlatformLimit checks if tenant can connect another social account (platform).
+func (s *QuotaService) CheckPlatformLimit(ctx context.Context, tenantID uint) error {
+	quota, err := s.GetOrCreateQuota(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	// 0 means unlimited
+	if quota.PlatformsLimit == 0 {
+		return nil
+	}
+
+	var connected int64
+	if err := s.DB.WithContext(ctx).
+		Model(&storage.SocialAccount{}).
+		Where("tenant_id = ? AND connected = ?", tenantID, true).
+		Count(&connected).Error; err != nil {
+		return fmt.Errorf("failed to count connected platforms: %w", err)
+	}
+
+	if int(connected) >= quota.PlatformsLimit {
+		return fmt.Errorf("%w: platforms limit (%d) exceeded", ErrQuotaExceeded, quota.PlatformsLimit)
+	}
 	return nil
 }
 
@@ -218,25 +272,25 @@ func (s *QuotaService) IncrementPostUsage(ctx context.Context, tenantID uint) er
 	if err != nil {
 		return err
 	}
-	
+
 	// Check quota before incrementing
 	if quota.PostsLimit > 0 && quota.PostsUsed >= quota.PostsLimit {
 		return fmt.Errorf("%w: posts limit (%d) exceeded", ErrQuotaExceeded, quota.PostsLimit)
 	}
-	
+
 	updates := map[string]interface{}{
 		"posts_used": gorm.Expr("posts_used + ?", 1),
 	}
-	
+
 	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to increment post usage: %w", err)
 	}
-	
+
 	// Invalidate cache after update
 	if s.Cache != nil {
 		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
 	}
-	
+
 	return nil
 }
 
@@ -246,12 +300,12 @@ func (s *QuotaService) CheckStorageQuota(ctx context.Context, tenantID uint, siz
 	if err != nil {
 		return err
 	}
-	
+
 	// 0 means unlimited
 	if quota.StorageLimitMB > 0 && (quota.StorageUsedMB+sizeMB) > quota.StorageLimitMB {
 		return fmt.Errorf("%w: storage limit (%d MB) would be exceeded", ErrQuotaExceeded, quota.StorageLimitMB)
 	}
-	
+
 	return nil
 }
 
@@ -261,25 +315,25 @@ func (s *QuotaService) IncrementStorageUsage(ctx context.Context, tenantID uint,
 	if err != nil {
 		return err
 	}
-	
+
 	// Check quota before incrementing
 	if quota.StorageLimitMB > 0 && (quota.StorageUsedMB+sizeMB) > quota.StorageLimitMB {
 		return fmt.Errorf("%w: storage limit (%d MB) would be exceeded", ErrQuotaExceeded, quota.StorageLimitMB)
 	}
-	
+
 	updates := map[string]interface{}{
 		"storage_used_mb": gorm.Expr("storage_used_mb + ?", sizeMB),
 	}
-	
+
 	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to increment storage usage: %w", err)
 	}
-	
+
 	// Invalidate cache after update
 	if s.Cache != nil {
 		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
 	}
-	
+
 	return nil
 }
 
@@ -289,20 +343,20 @@ func (s *QuotaService) DecrementStorageUsage(ctx context.Context, tenantID uint,
 	if err != nil {
 		return err
 	}
-	
+
 	updates := map[string]interface{}{
 		"storage_used_mb": gorm.Expr("GREATEST(0, storage_used_mb - ?)", sizeMB),
 	}
-	
+
 	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to decrement storage usage: %w", err)
 	}
-	
+
 	// Invalidate cache after update
 	if s.Cache != nil {
 		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
 	}
-	
+
 	return nil
 }
 
@@ -312,12 +366,12 @@ func (s *QuotaService) CheckAPICallQuota(ctx context.Context, tenantID uint) err
 	if err != nil {
 		return err
 	}
-	
+
 	// 0 means unlimited
 	if quota.APICallsLimit > 0 && quota.APICallsUsed >= quota.APICallsLimit {
 		return fmt.Errorf("%w: API calls limit (%d) exceeded", ErrQuotaExceeded, quota.APICallsLimit)
 	}
-	
+
 	return nil
 }
 
@@ -327,25 +381,25 @@ func (s *QuotaService) IncrementAPICallUsage(ctx context.Context, tenantID uint)
 	if err != nil {
 		return err
 	}
-	
+
 	// Check quota before incrementing
 	if quota.APICallsLimit > 0 && quota.APICallsUsed >= quota.APICallsLimit {
 		return fmt.Errorf("%w: API calls limit (%d) exceeded", ErrQuotaExceeded, quota.APICallsLimit)
 	}
-	
+
 	updates := map[string]interface{}{
 		"api_calls_used": gorm.Expr("api_calls_used + ?", 1),
 	}
-	
+
 	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to increment API call usage: %w", err)
 	}
-	
+
 	// Invalidate cache after update
 	if s.Cache != nil {
 		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
 	}
-	
+
 	return nil
 }
 
@@ -362,9 +416,9 @@ func (s *QuotaService) UpdateQuotaLimits(ctx context.Context, tenantID uint, lim
 	if err != nil {
 		return err
 	}
-	
+
 	updates := make(map[string]interface{})
-	
+
 	if val, ok := limits["ai_calls_limit"]; ok {
 		updates["ai_calls_limit"] = val
 	}
@@ -377,28 +431,30 @@ func (s *QuotaService) UpdateQuotaLimits(ctx context.Context, tenantID uint, lim
 	if val, ok := limits["api_calls_limit"]; ok {
 		updates["api_calls_limit"] = val
 	}
+	if val, ok := limits["platforms_limit"]; ok {
+		updates["platforms_limit"] = val
+	}
 	if planType != "" {
 		updates["plan_type"] = planType
 	}
-	
+
 	if len(updates) == 0 {
 		return nil
 	}
-	
+
 	if err := s.DB.WithContext(ctx).Model(quota).Updates(updates).Error; err != nil {
 		return fmt.Errorf("failed to update quota limits: %w", err)
 	}
-	
+
 	// Invalidate cache after update
 	if s.Cache != nil {
 		s.Cache.Delete(ctx, cache.QuotaKey(tenantID))
 	}
-	
+
 	s.Logger.Info("updated quota limits for tenant",
 		zap.Uint("tenant_id", tenantID),
 		zap.Any("limits", limits),
 		zap.String("plan_type", planType))
-	
+
 	return nil
 }
-

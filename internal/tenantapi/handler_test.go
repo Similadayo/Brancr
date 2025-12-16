@@ -349,3 +349,37 @@ func TestHandler_CreatePost_Unauthorized(t *testing.T) {
 
 	rr.AssertStatus(t, http.StatusUnauthorized)
 }
+
+func TestHandler_UpdateAIModeAndBlockAI(t *testing.T) {
+	handler, db := setupTestHandler(t)
+	defer testutil.CleanupDB(t, db)
+
+	tenant := testutil.CreateTestTenant(t, db, "aiuser@example.com", "password123", "AI User")
+
+	// Update AI mode to 'human'
+	req := testutil.TestRequestWithTenant(t, "PUT", "/api/tenant/settings/ai-mode", map[string]interface{}{"mode": "human"}, tenant.ID, tenant.Email)
+	rr := testutil.NewTestResponseRecorder()
+	handler.updateAIModeSettings(rr, req)
+	rr.AssertStatus(t, http.StatusOK)
+
+	// Verify in DB
+	var updated storage.Tenant
+	if err := db.First(&updated, tenant.ID).Error; err != nil {
+		t.Fatalf("failed to fetch tenant: %v", err)
+	}
+	if updated.AIHumanMode != "human" {
+		t.Fatalf("expected AIHumanMode 'human', got '%s'", updated.AIHumanMode)
+	}
+
+	// Now attempt to generate a caption - should be rejected with 403 (ai_disabled)
+	genReq := testutil.TestRequestWithTenant(t, "POST", "/api/tenant/posts/generate-caption", map[string]interface{}{"platform": "instagram"}, tenant.ID, tenant.Email)
+	genRR := testutil.NewTestResponseRecorder()
+	handler.generateCaption(genRR, genReq)
+	genRR.AssertStatus(t, http.StatusForbidden)
+
+	var resp map[string]interface{}
+	genRR.BodyJSON(t, &resp)
+	if resp["error"] != "ai_disabled" {
+		t.Fatalf("expected ai_disabled error, got %v", resp)
+	}
+}

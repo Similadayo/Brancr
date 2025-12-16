@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/similadayo/brancr/internal/config"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
+	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -32,10 +34,11 @@ type MetaOAuthHandler struct {
 	RedirectURI     string
 	SuccessRedirect string
 	HTTPClient      *http.Client
+	Metrics         *metrics.Metrics
 }
 
 // NewMetaOAuthHandler returns a configured Meta OAuth handler or nil if configuration is incomplete.
-func NewMetaOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config) (*MetaOAuthHandler, error) {
+func NewMetaOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, metricsSvc *metrics.Metrics) (*MetaOAuthHandler, error) {
 	if cfg.MetaAppID == "" || cfg.MetaAppSecret == "" || cfg.MetaRedirectURI == "" {
 		logger.Info("Meta OAuth disabled — missing META_APP_ID, META_APP_SECRET, or META_REDIRECT_URI")
 		return nil, nil
@@ -51,6 +54,7 @@ func NewMetaOAuthHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config) (*
 		RedirectURI:     cfg.MetaRedirectURI,
 		SuccessRedirect: cfg.MetaSuccessURL,
 		HTTPClient:      client,
+		Metrics:         metricsSvc,
 	}, nil
 }
 
@@ -138,7 +142,7 @@ func (h *MetaOAuthHandler) StartOAuth(w http.ResponseWriter, r *http.Request) {
 		}(),
 	}
 	http.SetCookie(w, stateCookie)
-	
+
 	h.Logger.Debug("✅ OAuth state cookie set as backup",
 		zap.String("cookie_name", "oauth_state_backup"),
 		zap.Int("cookie_value_length", len(stateToken)),
@@ -256,7 +260,7 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		reasonParam := query.Get("reason")
 		statusParam := query.Get("status")
 		errDesc := query.Get("error_description")
-		
+
 		// Log all available information for debugging
 		h.Logger.Warn("Meta OAuth callback received without state parameter",
 			zap.String("url", r.URL.String()),
@@ -267,20 +271,20 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			zap.String("reason_param", reasonParam),
 			zap.String("status_param", statusParam),
 			zap.String("error_description", errDesc))
-		
+
 		// Check if user cancelled or there's an error from Meta
 		// Meta can return errors in different formats:
 		// 1. Standard: error=access_denied&error_description=...
 		// 2. Alternative: reason=...&status=error
 		if errParam != "" || (statusParam == "error" && reasonParam != "") {
 			var errorMsg string
-			
+
 			if errParam != "" {
 				// Standard error format
 				h.Logger.Info("Meta OAuth returned an error (standard format)",
 					zap.String("error", errParam),
 					zap.String("error_description", errDesc))
-				
+
 				errorMsg = fmt.Sprintf("Meta OAuth error: %s", errParam)
 				if errDesc != "" {
 					errorMsg += fmt.Sprintf("\n\nDetails: %s", errDesc)
@@ -295,14 +299,14 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				h.Logger.Info("Meta OAuth returned an error (alternative format)",
 					zap.String("reason", reasonParam),
 					zap.String("status", statusParam))
-				
+
 				// Decode URL-encoded reason
 				if decodedReason, err := url.QueryUnescape(reasonParam); err == nil {
 					reasonParam = decodedReason
 				}
-				
-				if strings.Contains(strings.ToLower(reasonParam), "cancelled") || 
-				   strings.Contains(strings.ToLower(reasonParam), "authorization code missing") {
+
+				if strings.Contains(strings.ToLower(reasonParam), "cancelled") ||
+					strings.Contains(strings.ToLower(reasonParam), "authorization code missing") {
 					errorMsg = "OAuth authorization was cancelled.\n\nYou can try connecting again when you're ready."
 				} else {
 					errorMsg = fmt.Sprintf("OAuth error: %s", reasonParam)
@@ -311,24 +315,24 @@ func (h *MetaOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				// Generic error
 				errorMsg = "OAuth authorization failed. Please try connecting again."
 			}
-			
+
 			h.respondError(w, r, h.getDefaultSuccessURL(), errorMsg)
 			return
 		}
-		
+
 		// Provide more helpful error message
 		errorMsg := "OAuth state parameter missing. This usually happens when:\n• The redirect URL in Meta Developer Console doesn't match exactly\n• The OAuth flow was interrupted or cancelled\n• Please check your Meta app settings and try connecting again"
-		
+
 		// Check if request came from Telegram (User-Agent or Referer)
 		userAgent := r.UserAgent()
 		referer := r.Referer()
 		if strings.Contains(userAgent, "Telegram") || strings.Contains(referer, "telegram.org") {
 			errorMsg += "\n\n💡 Tip: If you're connecting from Telegram, make sure you complete the OAuth flow in the browser window. Don't close it until you see a success message."
 		}
-		
+
 		// Add diagnostic info
 		errorMsg += fmt.Sprintf("\n\n🔍 Diagnostic: Expected redirect URI: %s", h.RedirectURI)
-		
+
 		// Redirect to success page with error status
 		h.respondError(w, r, h.getDefaultSuccessURL(), errorMsg)
 		return
@@ -540,7 +544,7 @@ func (h *MetaOAuthHandler) processPlatforms(ctx context.Context, state metaOAuth
 			// Users should use Instagram Login (Business Login for Instagram) instead
 			result.Warnings = append(result.Warnings, metaPlatformResult{
 				Platform: "instagram",
-				Message: "Instagram connection via Facebook OAuth is no longer supported. Please use Instagram Login instead. This allows you to connect Instagram without requiring a Facebook Page.",
+				Message:  "Instagram connection via Facebook OAuth is no longer supported. Please use Instagram Login instead. This allows you to connect Instagram without requiring a Facebook Page.",
 			})
 
 		case "whatsapp":
@@ -878,7 +882,7 @@ func (h *MetaOAuthHandler) saveFacebookAccount(ctx context.Context, tenantID uin
 		acc.Connected = true
 		acc.ExpiresAt = expiresAt
 	})
-	
+
 	if err != nil {
 		h.Logger.Error("❌ Failed to upsert Facebook account",
 			zap.Uint("tenant_id", tenantID),
@@ -886,12 +890,12 @@ func (h *MetaOAuthHandler) saveFacebookAccount(ctx context.Context, tenantID uin
 			zap.Error(err))
 		return err
 	}
-	
+
 	h.Logger.Info("✅ Facebook account upserted successfully",
 		zap.Uint("tenant_id", tenantID),
 		zap.String("page_id", page.ID),
 		zap.String("page_name", page.Name))
-	
+
 	return nil
 }
 
@@ -915,7 +919,7 @@ func (h *MetaOAuthHandler) saveInstagramAccount(ctx context.Context, tenantID ui
 		acc.AccessToken = encrypted
 		acc.RefreshToken = ""
 		acc.PageID = facebookPageID // Store Facebook Page ID (needed for webhook subscription)
-		acc.ExternalID = ig.ID // Store Instagram Business Account ID (used for messaging API and webhook routing)
+		acc.ExternalID = ig.ID      // Store Instagram Business Account ID (used for messaging API and webhook routing)
 		acc.Username = ig.Username
 		acc.Mode = "oauth2"
 		acc.Connected = true
@@ -953,10 +957,19 @@ func (h *MetaOAuthHandler) upsertSocialAccount(ctx context.Context, tenantID uin
 	result := h.DB.WithContext(ctx).Where("tenant_id = ? AND platform = ?", tenantID, platform).First(&account)
 
 	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		// Check platform quota before creating a new account
+		qs := quota.NewQuotaService(h.DB, h.Logger, nil)
+		if err := qs.CheckPlatformLimit(ctx, tenantID); err != nil {
+			if h.Metrics != nil {
+				h.Metrics.QuotaRejections.Inc()
+			}
+			return err
+		}
+
 		account = storage.SocialAccount{
-			TenantID: tenantID,
-			Platform: platform,
-			Metadata: "{}", // Initialize with empty JSON object for jsonb field
+			TenantID:  tenantID,
+			Platform:  platform,
+			Metadata:  "{}", // Initialize with empty JSON object for jsonb field
 			CreatedAt: time.Now(),
 		}
 	} else if result.Error != nil {
@@ -1135,12 +1148,12 @@ func (h *MetaOAuthHandler) respondError(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if uri, err := url.Parse(errorURL); err == nil {
-			q := uri.Query()
-			q.Set("status", "error")
-			q.Set("reason", trimmed)
-			uri.RawQuery = q.Encode()
-			http.Redirect(w, r, uri.String(), http.StatusFound)
-			return
+		q := uri.Query()
+		q.Set("status", "error")
+		q.Set("reason", trimmed)
+		uri.RawQuery = q.Encode()
+		http.Redirect(w, r, uri.String(), http.StatusFound)
+		return
 	}
 
 	// Fallback to error response if redirect URL is invalid
@@ -1163,22 +1176,22 @@ func (h *MetaOAuthHandler) respondSuccess(w http.ResponseWriter, r *http.Request
 	}
 
 	if uri, err := url.Parse(successURL); err == nil {
-			platforms := make([]string, len(result.Connected))
-			for i, item := range result.Connected {
-				platforms[i] = item.Platform
-			}
+		platforms := make([]string, len(result.Connected))
+		for i, item := range result.Connected {
+			platforms[i] = item.Platform
+		}
 
-			q := uri.Query()
-			q.Set("status", "success")
-			if len(platforms) > 0 {
-				q.Set("platforms", strings.Join(platforms, ","))
-			}
-			if len(result.Warnings) > 0 {
-				q.Set("warnings", strconv.Itoa(len(result.Warnings)))
-			}
-			uri.RawQuery = q.Encode()
-			http.Redirect(w, r, uri.String(), http.StatusFound)
-			return
+		q := uri.Query()
+		q.Set("status", "success")
+		if len(platforms) > 0 {
+			q.Set("platforms", strings.Join(platforms, ","))
+		}
+		if len(result.Warnings) > 0 {
+			q.Set("warnings", strconv.Itoa(len(result.Warnings)))
+		}
+		uri.RawQuery = q.Encode()
+		http.Redirect(w, r, uri.String(), http.StatusFound)
+		return
 	}
 
 	// Fallback to JSON if redirect URL is invalid

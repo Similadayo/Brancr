@@ -243,7 +243,7 @@ func (s *Services) initAI() error {
 }
 
 func (s *Services) initBotManager() error {
-	botManager := bot.NewTenantBotManager(s.DB, s.Config, s.Logger)
+	botManager := bot.NewTenantBotManager(s.DB, s.Config, s.Logger, s.Metrics)
 
 	// Initialize IndustrySelectionHandler if IndustryService is available
 	if s.IndustryService != nil {
@@ -366,7 +366,7 @@ func (s *Services) initSocial() error {
 		s.Logger.Info("✅ Gupshup webhook handler initialized")
 	}
 
-	if oauthHandler, err := social.NewMetaOAuthHandler(s.DB, s.Logger, s.Config); err != nil {
+	if oauthHandler, err := social.NewMetaOAuthHandler(s.DB, s.Logger, s.Config, s.Metrics); err != nil {
 		s.Logger.Warn("failed to initialize Meta OAuth handler", zap.Error(err))
 	} else {
 		s.MetaOAuthHandler = oauthHandler

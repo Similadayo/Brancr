@@ -27,10 +27,12 @@ import (
 	"github.com/similadayo/brancr/internal/config"
 	"github.com/similadayo/brancr/internal/industry"
 	"github.com/similadayo/brancr/internal/middleware"
+	"github.com/similadayo/brancr/internal/quota"
 	"github.com/similadayo/brancr/internal/social"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/utils"
 	"github.com/similadayo/brancr/internal/workflows"
+	"github.com/similadayo/brancr/pkg/metrics"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -72,6 +74,7 @@ type Handler struct {
 		SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
 		SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
 	} // Optional email service for sending receipts
+	Metrics *metrics.Metrics
 
 	signupCache sync.Map
 	tokenCache  sync.Map
@@ -80,7 +83,7 @@ type Handler struct {
 func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redis.Client, orchestrator *workflows.WorkflowOrchestrator, scheduler *social.Scheduler, aiClient *ai.AIClient, messageHandler *social.MessageHandler, industryService *industry.Service, instagramInsights *social.InstagramInsightsService, emailService interface {
 	SendReceiptEmail(to, customerName, orderNumber, receiptURL, portalURL string) error
 	SendOrderStatusEmail(to, customerName, orderNumber, status, portalURL string) error
-}, cacheService *cache.Cache) *Handler {
+}, cacheService *cache.Cache, metricsSvc *metrics.Metrics) *Handler {
 	return &Handler{
 		DB:                   db,
 		Logger:               logger,
@@ -94,6 +97,7 @@ func NewHandler(db *gorm.DB, logger *zap.Logger, cfg *config.Config, redis *redi
 		IndustryService:      industryService,
 		InstagramInsights:    instagramInsights,
 		EmailService:         emailService,
+		Metrics:              metricsSvc,
 	}
 }
 
@@ -158,6 +162,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Get("/tenant/settings/notifications", h.getNotificationSettings)
 			r.Put("/tenant/settings/notifications", h.updateNotificationSettings)
 			r.Post("/tenant/settings/notifications/test", h.testNotificationSettings)
+			// AI mode toggle for tenant (ai | human)
+			r.Put("/tenant/settings/ai-mode", h.updateAIModeSettings)
 
 			r.Get("/tenant/social-accounts", h.listIntegrations) // backward-compatible
 
@@ -1367,6 +1373,17 @@ func (h *Handler) assignPhoneNumber(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.DB.Create(&account).Error; err != nil {
 			h.Logger.Error("failed to create social account", zap.Error(err))
+		}
+		// Ensure platform quota respected (no-op if quota unlimited)
+		quotaSvc := quota.NewQuotaService(h.DB, h.Logger, nil)
+		if err := quotaSvc.CheckPlatformLimit(r.Context(), claims.TenantID); err != nil {
+			// Undo created account to respect quota
+			_ = h.DB.Delete(&account).Error
+			if h.Metrics != nil {
+				h.Metrics.QuotaRejections.Inc()
+			}
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "platforms_limit_exceeded", "message": err.Error()})
+			return
 		}
 	} else {
 		// Update existing account
@@ -2681,6 +2698,37 @@ func (h *Handler) updatePersonaSettings(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Persona updated"})
 }
 
+// updateAIModeSettings allows a tenant to toggle AI/human mode for their account
+func (h *Handler) updateAIModeSettings(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.TenantFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var payload struct {
+		Mode string `json:"mode"` // "ai" or "human"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	mode := strings.TrimSpace(payload.Mode)
+	if mode != "ai" && mode != "human" {
+		http.Error(w, "invalid mode", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.DB.Model(&storage.Tenant{}).Where("id = ?", claims.TenantID).Update("ai_human_mode", mode).Error; err != nil {
+		h.Logger.Error("failed to update tenant ai mode", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		http.Error(w, "failed to update mode", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "mode": mode})
+}
+
 func (h *Handler) updateBusinessDetailsSettings(w http.ResponseWriter, r *http.Request) {
 	claims, ok := middleware.TenantFromContext(r.Context())
 	if !ok {
@@ -3980,6 +4028,18 @@ func (h *Handler) createPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check scheduling quota (prevents over-scheduling)
+	if h.Config != nil {
+		quotaSvc := quota.NewQuotaService(h.DB, h.Logger, nil)
+		if err := quotaSvc.CheckCanSchedulePost(r.Context(), claims.TenantID); err != nil {
+			if h.Metrics != nil {
+				h.Metrics.QuotaRejections.Inc()
+			}
+			h.writeValidationError(w, r, "post quota exceeded", map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	mediaJSON, _ := json.Marshal(req.MediaIDs)
 	platsJSON, _ := json.Marshal(req.Platforms)
 	post := storage.ScheduledPost{
@@ -4170,11 +4230,35 @@ func (h *Handler) generateCaption(w http.ResponseWriter, r *http.Request) {
 		ImageURLs:       imageURLs, // Pass image URLs for analysis
 	}
 
+	// Check whether AI is enabled for this tenant
+	if enabled, err := ai.IsAIEnabled(ctx, h.DB, claims.TenantID); err != nil {
+		h.Logger.Warn("failed to verify tenant ai mode", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		// Fall through and attempt quota check
+	} else if !enabled {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ai_disabled", "message": "AI is disabled for this tenant"})
+		return
+	}
+
+	// Check AI quota before making request
+	qs := quota.NewQuotaService(h.DB, h.Logger, nil)
+	if err := qs.CheckAICallQuota(ctx, claims.TenantID); err != nil {
+		if h.Metrics != nil {
+			h.Metrics.QuotaRejections.Inc()
+		}
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "ai_quota_exceeded", "message": err.Error()})
+		return
+	}
+
 	result, err := optimizer.OptimizeCaption(ctx, aiReq)
 	if err != nil {
 		h.Logger.Error("failed to generate caption", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
 		http.Error(w, fmt.Sprintf("failed to generate caption: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// Increment AI usage (best-effort)
+	if incErr := qs.IncrementAICallUsage(ctx, claims.TenantID); incErr != nil {
+		h.Logger.Warn("failed to increment AI call usage", zap.Error(incErr), zap.Uint("tenant_id", claims.TenantID))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -6096,6 +6180,25 @@ func (h *Handler) generateCaptionFromKeywords(w http.ResponseWriter, r *http.Req
 	}
 
 	ctx := r.Context()
+	// Check whether AI is enabled for this tenant
+	if enabled, err := ai.IsAIEnabled(ctx, h.DB, claims.TenantID); err != nil {
+		h.Logger.Warn("failed to verify tenant ai mode", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		// Fall through and attempt quota check
+	} else if !enabled {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ai_disabled", "message": "AI is disabled for this tenant"})
+		return
+	}
+
+	// Check AI quota before making request
+	qs := quota.NewQuotaService(h.DB, h.Logger, nil)
+	if err := qs.CheckAICallQuota(ctx, claims.TenantID); err != nil {
+		if h.Metrics != nil {
+			h.Metrics.QuotaRejections.Inc()
+		}
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "ai_quota_exceeded", "message": err.Error()})
+		return
+	}
+
 	caption, err := optimizer.GenerateCaptionFromKeywords(ctx, claims.TenantID, req.Keywords, req.Platform, req.MediaType, req.ImageURLs)
 	if err != nil {
 		h.Logger.Error("failed to generate caption from keywords", zap.Error(err))
@@ -6104,6 +6207,11 @@ func (h *Handler) generateCaptionFromKeywords(w http.ResponseWriter, r *http.Req
 			"message": err.Error(),
 		})
 		return
+	}
+
+	// Increment AI usage (best-effort)
+	if incErr := qs.IncrementAICallUsage(ctx, claims.TenantID); incErr != nil {
+		h.Logger.Warn("failed to increment AI call usage", zap.Error(incErr), zap.Uint("tenant_id", claims.TenantID))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -6154,6 +6262,25 @@ func (h *Handler) rephraseCaption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// Check whether AI is enabled for this tenant
+	if enabled, err := ai.IsAIEnabled(ctx, h.DB, claims.TenantID); err != nil {
+		h.Logger.Warn("failed to verify tenant ai mode", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		// Fall through and attempt quota check
+	} else if !enabled {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ai_disabled", "message": "AI is disabled for this tenant"})
+		return
+	}
+
+	// Check AI quota before making request
+	qs := quota.NewQuotaService(h.DB, h.Logger, nil)
+	if err := qs.CheckAICallQuota(ctx, claims.TenantID); err != nil {
+		if h.Metrics != nil {
+			h.Metrics.QuotaRejections.Inc()
+		}
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "ai_quota_exceeded", "message": err.Error()})
+		return
+	}
+
 	caption, err := optimizer.RephraseCaption(ctx, claims.TenantID, req.Caption, req.Platform, req.MediaType, req.ImageURLs)
 	if err != nil {
 		h.Logger.Error("failed to rephrase caption", zap.Error(err))
@@ -6162,6 +6289,11 @@ func (h *Handler) rephraseCaption(w http.ResponseWriter, r *http.Request) {
 			"message": err.Error(),
 		})
 		return
+	}
+
+	// Increment AI usage (best-effort)
+	if incErr := qs.IncrementAICallUsage(ctx, claims.TenantID); incErr != nil {
+		h.Logger.Warn("failed to increment AI call usage", zap.Error(incErr), zap.Uint("tenant_id", claims.TenantID))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -6212,6 +6344,25 @@ func (h *Handler) fineTuneCaption(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// Check whether AI is enabled for this tenant
+	if enabled, err := ai.IsAIEnabled(ctx, h.DB, claims.TenantID); err != nil {
+		h.Logger.Warn("failed to verify tenant ai mode", zap.Error(err), zap.Uint("tenant_id", claims.TenantID))
+		// Fall through and attempt quota check
+	} else if !enabled {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "ai_disabled", "message": "AI is disabled for this tenant"})
+		return
+	}
+
+	// Check AI quota before making request
+	qs := quota.NewQuotaService(h.DB, h.Logger, nil)
+	if err := qs.CheckAICallQuota(ctx, claims.TenantID); err != nil {
+		if h.Metrics != nil {
+			h.Metrics.QuotaRejections.Inc()
+		}
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "ai_quota_exceeded", "message": err.Error()})
+		return
+	}
+
 	caption, err := optimizer.FineTuneCaption(ctx, claims.TenantID, req.Caption, req.Platform, req.MediaType, req.ImageURLs)
 	if err != nil {
 		h.Logger.Error("failed to fine-tune caption", zap.Error(err))
@@ -6220,6 +6371,11 @@ func (h *Handler) fineTuneCaption(w http.ResponseWriter, r *http.Request) {
 			"message": err.Error(),
 		})
 		return
+	}
+
+	// Increment AI usage (best-effort)
+	if incErr := qs.IncrementAICallUsage(ctx, claims.TenantID); incErr != nil {
+		h.Logger.Warn("failed to increment AI call usage", zap.Error(incErr), zap.Uint("tenant_id", claims.TenantID))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -7026,6 +7182,16 @@ func (h *Handler) connectWhatsAppRespondIO(w http.ResponseWriter, r *http.Reques
 	}
 
 	ctx := r.Context()
+
+	// Check platform quota before connecting
+	quotaSvc := quota.NewQuotaService(h.DB, h.Logger, nil)
+	if err := quotaSvc.CheckPlatformLimit(r.Context(), tenantID); err != nil {
+		if h.Metrics != nil {
+			h.Metrics.QuotaRejections.Inc()
+		}
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "platforms_limit_exceeded", "message": err.Error()})
+		return
+	}
 
 	// Step 1: Get WhatsApp channel from Respond.io workspace
 	respondIOClient := social.NewRespondIOClient(h.Config.RespondIOAPIKey, h.Logger)

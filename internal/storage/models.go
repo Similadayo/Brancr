@@ -26,10 +26,11 @@ type Tenant struct {
 	OwnerPhone         string
 	OnboardingStep     string `gorm:"default:business_profile"` // business_profile, persona, business_details, social_connect, complete
 	OnboardingComplete bool   `gorm:"default:false"`
-	Timezone           string `gorm:"size:50;default:'UTC'"`   // e.g., "America/New_York", "Europe/London"
-	IndustryID         uint   `gorm:"index"`                   // Links to Industry model
-	IndustrySettings   string `gorm:"type:jsonb;default:'{}'"` // Industry-specific custom settings
-	Metadata           string `gorm:"type:jsonb;default:'{}'"` // Additional tenant settings (webhook URLs, etc.)
+	Timezone           string `gorm:"size:50;default:'UTC'"`                     // e.g., "America/New_York", "Europe/London"
+	AIHumanMode        string `gorm:"size:20;default:'ai'" json:"ai_human_mode"` // 'ai' or 'human'
+	IndustryID         uint   `gorm:"index"`                                     // Links to Industry model
+	IndustrySettings   string `gorm:"type:jsonb;default:'{}'"`                   // Industry-specific custom settings
+	Metadata           string `gorm:"type:jsonb;default:'{}'"`                   // Additional tenant settings (webhook URLs, etc.)
 	WebhookSecret      string // Secret key for HMAC signature verification
 }
 
@@ -622,6 +623,9 @@ type TenantQuota struct {
 	PostsLimit     int `gorm:"default:50"`   // Daily posts limit
 	StorageLimitMB int `gorm:"default:1000"` // Storage limit in MB
 	APICallsLimit  int `gorm:"default:1000"` // Daily API calls limit
+
+	// Platforms limit (max connected social accounts)
+	PlatformsLimit int `gorm:"default:5"`
 
 	// Current usage (reset daily)
 	AICallsUsed   int `gorm:"default:0"`

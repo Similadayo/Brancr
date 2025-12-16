@@ -36,7 +36,7 @@ func TestGetOrder_ReturnsTopLevelFields(t *testing.T) {
 		t.Fatalf("failed to create order: %v", err)
 	}
 
-	h := NewHandler(db, testutil.TestLogger(t), testutil.TestConfig(), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(db, testutil.TestLogger(t), testutil.TestConfig(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	rr := testutil.NewTestResponseRecorder()
 	req := testutil.TestRequestWithTenant(t, "GET", "/api/tenant/orders/1", nil, tenant.ID, tenant.Email)

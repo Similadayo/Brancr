@@ -32,6 +32,7 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/events", AdminAppEventsSSEHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin, RoleComplianceAdmin)).Get("/api/dashboard", AdminDashboardDataHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin, RoleBillingAdmin)).Post("/api/tenants/{id}/status", AdminTenantStatusAPIHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin)).Post("/api/tenants/{id}/mode", AdminTenantModeAPIHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAdmin, RolePlatformAdmin)).Post("/api/tenants/{id}/onboarding/reset", AdminTenantOnboardingResetHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RolePlatformAdmin)).Post("/api/tenants/{id}/tokens/refresh", AdminTenantTokenRefreshHandler(ctx))
 
@@ -48,6 +49,7 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/tenants", TenantsHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator, RoleBillingAdmin)).Get("/tenants/{id}", TenantDetailHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/tenants/{id}/status", TenantUpdateStatusHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Post("/tenants/{id}/mode", TenantUpdateAIModeHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleBillingAdmin)).Post("/tenants/{id}/quota", TenantUpdateQuotaHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleTechnicalOperator)).Get("/tenants/{id}/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetTenantAnalytics(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleTechnicalOperator)).Get("/analytics", NewAnalyticsHandler(ctx.DB, ctx.Logger, nil).GetAnalyticsDashboard(ctx))
