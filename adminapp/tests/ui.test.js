@@ -27,8 +27,8 @@ describe('AdminUI primitives', () => {
     const container = document.getElementById('adminui-toast-container');
     expect(container).toBeTruthy();
     expect(container.textContent).toContain('hello');
-    // wait for auto-remove (timeout plus small buffer)
-    await new Promise((r) => setTimeout(r, 120));
+    // wait for auto-remove (timeout plus hide transition buffer)
+    await new Promise((r) => setTimeout(r, 500));
     expect(document.getElementById('adminui-toast-container')?.children.length || 0).toBe(0);
   });
 

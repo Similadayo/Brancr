@@ -5,6 +5,8 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: [],
+    include: ['tests/**/*.test.js', 'tests/**/*.spec.js'],
+    exclude: ['e2e/**'],
     coverage: {
       reporter: ['text', 'lcov']
     }
