@@ -30,7 +30,7 @@
         <td style="color: var(--text-secondary);">{{.CustomerName}}</td>
         <td><span class="badge info">{{.Intent}}</span></td>
         <td style="max-width: 420px; color: var(--text-secondary);">
-          {{.ContentPreview}}
+          <span class="content-preview" data-tooltip="Preview has sensitive content. Click View to re-authenticate and see full details.">{{.ContentPreview}}</span>
         </td>
         <td style="color: var(--text-secondary);">{{.CreatedAt}}</td>
         <td>
@@ -53,120 +53,18 @@
 </div>
 {{end}}
 
+<script src="/admin/app/assets/ui.js" defer></script>
 <script>
-(function(){
-  function openModal(html){
-    let modal = document.getElementById('adminReauthModal');
-    if(!modal){
-      modal = document.createElement('div');
-      modal.id = 'adminReauthModal';
-      modal.innerHTML = `
-        <div class="modal-backdrop">
-          <div class="modal">
-            <div class="modal-header"><h3>Re-authenticate for sensitive content</h3></div>
-            <div class="modal-body">
-              <p>Enter your admin password to view full escalation details. This requires recent authentication.</p>
-              <input type="password" id="reauthPassword" placeholder="Password" />
-              <div id="reauthError" style="color:var(--danger); display:none; margin-top:8px;"></div>
-            </div>
-            <div class="modal-footer">
-              <button id="reauthCancel">Cancel</button>
-              <button id="reauthSubmit">Submit</button>
-            </div>
-          </div>
-        </div>`;
-      document.body.appendChild(modal);
-      // basic styles for modal
-      const style = document.createElement('style');
-      style.textContent = `.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:1000}.modal{background:var(--bg-primary);padding:20px;border-radius:8px;width:520px;max-width:95%}.modal-header h3{margin-bottom:8px}.modal-body input{width:100%;padding:8px;margin-top:8px;border:1px solid var(--border-color);border-radius:6px}.modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}`;
-      document.head.appendChild(style);
-      modal.querySelector('#reauthCancel').addEventListener('click', () => modal.style.display='none');
-    }
-    modal.style.display='block';
-    return modal;
+// Wire up view buttons to the shared AdminUI
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.view-content');
+  if (!btn) return;
+  const id = btn.dataset.escalationId;
+  if (!id) return;
+  if (window.AdminUI && typeof window.AdminUI.viewEscalation === 'function') {
+    window.AdminUI.viewEscalation(id);
   }
-
-  async function getReauthToken(password){
-    const res = await fetch('/admin/reauth', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password}) });
-    if(!res.ok){
-      const el = document.getElementById('reauthError');
-      if(el){ el.style.display='block'; el.textContent = 'Authentication failed'; }
-      throw new Error('auth failed');
-    }
-    const body = await res.json();
-    return body.token; // server returns { token: "..." }
-  }
-
-  async function fetchEscalationContent(id, token){
-    const headers = token ? { 'X-Admin-Reauth-Token': token } : {};
-    const res = await fetch(`/admin/escalations/${id}/content`, { headers });
-    if(!res.ok){
-      throw new Error('failed to fetch content');
-    }
-    return res.text();
-  }
-
-  async function showEscalation(id){
-    // try fetch directly (for admins who recently reauthed)
-    try{
-      const html = await fetchEscalationContent(id);
-      openViewer(html);
-      return;
-    }catch(e){
-      // need reauth
-    }
-
-    const modal = openModal();
-    const pwInput = modal.querySelector('#reauthPassword');
-    const submit = modal.querySelector('#reauthSubmit');
-    const error = modal.querySelector('#reauthError');
-    error.style.display='none';
-    pwInput.value='';
-    submit.onclick = async () => {
-      submit.disabled = true;
-      try{
-        const token = await getReauthToken(pwInput.value);
-        modal.style.display='none';
-        const html = await fetchEscalationContent(id, token);
-        openViewer(html);
-      }catch(err){
-        error.style.display='block';
-        error.textContent = 'Authentication failed — try again';
-      }finally{ submit.disabled = false; }
-    };
-  }
-
-  function openViewer(html){
-    let viewer = document.getElementById('escalationViewer');
-    if(!viewer){
-      viewer = document.createElement('div');
-      viewer.id = 'escalationViewer';
-      viewer.innerHTML = `<div class="viewer-backdrop"><div class="viewer" id="viewerContent"></div></div>`;
-      document.body.appendChild(viewer);
-      const style = document.createElement('style');
-      style.textContent = `.viewer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:1000}.viewer{background:var(--bg-primary);padding:20px;border-radius:8px;width:720px;max-width:95%;max-height:80vh;overflow:auto}.viewer pre{white-space:pre-wrap;word-break:break-word}`;
-      document.head.appendChild(style);
-      viewer.addEventListener('click', (ev) => { if(ev.target === viewer) viewer.style.display='none'; });
-    }
-    const content = document.getElementById('viewerContent');
-    // Try to parse JSON and pretty-print; otherwise render HTML safely
-    try{
-      const parsed = JSON.parse(html);
-      content.innerHTML = `<pre>${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>`;
-    }catch(_){
-      content.innerHTML = html;
-    }
-    viewer.style.display='block';
-  }
-
-  document.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('.view-content');
-    if(!btn) return;
-    const id = btn.dataset.escalationId;
-    if(!id) return;
-    showEscalation(id);
-  });
-})();
+});
 </script>
 
 {{template "layout.html" .}}

@@ -391,8 +391,55 @@ body {
   background: #cbd5f5;
 }
 
-.muted-text {
-  font-size: 13px;
+/* AdminUI button styles */
+.btn-primary{
+  background: linear-gradient(120deg, #34d399, #14b8a6);
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.btn-secondary{
+  background: transparent;
+  border: 1px solid rgba(15,23,42,0.08);
+  color:#0f172a;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+.btn-ghost{
+  background: transparent;
+  border: none;
+  color: #0f172a;
+  padding: 6px 10px;
+}
+
+/* Toast */
+.adminui-toast{
+  background: rgba(15,23,42,0.95);
+  color: #fff;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(2,6,23,0.3);
+}
+.adminui-toast-hide{ opacity: 0; transform: translateY(-6px); transition: all 0.3s ease; }
+.adminui-toast-info{ background: rgba(15,23,42,0.95); }
+.adminui-toast-error{ background: #ef4444; }
+
+/* Tooltip */
+.adminui-tooltip{
+  background: rgba(2,6,23,0.95);
+  color: #fff;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  box-shadow: 0 6px 24px rgba(2,6,23,0.4);
+  z-index: 1200;
+}
+
+/* Viewer modal */
+.adminui-viewer .close{ position:absolute; right:12px; top:12px; }
   color: #475569;
 }
 
