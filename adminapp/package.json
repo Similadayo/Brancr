@@ -5,7 +5,8 @@
   "scripts": {
     "test": "vitest run --reporter verbose",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "build": "node -e \"console.log('Skipping admin build (static assets included)')\""
   },
   "devDependencies": {
     "@playwright/test": "^1.37.0",
