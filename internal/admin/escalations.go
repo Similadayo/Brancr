@@ -98,14 +98,22 @@ func EscalationsHandler(ctx *AdminContext) http.HandlerFunc {
 	}
 }
 
-// maskPII masks phone numbers and emails in a string
+// maskPII masks phone numbers, emails, credit card numbers and long numeric sequences in a string
 func maskPII(s string) string {
 	// Simple regex-based masking for phone numbers and emails
-	// (For brevity, not full RFC compliance)
+	// (For brevity, not full RFC/Luhn compliance)
 	emailRe := regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 	phoneRe := regexp.MustCompile(`\+?\d[\d\s\-]{7,}\d`)
+	// match 13-16 digit sequences allowing spaces or dashes (common CC patterns)
+	cardRe := regexp.MustCompile(`(?i)\b(?:\d[ -]*?){13,16}\b`)
+	// match long numeric sequences (e.g., account numbers)
+	longNumRe := regexp.MustCompile(`\b\d{9,}\b`)
+
 	s = emailRe.ReplaceAllString(s, "[redacted email]")
 	s = phoneRe.ReplaceAllString(s, "[redacted phone]")
+	s = cardRe.ReplaceAllString(s, "[redacted card]")
+	// mask any long numeric sequences not already caught
+	s = longNumRe.ReplaceAllString(s, "[redacted number]")
 	return s
 }
 

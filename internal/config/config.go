@@ -40,6 +40,7 @@ type Config struct {
 	BrancrWABAToken               string // Access token for Brancr's WABA (system user token)
 	TenantJWTSecret               string
 	TenantImpersonationTTLMinutes int // TTL for tenant impersonation cookie (minutes)
+	AdminReauthTTLMinutes         int // TTL for admin reauth tokens (minutes)
 	TikTokClientKey               string
 	TikTokClientSecret            string
 	TikTokRedirectURI             string
@@ -117,6 +118,7 @@ func Load() *Config {
 		TikTokWebhookSecret:           os.Getenv("TIKTOK_WEBHOOK_SECRET"),
 		CORSAllowedOrigins:            getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
 		TenantCookieDomain:            getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
+		AdminReauthTTLMinutes:         getEnvInt("ADMIN_REAUTH_TTL_MINUTES", 15),
 		RespondIOAPIKey:               os.Getenv("RESPOND_IO_API_KEY"), // Respond.io API access token
 		FrontendURL:                   os.Getenv("FRONTEND_URL"),
 		GupshupPartnerUsername:        os.Getenv("GUPSHUP_PARTNER_USERNAME"),
