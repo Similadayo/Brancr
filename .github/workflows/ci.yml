@@ -88,3 +88,41 @@ jobs:
           POSTGRES_DSN: postgres://brancr:brancr@localhost:5432/brancr_test?sslmode=disable
         run: |
           go test ./internal/storage/... ./internal/admin ./internal/tenantapi ./internal/receipt ./internal/quota -v
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    needs: postgres-integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: adminapp/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/adminapp/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install frontend deps
+        working-directory: ./adminapp
+        run: |
+          npm ci
+
+      - name: Run frontend unit tests
+        working-directory: ./adminapp
+        run: |
+          npm test
+
+      - name: Run frontend E2E (optional)
+        if: env.RUN_E2E == 'true'
+        working-directory: ./adminapp
+        env:
+          BACKEND_URL: http://localhost:8080
+          ADMIN_TEST_PASSWORD: ${{ secrets.ADMIN_TEST_PASSWORD }}
+        run: |
+          npm run e2e

@@ -1,0 +1,15 @@
+{
+  "name": "brancr-admin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "vitest run --reporter verbose",
+    "test:watch": "vitest",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.37.0",
+    "jsdom": "^27.3.0",
+    "vitest": "^1.0.0"
+  }
+}
