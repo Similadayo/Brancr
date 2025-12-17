@@ -101,7 +101,7 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		r.With(requireAnyRole(RoleSuperAdmin, RoleComplianceAdmin)).Get("/security/audit-logs", AuditLogsPageHandler(ctx))
 
 		// Support
-		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent)).Get("/support/impersonate", ImpersonationPageHandler(ctx))
+		r.With(requireAnyRole(RoleSuperAdmin, RolePlatformAdmin)).Get("/support/impersonate", ImpersonationPageHandler(ctx))
 		r.With(
 			RequirePermission("tenant.impersonate"),
 			RequireActiveAdminCase(ctx),

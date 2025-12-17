@@ -39,6 +39,7 @@ type Config struct {
 	BrancrWABAID           string // Brancr's provider-owned WABA ID
 	BrancrWABAToken        string // Access token for Brancr's WABA (system user token)
 	TenantJWTSecret        string
+	TenantImpersonationTTLMinutes int // TTL for tenant impersonation cookie (minutes)
 	TikTokClientKey        string
 	TikTokClientSecret     string
 	TikTokRedirectURI      string
@@ -128,6 +129,7 @@ func Load() *Config {
 		SMTPPass:                os.Getenv("SMTP_PASS"),
 		SMTPFrom:                getEnv("SMTP_FROM", "noreply@brancr.com"),
 		PortalTokenExpiryDays:   getEnvInt("PORTAL_TOKEN_EXPIRY_DAYS", 90),
+		TenantImpersonationTTLMinutes: getEnvInt("TENANT_IMPERSONATION_TTL_MINUTES", 60),
 		DBMaxOpenConns:          getEnvInt("DB_MAX_OPEN_CONNS", 100),
 		DBMaxIdleConns:          getEnvInt("DB_MAX_IDLE_CONNS", 10),
 		WorkerPoolSize:          getEnvInt("WORKER_POOL_SIZE", 20),

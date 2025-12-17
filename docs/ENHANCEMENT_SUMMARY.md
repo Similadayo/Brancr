@@ -152,6 +152,18 @@ handler.go (8,311 lines)
 
 ### 6. ⚠️ API cleanup — business details menu items removed
 
+### 7. 🔒 Admin hardening: content gating and impersonation controls
+**Changes:**
+- **Escalations content**: full escalation content endpoint (`GET /admin/escalations/{id}/content`) is strictly case-gated and requires `content.read` permission; attempts without an active admin case return 403. A new unit test (`internal/admin/escalation_content_test.go`) verifies forbidden access and audit logging on content reads.
+- **Impersonation restriction**: the admin impersonation page is now restricted to **Platform Admin** and **Super Admin** roles (was previously support agents). Impersonation start/stop remain case-gated and audited.
+- **Impersonation cookie scoping & TTL**: impersonation cookie is now scoped to `Path=/admin` (not `/`) and TTL is configurable via `TENANT_IMPERSONATION_TTL_MINUTES` (default 60). Tests verify cookie path and TTL behavior.
+
+**Reason:** Reduce accidental or unauthorized exposure of tenant customer content and tighten sensitive admin flows.
+
+---
+
+### 6. ⚠️ API cleanup — business details menu items removed
+
 - **Change:** The `business_details` section of the tenant settings no longer includes `menu_items` (menu items are now managed solely via the canonical `/tenant/menu-items` endpoints).
 - **Reason:** Avoid duplication and maintain a single source of truth for menu items.
 - **Impact:** Frontend clients should stop sending or expecting `menu_items` in `/tenant/onboarding/business-details` and `/tenant/settings/business-details`. Use `GET/POST/PUT/DELETE /tenant/menu-items` instead.

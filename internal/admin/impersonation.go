@@ -83,8 +83,12 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 			email = tenant.Email
 		}
 
-		// Enforce max TTL 60min
-		ttl := 60 * time.Minute
+		// TTL configurable via config (minutes) — default to 60
+		ttlMinutes := 60
+		if ctx.Config != nil && ctx.Config.TenantImpersonationTTLMinutes > 0 {
+			ttlMinutes = ctx.Config.TenantImpersonationTTLMinutes
+		}
+		ttl := time.Duration(ttlMinutes) * time.Minute
 		token, err := middleware.CreateTenantToken([]byte(ctx.Config.TenantJWTSecret), tenantID, email, ttl)
 		if err != nil {
 			ctx.Logger.Error("failed to create tenant impersonation token", zap.Error(err))
@@ -114,7 +118,7 @@ func ImpersonationStartHandler(ctx *AdminContext) http.HandlerFunc {
 		http.SetCookie(w, &http.Cookie{
 			Name:     tenantSessionCookieName,
 			Value:    token,
-			Path:     "/",
+			Path:     "/admin",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   int(ttl.Seconds()),
@@ -165,7 +169,7 @@ func ImpersonationStopHandler(ctx *AdminContext) http.HandlerFunc {
 		http.SetCookie(w, &http.Cookie{
 			Name:     tenantSessionCookieName,
 			Value:    "",
-			Path:     "/",
+			Path:     "/admin",
 			HttpOnly: true,
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
