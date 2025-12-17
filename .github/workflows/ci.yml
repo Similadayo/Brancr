@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev build-essential
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run tests (enable CGO)
+        env:
+          CGO_ENABLED: 1
+        run: |
+          go test ./... -v
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: brancr
+          POSTGRES_PASSWORD: brancr
+          POSTGRES_DB: brancr_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U brancr -d brancr_test"
+          --health-interval=3s
+          --health-timeout=2s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev build-essential postgresql-client
+
+      - name: Install golang-migrate CLI
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+          echo "::add-path::$(go env GOPATH)/bin"
+
+      - name: Wait for Postgres
+        run: |
+          for i in `seq 1 20`; do pg_isready -h localhost -p 5432 -U brancr -d brancr_test && break || sleep 1; done
+
+      - name: Run migrations
+        env:
+          POSTGRES_DSN: postgres://brancr:brancr@localhost:5432/brancr_test?sslmode=disable
+        run: |
+          migrate -path migrations -database "$POSTGRES_DSN" up
+
+      - name: Run DB integration tests
+        env:
+          CGO_ENABLED: 1
+          POSTGRES_DSN: postgres://brancr:brancr@localhost:5432/brancr_test?sslmode=disable
+        run: |
+          go test ./internal/storage/... ./internal/admin ./internal/tenantapi ./internal/receipt ./internal/quota -v

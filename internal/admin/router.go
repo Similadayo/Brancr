@@ -60,7 +60,10 @@ func AdminRouter(ctx *AdminContext, m *metrics.Metrics) http.Handler {
 		r.With(
 			RequirePermission("content.read"),
 			RequireActiveAdminCase(ctx),
+			RequireRecentAuth(ctx),
 		).Get("/escalations/{id}/content", EscalationContentHandler(ctx))
+		// Reauth endpoint for sensitive actions
+		r.Post("/reauth", PostReauthHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RolePlatformAdmin)).Post("/escalations/{id}/resolve", EscalationResolveHandler(ctx))
 		r.With(requireAnyRole(RoleSuperAdmin, RoleSupportAgent, RoleBillingAdmin)).Get("/orders", OrdersHandler(ctx))
 		// Admin portal token generation for orders (admin-only)
