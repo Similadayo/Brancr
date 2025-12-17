@@ -14,44 +14,44 @@ type Config struct {
 	Port      string // e.g., 8080
 	PublicURL string // e.g. https://api.brancr.com
 	// OpenRouter removed - using OpenAI direct API only
-	PostgresDSN            string
-	CloudName              string
-	CloudAPIKey            string
-	CloudAPISecret         string
-	RedisAddr              string
-	AdminBotToken          string
-	AdminEmail             string
-	AdminPassword          string
-	MetaAppID              string
-	MetaAppSecret          string
-	MetaRedirectURI        string
-	MetaSuccessURL         string
-	InstagramAppID         string // Instagram App ID for Business Login (separate from Meta App ID)
-	InstagramAppSecret     string // Instagram App Secret for Business Login (separate from Meta App Secret)
-	InstagramRedirectURI   string // Instagram OAuth redirect URI (can be same as MetaRedirectURI)
-	MetaEmbeddedConfigID   string
-	MetaEmbeddedExtras     string
-	MetaSystemUserToken    string
-	MetaBusinessID         string
-	MetaPaymentMethodID    string // Payment method ID for Brancr's billing (when Payment Processing API access is granted)
-	MetaExtendedCreditID   string // Extended Credit Line ID for Solution Partner billing model
-	MetaSystemUserID       string // System User ID (needed to add to WABAs)
-	BrancrWABAID           string // Brancr's provider-owned WABA ID
-	BrancrWABAToken        string // Access token for Brancr's WABA (system user token)
-	TenantJWTSecret        string
+	PostgresDSN                   string
+	CloudName                     string
+	CloudAPIKey                   string
+	CloudAPISecret                string
+	RedisAddr                     string
+	AdminBotToken                 string
+	AdminEmail                    string
+	AdminPassword                 string
+	MetaAppID                     string
+	MetaAppSecret                 string
+	MetaRedirectURI               string
+	MetaSuccessURL                string
+	InstagramAppID                string // Instagram App ID for Business Login (separate from Meta App ID)
+	InstagramAppSecret            string // Instagram App Secret for Business Login (separate from Meta App Secret)
+	InstagramRedirectURI          string // Instagram OAuth redirect URI (can be same as MetaRedirectURI)
+	MetaEmbeddedConfigID          string
+	MetaEmbeddedExtras            string
+	MetaSystemUserToken           string
+	MetaBusinessID                string
+	MetaPaymentMethodID           string // Payment method ID for Brancr's billing (when Payment Processing API access is granted)
+	MetaExtendedCreditID          string // Extended Credit Line ID for Solution Partner billing model
+	MetaSystemUserID              string // System User ID (needed to add to WABAs)
+	BrancrWABAID                  string // Brancr's provider-owned WABA ID
+	BrancrWABAToken               string // Access token for Brancr's WABA (system user token)
+	TenantJWTSecret               string
 	TenantImpersonationTTLMinutes int // TTL for tenant impersonation cookie (minutes)
-	TikTokClientKey        string
-	TikTokClientSecret     string
-	TikTokRedirectURI      string
-	TikTokScopes           string
-	TikTokDefaultPrivacy   string
-	TikTokWebhookSecret    string // Secret for verifying TikTok webhook signatures
-	CORSAllowedOrigins     string
-	TenantCookieDomain     string
-	RespondIOAPIKey        string // Respond.io API access token for WhatsApp integration
-	FrontendURL            string // Frontend URL for redirects after OAuth
-	GupshupPartnerUsername string // Gupshup Partner username/email for authentication
-	GupshupPartnerPassword string // Gupshup Partner password OR client secret (from Partner Portal Settings)
+	TikTokClientKey               string
+	TikTokClientSecret            string
+	TikTokRedirectURI             string
+	TikTokScopes                  string
+	TikTokDefaultPrivacy          string
+	TikTokWebhookSecret           string // Secret for verifying TikTok webhook signatures
+	CORSAllowedOrigins            string
+	TenantCookieDomain            string
+	RespondIOAPIKey               string // Respond.io API access token for WhatsApp integration
+	FrontendURL                   string // Frontend URL for redirects after OAuth
+	GupshupPartnerUsername        string // Gupshup Partner username/email for authentication
+	GupshupPartnerPassword        string // Gupshup Partner password OR client secret (from Partner Portal Settings)
 	// For accounts after Nov 20, 2024: use Client Secret (recommended)
 	// For older accounts: use actual account password
 	GupshupPartnerAppID     string // Gupshup Partner App ID (single app for all tenants, optional)
@@ -84,59 +84,59 @@ func Load() *Config {
 		Port:      getEnv("PORT", "8080"),
 		PublicURL: os.Getenv("BRANCR_PUBLIC_URL"),
 		// OpenRouter removed - using OpenAI direct API only
-		PostgresDSN:             os.Getenv("POSTGRES_DSN"),
-		CloudName:               os.Getenv("CLOUDINARY_CLOUD_NAME"),
-		CloudAPIKey:             os.Getenv("CLOUDINARY_API_KEY"),
-		CloudAPISecret:          os.Getenv("CLOUDINARY_API_SECRET"),
-		RedisAddr:               getEnv("REDIS_ADDR", ""),
-		AdminBotToken:           os.Getenv("BRANCR_ADMIN_BOT_TOKEN"),
-		AdminEmail:              os.Getenv("ADMIN_EMAIL"),
-		AdminPassword:           os.Getenv("ADMIN_PASSWORD"),
-		MetaAppID:               os.Getenv("META_APP_ID"),
-		MetaAppSecret:           os.Getenv("META_APP_SECRET"),
-		MetaRedirectURI:         os.Getenv("META_REDIRECT_URI"),
-		MetaSuccessURL:          os.Getenv("META_SUCCESS_REDIRECT"),
-		InstagramAppID:          os.Getenv("INSTAGRAM_APP_ID"),
-		InstagramAppSecret:      os.Getenv("INSTAGRAM_APP_SECRET"),
-		InstagramRedirectURI:    getEnv("INSTAGRAM_REDIRECT_URI", os.Getenv("META_REDIRECT_URI")), // Defaults to MetaRedirectURI if not set
-		MetaEmbeddedConfigID:    os.Getenv("META_WHATSAPP_CONFIG_ID"),
-		MetaEmbeddedExtras:      os.Getenv("META_WHATSAPP_EXTRAS"),
-		MetaSystemUserToken:     getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
-		MetaBusinessID:          os.Getenv("META_BUSINESS_ID"),
-		MetaPaymentMethodID:     os.Getenv("META_PAYMENT_METHOD_ID"),  // Required for billing setup
-		MetaExtendedCreditID:    os.Getenv("META_EXTENDED_CREDIT_ID"), // Extended Credit Line ID for Solution Partner billing
-		MetaSystemUserID:        os.Getenv("META_SYSTEM_USER_ID"),     // System User ID for adding to WABAs
-		BrancrWABAID:            os.Getenv("BRANCR_WABA_ID"),          // Provider-owned WABA ID
-		BrancrWABAToken:         os.Getenv("BRANCR_WABA_TOKEN"),       // WABA access token
-		TenantJWTSecret:         os.Getenv("TENANT_JWT_SECRET"),
-		TikTokClientKey:         os.Getenv("TIKTOK_CLIENT_KEY"),
-		TikTokClientSecret:      os.Getenv("TIKTOK_CLIENT_SECRET"),
-		TikTokRedirectURI:       os.Getenv("TIKTOK_REDIRECT_URI"),
-		TikTokScopes:            getEnv("TIKTOK_SCOPES", "user.info.basic,video.publish,video.upload"),
-		TikTokDefaultPrivacy:    os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
-		TikTokWebhookSecret:     os.Getenv("TIKTOK_WEBHOOK_SECRET"),
-		CORSAllowedOrigins:      getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
-		TenantCookieDomain:      getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
-		RespondIOAPIKey:         os.Getenv("RESPOND_IO_API_KEY"), // Respond.io API access token
-		FrontendURL:             os.Getenv("FRONTEND_URL"),
-		GupshupPartnerUsername:  os.Getenv("GUPSHUP_PARTNER_USERNAME"),
-		GupshupPartnerPassword:  os.Getenv("GUPSHUP_PARTNER_PASSWORD"),
-		GupshupPartnerAppID:     os.Getenv("GUPSHUP_PARTNER_APP_ID"),
-		GupshupAPIBaseURL:       getEnv("GUPSHUP_API_BASE_URL", "https://partner.gupshup.io"),
-		SMTPHost:                os.Getenv("SMTP_HOST"),
-		SMTPPort:                getEnv("SMTP_PORT", "587"),
-		SMTPUser:                os.Getenv("SMTP_USER"),
-		SMTPPass:                os.Getenv("SMTP_PASS"),
-		SMTPFrom:                getEnv("SMTP_FROM", "noreply@brancr.com"),
-		PortalTokenExpiryDays:   getEnvInt("PORTAL_TOKEN_EXPIRY_DAYS", 90),
+		PostgresDSN:                   os.Getenv("POSTGRES_DSN"),
+		CloudName:                     os.Getenv("CLOUDINARY_CLOUD_NAME"),
+		CloudAPIKey:                   os.Getenv("CLOUDINARY_API_KEY"),
+		CloudAPISecret:                os.Getenv("CLOUDINARY_API_SECRET"),
+		RedisAddr:                     getEnv("REDIS_ADDR", ""),
+		AdminBotToken:                 os.Getenv("BRANCR_ADMIN_BOT_TOKEN"),
+		AdminEmail:                    os.Getenv("ADMIN_EMAIL"),
+		AdminPassword:                 os.Getenv("ADMIN_PASSWORD"),
+		MetaAppID:                     os.Getenv("META_APP_ID"),
+		MetaAppSecret:                 os.Getenv("META_APP_SECRET"),
+		MetaRedirectURI:               os.Getenv("META_REDIRECT_URI"),
+		MetaSuccessURL:                os.Getenv("META_SUCCESS_REDIRECT"),
+		InstagramAppID:                os.Getenv("INSTAGRAM_APP_ID"),
+		InstagramAppSecret:            os.Getenv("INSTAGRAM_APP_SECRET"),
+		InstagramRedirectURI:          getEnv("INSTAGRAM_REDIRECT_URI", os.Getenv("META_REDIRECT_URI")), // Defaults to MetaRedirectURI if not set
+		MetaEmbeddedConfigID:          os.Getenv("META_WHATSAPP_CONFIG_ID"),
+		MetaEmbeddedExtras:            os.Getenv("META_WHATSAPP_EXTRAS"),
+		MetaSystemUserToken:           getEnv("META_SYSTEM_USER_TOKEN", os.Getenv("SYSTEM_USER_TOKEN")),
+		MetaBusinessID:                os.Getenv("META_BUSINESS_ID"),
+		MetaPaymentMethodID:           os.Getenv("META_PAYMENT_METHOD_ID"),  // Required for billing setup
+		MetaExtendedCreditID:          os.Getenv("META_EXTENDED_CREDIT_ID"), // Extended Credit Line ID for Solution Partner billing
+		MetaSystemUserID:              os.Getenv("META_SYSTEM_USER_ID"),     // System User ID for adding to WABAs
+		BrancrWABAID:                  os.Getenv("BRANCR_WABA_ID"),          // Provider-owned WABA ID
+		BrancrWABAToken:               os.Getenv("BRANCR_WABA_TOKEN"),       // WABA access token
+		TenantJWTSecret:               os.Getenv("TENANT_JWT_SECRET"),
+		TikTokClientKey:               os.Getenv("TIKTOK_CLIENT_KEY"),
+		TikTokClientSecret:            os.Getenv("TIKTOK_CLIENT_SECRET"),
+		TikTokRedirectURI:             os.Getenv("TIKTOK_REDIRECT_URI"),
+		TikTokScopes:                  getEnv("TIKTOK_SCOPES", "user.info.basic,video.publish,video.upload"),
+		TikTokDefaultPrivacy:          os.Getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL"),
+		TikTokWebhookSecret:           os.Getenv("TIKTOK_WEBHOOK_SECRET"),
+		CORSAllowedOrigins:            getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+		TenantCookieDomain:            getEnv("TENANT_COOKIE_DOMAIN", "api.brancr.com"),
+		RespondIOAPIKey:               os.Getenv("RESPOND_IO_API_KEY"), // Respond.io API access token
+		FrontendURL:                   os.Getenv("FRONTEND_URL"),
+		GupshupPartnerUsername:        os.Getenv("GUPSHUP_PARTNER_USERNAME"),
+		GupshupPartnerPassword:        os.Getenv("GUPSHUP_PARTNER_PASSWORD"),
+		GupshupPartnerAppID:           os.Getenv("GUPSHUP_PARTNER_APP_ID"),
+		GupshupAPIBaseURL:             getEnv("GUPSHUP_API_BASE_URL", "https://partner.gupshup.io"),
+		SMTPHost:                      os.Getenv("SMTP_HOST"),
+		SMTPPort:                      getEnv("SMTP_PORT", "587"),
+		SMTPUser:                      os.Getenv("SMTP_USER"),
+		SMTPPass:                      os.Getenv("SMTP_PASS"),
+		SMTPFrom:                      getEnv("SMTP_FROM", "noreply@brancr.com"),
+		PortalTokenExpiryDays:         getEnvInt("PORTAL_TOKEN_EXPIRY_DAYS", 90),
 		TenantImpersonationTTLMinutes: getEnvInt("TENANT_IMPERSONATION_TTL_MINUTES", 60),
-		DBMaxOpenConns:          getEnvInt("DB_MAX_OPEN_CONNS", 100),
-		DBMaxIdleConns:          getEnvInt("DB_MAX_IDLE_CONNS", 10),
-		WorkerPoolSize:          getEnvInt("WORKER_POOL_SIZE", 20),
-		WorkerQueueSize:         getEnvInt("WORKER_QUEUE_SIZE", 100),
-		GoogleOAuthClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
-		GoogleOAuthClientSecret: os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
-		GoogleOAuthRedirectURI:  os.Getenv("GOOGLE_OAUTH_REDIRECT_URI"),
+		DBMaxOpenConns:                getEnvInt("DB_MAX_OPEN_CONNS", 100),
+		DBMaxIdleConns:                getEnvInt("DB_MAX_IDLE_CONNS", 10),
+		WorkerPoolSize:                getEnvInt("WORKER_POOL_SIZE", 20),
+		WorkerQueueSize:               getEnvInt("WORKER_QUEUE_SIZE", 100),
+		GoogleOAuthClientID:           os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+		GoogleOAuthClientSecret:       os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+		GoogleOAuthRedirectURI:        os.Getenv("GOOGLE_OAUTH_REDIRECT_URI"),
 	}
 
 	// Run validation (warnings only, doesn't fail)
