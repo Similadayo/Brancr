@@ -2306,15 +2306,27 @@ func inferFocusFromLastReply(message string, lastAIReply string, knowledge *v4ct
 		return ""
 	}
 	msg := strings.ToLower(message)
-	pronouns := []string{"that one", "this one", "that", "this", "it"}
-	usesPronoun := false
-	for _, p := range pronouns {
+	vagueFollowUpPhrases := []string{
+		// Pronouns
+		"that one", "this one", "that", "this", "it",
+		// Price follow-ups
+		"best price", "how much", "any discount", "what about the price",
+		"the price", "any deal", "how about", "can you do", "the best",
+		"what's the price", "whats the price",
+		// Condition / spec follow-ups
+		"the condition", "conditions", "what condition", "is it new",
+		"is it available", "still available", "any left", "in stock",
+		// Vague continuation
+		"tell me more", "more details", "send specs",
+	}
+	isVagueFollowUp := false
+	for _, p := range vagueFollowUpPhrases {
 		if strings.Contains(msg, p) {
-			usesPronoun = true
+			isVagueFollowUp = true
 			break
 		}
 	}
-	if !usesPronoun {
+	if !isVagueFollowUp {
 		return ""
 	}
 	best := ""
