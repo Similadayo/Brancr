@@ -1,0 +1,9 @@
+node_modules/
+/adminapp/node_modules/
+/bin/
+/vendor/
+/.env
+*.log
+.DS_Store
+.vscode/
+.idea/ 

@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{block "title" .}}Dashboard — Brancr Admin{{end}}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="https://unpkg.com/htmx.org@1.9.2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      /* Light mode colors */
+      --bg-primary: #ffffff;
+      --bg-secondary: #f9fafb;
+      --bg-tertiary: #f3f4f6;
+      --text-primary: #111827;
+      --text-secondary: #6b7280;
+      --text-tertiary: #9ca3af;
+      --border-color: #e5e7eb;
+      --card-bg: #ffffff;
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+      --card-shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+      --primary: #0A034B;
+      --primary-hover: #0d045f;
+      --accent: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --sidebar-bg: #ffffff;
+      --sidebar-border: #e5e7eb;
+      --nav-active: #f3f4f6;
+      --nav-hover: #f9fafb;
+    }
+
+    [data-theme="dark"] {
+      --bg-primary: #111827;
+      --bg-secondary: #1f2937;
+      --bg-tertiary: #374151;
+      --text-primary: #f9fafb;
+      --text-secondary: #d1d5db;
+      --text-tertiary: #9ca3af;
+      --border-color: #374151;
+      --card-bg: #1f2937;
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+      --card-shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+      --primary: #ffffff;
+      --primary-hover: #e5e7eb;
+      --accent: #3b82f6;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --sidebar-bg: #1f2937;
+      --sidebar-border: #374151;
+      --nav-active: #374151;
+      --nav-hover: #374151;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    /* App shell (mobile-first) */
+    #sidebarToggle {
+      position: absolute;
+      left: -9999px;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+
+    .sidebar-overlay {
+      display: none;
+    }
+
+    .app-shell {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      width: 260px;
+      flex: 0 0 260px;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--sidebar-border);
+      padding: 18px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      z-index: 40;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 14px;
+      text-decoration: none;
+      color: var(--text-primary);
+    }
+
+    .brand:hover {
+      background: var(--nav-hover);
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: var(--primary);
+      flex: 0 0 36px;
+    }
+
+    .brand-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.15;
+      min-width: 0;
+    }
+
+    .brand-title {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 160px;
+    }
+
+    .brand-subtitle {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .sidebar nav {
+      background: transparent;
+      border-right: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      overflow: visible;
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: var(--bg-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .sidebar-footer .user {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      flex: 0 0 34px;
+    }
+
+    .user-meta {
+      min-width: 0;
+    }
+
+    .user-meta .name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
+    }
+
+    .user-meta .email {
+      font-size: 12px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
+    }
+
+    .main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      background: var(--bg-primary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: var(--card-shadow);
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+    }
+
+    .icon-btn {
+      border: 1px solid var(--border-color);
+      background: var(--bg-primary);
+      border-radius: 14px;
+      padding: 10px 12px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .icon-btn:hover {
+      background: var(--nav-hover);
+      color: var(--text-primary);
+    }
+
+    .search {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 10px 12px;
+      min-width: 0;
+    }
+
+    .search input {
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text-primary);
+      width: 100%;
+      font-size: 14px;
+      padding: 0;
+    }
+
+    .search .hint {
+      color: var(--text-tertiary);
+      font-size: 13px;
+      flex: 0 0 auto;
+    }
+
+    .segmented {
+      display: inline-flex;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--bg-secondary);
+    }
+
+    .segmented button {
+      border: none;
+      background: transparent;
+      padding: 10px 12px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-weight: 700;
+      font-size: 13px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .segmented button.active {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+    }
+
+    .nav-section {
+      margin-bottom: 24px;
+    }
+
+    .nav-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-tertiary);
+      padding: 0 12px;
+      margin-bottom: 8px;
+    }
+
+    nav a {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    nav a:hover {
+      background: var(--nav-hover);
+      color: var(--text-primary);
+    }
+
+    nav a.active {
+      background: var(--accent);
+      color: white;
+    }
+    
+    [data-theme="dark"] nav a.active {
+      background: var(--accent);
+      color: white;
+    }
+
+    nav a svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* Content Area */
+    .content {
+      padding: 18px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .page-header {
+      margin-bottom: 32px;
+    }
+
+    .page-header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+
+    .page-header p {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    /* Cards */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--card-shadow);
+      border: 1px solid var(--border-color);
+      transition: all 0.2s;
+    }
+
+    .card:hover {
+      box-shadow: var(--card-shadow-hover);
+      transform: translateY(-2px);
+    }
+
+    .stat-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .stat-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .stat-card-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+
+    .stat-card-icon.blue { background: #dbeafe; color: #1e40af; }
+    .stat-card-icon.green { background: #d1fae5; color: #065f46; }
+    .stat-card-icon.purple { background: #e9d5ff; color: #6b21a8; }
+    .stat-card-icon.orange { background: #fed7aa; color: #9a3412; }
+    .stat-card-icon.danger { background: #fee2e2; color: #991b1b; }
+
+    [data-theme="dark"] .stat-card-icon.blue { background: #1e3a8a; color: #dbeafe; }
+    [data-theme="dark"] .stat-card-icon.green { background: #065f46; color: #d1fae5; }
+    [data-theme="dark"] .stat-card-icon.purple { background: #6b21a8; color: #e9d5ff; }
+    [data-theme="dark"] .stat-card-icon.orange { background: #9a3412; color: #fed7aa; }
+    [data-theme="dark"] .stat-card-icon.danger { background: #991b1b; color: #fee2e2; }
+
+    .stat-card-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .stat-card-label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .stat-card-change {
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .stat-card-change.positive { color: var(--success); }
+    .stat-card-change.negative { color: var(--danger); }
+
+    /* Tables */
+    .table-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      box-shadow: var(--card-shadow);
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead {
+      background: var(--bg-secondary);
+    }
+
+    th {
+      padding: 16px;
+      text-align: left;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+      font-size: 14px;
+    }
+
+    tbody tr:hover {
+      background: var(--bg-secondary);
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    /* Buttons */
+    button, .btn, .btn-primary, .btn-secondary, .btn-danger {
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+      font-size: 14px;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+    }
+
+    .btn-sm {
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 10px;
+    }
+
+    button.primary, .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.primary:hover, .btn-primary:hover {
+      background: var(--accent);
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+    
+    [data-theme="dark"] button.primary,
+    [data-theme="dark"] .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    button.danger, .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+
+    button.danger:hover, .btn-danger:hover {
+      opacity: 0.9;
+    }
+
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-secondary);
+      transform: translateY(-1px);
+    }
+
+    /* Status badges */
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .badge.success { background: #d1fae5; color: #065f46; }
+    .badge.warning { background: #fed7aa; color: #9a3412; }
+    .badge.danger { background: #fee2e2; color: #991b1b; }
+    .badge.info { background: #dbeafe; color: #1e40af; }
+
+    [data-theme="dark"] .badge.success { background: #065f46; color: #d1fae5; }
+    [data-theme="dark"] .badge.warning { background: #9a3412; color: #fed7aa; }
+    [data-theme="dark"] .badge.danger { background: #991b1b; color: #fee2e2; }
+    [data-theme="dark"] .badge.info { background: #1e3a8a; color: #dbeafe; }
+
+    /* Charts */
+    .chart-container {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: var(--card-shadow);
+      border: 1px solid var(--border-color);
+      margin-bottom: 24px;
+      height: 400px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-shrink: 0;
+    }
+
+    .chart-header h3 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .chart-container canvas {
+      flex: 1;
+      max-height: 320px;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* Forms */
+    input, select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        transform: translateX(-110%);
+        transition: transform 0.2s ease;
+        box-shadow: var(--card-shadow-hover);
+      }
+
+      #sidebarToggle:checked ~ .sidebar-overlay {
+        display: block;
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #sidebarToggle:checked ~ .app-shell .sidebar {
+        transform: translateX(0);
+      }
+
+      .sidebar-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.2);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+        z-index: 30;
+      }
+
+      .content {
+        padding: 16px;
+      }
+
+      .topbar-right .segmented {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <input type="checkbox" id="sidebarToggle" aria-hidden="true">
+  <label class="sidebar-overlay" for="sidebarToggle" aria-label="Close navigation"></label>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a href="/admin" class="brand">
+        <div class="brand-mark">B</div>
+        <div class="brand-text">
+          <div class="brand-title">Brancr</div>
+          <div class="brand-subtitle">Admin Console</div>
+        </div>
+      </a>
+
+      <nav>
+      <div class="nav-section">
+        <div class="nav-section-title">Main</div>
+        <a href="/admin" class="{{if eq .Page "dashboard"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+          Dashboard
+        </a>
+        <a href="/admin/tenants" class="{{if eq .Page "tenants"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+          Tenants
+        </a>
+        <a href="/admin/escalations" class="{{if eq .Page "escalations"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5.07 19H18.93c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z"></path></svg>
+          Escalations
+        </a>
+        <a href="/admin/orders" class="{{if eq .Page "orders"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2 9m14-9l2 9M9 22a1 1 0 100-2 1 1 0 000 2zm10 0a1 1 0 100-2 1 1 0 000 2z"></path></svg>
+          Orders
+        </a>
+        <a href="/admin/payments" class="{{if eq .Page "payments"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-2m4-5h-8m0 0l3-3m-3 3l3 3"></path></svg>
+          Payments
+        </a>
+        <a href="/admin/scheduled" class="{{if eq .Page "scheduled"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+          Scheduled Posts
+        </a>
+        <a href="/admin/social" class="{{if eq .Page "social"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+          Social Connections
+        </a>
+        <a href="/admin/whatsapp" class="{{if eq .Page "whatsapp"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path></svg>
+          WhatsApp Numbers
+        </a>
+        <a href="/admin/usage" class="{{if eq .Page "usage"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+          Usage Stats
+        </a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">System</div>
+        <a href="/admin/health" class="{{if eq .Page "health"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          System Health
+        </a>
+        <a href="/admin/logs" class="{{if eq .Page "logs"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          Logs
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-title">Security</div>
+        <a href="/admin/security/admin-users" class="{{if eq .Page "admin_users"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2m16 0h3a2 2 0 002-2V7a2 2 0 00-2-2h-3m-4 6a4 4 0 10-8 0 4 4 0 008 0z"></path></svg>
+          Admin Users
+        </a>
+        <a href="/admin/security/audit-logs" class="{{if eq .Page "audit_logs"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m-6-8h6M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"></path></svg>
+          Audit Logs
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-title">Support</div>
+        <a href="/admin/support/impersonate" class="{{if eq .Page "impersonate"}}active{{end}}">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+          Impersonate Tenant
+        </a>
+      </div>
+
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="user">
+          <div class="avatar" aria-hidden="true"></div>
+          <div class="user-meta">
+            <div class="name">Admin</div>
+            <div class="email">support@brancr</div>
+          </div>
+        </div>
+        <button class="icon-btn" type="button" onclick="toggleTheme()" id="themeToggle" aria-label="Toggle theme" style="padding: 10px 10px;">
+          <span id="themeIcon">🌙</span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <div class="topbar-left">
+          <label class="icon-btn" for="sidebarToggle" aria-label="Open navigation" style="padding: 10px 12px;">☰</label>
+          <div class="search" role="search">
+            <span class="hint" aria-hidden="true">Search</span>
+            <input aria-label="Search" placeholder="Search" />
+            <span class="hint" aria-hidden="true">⌕</span>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <button class="icon-btn" type="button" aria-label="Select date">
+            <span style="color: var(--text-tertiary); font-weight: 800;">📅</span>
+            <span>Today</span>
+          </button>
+          <div class="segmented" role="group" aria-label="View mode">
+            <button type="button" class="active" aria-pressed="true">▦&nbsp;Card</button>
+            <button type="button" aria-pressed="false">≡&nbsp;List</button>
+          </div>
+          <form method="POST" action="/admin/logout" style="display: inline;">
+            <button type="submit" class="icon-btn" style="border-color: transparent; background: var(--danger); color: white;">Logout</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="content">
+        {{block "content" .}}{{end}}
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Theme toggle functionality
+    function getTheme() {
+      return localStorage.getItem('theme') || 'light';
+    }
+
+    function setTheme(theme) {
+      localStorage.setItem('theme', theme);
+      document.documentElement.setAttribute('data-theme', theme);
+      updateThemeIcon(theme);
+    }
+
+    function toggleTheme() {
+      const currentTheme = getTheme();
+      const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+      setTheme(newTheme);
+    }
+
+    function updateThemeIcon(theme) {
+      const icon = document.getElementById('themeIcon');
+      if (theme === 'dark') {
+        icon.textContent = '☀️';
+      } else {
+        icon.textContent = '🌙';
+      }
+    }
+
+    // Initialize theme on page load
+    setTheme(getTheme());
+  </script>
+</body>
+</html>

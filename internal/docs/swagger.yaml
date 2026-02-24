@@ -1,0 +1,555 @@
+basePath: /api
+definitions:
+  tenantapi.loginRequest:
+    properties:
+      email:
+        example: john@example.com
+        type: string
+      password:
+        example: securePassword123
+        type: string
+    type: object
+  tenantapi.signupRequest:
+    properties:
+      company_name:
+        example: Acme Corp
+        type: string
+      email:
+        example: john@example.com
+        type: string
+      name:
+        example: John Doe
+        type: string
+      password:
+        example: securePassword123
+        type: string
+      phone:
+        example: "+1234567890"
+        type: string
+    type: object
+host: api.brancr.com
+info:
+  contact:
+    email: support@brancr.com
+    name: API Support
+    url: https://brancr.com/support
+  description: AI-powered social media management platform API
+  license:
+    name: Proprietary
+    url: https://brancr.com/license
+  termsOfService: https://brancr.com/terms
+  title: Brancr API
+  version: "1.0"
+paths:
+  /admin/api/tenants/{id}/kyb:
+    get:
+      description: Retrieve KYB submission for a tenant
+      parameters:
+      - description: Tenant ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get tenant KYB
+      tags:
+      - admin kyb
+  /admin/api/tenants/{id}/kyb/reject:
+    post:
+      consumes:
+      - application/json
+      description: Mark a tenant's KYB as rejected
+      parameters:
+      - description: Tenant ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Reject payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Reject tenant KYB
+      tags:
+      - admin kyb
+  /admin/api/tenants/{id}/kyb/verify:
+    post:
+      description: Mark a tenant's KYB as verified
+      parameters:
+      - description: Tenant ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Verify tenant KYB
+      tags:
+      - admin kyb
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate tenant with email and password
+      parameters:
+      - description: Login request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/tenantapi.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Login successful
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid credentials
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Login tenant
+      tags:
+      - auth
+  /auth/signup:
+    post:
+      consumes:
+      - application/json
+      description: Create a new tenant account with email, password, and company information
+      parameters:
+      - description: Signup request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/tenantapi.signupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Tenant created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Email already exists
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Register a new tenant
+      tags:
+      - auth
+  /tenant/analytics/performance:
+    get:
+      consumes:
+      - application/json
+      description: Get performance metrics including engagement rate, impressions,
+        reach, and top performing post
+      parameters:
+      - default: 7d
+        description: Time period (7d, 30d, 90d, all)
+        in: query
+        name: period
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Performance summary
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get performance summary
+      tags:
+      - analytics
+  /tenant/campaigns/stats:
+    get:
+      consumes:
+      - application/json
+      description: Get counts for scheduled, published, and draft posts
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Campaign statistics
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get campaign statistics
+      tags:
+      - campaigns
+  /tenant/drafts:
+    get:
+      description: List drafts for tenant. Optional ?key= to filter by flow key
+      parameters:
+      - description: Draft key
+        in: query
+        name: key
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List drafts
+      tags:
+      - drafts
+    post:
+      consumes:
+      - application/json
+      description: Create a draft scoped to the tenant
+      parameters:
+      - description: Draft payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create draft
+      tags:
+      - drafts
+  /tenant/drafts/{id}:
+    delete:
+      description: Delete a tenant draft by ID
+      parameters:
+      - description: Draft ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete draft
+      tags:
+      - drafts
+    get:
+      description: Retrieve a draft by ID (tenant scoped)
+      parameters:
+      - description: Draft ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get draft
+      tags:
+      - drafts
+    put:
+      consumes:
+      - application/json
+      description: Update draft content or metadata
+      parameters:
+      - description: Draft ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Draft update payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update draft
+      tags:
+      - drafts
+  /tenant/onboarding/kyb:
+    post:
+      consumes:
+      - application/json
+      description: Submit KYB data for tenant onboarding
+      parameters:
+      - description: KYB payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Submit KYB
+      tags:
+      - onboarding kyb
+  /tenant/posts:
+    post:
+      consumes:
+      - application/json
+      description: Create a new scheduled post with media, caption, and platforms.
+        Can be published immediately or scheduled for later.
+      parameters:
+      - description: Post creation request
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Post created successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create scheduled post
+      tags:
+      - posts
+  /tenant/scheduled-posts:
+    get:
+      consumes:
+      - application/json
+      description: Get a list of scheduled posts, optionally filtered by status
+      parameters:
+      - description: Filter by status (scheduled, posted, draft)
+        in: query
+        name: status
+        type: string
+      - description: 'Limit number of results (default: 100)'
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of scheduled posts
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List scheduled posts
+      tags:
+      - posts
+  /tenant/scheduled-posts/{id}:
+    delete:
+      consumes:
+      - application/json
+      description: Cancel a scheduled post by marking it as cancelled. Cannot delete
+        already posted content.
+      parameters:
+      - description: Post ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Post cancelled successfully
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request or post already posted
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Post not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete scheduled post
+      tags:
+      - posts
+    get:
+      consumes:
+      - application/json
+      description: Get details of a specific scheduled post by ID
+      parameters:
+      - description: Post ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Scheduled post details
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Post not found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get scheduled post
+      tags:
+      - posts
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
