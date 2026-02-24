@@ -20,6 +20,7 @@ import (
 	"github.com/similadayo/brancr/internal/ai_v4/decision"
 	"github.com/similadayo/brancr/internal/ai_v4/emotion"
 	"github.com/similadayo/brancr/internal/ai_v4/executor"
+	"github.com/similadayo/brancr/internal/ai_v4/negotiation"
 	"github.com/similadayo/brancr/internal/fulfillment"
 
 	// "github.com/similadayo/brancr/internal/ai_v4/intent" // REMOVED: Intent is no longer a driver
@@ -2795,16 +2796,27 @@ func (r *FlowRunner) RunTurn(
 			Order("updated_at desc").
 			First(&latestSalesConv).Error
 		if err == nil {
+			// If the customer is making a new price offer in this message, reset any stale
+			// escalation flag so negotiation can restart fresh rather than immediately
+			// returning "Your pricing request is with our manager" from a past escalation.
+			escalationPending := latestSalesConv.EscalationPending
+			if escalationPending && negotiation.DetectOfferInText(req.MessageText) > 0 {
+				escalationPending = false
+				log.Info("escalation_pending_reset_on_new_offer",
+					zap.String("message", req.MessageText),
+				)
+			}
 			negotiationCtx = &python.NegotiationContext{
-				IsActive:          strings.EqualFold(strings.TrimSpace(latestSalesConv.Stage), "negotiation") || latestSalesConv.EscalationPending,
+				IsActive:          strings.EqualFold(strings.TrimSpace(latestSalesConv.Stage), "negotiation") || escalationPending,
 				NegotiationCount:  latestSalesConv.NegotiationCount,
 				LastAIOffer:       latestSalesConv.LastAIOffer,
 				LastCustomerOffer: latestSalesConv.LastOfferAmount,
-				EscalationPending: latestSalesConv.EscalationPending,
+				EscalationPending: escalationPending,
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			log.Warn("negotiation_context_load_failed", zap.Error(err))
 		}
+
 	}
 
 	if shouldBypassPythonAnalyze {
