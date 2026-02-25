@@ -426,9 +426,12 @@ func (h *Handler) getOrderRequirements(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, ir := range itemReqs {
-			// Deduplicate against system requirements if tenant configured one with the same label/applies_to.
-			sysKey := strings.ToLower(strings.TrimSpace(ir.Requirement.Label)) + "|" + strings.ToLower(strings.TrimSpace(ir.Requirement.AppliesTo))
-			if seen[sysKey] {
+			// Deduplicate against system requirements. A requirement with applies_to="any"
+			// overlaps with system requirements tagged "delivery" or "pickup", so we must
+			// check all three variants of the key.
+			labelKey := strings.ToLower(strings.TrimSpace(ir.Requirement.Label))
+			appliesKey := strings.ToLower(strings.TrimSpace(ir.Requirement.AppliesTo))
+			if seen[labelKey+"|"+appliesKey] || seen[labelKey+"|delivery"] || seen[labelKey+"|pickup"] || seen[labelKey+"|any"] {
 				continue
 			}
 
