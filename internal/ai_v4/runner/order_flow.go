@@ -1283,26 +1283,35 @@ func buildDeterministicOrderConfirmation(orderSnapshot *v4ctx.OrderSnapshot, del
 		currency = "NGN"
 	}
 
+	// If a negotiated price was agreed, use it as the effective unit price for display and total.
+	agreedUnit := orderSnapshot.AgreedUnitPrice
+
 	var reply strings.Builder
 	reply.WriteString("Thanks, your order is confirmed:\n")
 
+	var computedTotal int64
 	for _, item := range orderSnapshot.Items {
 		if item.Quantity <= 0 {
 			continue
 		}
 		unitPrice := item.UnitPrice
-		if orderSnapshot.AgreedUnitPrice > 0 && len(orderSnapshot.Items) == 1 {
-			unitPrice = orderSnapshot.AgreedUnitPrice
+		if agreedUnit > 0 && len(orderSnapshot.Items) == 1 {
+			unitPrice = agreedUnit
 		}
+		computedTotal += unitPrice * int64(item.Quantity)
 		reply.WriteString(fmt.Sprintf("- %d x %s, %s%s\n",
 			item.Quantity,
 			item.Name,
 			currency,
 			formatIntWithCommas(unitPrice)))
-
 	}
 
-	reply.WriteString(fmt.Sprintf("TOTAL %s%s.", currency, formatIntWithCommas(orderSnapshot.TotalPrice)))
+	// Use the computed total (which respects the negotiated price) instead of the stale snapshot total.
+	total := computedTotal
+	if total <= 0 {
+		total = orderSnapshot.TotalPrice
+	}
+	reply.WriteString(fmt.Sprintf("TOTAL %s%s.", currency, formatIntWithCommas(total)))
 	if deliveryConfig.DeliveryEnabled && deliveryConfig.PickupEnabled {
 		reply.WriteString(" Would you like delivery or pickup?")
 	}

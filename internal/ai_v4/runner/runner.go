@@ -3333,6 +3333,24 @@ func (r *FlowRunner) RunTurn(
 		log.Info("executing_proposed_actions",
 			zap.Int("count", len(analysis.Actions)),
 			zap.Bool("python_authority", pythonDecisionAuthority))
+
+		// If a negotiated price was agreed (LastAIOffer > 0) and the customer is
+		// now confirming an order, stamp the agreed price onto the order snapshot
+		// so the confirmation message shows the correct negotiated total.
+		if negotiationCtx != nil && negotiationCtx.LastAIOffer > 0 && orderSnapshot != nil {
+			for _, act := range analysis.Actions {
+				if act.Type == "confirm_order" || act.Type == "add_to_order" || act.Type == "update_order" {
+					if orderSnapshot.AgreedUnitPrice == 0 {
+						orderSnapshot.AgreedUnitPrice = int64(negotiationCtx.LastAIOffer)
+						log.Info("negotiated_price_applied_to_order",
+							zap.Float64("last_ai_offer", negotiationCtx.LastAIOffer),
+						)
+					}
+					break
+				}
+			}
+		}
+
 		err := r.executeProposedActions(ctx, analysis.Actions, req.Scope, snapshot, knowledge, orderSnapshot, convSnapshot)
 		if err != nil {
 			log.Error("action_execution_failed", zap.Error(err))
