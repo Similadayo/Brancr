@@ -1905,51 +1905,40 @@ func resolveVariantFocusFromMessage(message string, activeItem string, lastAIRep
 		return ""
 	}
 
-	base := normalizeFamilyName(activeItem)
+	baseActive := normalizeFamilyName(activeItem)
+	baseFromReply := normalizeFamilyName(bestCatalogNameMentionedInText(lastAIReply, knowledge))
+	base := baseActive
 	if base == "" {
-		base = normalizeFamilyName(bestCatalogNameMentionedInText(lastAIReply, knowledge))
+		base = baseFromReply
 	}
 
 	type cand struct {
 		name  string
 		score int
 	}
-	var matches []cand
 	lastLower := strings.ToLower(lastAIReply)
 
-	addIfMatch := func(name string) {
-		if strings.TrimSpace(name) == "" {
-			return
+	collectMatches := func(targetBase string) []cand {
+		matches := make([]cand, 0)
+		addIfMatch := func(name string) {
+			if strings.TrimSpace(name) == "" {
+				return
+			}
+			if targetBase != "" && normalizeFamilyName(name) != targetBase {
+				return
+			}
+			if !strings.Contains(normalizeCompact(name), token) {
+				return
+			}
+			score := 0
+			if strings.TrimSpace(activeItem) != "" && strings.EqualFold(strings.TrimSpace(activeItem), strings.TrimSpace(name)) {
+				score += 5
+			}
+			if strings.TrimSpace(lastAIReply) != "" && strings.Contains(lastLower, strings.ToLower(name)) {
+				score += 10
+			}
+			matches = append(matches, cand{name: name, score: score})
 		}
-		if base != "" && normalizeFamilyName(name) != base {
-			return
-		}
-		if !strings.Contains(normalizeCompact(name), token) {
-			return
-		}
-		score := 0
-		if strings.TrimSpace(activeItem) != "" && strings.EqualFold(strings.TrimSpace(activeItem), strings.TrimSpace(name)) {
-			score += 5
-		}
-		if strings.TrimSpace(lastAIReply) != "" && strings.Contains(lastLower, strings.ToLower(name)) {
-			score += 10
-		}
-		matches = append(matches, cand{name: name, score: score})
-	}
-
-	for _, p := range knowledge.Products {
-		addIfMatch(p.Name)
-	}
-	for _, m := range knowledge.MenuItems {
-		addIfMatch(m.Name)
-	}
-	for _, s := range knowledge.Services {
-		addIfMatch(s.Name)
-	}
-
-	if len(matches) == 0 && base != "" {
-		// If family filtering was too strict, retry global capacity match only if it yields a single unambiguous hit.
-		base = ""
 		for _, p := range knowledge.Products {
 			addIfMatch(p.Name)
 		}
@@ -1959,6 +1948,13 @@ func resolveVariantFocusFromMessage(message string, activeItem string, lastAIRep
 		for _, s := range knowledge.Services {
 			addIfMatch(s.Name)
 		}
+		return matches
+	}
+
+	matches := collectMatches(base)
+	if len(matches) == 0 && baseFromReply != "" && !strings.EqualFold(baseFromReply, baseActive) {
+		// Use last AI reply as a scoped fallback instead of global capacity matching.
+		matches = collectMatches(baseFromReply)
 	}
 
 	if len(matches) == 0 {

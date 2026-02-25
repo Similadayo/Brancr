@@ -74,3 +74,24 @@ func TestResolveVariantFocusFromMessage_ReturnsEmptyWhenAmbiguousWithoutContext(
 		t.Fatalf("expected ambiguous variant focus to be empty, got %q", got)
 	}
 }
+
+func TestResolveVariantFocusFromMessage_DoesNotCrossFamilyOnCapacityOnlyFollowUp(t *testing.T) {
+	knowledge := &v4ctx.TenantKnowledgeSnapshot{
+		Industry:    "retail",
+		HasProducts: true,
+		Products: []v4ctx.ProductSummary{
+			{Name: "iPhone 14 (256GB)"},
+			{Name: "Infinix Hot 40 (128GB)"},
+		},
+	}
+
+	got := resolveVariantFocusFromMessage(
+		"How about the 128GB? How much is that one?",
+		"iPhone 14 (256GB)",
+		"iPhone 14 (256GB) is NGN 1,100,000.",
+		knowledge,
+	)
+	if got != "" {
+		t.Fatalf("expected no cross-family variant resolution, got %q", got)
+	}
+}
