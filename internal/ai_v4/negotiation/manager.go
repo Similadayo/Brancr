@@ -90,7 +90,7 @@ func (m *Manager) Decide(ctx context.Context, salesConv *storage.SalesConversati
 		maxDisc = 0.10
 	}
 	if policy.MaxConcessions <= 0 {
-		policy.MaxConcessions = 2
+		policy.MaxConcessions = 5
 	}
 	proximity := policy.ProximityPct
 	if proximity <= 0 {
@@ -177,7 +177,7 @@ func (m *Manager) Decide(ctx context.Context, salesConv *storage.SalesConversati
 
 	// Customer matched (or exceeded) our previously quoted amount: treat as acceptance.
 	if offer > 0 && salesConv.LastAIOffer > 0 {
-		if math.Abs(offer-salesConv.LastAIOffer) <= 100 || offer > salesConv.LastAIOffer {
+		if math.Abs(offer-salesConv.LastAIOffer) <= 500 || offer > salesConv.LastAIOffer {
 			return Decision{Phase: PhaseAccept, Offer: salesConv.LastAIOffer, Reason: "offer_matches_last_ai_offer", Escalation: EscalationNone}, nil
 		}
 	}
