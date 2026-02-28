@@ -33,19 +33,19 @@ func featureEnabled(name string, defaultValue bool) bool {
 }
 
 func skuLockEnabled() bool {
-	return featureEnabled("AI_V4_SKU_LOCK_ENABLED", false)
+	return featureEnabled("AI_V4_SKU_LOCK_ENABLED", true)
 }
 
 func unavailableGuardEnabled() bool {
-	return featureEnabled("AI_V4_UNAVAILABLE_GUARD_ENABLED", false)
+	return featureEnabled("AI_V4_UNAVAILABLE_GUARD_ENABLED", true)
 }
 
 func specPriorityEnabled() bool {
-	return featureEnabled("AI_V4_SPEC_PRIORITY_ENABLED", false)
+	return featureEnabled("AI_V4_SPEC_PRIORITY_ENABLED", true)
 }
 
 func closeoutSuppressionEnabled() bool {
-	return featureEnabled("AI_V4_CLOSEOUT_SUPPRESSION_ENABLED", false)
+	return featureEnabled("AI_V4_CLOSEOUT_SUPPRESSION_ENABLED", true)
 }
 
 func itemIDFromName(name string) string {
