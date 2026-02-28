@@ -92,11 +92,13 @@ func TestConversationSimulation_UnavailableThenAlternativesRequireExplicitSwitch
 		t.Fatalf("expected unavailable-model guard hit")
 	}
 	reply := buildUnavailableWithAlternativesReply(requested, alternatives)
-	if !strings.Contains(strings.ToLower(reply), "not in our catalog") {
+	// New wording: "We don't have the X, but we've got: Y, Z. Which one interests you?"
+	replyLower := strings.ToLower(reply)
+	if !strings.Contains(replyLower, "don't have") && !strings.Contains(replyLower, "don't stock") && !strings.Contains(replyLower, "isn't something we stock") {
 		t.Fatalf("expected unavailable response, got %q", reply)
 	}
-	if !strings.Contains(strings.ToLower(reply), "alternatives") {
-		t.Fatalf("expected explicit alternative instruction, got %q", reply)
+	if !strings.Contains(replyLower, "iphone 13") && !strings.Contains(replyLower, "iphone 14") && !strings.Contains(replyLower, "interests you") && !strings.Contains(replyLower, "available") {
+		t.Fatalf("expected alternatives or catalog offer, got %q", reply)
 	}
 
 	// Turn: explicit switch is accepted and lock moves.

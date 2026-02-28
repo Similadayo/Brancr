@@ -224,9 +224,26 @@ func buildUnavailableWithAlternativesReply(requested string, alternatives []avai
 	if req == "" {
 		req = "that model"
 	}
-	if len(alternatives) == 0 {
-		return fmt.Sprintf("%s is not in our catalog right now. Let us know if you want available alternatives.", req)
+
+	// 🆕 Extract the brand name from the requested item for a more natural response
+	brandName := ""
+	if parts := strings.Fields(req); len(parts) > 0 {
+		brandName = parts[0]
 	}
+
+	if len(alternatives) == 0 {
+		// No same-brand alternatives — this might be a brand we don't carry at all.
+		// Don't randomly push a different brand. Acknowledge and invite them to see what's available.
+		if brandName != "" {
+			return fmt.Sprintf(
+				"The %s isn't something we stock. Want me to show you what we have available?",
+				req,
+			)
+		}
+		return "We don't carry that one. Want me to show you what we have?"
+	}
+
+	// Same-brand alternatives exist — list them naturally
 	lines := make([]string, 0, len(alternatives))
 	for _, alt := range alternatives {
 		price := formatCurrency(alt.price, alt.currency)
@@ -236,7 +253,11 @@ func buildUnavailableWithAlternativesReply(requested string, alternatives []avai
 		}
 		lines = append(lines, fmt.Sprintf("%s (%s)", alt.name, price))
 	}
-	return fmt.Sprintf("%s is not in our catalog right now. Available alternatives: %s. Let us know if you want to switch to any of these.", req, strings.Join(lines, ", "))
+
+	if len(lines) == 1 {
+		return fmt.Sprintf("We don't have the %s, but we've got the %s. Want more details?", req, lines[0])
+	}
+	return fmt.Sprintf("We don't have the %s, but we've got: %s. Which one interests you?", req, strings.Join(lines, ", "))
 }
 
 func isDirectSpecQuestion(message string) bool {

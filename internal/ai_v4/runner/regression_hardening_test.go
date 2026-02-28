@@ -54,7 +54,16 @@ func TestRegression_UnavailableModel_NoAutoSubstitution(t *testing.T) {
 		t.Fatalf("expected 1-3 alternatives, got %d", len(alternatives))
 	}
 	reply := buildUnavailableWithAlternativesReply(requested, alternatives)
-	if !strings.Contains(strings.ToLower(reply), "alternatives") && !strings.Contains(strings.ToLower(reply), "switch to any") {
+	replyLower := strings.ToLower(reply)
+	// New wording: "We don't have X, but we've got: Y, Z. Which one interests you?"
+	hasUnavailableSignal := strings.Contains(replyLower, "don't have") ||
+		strings.Contains(replyLower, "don't stock") ||
+		strings.Contains(replyLower, "isn't something we stock")
+	hasAlternativeSignal := strings.Contains(replyLower, "we've got") ||
+		strings.Contains(replyLower, "interests you") ||
+		strings.Contains(replyLower, "available") ||
+		strings.Contains(replyLower, "alternatives")
+	if !hasUnavailableSignal || !hasAlternativeSignal {
 		t.Fatalf("expected explicit alternative or switch requirement, got %q", reply)
 	}
 }
