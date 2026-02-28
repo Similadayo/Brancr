@@ -707,10 +707,21 @@ func messageLooksLikeNegotiation(message string) bool {
 		return false
 	}
 	cues := []string{
+		// Existing price / discount signals
 		"best price", "last price", "final price", "lowest price",
 		"any discount", "discount", "reduce", "price drop", "price reduction",
 		"can you do", "can u do", "can we do", "can you come down",
 		"my budget", "budget is", "i have", "i can pay", "i will pay",
+		// 🆕 Price-objection signals that were triggering manager escalation instead of negotiation
+		"that costs less", "costs less", "cheaper", "cheaper elsewhere",
+		"seen it cheaper", "saw it cheaper", "found it cheaper",
+		"too expensive", "that's too much", "thats too much", "too much",
+		"lower price", "better price", "give me a better price",
+		"price is too high", "price too high", "overpriced",
+		"negotiate", "can we negotiate", "room to negotiate",
+		"i thought you could negotiate", "thought you negotiate",
+		"reduce the price", "cut the price", "bring it down",
+		"abeg reduce", "reduce am", "shift am", "cut am",
 	}
 	for _, c := range cues {
 		if strings.Contains(msg, c) {
