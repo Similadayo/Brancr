@@ -3379,6 +3379,20 @@ func (r *FlowRunner) RunTurn(
 		convSnapshot.ConversationMode = "general"
 	}
 
+	// BUG FIX: Detect terminal order stages and exit ordering mode.
+	// Without this, a conversation with a completed order (payment_sent) remains
+	// stuck in ordering mode, and ProcessOrderFlow's recovery logic re-enters
+	// the confirming stage, causing order duplication.
+	if orderSnapshot != nil {
+		switch strings.TrimSpace(orderSnapshot.Stage) {
+		case "payment_sent", "fulfilled", "cancelled":
+			convSnapshot.ConversationMode = "general"
+			orderSnapshot.HasActiveOrder = false
+			log.Info("exiting_order_mode_terminal_stage",
+				zap.String("stage", orderSnapshot.Stage))
+		}
+	}
+
 	// USE ORDER FLOW if:
 	// 1. ConversationMode is "ordering" (customer already in order flow), OR
 	// 2. New order items were just detected
@@ -3406,6 +3420,25 @@ func (r *FlowRunner) RunTurn(
 
 	// 🆕 Skip order flow if intent is payment_confirmation (use Python's natural confirmation instead)
 	isPaymentConfirmation := analysis.Semantic.DetectedIntent == "payment_confirmation"
+
+	// 🆕 PHOTO REQUEST HANDLER: Acknowledge photo/image requests gracefully.
+	// Product photo sending is not yet fully implemented, so we give a helpful
+	// deterministic reply instead of silently ignoring the request.
+	if analysis.Semantic.DetectedIntent == "photo_request" && strings.TrimSpace(finalReply) == "" {
+		photoReply := "We don't have product photos available via chat just yet, but I can describe the item in detail or answer any questions about its specs, condition, or features."
+		if strings.TrimSpace(focusItem) != "" {
+			photoReply = fmt.Sprintf("We don't have photos of %s available via chat just yet, but I can describe it in detail or answer any questions about its specs, condition, or features.", focusItem)
+		}
+		// If in ordering mode, append the resume prompt so the flow isn't interrupted.
+		if orderSnapshot != nil && isActiveOrderFlowStage(orderSnapshot.Stage) {
+			resume := resumePromptForStage(orderSnapshot.Stage)
+			if strings.TrimSpace(resume) != "" {
+				photoReply = strings.TrimSpace(photoReply) + "\n\n" + resume
+			}
+		}
+		finalReply = photoReply
+		log.Info("photo_request_acknowledged", zap.String("focus_item", focusItem))
+	}
 
 	// 🆕 EXIT ORDER MODE for LOW BUYING CONFIDENCE:
 	// If customer is uncertain ("I want X but don't know which"), exit order mode
@@ -3535,6 +3568,16 @@ func (r *FlowRunner) RunTurn(
 		log.Info("📦 Using order flow",
 			zap.Bool("in_ordering_mode", inOrderingMode),
 			zap.Bool("has_new_items", hasNewItems))
+
+		// BUG FIX: Stamp negotiated price BEFORE entering ProcessOrderFlow,
+		// not just when analysis.Actions contains confirm_order.
+		// This ensures the order confirmation shows the agreed price even when
+		// Python doesn't emit a confirm_order action.
+		if negotiationCtx != nil && negotiationCtx.LastAIOffer > 0 && orderSnapshot != nil && orderSnapshot.AgreedUnitPrice == 0 {
+			orderSnapshot.AgreedUnitPrice = int64(negotiationCtx.LastAIOffer)
+			log.Info("negotiated_price_applied_before_order_flow",
+				zap.Float64("last_ai_offer", negotiationCtx.LastAIOffer))
+		}
 
 		reply, err := r.ProcessOrderFlow(
 			ctx,

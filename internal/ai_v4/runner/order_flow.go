@@ -502,6 +502,24 @@ func (r *FlowRunner) ProcessOrderFlow(
 	convSnapshot *v4ctx.ConversationSnapshot, // For mode changes
 ) (finalReply string, err error) {
 
+	// ========================================
+	// TERMINAL STAGE GUARD: Prevent re-entry after order is complete.
+	// Without this, terminal stages fall through to the unknown-stage
+	// recovery at the bottom which resets to "confirming", causing
+	// order duplication on every subsequent customer message.
+	// ========================================
+	switch strings.TrimSpace(orderSnapshot.Stage) {
+	case "payment_sent", "fulfilled", "cancelled":
+		log.Info("order_flow_terminal_stage_exit",
+			zap.String("stage", orderSnapshot.Stage))
+		// Exit ordering mode — order is done.
+		if convSnapshot != nil {
+			convSnapshot.ConversationMode = "general"
+		}
+		orderSnapshot.HasActiveOrder = false
+		return "", nil
+	}
+
 	preview := func(s string) string {
 		t := strings.TrimSpace(s)
 		if t == "" {
@@ -906,6 +924,26 @@ func (r *FlowRunner) ProcessOrderFlow(
 		if pickupTime == "" {
 			pickupTime = inferPickupTimeFallback(rawMessage)
 		}
+
+		// BUG FIX: When the customer repeats "pick up" / "pickup" while we are
+		// waiting for a pickup TIME, treat it as "I'll come pick up" (i.e. no
+		// specific time preference) rather than leaving pickupTime empty.
+		// Without this, the empty pickupTime causes re-prompting, and on the
+		// next turn the delivery-choice detector re-fires, which re-enters
+		// the confirming stage and duplicates the order.
+		if pickupTime == "" {
+			lowerMsg := strings.ToLower(strings.TrimSpace(rawMessage))
+			pickupPhrases := []string{"pickup", "pick up", "pick-up", "collect", "i will pick", "i'll pick"}
+			for _, p := range pickupPhrases {
+				if strings.Contains(lowerMsg, p) {
+					pickupTime = "Customer will pick up (no specific time)"
+					log.Info("pickup_time_inferred_from_pickup_phrase",
+						zap.String("raw_message", rawMessage))
+					break
+				}
+			}
+		}
+
 		if pickupTime != "" {
 			orderSnapshot.PickupTime = pickupTime
 			if orderSnapshot.OrderID != "" {
