@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/similadayo/brancr/internal/llm"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/testutil"
 	"go.uber.org/zap"
@@ -46,9 +47,11 @@ func TestCaptionOptimizer_OptimizeCaption_WithImage(t *testing.T) {
 
 	// Mock AIClient
 	mockClient := &AIClient{
-		APIKey:  "test-key",
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-4",
+		Client: &llm.Client{
+			APIKey:  "test-key",
+			BaseURL: "https://api.openai.com/v1",
+			Model:   "gpt-4",
+		},
 	}
 
 	optimizer := &CaptionOptimizer{
@@ -103,9 +106,11 @@ func TestCaptionOptimizer_OptimizeCaption_TextOnly(t *testing.T) {
 	db.Create(&bizProfile)
 
 	mockClient := &AIClient{
-		APIKey:  "test-key",
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-4",
+		Client: &llm.Client{
+			APIKey:  "test-key",
+			BaseURL: "https://api.openai.com/v1",
+			Model:   "gpt-4",
+		},
 	}
 
 	optimizer := &CaptionOptimizer{
@@ -153,9 +158,11 @@ func TestCaptionOptimizer_OptimizeCaption_AIFails_ReturnOriginal(t *testing.T) {
 
 	// Mock client that fails
 	failingClient := &AIClient{
-		APIKey:  "test-key",
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-4",
+		Client: &llm.Client{
+			APIKey:  "test-key",
+			BaseURL: "https://api.openai.com/v1",
+			Model:   "gpt-4",
+		},
 	}
 
 	optimizer := &CaptionOptimizer{
@@ -213,9 +220,11 @@ func TestCaptionOptimizer_OptimizeCaption_PlatformGuidance(t *testing.T) {
 
 	for _, tt := range tests {
 		mockClient := &AIClient{
-			APIKey:  "test-key",
-			BaseURL: "https://api.openai.com/v1",
-			Model:   "gpt-4",
+			Client: &llm.Client{
+				APIKey:  "test-key",
+				BaseURL: "https://api.openai.com/v1",
+				Model:   "gpt-4",
+			},
 		}
 
 		optimizer := &CaptionOptimizer{
@@ -284,9 +293,11 @@ func TestCaptionOptimizer_OptimizeCaption_WithBusinessContext(t *testing.T) {
 		db.Create(&item)
 	}
 	mockClient := &AIClient{
-		APIKey:  "test-key",
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-4",
+		Client: &llm.Client{
+			APIKey:  "test-key",
+			BaseURL: "https://api.openai.com/v1",
+			Model:   "gpt-4",
+		},
 	}
 
 	optimizer := &CaptionOptimizer{

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/similadayo/brancr/internal/llm"
 	"github.com/similadayo/brancr/internal/storage"
 	"github.com/similadayo/brancr/internal/testutil"
 	"go.uber.org/zap"
@@ -224,9 +225,11 @@ func TestIntentDetector_CustomIntentCatalog(t *testing.T) {
 	}
 
 	mockClient := &AIClient{
-		APIKey:  "test-key",
-		BaseURL: "https://api.openai.com/v1",
-		Model:   "gpt-4",
+		Client: &llm.Client{
+			APIKey:  "test-key",
+			BaseURL: "https://api.openai.com/v1",
+			Model:   "gpt-4",
+		},
 	}
 
 	detector := &IntentDetector{
