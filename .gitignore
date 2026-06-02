@@ -4,6 +4,8 @@ node_modules/
 /vendor/
 /.env
 *.log
+*.exe
+cmd/brancr/brancr.exe
 .DS_Store
 .vscode/
 .idea/ 
