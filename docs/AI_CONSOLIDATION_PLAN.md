@@ -2,6 +2,35 @@
 
 _Last updated: 2026-06-02_
 
+## Status checklist (living tracker)
+
+**Track 1 — Cleanup (from initial assessment)** — ✅ complete
+- [x] Delete orphan packages (`shadow`, `simulation`, `ai_client`)
+- [x] Remove committed `brancr.exe` + root PII log dumps; `.gitignore` the binary
+
+**Track 2 — AI consolidation (5 phases)**
+- Phase 0 — Guardrails / test net — 🟡 in progress
+  - [x] `go build ./...` + logic tests green as the baseline gate
+  - [ ] Enable CGO (install gcc) so the 41 SQLite-backed test files run (`CGO_ENABLED=1 go test ./...`)
+- Phase 1 — Extract shared infra from `internal/ai` — 🟡 ~40%
+  - [x] LLM chat transport → `internal/llm` (embed+alias)
+  - [x] Embeddings transport → `internal/llm`
+  - [x] `ParseMenuText` / `ParseMenuFromImage` → free functions in `internal/catalog/ingest`
+  - [x] `GenerateBusinessProfile` (`magic_profile.go`) → `internal/onboarding`
+  - [x] `GenerateBusinessKnowledge` (`magic_knowledge.go`) → `internal/onboarding`
+  - [x] `MemoryService` → `internal/recall` (name `internal/memory` was taken)
+  - [ ] `caption_optimizer.go` — blocked: moving to `internal/social/captions` would create an import cycle; needs `AIClientInterface` + `BuildBaseMessages` moved to `internal/llm` first
+  - [ ] Delete the `AIClient` shim + aliases once nothing depends on them
+- Phase 2 — Telegram customer path → v4 (kills legacy `CustomerResponder` use) — ⬜ gated on test net
+- Phase 3 — Absorb v3 `ActionExecutor` into v4 (removes `ai_v4 → ai/v3` dep) — ⬜ gated, highest risk
+- Phase 4 — Delete legacy `internal/ai` reasoning + all `internal/ai/v3` (~30k+ LOC) — ⬜ final step
+
+**Separate items (out of scope of the 5 phases — track independently)**
+- [ ] Split `tenantapi/handler.go` (~10.7k LOC) by resource
+- [ ] Rotate secrets that sat in the deleted root log files / `.env`
+- [ ] De-duplicate Go↔Python logic (Nigerian price parsing, browse/variant/negotiation)
+- [ ] Rename one `llm` package (`internal/llm` vs `internal/ai_v4/llm` collision)
+
 ## Why this exists
 
 The Go backend has accumulated **three generations of AI code** (`internal/ai`,

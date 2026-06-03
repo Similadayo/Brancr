@@ -1659,6 +1659,113 @@ func isCatalogReplyValid(reply string, message string, knowledge *v4ctx.TenantKn
 	return true
 }
 
+// detectHallucinatedItemName scans a reply for noun phrases that look like product
+// names but do not exist in the tenant's catalog. Returns the first hallucinated
+// name found, or "" if the reply appears clean.
+//
+// Strategy: extract capitalised multi-word phrases from the reply (the shape of
+// product names), then check each against the catalog. A phrase is flagged if:
+//   - it is 2–5 words, starts with a capital letter, and is not a common English phrase
+//   - it does NOT appear as a substring of any catalog item name (case-insensitive)
+//
+// This is intentionally conservative: we only flag high-confidence hallucinations
+// to avoid false positives on legitimate conversational phrases.
+func detectHallucinatedItemName(reply string, knowledge *v4ctx.TenantKnowledgeSnapshot) string {
+	if knowledge == nil {
+		return ""
+	}
+
+	// Build a flat list of all catalog names (lower-cased) for fast lookup.
+	catalogNames := make([]string, 0, len(knowledge.Products)+len(knowledge.MenuItems)+len(knowledge.Services))
+	for _, p := range knowledge.Products {
+		catalogNames = append(catalogNames, strings.ToLower(strings.TrimSpace(p.Name)))
+	}
+	for _, m := range knowledge.MenuItems {
+		catalogNames = append(catalogNames, strings.ToLower(strings.TrimSpace(m.Name)))
+	}
+	for _, s := range knowledge.Services {
+		catalogNames = append(catalogNames, strings.ToLower(strings.TrimSpace(s.Name)))
+	}
+
+	// If the catalog is empty there is nothing to validate against.
+	if len(catalogNames) == 0 {
+		return ""
+	}
+
+	// Common false-positive phrases that look like product names but are conversational.
+	safePhrasePrefixes := []string{
+		"we don't", "we do", "we have", "we can", "we offer",
+		"let me", "thank you", "please note", "of course", "right now",
+		"at this", "at the", "for more", "feel free", "check with",
+		"our team", "our store", "our range", "your order", "your request",
+	}
+	safePhrase := func(s string) bool {
+		lower := strings.ToLower(s)
+		for _, prefix := range safePhrasePrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Extract capitalised phrases (2–5 words) from the reply.
+	// Pattern: sequences of words where the first word starts with a capital letter
+	// and subsequent words are also capitalised or are short connectors (of, in, for).
+	words := strings.Fields(reply)
+	for i := 0; i < len(words); i++ {
+		word := words[i]
+		// Must start with a capital letter and be at least 3 chars.
+		if len(word) < 3 || word[0] < 'A' || word[0] > 'Z' {
+			continue
+		}
+		// Build a phrase of up to 5 words.
+		for phraseLen := 2; phraseLen <= 5 && i+phraseLen <= len(words); phraseLen++ {
+			phrase := strings.Join(words[i:i+phraseLen], " ")
+			// Strip trailing punctuation.
+			phrase = strings.TrimRight(phrase, ".,!?;:'\"")
+			if safePhrase(phrase) {
+				continue
+			}
+			lowerPhrase := strings.ToLower(phrase)
+			// Check if this phrase matches any catalog name.
+			matched := false
+			for _, catName := range catalogNames {
+				if strings.Contains(catName, lowerPhrase) || strings.Contains(lowerPhrase, catName) {
+					matched = true
+					break
+				}
+			}
+			// Only flag if it looks strongly like a product name:
+			// at least 2 words and neither word is a common article/pronoun.
+			if !matched {
+				stopWords := map[string]bool{
+					"the": true, "a": true, "an": true, "our": true, "your": true,
+					"this": true, "that": true, "we": true, "it": true, "is": true,
+					"are": true, "was": true, "be": true, "been": true, "have": true,
+					"has": true, "had": true, "do": true, "does": true, "did": true,
+					"will": true, "would": true, "can": true, "could": true,
+					"should": true, "may": true, "might": true, "with": true,
+					"for": true, "from": true, "into": true, "onto": true, "upon": true,
+				}
+				phraseWords := strings.Fields(lowerPhrase)
+				isStopOnly := true
+				for _, pw := range phraseWords {
+					if !stopWords[pw] {
+						isStopOnly = false
+						break
+					}
+				}
+				if !isStopOnly && len(phraseWords) >= 2 {
+					// Additional guard: skip if it's a well-known Nigerian/English phrase
+					return phrase
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func normalizeFamilyName(name string) string {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	if idx := strings.Index(lower, "("); idx >= 0 {
@@ -3891,9 +3998,29 @@ func (r *FlowRunner) RunTurn(
 	}
 
 	// 4. Response Construction
-	// Safety Net: reject meta
+
+	// Safety Net: reject meta-commentary (AI talking about itself rather than to customer)
 	if strings.Contains(strings.ToLower(finalReply), "here's a reply") {
 		return nil, errors.New("safety_rejected_meta_reply")
+	}
+
+	// Safety Net: catalog name hallucination check
+	// Scan the final reply for product/item names that do not exist in the tenant's
+	// catalog. If a hallucinated name is detected, replace the reply with a safe
+	// catalog fallback so the customer never sees invented products.
+	if strings.TrimSpace(finalReply) != "" && knowledge != nil {
+		if hallucinatedName := detectHallucinatedItemName(finalReply, knowledge); hallucinatedName != "" {
+			log.Warn("hallucination_guard_triggered",
+				zap.String("hallucinated_name", hallucinatedName),
+				zap.String("original_reply", finalReply[:min(120, len(finalReply))]))
+			// Replace with a safe deterministic reply
+			finalReply = buildFullCatalogReplyForRequest(req.MessageText, knowledge)
+			if strings.TrimSpace(finalReply) == "" {
+				finalReply = "Sorry, I didn't quite catch that. Here's what we currently have available — let me know which one interests you."
+			}
+			log.Info("hallucination_guard_replaced_reply",
+				zap.String("safe_reply_preview", finalReply[:min(80, len(finalReply))]))
+		}
 	}
 
 	response = &types.AIResponse{
